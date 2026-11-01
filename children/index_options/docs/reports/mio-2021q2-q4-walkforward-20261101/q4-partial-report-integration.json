@@ -1,0 +1,266 @@
+{
+  "schema": "dskit-bounded-independent-review-v1",
+  "reviewer": "/root/q4_partial_report_integration",
+  "model": "GPT-6 Astra",
+  "lens": "independent integration, provenance and failed-publication lifecycle",
+  "base": "5a09c840cceb2071e68765148f48c73884d5556a",
+  "candidate": "e072957b056bf07900ad21415c711e8b1af67d68",
+  "worktree": "/home/russell/wt/q2-reconcile-20261031",
+  "scope": "Only the two-method Q4 partial reports, direct execution extracts, combined comparison, failed publication and report JSON at the immutable candidate. Source preparation and subsequently approved eligibility policy are excluded.",
+  "contract": "A completed pipeline does not imply a complete study. Preserve complete=false and nominal_lp failure; bind the two completed methods to the actual attested result and receipt, renderer configuration, exact accounting counts and USD 0.005 money gates. A failed exposure is published exactly once and has no successful review or frontier advancement.",
+  "owner_authority": "Existing authorization covers reports and preserving failure evidence. The owner subsequently approved a config-only eligibility policy; this review does not approve its implementation, source identity, launch or outcomes. No new ADR or runtime code is reviewed.",
+  "path_constraints": [
+    "A0002 proper-score selection remains distinct from strategy economics",
+    "A0003 mature labels and sealed 2024+ boundary unchanged",
+    "A0008 accepted training sequence unchanged"
+  ],
+  "counts": {
+    "Critical": 0,
+    "Major": 0,
+    "Minor": 1,
+    "Nit": 1
+  },
+  "unresolved_counts": {
+    "Critical": 0,
+    "Major": 0,
+    "Minor": 1,
+    "Nit": 1
+  },
+  "verdict": "PASS for bounded partial-report integration/provenance, with two pre-existing display/status caveats retained. This closes neither the overall nine-report task nor the unsupported-deliverable completion issue.",
+  "findings": [
+    {
+      "id": "Q4PARTIAL-COR-MIN-001",
+      "severity": "Minor",
+      "family": "generic event narrative session label",
+      "independently_confirmed": true,
+      "location": "q4-partial/{w1_003_shock10_lp,w1_003_lp}/summary.md and corresponding HTML",
+      "invariant": "Distinguish quarter account sessions from decision dates.",
+      "reproducer": "The generic narrative says 14 sessions (14 decisions), while 64 quarter sessions and 109 settlement-tail account rows are verified and shown in authoritative run identity and ledger tables.",
+      "consequence": "Possible display ambiguity, with no missing market session or changed result.",
+      "origin": "Pre-existing generic report convention, also reported by the preceding correctness lens.",
+      "disposition": "Nonblocking. Keep immutable generated evidence. A future config caveat may state that the generic narrative uses decision-day sessions; no runtime change required for this scoped closure."
+    },
+    {
+      "id": "Q4PARTIAL-COR-NIT-001",
+      "severity": "Nit",
+      "family": "stale intermediate progress wording",
+      "independently_confirmed": true,
+      "location": "q4-partial/reports-verification.json:companion_execution_detail_and_combined_index",
+      "invariant": "Progress metadata should identify its stage.",
+      "reproducer": "The intermediate verification still says pending delivery appendix; the candidate artifact index and direct CSV companions are present and independently checked.",
+      "consequence": "Editorial status ambiguity only; no absent file, wrong total, or provenance gap.",
+      "disposition": "Nonblocking retained stage snapshot; use the artifact index and actual files as final delivery evidence."
+    }
+  ],
+  "overall_open_findings": [
+    {
+      "id": "Q4-IBM-PHASE0-MAJ-001",
+      "severity": "Major",
+      "scope": "overall completion and unsupported-deliverable policy implementation, outside this bounded report review",
+      "status": "Completion remains unresolved. Owner has approved the policy direction, but new source verification and successful rerun are not part of this review.",
+      "evidence": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/verification/q4-ibm-phase0-correctness.json",
+      "sha256": "0324f1df9653dbe620bc47a008129deaaa7263076bee4b6400a82d936eb66b52"
+    }
+  ],
+  "matrix": [
+    {
+      "invariant": "Attested source and exact pins",
+      "result": "PASS",
+      "evidence": "RunAttestation.node_output_for_document binds close_packet to the actual source document. A wrong document hash fails read-only. Result bytes, content hash, close-node hash and saved source-config identity all agree."
+    },
+    {
+      "invariant": "Report nodes and metadata",
+      "result": "PASS",
+      "evidence": "All 21 report nodes completed under the claimed report identity. Candidate config hash reproduces it. First-event config and HTML embedded config exactly equal the saved renderer config; source result/config/receipt are bound within run_start metadata. Top-level event data correctly follows the renderer data_fingerprint contract."
+    },
+    {
+      "invariant": "All required accounting gates",
+      "result": "PASS",
+      "evidence": "Seven gates per completed method, money tolerances 0.005 and exact count tolerances 0. Independent event signed cash movements, contributions and fees reproduce the attested totals; fill/refusal/decision counts agree. 218 marked-ledger rows match authoritative saved values."
+    },
+    {
+      "invariant": "Quarter and cohort distinction",
+      "result": "PASS",
+      "evidence": "64 quarter sessions, 14 decisions and 109 account rows per completed method. Quarter-boundary marked equity, open-book count and return are distinct from settled cohort P&L. No final open books remain. At-cost event charts are explicitly labeled and MIO marks declared authoritative."
+    },
+    {
+      "invariant": "Artifact integration and mirror identity",
+      "result": "PASS",
+      "evidence": "All 33 indexed files match bytes and hashes. All 26 method-report mirrors equal generated originals. Eight source links verify exact bytes/hashes. Every saved field and nested object in 23 trade, 46 refusal and 218 account companion rows equals the attested source. Q4 comparison counts and hashes agree; six Q2/Q3 comparison rows are unchanged."
+    },
+    {
+      "invariant": "Failure disclosure and once-only registry publication",
+      "result": "PASS",
+      "evidence": "nominal_lp has status failed, no result payload, no invented final totals and no report nodes. Both navigation pages, combined status and individual report caveats disclose partial completion. Actual publication run is attested and reuses the exact source study and receipt. Read-only registry snapshot revision 5 has one publish_attested_close, failed_exposed_pending_review, active claim retained, frontier 0 and no disposition."
+    },
+    {
+      "invariant": "Containment and independent review",
+      "result": "PASS",
+      "evidence": "Explicit candidate blobs were used throughout. Changes outside the candidate appeared only as an untracked new eligibility preparation config, excluded from review. No source/config/runtime edit, replay, registry mutation, full suite or other task messaging occurred."
+    }
+  ],
+  "checks": {
+    "primary_assertions": 1981,
+    "supplemental_assertions": 4418,
+    "total_assertions": 6399,
+    "areas": {
+      "dependency_containment": 2,
+      "source_attestation": 11,
+      "report_attestation": 23,
+      "publication": 13,
+      "artifact_mirrors": 60,
+      "failure_disclosure": 10,
+      "method_coverage": 228,
+      "event_provenance": 20,
+      "html_provenance": 6,
+      "artifact_links": 8,
+      "money_and_count_gates": 44,
+      "trade_integration": 4,
+      "ledger_projection": 1526,
+      "quarter_boundary": 14,
+      "combined_evaluation": 11,
+      "candidate_scope": 1
+    },
+    "supplement": {
+      "additional_assertions": 4418,
+      "companion_exact_projection": true,
+      "scope": "All saved source fields and nested objects in 23 trade, 46 refusal and 218 marked-account rows; comparison book/contract/refusal counts."
+    }
+  },
+  "source": {
+    "document_hash": "75520d7b0be89dbc066a3b9928b15a162f719600e6a46d17da5b6182eeed8949",
+    "receipt": {
+      "bytes": 9885084,
+      "media_type": "application/json",
+      "path": "artifacts/json/8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a.json",
+      "sha256": "8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a"
+    },
+    "study_complete": false,
+    "run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2/mio-2021q4-tail-v2-walkforward-frozen-m53-development-2021-12-31-9add6949"
+  },
+  "report": {
+    "run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/reports-q4-partial/mio-2021q4-partial-tail-v2-evaluation-2021-12-31-82296675",
+    "document_hash": "86e94b58757d8e808edb8d9b02e643da33057c645c40873f335d908c5c2b8d48",
+    "indexed_files": 33
+  },
+  "completed_method_metrics": {
+    "w1_003_shock10_lp": {
+      "pnl": -7937.5,
+      "final_equity": 8062.5,
+      "fees": 71.5,
+      "books": 19,
+      "contracts": 110,
+      "refused": 27,
+      "events": 8059,
+      "gates": 7
+    },
+    "w1_003_lp": {
+      "pnl": -8239.85,
+      "final_equity": 7760.15,
+      "fees": 44.85,
+      "books": 4,
+      "contracts": 69,
+      "refused": 19,
+      "events": 7998,
+      "gates": 7
+    }
+  },
+  "publication_snapshot": {
+    "identity": {
+      "domain": "index_options_MIO_q4_settlement_20261101",
+      "id": "5b6924e9-2cf7-486f-90f5-62db8fb60b38",
+      "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/q4-tail-exposure-registry.sqlite"
+    },
+    "revision": 5,
+    "frontier": 0,
+    "active": "d2bcc77d-e3f7-4def-91e1-e1432ed840b3",
+    "claim_status": "failed_exposed_pending_review",
+    "dispositions": {},
+    "actions": [
+      "initialize",
+      "freeze",
+      "claim",
+      "bind_inputs",
+      "bind_execution",
+      "publish_attested_close"
+    ],
+    "event_digest": "48bb6faf8b6bb6123f83e3deb1449d16c5d9dfd3d3f571755522781ca9a2d4b3"
+  },
+  "candidate_bindings": {
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/publish-q4-partial-tail-v2.json": "f69479022f6cf6fc75738641b91cdb966c0f073f63a68dc8dfa60a75d9ffcaef",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/report-q4-partial-tail-v2.json": "0df72da85e88391fd82794de155b0c5770dd45e43af243bbe5302590946d2d4b",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/README.md": "d6850b972ad55eea3684da8a3cb8863cd38dcb75a313b71fc1c85e680f87060d",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/combined-status.json": "a9ae3d46f45926742970a1cfff53094fd15ab466764b1d468d5cf8304606855e",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/comparison.csv": "897d2f32d5b7c44308bf01e9214f4e6642545b774e00163bd27be57307f0f151",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-ibm-phase0-correctness.json": "0324f1df9653dbe620bc47a008129deaaa7263076bee4b6400a82d936eb66b52",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial-failure.json": "2b2da09b39a73c5652f7deade2d47c04f71271620a6eb4b110185f4bbb800194",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/README.md": "457801a934543b64b933d81e5fbc8e69f3e31a6bf705ac3cfc03e10cdad20ac2",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/artifact-index.json": "bc3aa9530a959dac2e4ab7844bac41ab2beb327b0051b9a2e745d68c32439314",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/daily-account.csv": "65a2bfb4b8e7a004f5e1ed6fb5946280a0c25780152915712daf6360813cf6a3",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/mio-verification.json": "4f86f24ea15bbcd6caefa80aaab351b5d8971a7024e79a4b9d585dc4eefe55d3",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/orders-and-fills.csv": "6e3055d5ad9832f3d5cef7c360d620cf76a80aa958750f6168896f58d449b510",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/rejected-orders.csv": "988602eb512322f6916066b7be8ed4989781807f9e1b97569a5d4de52033d082",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/reports-verification.json": "630fb48235f01aaa804babdcdba8dbee8a7d76baa835a3c71d48013d286d3588",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/trades.csv": "52ebe9a3da9253e3545eadc263edcee0b38631c684470522f49b6064176c1912",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_lp/decisions.csv": "5dd1d8f53b9f64f469a55eeacd409f3f0cc48544329bf3d7a1674929f86133ec",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_lp/events.jsonl": "b7677e6afc193bdf2ed2d6e5d852cfd8f7b12fc98fcb7567c5346586b0647682",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_lp/gate-comparison.csv": "61e334161b0d2036cd5f73c14cfcc525f564e6ab4f6f981c4aa739d666a03532",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_lp/ledger.csv": "1bf12a6c0dff6ad5473b7ba1c3b002aafb58f3bdc97ca31034c5da330b2ded56",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_lp/marked-figures.csv": "556e13ff821abd97be7748d408f6b9dbb1d504b0628480b090d62c0a8cff7178",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_lp/quarter-boundary.csv": "c4eb8f1edcce25043274f49f2c87839cb7ce772b8f19298387129ec62d8c3a7f",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_lp/refusals-ticker-dte.csv": "9a681be645abd111b7c3fa5b07d77f94226696cd7848bfcd466fc42d2aa7f440",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_lp/report.html": "48f388a87c04c64c5769d235ea929c57c5e4815760c9c9970d6b05e3c3cd1837",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_lp/run-identity.csv": "1f50e91e12fb8c10c2c61e68743be65bd88ef72957ed68ac29b95a0e49f1a30f",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_lp/source-links.csv": "ddf18fcc9c907ad4fb79d566c61e763ade9db997e021705ca5bfe515f876437f",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_lp/summary.md": "aa5e6e21b120cec9030ca7df3746c609c36ecbc134c5bf37f5c9eb509665dd6d",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_lp/ticker-dte.csv": "8029d5eb590460451fe5d53f1b8c4fdaca93adf59a30e9d6bdd03d648e1a064f",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_lp/trades.csv": "23b73d96f2fe74fb5bc80c42b00f0007fb521311e4e36a13a391430c848899d2",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_shock10_lp/decisions.csv": "6af4a044f56e73179c0e38f4f7a20c04d66938e5addb64170109899e0a38c327",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_shock10_lp/events.jsonl": "e34a227d96d97dc95aeb1ff1add17a5b32d7d8ce38ee802bc11d68cea80a80e6",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_shock10_lp/gate-comparison.csv": "a2b3f9a951ea52a22ed8b0253f421bb667307e2e45362e79814a7328988c60b8",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_shock10_lp/ledger.csv": "e652acb93ff4c4dc27909f92cd03c8d4fdadd62cb03d33d25fefeea1f03e4175",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_shock10_lp/marked-figures.csv": "455950dceb9225364a9826bd00ad2dc7440c7723a1dede80a41961a766eb389b",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_shock10_lp/quarter-boundary.csv": "01ba574d3fc8c3be297955e0b29421914a8810a0edc0ee9529f9803344192205",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_shock10_lp/refusals-ticker-dte.csv": "196223b63b0e6a3f275d0d2a0d73fd2e1bdb75a05fd88e99f1913f44359039d9",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_shock10_lp/report.html": "aba6c4929b849388c0a2211983744b301fc6b4b68e10b2e00da1e9ae40ed8a5a",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_shock10_lp/run-identity.csv": "b4fc89f3c080e77f50c8b77b5c2b497300c533a34afc5c87000e29182509f182",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_shock10_lp/source-links.csv": "ddf18fcc9c907ad4fb79d566c61e763ade9db997e021705ca5bfe515f876437f",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_shock10_lp/summary.md": "28ec8a610a34c70bbcb2f4a041578a8b3645153180fe1c2b91afaf541b3605a0",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_shock10_lp/ticker-dte.csv": "27b57f40ac2d01cef135962f32b4c0ad410931251b5446238cde88ac66e13130",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/w1_003_shock10_lp/trades.csv": "6ab3143e51f8799a71b6ce3c79e9f3738b4f60fbae7651c2d4cc8b1cc3d5d61d",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-supplemental-review-lock.json": "886b259f260308d28d3bf746f0a100b32963664544566fb6b8fd83bd8b4c11d0"
+  },
+  "candidate_diff_sha256": "ad7b203dac7215ef4ad00dc5121226e356b95eb0ba6b20617166c5a2e58af087",
+  "working_tree_observation": {
+    "head": "e072957b056bf07900ad21415c711e8b1af67d68",
+    "status": "?? children/index_options/configs/mio-2021h2-walkforward-20261101/run-q4-eligibility-chain-prep.json",
+    "interpretation": "Parent's untracked eligibility prep is excluded; all reviewed content was read from candidate Git blobs."
+  },
+  "sweep": {
+    "command": "bash tools/sweep/sweep q4-partial-report-integration partial-report attestation-provenance",
+    "exit": 0,
+    "result": "Searched 48 refs and 111 other worktrees; no near matches or origin/main mentions."
+  },
+  "execution": {
+    "environment": "WSL2 via SSH russell@localhost",
+    "interpreter": "/home/russell/dskit/.venv/bin/python",
+    "commands": "Read-only Python assertions over exact Git blobs and saved artifacts; RunAttestation and PipelineDocument identity checks; read-only SQLite transaction; git show/diff/status. Tool transcript retained in reviewer task.",
+    "no_full_suite": true,
+    "no_replay": true,
+    "no_registry_mutation": true,
+    "no_runtime_or_config_changes": true
+  },
+  "untested_limits": [
+    "No market rerun or raw-price independent settlement revaluation. This integration review verifies attested result extraction, event accounting and registry publication.",
+    "No browser screenshot rendering; HTML structure, caveats and embedded configuration were inspected directly.",
+    "Eligibility policy and new prepared sources are intentionally outside this candidate. Owner approval does not itself establish their correctness.",
+    "Q2/Q3 prior reviews were not repeated; their six combined comparison rows were checked unchanged.",
+    "Attestation supplies repository-documented file identity and node binding; no claim of resistance to hostile interpreter/file mutation."
+  ],
+  "created_utc": "2026-11-01T13:21:56.265437+00:00",
+  "preceding_correctness_evidence": {
+    "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/verification/q4-partial-report-correctness.json",
+    "sha256": "38936096347d669bd39ac2b2809ea8eec120cf58785b6a171a3deb4080b9a27c",
+    "status": "independent previous lens; not used as a substitute for the checks above"
+  }
+}

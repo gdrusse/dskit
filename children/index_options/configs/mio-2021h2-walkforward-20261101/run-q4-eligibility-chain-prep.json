@@ -1,0 +1,249 @@
+{
+  "name": "mio-q4-approved-spinoff-eligibility-preparation",
+  "notes": "Q4 eligibility revision only. IBM/O contract rows are filtered consistently for all three methods after public predecision announcements, until standard-root relisting. Two source files change; models, forecasts, accounts, methods and 212-name admission stay fixed.",
+  "pipeline": {
+    "ibm_read": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/mio-2021h2-exact-q2-20261031/ob",
+        "source": "mio-q4-tail-v2-20261101",
+        "stream": "files",
+        "relpath_by_key": {
+          "IBM": "chain/IBM.parquet"
+        },
+        "key": "IBM",
+        "columns": {
+          "symbol": "symbol",
+          "date": "date",
+          "expiration": "expiration",
+          "type": "type",
+          "strike_raw": "strike_raw",
+          "strike": "strike",
+          "bid": "bid",
+          "ask": "ask",
+          "bid_size": "bid_size",
+          "ask_size": "ask_size",
+          "basis_factor": "basis_factor",
+          "underlying_price": "underlying_price"
+        }
+      },
+      "notes": "Read the unchanged onboarded tail-v2 chain; source pin and before/after equality are retained in policy verification."
+    },
+    "ibm_policy": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$ibm_read.records"
+      },
+      "params": {
+        "field": "eligibility_reason",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "symbol",
+                "op": "==",
+                "value": "IBM"
+              },
+              {
+                "field": "date",
+                "op": ">=",
+                "value": "2021-10-13"
+              },
+              {
+                "field": "date",
+                "op": "<",
+                "value": "2021-11-05"
+              },
+              {
+                "field": "expiration",
+                "op": ">=",
+                "value": "2021-11-03"
+              }
+            ],
+            "value": "IBM_preannounced_Kyndryl_distribution"
+          },
+          {
+            "when": [],
+            "value": "supported"
+          }
+        ]
+      },
+      "notes": "Only public announcement/relisting dates and contract expiry determine this rule; no realized prices, future basis ratios or selected-book outcomes."
+    },
+    "ibm_kept": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$ibm_policy.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "eligibility_reason",
+            "op": "==",
+            "value": "supported"
+          }
+        ]
+      }
+    },
+    "ibm_kept_write": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$ibm_kept.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/q4-eligibility-prep/IBM-kept.jsonl",
+        "source": "Owner-approved Q4 spinoff eligibility kept; original quote values preserved; rule and sources in eligibility-policy.json"
+      },
+      "notes": "Canonical rows preserve exact numerical values. The excluded stream is retained as the audit."
+    },
+    "ibm_excluded": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$ibm_policy.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "eligibility_reason",
+            "op": "!=",
+            "value": "supported"
+          }
+        ]
+      }
+    },
+    "ibm_excluded_write": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$ibm_excluded.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/q4-eligibility-prep/IBM-excluded.jsonl",
+        "source": "Owner-approved Q4 spinoff eligibility excluded; original quote values preserved; rule and sources in eligibility-policy.json"
+      },
+      "notes": "Canonical rows preserve exact numerical values. The excluded stream is retained as the audit."
+    },
+    "o_read": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/mio-2021h2-exact-q2-20261031/ob",
+        "source": "mio-q4-tail-v2-20261101",
+        "stream": "files",
+        "relpath_by_key": {
+          "O": "chain/O.parquet"
+        },
+        "key": "O",
+        "columns": {
+          "symbol": "symbol",
+          "date": "date",
+          "expiration": "expiration",
+          "type": "type",
+          "strike_raw": "strike_raw",
+          "strike": "strike",
+          "bid": "bid",
+          "ask": "ask",
+          "bid_size": "bid_size",
+          "ask_size": "ask_size",
+          "basis_factor": "basis_factor",
+          "underlying_price": "underlying_price"
+        }
+      },
+      "notes": "Read the unchanged onboarded tail-v2 chain; source pin and before/after equality are retained in policy verification."
+    },
+    "o_policy": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$o_read.records"
+      },
+      "params": {
+        "field": "eligibility_reason",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "symbol",
+                "op": "==",
+                "value": "O"
+              },
+              {
+                "field": "date",
+                "op": ">=",
+                "value": "2021-10-25"
+              },
+              {
+                "field": "date",
+                "op": "<",
+                "value": "2021-11-16"
+              },
+              {
+                "field": "expiration",
+                "op": ">=",
+                "value": "2021-11-12"
+              }
+            ],
+            "value": "O_preannounced_Orion_distribution"
+          },
+          {
+            "when": [],
+            "value": "supported"
+          }
+        ]
+      },
+      "notes": "Only public announcement/relisting dates and contract expiry determine this rule; no realized prices, future basis ratios or selected-book outcomes."
+    },
+    "o_kept": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$o_policy.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "eligibility_reason",
+            "op": "==",
+            "value": "supported"
+          }
+        ]
+      }
+    },
+    "o_kept_write": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$o_kept.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/q4-eligibility-prep/O-kept.jsonl",
+        "source": "Owner-approved Q4 spinoff eligibility kept; original quote values preserved; rule and sources in eligibility-policy.json"
+      },
+      "notes": "Canonical rows preserve exact numerical values. The excluded stream is retained as the audit."
+    },
+    "o_excluded": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$o_policy.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "eligibility_reason",
+            "op": "!=",
+            "value": "supported"
+          }
+        ]
+      }
+    },
+    "o_excluded_write": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$o_excluded.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/q4-eligibility-prep/O-excluded.jsonl",
+        "source": "Owner-approved Q4 spinoff eligibility excluded; original quote values preserved; rule and sources in eligibility-policy.json"
+      },
+      "notes": "Canonical rows preserve exact numerical values. The excluded stream is retained as the audit."
+    }
+  },
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/q4-eligibility-prep"
+  }
+}

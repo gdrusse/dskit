@@ -1,0 +1,32 @@
+{
+  "base": "e072957b056bf07900ad21415c711e8b1af67d68",
+  "owner_approval": {
+    "at": "2026-11-01T13:08:30.517096+00:00",
+    "answer": "Approve the config-only eligibility policy",
+    "scope": "Exclude new positions crossing publicly announced unsupported spinoffs consistently across all methods; retain verified standard contracts. No new ADR/runtime code.",
+    "question_item": "call_af28d5aaae47413c83a9ccf0410118ac"
+  },
+  "scope": "New config-only Q4 source eligibility variant; no runtime changes. Two fresh sequential lenses: correctness of dates, exact row partition and preserved data; integration of all six nodes, pins, protocol history and runnable launch. Earlier implementation/model/report scopes stay closed.",
+  "inputs": {
+    "source_verification": "/home/russell/wt/q2-reconcile-20261031/children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-eligibility-source.json",
+    "phase0": "/home/russell/wt/q2-reconcile-20261031/children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-eligibility-phase0.json",
+    "run_config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q4-eligibility-v1.json",
+    "prep_config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/run-q4-eligibility-chain-prep.json"
+  },
+  "matrix": [
+    "Chronology uses only known announcements and release notices; no outcome/basis predicates",
+    "All excluded rows retained; exact original-value/schema/order partition and210identical files",
+    "No unexpected method, training, forecast, economics or runtime delta; all212names retained",
+    "Historical false strong basis statement and failed publications remain visible; new source registry imports all exposure",
+    "Existing guards remain; unsupported preannouncement holdings must refuse rather than be repaired",
+    "Q2/Q3 originals and new Q4 eligibility differ and must be labelled explicitly"
+  ],
+  "checks": [
+    "12 existing preparation nodes attested complete",
+    "Lossless Arrow roundtrip and independent metadata predicate partition",
+    "All270runtime source hashes match original reviewed candidate",
+    "Existing CLI validate and StudyContract.build pass",
+    "New initialized registry revision0 with no active claim, before MIO launch"
+  ],
+  "release_scope": "Launch only; actual successful3method replay,9reports and final accounting review still required before merge/purge."
+}

@@ -1,0 +1,51 @@
+{
+  "previous_registry": {
+    "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/q4-tail-exposure-registry.sqlite",
+    "id": "5b6924e9-2cf7-486f-90f5-62db8fb60b38",
+    "domain": "index_options_MIO_q4_settlement_20261101"
+  },
+  "previous_registry_sha256": "38140d8fc8273e128dec7ac740fe14174f4aecb60c169339fc418f469638ae1e",
+  "previous_revision": 6,
+  "previous_dispositions": {
+    "dev_2021q4_tail_complete_20261101": {
+      "action": "abandon",
+      "claim": "d2bcc77d-e3f7-4def-91e1-e1432ed840b3",
+      "packet_id": "dev_2021q4_tail_complete_20261101",
+      "reason": "Owner approved config-only eligibility for publicly announced unsupported spinoffs. Preserve this attested partial Q4 result: nominal_lp could not settle IBM/Kyndryl mixed deliverable, while two methods completed. New eligibility changes candidate trades uniformly across methods, so replay receives a separate retrospective development identity and imports this exposure.",
+      "revision": 5,
+      "sha256": "860773edad03884f5fd97e6a0344816e5f3afafa5c8618ce1770d0226d90ba64"
+    }
+  },
+  "earlier_exposure_link": {
+    "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/q4-tail-prior-exposure.json",
+    "sha256": "830f1df00fcf87df88660f4cebae2820737402b68c91a7ad124c164ed0eef180"
+  },
+  "partial_run": {
+    "run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2/mio-2021q4-tail-v2-walkforward-frozen-m53-development-2021-12-31-9add6949",
+    "document_hash": "75520d7b0be89dbc066a3b9928b15a162f719600e6a46d17da5b6182eeed8949",
+    "verification": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/verification/mio-q4-partial.json",
+    "study_complete": false,
+    "failed_methods": [
+      "nominal_lp"
+    ],
+    "report_mirror": "/home/russell/wt/q2-reconcile-20261031/children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial",
+    "execution_detail_verified": true,
+    "reports_run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/reports-q4-partial/mio-2021q4-partial-tail-v2-evaluation-2021-12-31-82296675",
+    "reports_root": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/reports/q4-partial",
+    "provenance_correction_pending": false,
+    "registry_revision": 5,
+    "report_candidate": "e072957b056bf07900ad21415c711e8b1af67d68"
+  },
+  "owner_approval": {
+    "at": "2026-11-01T13:08:30.517096+00:00",
+    "answer": "Approve the config-only eligibility policy",
+    "scope": "Exclude new positions crossing publicly announced unsupported spinoffs consistently across all methods; retain verified standard contracts. No new ADR/runtime code.",
+    "question_item": "call_af28d5aaae47413c83a9ccf0410118ac"
+  },
+  "new_registry": {
+    "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/q4-eligibility-exposure-registry.sqlite",
+    "id": "4ba44b72-37a6-4273-b8e3-449954c338b8",
+    "domain": "index_options_MIO_q4_eligibility_20261101"
+  },
+  "classification": "retrospective development; never fresh holdout"
+}

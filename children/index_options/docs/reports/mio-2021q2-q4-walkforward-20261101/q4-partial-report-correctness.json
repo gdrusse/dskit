@@ -1,0 +1,229 @@
+{
+  "schema": "dskit-bounded-independent-review-v1",
+  "created_utc": "2026-11-01T13:13:52.479271+00:00",
+  "reviewer": "/root/q4_partial_report_correctness",
+  "model": "GPT-6 Astra",
+  "lens": "independent correctness and accounting",
+  "base": "5a09c840cceb2071e68765148f48c73884d5556a",
+  "candidate": "e072957b056bf07900ad21415c711e8b1af67d68",
+  "worktree": "/home/russell/wt/q2-reconcile-20261031",
+  "scope": "Q4 partial standard report package, direct execution extracts, combined index and publish/report JSON; no strategy or runtime review expansion.",
+  "contract": "Truthfully retain complete=false and nominal_lp failure; report only two complete replay-verified methods; exact source/receipt bindings, 64 Q4 sessions and 14 decisions; money within USD 0.005 and exact counts; distinguish marked quarter end, fully settled cohort and event at-cost accounting. Publication is failed exposure, not successful disposition.",
+  "owner_scope": "User authorized configs, reports and exposure preservation. The proposed eligibility policy remains unapplied; Q4-IBM-PHASE0-MAJ-001 remains an overall owner-scope blocker.",
+  "path_constraints": [
+    "A0002 proper-score selection separate from economics",
+    "A0003 sealed 2024+ boundary and mature labels",
+    "A0008 accepted training sequence; no change reviewed here"
+  ],
+  "counts": {
+    "Critical": 0,
+    "Major": 0,
+    "Minor": 1,
+    "Nit": 1
+  },
+  "unresolved_counts": {
+    "Critical": 0,
+    "Major": 0,
+    "Minor": 1,
+    "Nit": 1
+  },
+  "verdict": "PASS for bounded partial-report correctness, with deferred display/status caveats. This does not close the overall simulation task or authorize merge, purge or a changed-eligibility rerun.",
+  "findings": [
+    {
+      "id": "Q4PARTIAL-COR-MIN-001",
+      "severity": "Minor",
+      "family": "generic event narrative session label",
+      "location": "q4-partial/{w1_003_shock10_lp,w1_003_lp}/summary.md:19 and corresponding HTML",
+      "invariant": "Distinguish 64 quarter market sessions from 14 decision dates.",
+      "reproducer": "Both generic What happened paragraphs say round trips over 14 sessions (14 decisions); source audit and run-identity/quarter-boundary tables contain 64 account sessions and 14 decisions.",
+      "consequence": "The generic narrative can be read as only 14 covered market sessions. Authoritative coverage and all quantitative metrics are correct, so no material accounting error is demonstrated.",
+      "origin": "Pre-existing generic event renderer convention, now retained in this partial package.",
+      "disposition": "Nonblocking. Defer runtime changes; a future config caveat can clarify that generic narrative sessions means decision days. Do not rewrite immutable generated evidence solely for this nit-level wording issue."
+    },
+    {
+      "id": "Q4PARTIAL-COR-NIT-001",
+      "severity": "Nit",
+      "family": "stale delivery progress field",
+      "location": "q4-partial/reports-verification.json:242",
+      "invariant": "Progress metadata should describe its stage or the current delivery consistently.",
+      "reproducer": "companion_execution_detail_and_combined_index says pending delivery appendix, while the candidate has the complete companion CSVs and combined index; all are independently verified.",
+      "consequence": "Stale intermediate wording only; no missing artifact or wrong report total.",
+      "disposition": "Nonblocking retained intermediate verification status. Treat artifact-index.json and actual companion files as delivery evidence."
+    }
+  ],
+  "overall_open_findings": [
+    {
+      "id": "Q4-IBM-PHASE0-MAJ-001",
+      "severity": "Major",
+      "scope": "overall completion and policy boundary, not partial-report accounting",
+      "status": "unresolved; owner answer pending",
+      "evidence": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/verification/q4-ibm-phase0-correctness.json",
+      "sha256": "0324f1df9653dbe620bc47a008129deaaa7263076bee4b6400a82d936eb66b52"
+    }
+  ],
+  "source": {
+    "run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2/mio-2021q4-tail-v2-walkforward-frozen-m53-development-2021-12-31-9add6949",
+    "document_hash": "75520d7b0be89dbc066a3b9928b15a162f719600e6a46d17da5b6182eeed8949",
+    "receipt": {
+      "bytes": 9885084,
+      "media_type": "application/json",
+      "path": "artifacts/json/8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a.json",
+      "sha256": "8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a"
+    },
+    "close_node_sha256": {
+      "nodes/06-close_packet.json": "082ce3aefbee45ee70fc1d7cb3967c1b957f3cb818aa7a495efeab9eef9dbc0f"
+    },
+    "pipeline_completed": true,
+    "study_complete": false,
+    "failed_method": "nominal_lp",
+    "failed_method_has_result_payload": false,
+    "failed_method_error": "ValueError: unsettleable selected book: 2021-10-25:IBM:2021-12-17"
+  },
+  "checks": [
+    {
+      "name": "Independent attestation, accounting and extraction verification",
+      "result": "PASS",
+      "assertions": 2221,
+      "details": [
+        "RunAttestation.node_output_for_document binds exact close document and report nodes; content hashes and bytes match.",
+        "Calendar matches exchange_calendars XNYS exactly: 64 quarter sessions, 109 sessions including settlement tail, 14 decisions, 212 names.",
+        "Both complete methods have replay_parity=true and no remaining open books after settlement.",
+        "Every curve row reconciles contribution/realized/funding/cash/reserve/holdings; independently recomputed NAV and drawdown match.",
+        "Comparison and boundary fields independently derived from attested curves and trades; quarter-end mark is separate from settled cohort.",
+        "Every saved field and nested object in trade/refusal/account companions matches source in order; all 154 optimizer leg quantities and actual fills/refusals reconcile.",
+        "23 filled books, 46 refused books and 218 account rows; no nominal rows or fabricated totals.",
+        "Event cashflows, signed premium cash movements, fees and opening/closing counts independently reconcile within 0.005; refusal reasons exact.",
+        "Embedded event and HTML source configs bind exact actual source/result/config; source-links and all 33 indexed report/package files hash correctly.",
+        "Original generated reports and repository mirrors match; Q2/Q3 six comparison rows unchanged; combined status is eight of nine and complete=false."
+      ]
+    },
+    {
+      "name": "Standard round-trip CSV per-book reconciliation",
+      "result": "PASS",
+      "rows": 23,
+      "details": "All standard trade CSV book IDs, P&L, fees, gross P&L and fill identities match the attested book list."
+    },
+    {
+      "name": "Failed publication accounting",
+      "result": "PASS",
+      "details": "Publish config study equals all six source study params; actual publication is attested; exact receipt bound. Registry revision 5 contains exactly one publish_attested_close, status failed_exposed_pending_review, frontier 0, active claim retained, no disposition."
+    },
+    {
+      "name": "Candidate containment",
+      "result": "PASS",
+      "details": "HEAD is exact candidate and git status clean. Changes confined to two configs and report/evidence package; no replay, registry write, runtime edit or repository edit performed by reviewer."
+    }
+  ],
+  "completed_method_metrics": [
+    {
+      "quarter": "2021Q4",
+      "method": "w1_003_shock10_lp",
+      "sessions": 64,
+      "decisions": 14,
+      "filled_books": 19,
+      "filled_legs": 25,
+      "filled_contracts": 110,
+      "refused_books": 27,
+      "fees": 71.5,
+      "contributions": 16000.0,
+      "quarter_end_date": "2021-12-31",
+      "quarter_end_equity": 12954.5,
+      "quarter_end_open_books": 6,
+      "quarter_end_contributions": 16000.0,
+      "quarter_end_nav": 0.8701166039428758,
+      "quarter_end_twr": -0.12988339605712418,
+      "quarter_end_pnl_marked": -3045.5,
+      "quarter_max_drawdown": -0.7482210949552581,
+      "settled_pnl": -7937.5,
+      "settled_equity": 8062.5,
+      "settled_twr": -0.4584650029495976,
+      "settled_max_drawdown": -0.7804728645048954,
+      "last_trade_settlement": "2022-02-18",
+      "last_curve_date": "2022-03-08",
+      "replay_parity": true,
+      "run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2/mio-2021q4-tail-v2-walkforward-frozen-m53-development-2021-12-31-9add6949",
+      "result_sha256": "8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a",
+      "document_hash": "75520d7b0be89dbc066a3b9928b15a162f719600e6a46d17da5b6182eeed8949"
+    },
+    {
+      "quarter": "2021Q4",
+      "method": "w1_003_lp",
+      "sessions": 64,
+      "decisions": 14,
+      "filled_books": 4,
+      "filled_legs": 6,
+      "filled_contracts": 69,
+      "refused_books": 19,
+      "fees": 44.85,
+      "contributions": 16000.0,
+      "quarter_end_date": "2021-12-31",
+      "quarter_end_equity": 14126.650000000001,
+      "quarter_end_open_books": 2,
+      "quarter_end_contributions": 16000.0,
+      "quarter_end_nav": 0.9495623984484004,
+      "quarter_end_twr": -0.0504376015515996,
+      "quarter_end_pnl_marked": -1873.3499999999985,
+      "quarter_max_drawdown": -0.762501425455068,
+      "settled_pnl": -8239.85,
+      "settled_equity": 7760.15,
+      "settled_twr": -0.47837975413000544,
+      "settled_max_drawdown": -0.7900440795321503,
+      "last_trade_settlement": "2022-02-18",
+      "last_curve_date": "2022-03-08",
+      "replay_parity": true,
+      "run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2/mio-2021q4-tail-v2-walkforward-frozen-m53-development-2021-12-31-9add6949",
+      "result_sha256": "8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a",
+      "document_hash": "75520d7b0be89dbc066a3b9928b15a162f719600e6a46d17da5b6182eeed8949"
+    }
+  ],
+  "publication": {
+    "config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/publish-q4-partial-tail-v2.json",
+    "config_sha256": "f69479022f6cf6fc75738641b91cdb966c0f073f63a68dc8dfa60a75d9ffcaef",
+    "run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/publish-q4-partial/publish-q4-partial-tail-v2-2021-12-31-ea09e910",
+    "document_hash": "91e2da948c6cf56fe3dac656b005000ff760e2c03b005274bad4f5b0b2911e42",
+    "registry_revision": 5,
+    "claim_status": "failed_exposed_pending_review",
+    "publication": {
+      "artifact_sha256": "8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a",
+      "receipt": {
+        "document_hash": "75520d7b0be89dbc066a3b9928b15a162f719600e6a46d17da5b6182eeed8949",
+        "node": "close_packet",
+        "port": "receipt",
+        "run_dir": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2/mio-2021q4-tail-v2-walkforward-frozen-m53-development-2021-12-31-9add6949"
+      }
+    },
+    "disposition": "No success review or abandonment. Keep failure exposed pending owner scope decision."
+  },
+  "artifact_bindings": {
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/report-q4-partial-tail-v2.json": "0df72da85e88391fd82794de155b0c5770dd45e43af243bbe5302590946d2d4b",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/publish-q4-partial-tail-v2.json": "f69479022f6cf6fc75738641b91cdb966c0f073f63a68dc8dfa60a75d9ffcaef",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/README.md": "d6850b972ad55eea3684da8a3cb8863cd38dcb75a313b71fc1c85e680f87060d",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/comparison.csv": "897d2f32d5b7c44308bf01e9214f4e6642545b774e00163bd27be57307f0f151",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/combined-status.json": "a9ae3d46f45926742970a1cfff53094fd15ab466764b1d468d5cf8304606855e",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial-failure.json": "2b2da09b39a73c5652f7deade2d47c04f71271620a6eb4b110185f4bbb800194",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/artifact-index.json": "bc3aa9530a959dac2e4ab7844bac41ab2beb327b0051b9a2e745d68c32439314",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/mio-verification.json": "4f86f24ea15bbcd6caefa80aaab351b5d8971a7024e79a4b9d585dc4eefe55d3",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-partial/reports-verification.json": "630fb48235f01aaa804babdcdba8dbee8a7d76baa835a3c71d48013d286d3588"
+  },
+  "candidate_diff_sha256": "ad7b203dac7215ef4ad00dc5121226e356b95eb0ba6b20617166c5a2e58af087",
+  "sweep": {
+    "command": "tools/sweep/sweep q4-partial-report-correctness partial-report receipt-accounting",
+    "exit": 0,
+    "result": "Searched 48 refs and 111 other worktrees; no near matches or origin/main mentions."
+  },
+  "execution": {
+    "environment": "WSL2 via SSH russell@localhost",
+    "interpreter": "/home/russell/dskit/.venv/bin/python",
+    "commands": "Read-only Python assertions over saved files, read-only SQLite URI, git show/diff/status; exact tool transcript retained in reviewer task.",
+    "no_full_suite": true,
+    "no_runtime_or_config_changes": true,
+    "no_registry_mutation": true,
+    "no_replay": true
+  },
+  "untested_limits": [
+    "No fresh market-data rerun or raw-price settlement revaluation. This verifies report extraction/accounting over the attested run and its recorded parity.",
+    "No browser screenshot/render review; HTML markup, embedded configuration and quantitative tables inspected directly.",
+    "IBM mixed-deliverable support and proposed eligibility policy remain outside this bounded report review and unresolved.",
+    "Q2/Q3 prior independent reviews are not repeated; unchanged comparison compatibility only."
+  ]
+}

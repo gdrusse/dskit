@@ -1,0 +1,698 @@
+{
+  "action_family_inventory": {
+    "additional_family_limit": "The metadata census is not an exhaustive official corporate-action master. A factor can remain constant for an unsupported deliverable, and old adjusted classes can persist after an earlier event; exact standard-root sourcing is therefore important. No claim of complete official action enumeration is made.",
+    "method": "Read retained continuous converter manifest basis segments and prior all-forecast crossing inventory. No new quote/bar/forecast payload scan. These are discovery metadata, never eligibility inputs.",
+    "pre_q4_candidates": [
+      {
+        "interpretation": "Requires primary-notice chronology/terms check to apply the new unsupported-spinoff policy consistently to Q2. No exclusion is proposed from the ratio itself.",
+        "period": "Q2",
+        "retained_transition": "Last prechange2021-06-02, first valid postchange2021-06-04; ratio approximately1.048, not a supported integer split.",
+        "symbol": "MRK"
+      },
+      {
+        "interpretation": "Reverse-split candidate family; current StandardSplitAdjustment requires integer ratio>1 and cannot represent it. This is outside a narrowly spinoff-only policy; existing failed-closed behavior remains. Standard-root provenance matters for postevent series.",
+        "period": "Q3",
+        "retained_transition": "Last prechange2021-07-30, first valid postchange2021-08-03; ratio approximately1/8.",
+        "symbol": "GE"
+      },
+      {
+        "interpretation": "Integer forward-split candidate; no Q4 crossing evidenced.",
+        "period": "Q1 before requestedQ2 entries",
+        "retained_transition": "2021-03-05 ratio2.",
+        "symbol": "APH"
+      },
+      {
+        "interpretation": "Already addressed by the approved standard-split source.",
+        "period": "Q2",
+        "retained_transition": "2021-06-17 ratio10.",
+        "symbol": "TTD"
+      }
+    ],
+    "q4_forecast_origin_expiry_crossings": {
+      "ANET": {
+        "examples": [
+          [
+            "2021-10-01",
+            "2021-11-19"
+          ],
+          [
+            "2021-10-04",
+            "2021-11-19"
+          ],
+          [
+            "2021-10-05",
+            "2021-11-19"
+          ]
+        ],
+        "pairs": 137
+      },
+      "IBM": {
+        "examples": [
+          [
+            "2021-10-01",
+            "2021-11-05"
+          ],
+          [
+            "2021-10-01",
+            "2021-11-12"
+          ],
+          [
+            "2021-10-01",
+            "2021-11-19"
+          ]
+        ],
+        "pairs": 120
+      },
+      "ISRG": {
+        "examples": [
+          [
+            "2021-10-01",
+            "2021-10-08"
+          ],
+          [
+            "2021-10-01",
+            "2021-10-15"
+          ],
+          [
+            "2021-10-01",
+            "2021-10-22"
+          ]
+        ],
+        "pairs": 14
+      },
+      "O": {
+        "examples": [
+          [
+            "2021-10-01",
+            "2021-11-19"
+          ],
+          [
+            "2021-10-04",
+            "2021-11-19"
+          ],
+          [
+            "2021-10-05",
+            "2021-11-19"
+          ]
+        ],
+        "pairs": 51
+      }
+    },
+    "q4_interpretation": "Observed Q4 forecast-crossing set is exactly ISRG/ANET/IBM/O. Existing action pins cover the standard ISRG3:1 and ANET4:1 splits; approved new spinoff eligibility policy addresses IBM/O. No additional unsupported Q4 crossing family is evidenced by this bounded retained census.",
+    "retained_2021_segment_changes": [
+      {
+        "after": 0.25,
+        "before": 0.125,
+        "new_first_valid_date": "2021-03-05",
+        "prior_valid_through": "2021-03-04",
+        "ratio": 2.0,
+        "symbol": "APH"
+      },
+      {
+        "after": 1.0,
+        "before": 0.9541985522233712,
+        "new_first_valid_date": "2021-06-04",
+        "prior_valid_through": "2021-06-02",
+        "ratio": 1.0479999132988695,
+        "symbol": "MRK"
+      },
+      {
+        "after": 1.0,
+        "before": 0.1,
+        "new_first_valid_date": "2021-06-17",
+        "prior_valid_through": "2021-06-16",
+        "ratio": 10.0,
+        "symbol": "TTD"
+      },
+      {
+        "after": 0.623016848278491,
+        "before": 4.984134762633997,
+        "new_first_valid_date": "2021-08-03",
+        "prior_valid_through": "2021-07-30",
+        "ratio": 0.12500000059172586,
+        "symbol": "GE"
+      },
+      {
+        "after": 1.0,
+        "before": 0.3333333333333333,
+        "new_first_valid_date": "2021-10-05",
+        "prior_valid_through": "2021-10-04",
+        "ratio": 3.0,
+        "symbol": "ISRG"
+      },
+      {
+        "after": 1.0,
+        "before": 0.9560229616389384,
+        "new_first_valid_date": "2021-11-05",
+        "prior_valid_through": "2021-11-03",
+        "ratio": 1.0459999813034515,
+        "symbol": "IBM"
+      },
+      {
+        "after": 1.0,
+        "before": 0.9689922480620154,
+        "new_first_valid_date": "2021-11-16",
+        "prior_valid_through": "2021-11-12",
+        "ratio": 1.032,
+        "symbol": "O"
+      },
+      {
+        "after": 0.25,
+        "before": 0.0625,
+        "new_first_valid_date": "2021-11-18",
+        "prior_valid_through": "2021-11-17",
+        "ratio": 4.0,
+        "symbol": "ANET"
+      }
+    ]
+  },
+  "candidate_at_followup_start": "e072957b056bf07900ad21415c711e8b1af67d68",
+  "chronology": {
+    "IBM": {
+      "adjusted_class": "IBM1",
+      "adjusted_class_effective": "2021-11-04",
+      "announcement": "2021-10-12",
+      "announcement_content": "Expected distribution after close2021-11-03. This supports conservative exclusion for the announced spinoff without backdating later exact OCC deliverables.",
+      "chronology_correction": "Parent later inspected the original OCC PDF and found it datedOct27. Nov3 is the BOX wrapper/MIAX alert date; earlier evidence recording Nov3 as the OCC memo date is superseded by this correction, not erased.",
+      "conservative_usable_session": "2021-10-13",
+      "occ_49461_date": "2021-10-27",
+      "standard_resumes": "2021-11-05",
+      "standard_root": "IBM"
+    },
+    "O": {
+      "adjusted_class": "O2",
+      "adjusted_class_effective": "2021-11-15",
+      "announced_distribution": "2021-11-12",
+      "announcement": "2021-10-22",
+      "conservative_usable_session": "2021-10-25",
+      "later_terms_notice_date": "2021-11-09",
+      "standard_resumes": "2021-11-16",
+      "standard_root": "O"
+    },
+    "policy_rules": [
+      "Use public announcement knowledge available before each decision; use next session for a date-only notice.",
+      "Do not use observed factor changes, future prices, selected trades, profitability or later OCC terms as earlier admission predicates.",
+      "After action, retain contracts from the exact standard root beginning with confirmed standard listing resumption. Do not ban the symbol indefinitely.",
+      "Keep the common policy and exclusion census across all three methods; preserve previously opened positions and fail explicitly if an unsupported preannouncement position exists."
+    ],
+    "source_status": "Dates and official-source contents below were independently verified by parent and supplied to this reviewer; this reviewer did not browse or call providers."
+  },
+  "code_sha256": {
+    "children/index_options/index_options/theta_exact_expiry.py": "301ccc3b32178283652caedf791090eee70f6a2045ff81afab1906987bea17dd",
+    "dskit/onboarding/libs/thetadata.py": "d817a26ae7274eac56e1b22ffc0f6e2fc5e9d46d7fd9422c632c99dc2721e295",
+    "dskit/pipeline/libs/chain_parquet.py": "b88f1442a9b17b7fbf3f09cc490ab8f1b3d84e331a8e76130a73c78acdae45ed"
+  },
+  "counts": {
+    "Critical": 0,
+    "Major": 0,
+    "Minor": 0,
+    "Nit": 0
+  },
+  "counts_scope": "No evidenced code/config defect is asserted by this bounded identity follow-up. Counts do not certify the pending preparation configuration, ledger replay, reports or uniform cross-quarter policy.",
+  "created_utc": "2026-11-01T13:17:48.670555+00:00",
+  "cross_quarter_comparison": {
+    "GE_boundary": "Q3 contains a retained reverse-split candidate. Preserve its existing support/refusal limitation; do not silently broaden spinoff approval into an arbitrary action policy.",
+    "MRK_boundary": "Q2 contains a retained noninteger MRK action candidate, so blanket claims that the new policy would have no prior-quarter effect are unsupported. Confirm public notice chronology and applicable contracts before deciding whether Q2 needs the same source-policy rerun.",
+    "prior_result_validity": "This follow-up does not overwrite or declare prior attested accounting invalid. It limits comparability claims until admission policy scope is reconciled.",
+    "required_caveat": "Q2/Q3 reports were generated under the prior eligibility policy; revised Q4 excludes announced unsupported spinoff crossings. Models, economic settings and212 names can remain the same while tradable-contract eligibility changes. Do not describe all three quarters as one unchanged eligibility protocol without applicability/equivalence evidence or reruns.",
+    "unselected_is_not_a_predicate": "A report that a candidate was unselected or unprofitable must not define eligibility. If claiming equivalent results, evaluate the declared policy uniformly before selection and preserve its complete admission census; selected-book inspection alone is not a common-protocol proof."
+  },
+  "file_sha256": {
+    "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/continuous-market-tables-complete/manifest.json": "5b3d0d63fc3b95bab6282c4f22925966a957fde21762607f0dc22674338d3da0",
+    "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/market-basis-audit.json": "9adb24c2719a28c5f077a2d95fc8582c45c7232e4d8caa094cece5381b26b3b8",
+    "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/q4-tail-v2-pin.json": "f1843d5d1643761291718fd4ddee68d6acd2d612b9344a4414f582adb343e378",
+    "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/verification/q4-final-source-correctness.json": "5494a70085c8c9f82edcd4d725f0248f3e0a96a00cba75ca5f626a56c3d9a7f2",
+    "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/verification/q4-ibm-phase0-correctness.json": "0324f1df9653dbe620bc47a008129deaaa7263076bee4b6400a82d936eb66b52"
+  },
+  "head_at_retention": "e072957b056bf07900ad21415c711e8b1af67d68",
+  "owner_authorization": "Parent reports owner explicitly approved config-only exclusion of new positions crossing publicly announced unsupported spinoffs, consistently across all methods, retaining verified standard contracts; no ADR/runtime edits. This supersedes the permission boundary only; original q4-ibm-phase0-correctness.json remains unchanged.",
+  "parent_verified_official_sources": [
+    {
+      "supports": "Contracts share requested symbol and expiration.",
+      "url": "https://docs.thetadata.us/operations_python/option_history_greeks_eod.html"
+    },
+    {
+      "supports": "v2 root becomes v3 symbol, a direct symbol identifier.",
+      "url": "https://docs.thetadata.us/Articles/Getting-Started/v2-migration-guide.html"
+    },
+    {
+      "supports": "Returned contracts filtered to requested symbol; response symbol identifies contract root.",
+      "url": "https://thetadata.net/docs/operations/option_list_contracts.html"
+    },
+    {
+      "supports": "Oct12 expected Nov3 after-close distribution announcement.",
+      "url": "https://newsroom.ibm.com/2021-10-12-IBM-Board-of-Directors-Approves-Separation-of-Kyndryl"
+    },
+    {
+      "supports": "OCC49461 datedOct27, IBM1 mixed deliverable effectiveNov4.",
+      "url": "https://www.miaxglobal.com/sites/default/files/alert-files/IBM_Distribution_49461.pdf"
+    },
+    {
+      "supports": "IBM becomes IBM1 Nov4; standard IBM resumes Nov5.",
+      "url": "https://www.miaxglobal.com/alert/2021/11/03/miax-exchange-group-options-markets-corporate-action-alert-international-1"
+    },
+    {
+      "supports": "Oct22 announcement of O distributionNov12.",
+      "url": "https://www.sec.gov/Archives/edgar/data/1507385/000150738521000210/exhibit991-mergerclosingda.htm"
+    },
+    {
+      "supports": "Nov9 notice of O2 effectiveNov15.",
+      "url": "https://infomemo.theocc.com/infomemos?number=49557"
+    },
+    {
+      "supports": "O2 adjustment and standard O resumesNov16.",
+      "url": "https://www.miaxglobal.com/alert/2021/11/12/miax-exchange-group-options-markets-corporate-action-alert-realty-income"
+    }
+  ],
+  "payload_read_scope": "This reviewer opened only repo text/JSON, retained manifests/review JSON and Parquet footers/schemas. Some historical member footers describe protected-year other-symbol windows; their data pages and row groups were not read. No raw quotes, bars, forecast rows, provider calls, tests, replay, process action or registry writes occurred.",
+  "reviewer": "/root/q4_final_source_correctness",
+  "schema": "q4-eligibility-phase0-v1",
+  "scope": "Read-only repository and retained-source metadata follow-up: post-action instrument identity, public-notice chronology, unsupported action-family inventory and prior-quarter comparison limits. No eligibility transform or replay reviewed here.",
+  "source_identity": {
+    "explicit_assumption": "Theta obeyed its documented exact-symbol/root API semantics and did not alias IBM1/O2 responses under requests for IBM/O. No evidence of such aliasing was found in the bounded retained metadata. Vendor adherence is an assumption, not independently row-attested deliverable proof.",
+    "normalized_metadata": {
+      "IBM": {
+        "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/market-q4-tail-v2/chain/IBM.parquet",
+        "pinned_sha256": "62e6536950a02634c75cf5adadff3ff889f482c58cbffd8ba2b494bc7dda2992",
+        "rows": 171914,
+        "schema": [
+          "symbol",
+          "date",
+          "expiration",
+          "type",
+          "strike_raw",
+          "strike",
+          "bid",
+          "ask",
+          "bid_size",
+          "ask_size",
+          "basis_factor",
+          "underlying_price"
+        ]
+      },
+      "O": {
+        "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/market-q4-tail-v2/chain/O.parquet",
+        "pinned_sha256": "a9c041a9df938546dfef198f770b23797dac1d91cf74ed53f0e4f3a457a8c2f4",
+        "rows": 23800,
+        "schema": [
+          "symbol",
+          "date",
+          "expiration",
+          "type",
+          "strike_raw",
+          "strike",
+          "bid",
+          "ask",
+          "bid_size",
+          "ask_size",
+          "basis_factor",
+          "underlying_price"
+        ]
+      }
+    },
+    "per_symbol_retained_metadata": {
+      "IBM": {
+        "basis_segments": [
+          {
+            "days": 297,
+            "days_refused": 0,
+            "factor": 0.9560229616389384,
+            "from": "2020-09-01",
+            "median_ratio": 0.9560229616389384,
+            "residual": 0.0,
+            "snapped": false,
+            "to": "2021-11-03"
+          },
+          {
+            "days": 85,
+            "days_refused": 0,
+            "factor": 1.0,
+            "from": "2021-11-05",
+            "median_ratio": 1.0,
+            "residual": 0.0,
+            "snapped": true,
+            "to": "2022-03-09"
+          }
+        ],
+        "refused": {
+          "days_basis_deviation": [],
+          "days_no_bar": [],
+          "days_no_underlying": [
+            "2021-11-04"
+          ],
+          "days_no_valid_quotes": [],
+          "expiries_few_two_sided_strikes": 0,
+          "expiries_no_valid_day": 0
+        },
+        "stitch": {
+          "absent": [],
+          "breaks": 0,
+          "pending": 0,
+          "pending_landed": [],
+          "renames": 0
+        }
+      },
+      "O": {
+        "basis_segments": [
+          {
+            "days": 304,
+            "days_refused": 0,
+            "factor": 0.9689922480620154,
+            "from": "2020-09-01",
+            "median_ratio": 0.9689922480620154,
+            "residual": 0.0,
+            "snapped": false,
+            "to": "2021-11-12"
+          },
+          {
+            "days": 78,
+            "days_refused": 0,
+            "factor": 1.0,
+            "from": "2021-11-16",
+            "median_ratio": 1.0,
+            "residual": 0.0,
+            "snapped": true,
+            "to": "2022-03-09"
+          }
+        ],
+        "refused": {
+          "days_basis_deviation": [],
+          "days_no_bar": [],
+          "days_no_underlying": [
+            "2021-11-15"
+          ],
+          "days_no_valid_quotes": [],
+          "expiries_few_two_sided_strikes": 0,
+          "expiries_no_valid_day": 0
+        },
+        "stitch": {
+          "absent": [],
+          "breaks": 0,
+          "pending": 0,
+          "pending_landed": [],
+          "renames": 0
+        }
+      }
+    },
+    "positive_trace": [
+      "The retained converter manifest names exactly the IBM/O source members and matching manifest digests. Footers independently match those digests and sizes.",
+      "The Q4 IBM source member footer covers only IBM2017-05-30..2022-03-14; the Q4 O member covers only O2018-03-26..2023-01-06. No protected-year payload is needed for a further bounded source audit.",
+      "Converter reader metadata reports zero root renames or breaks for IBM/O; ParquetChainRows substitutes a root only when a declared stitch changes it (chain_parquet.py:307-324).",
+      "ThetaExactExpiryTables retains symbol and expiration/right/strike identity while changing price basis and vocabulary (theta_exact_expiry.py:174-187,624-651). Final source provenance was already pinned and checked by retained source-correction reviews."
+    ],
+    "raw_footers": {
+      "IBM": [
+        {
+          "metadata": {
+            "dskit.export.acq_id": "20261017T074838Z-backfill-a41e1f31",
+            "dskit.export.export_class": "dskit.onboarding.libs.thetadata:ThetaOptionEodExport",
+            "dskit.export.manifest_sha256": "3e1b60c1df129c7e35e696ebae308fcc87f5817f7f83ea3e5f4b6477191b784b",
+            "dskit.export.missing_fields": "{}",
+            "dskit.export.schema_digest": "bf370513f490d277b98d283b11cd346bf25863b9ab4c9215c3ef517f50928ba3",
+            "dskit.export.schema_version": "2",
+            "dskit.export.snapshot_hash": "a41e1f313b822cc85b319c0ed410130b4868592a97a4dfb86508070356b6d7ef",
+            "dskit.export.source": "theta",
+            "dskit.export.stream": "option_eod",
+            "dskit.export.timezones": "{\"acquired_at\": \"UTC\", \"timestamp\": \"America/New_York wall clock as the vendor reports it (naive)\", \"underlying_timestamp\": \"America/New_York wall clock as the vendor reports it (naive)\"}",
+            "dskit.export.windows": "{\"IBM\": [\"2016-01-04\", \"2017-05-26\"], \"IBRX\": [\"2022-08-12\", \"2025-12-31\"]}"
+          },
+          "path": "/home/russell/data/thetadata/parquet-v2-clean/options-tested/theta/20261017T074838Z-backfill-a41e1f31.parquet",
+          "rows": 422291,
+          "schema": [
+            "symbol",
+            "expiration",
+            "strike",
+            "right",
+            "date",
+            "created",
+            "last_trade",
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "count",
+            "bid_size",
+            "bid_exchange",
+            "bid_condition",
+            "bid",
+            "ask_size",
+            "ask_exchange",
+            "ask_condition",
+            "ask",
+            "open_interest",
+            "delta",
+            "theta",
+            "vega",
+            "rho",
+            "epsilon",
+            "lambda",
+            "gamma",
+            "vanna",
+            "charm",
+            "vomma",
+            "veta",
+            "vera",
+            "speed",
+            "zomma",
+            "color",
+            "ultima",
+            "d1",
+            "d2",
+            "dual_delta",
+            "dual_gamma",
+            "implied_vol",
+            "iv_error",
+            "underlying_timestamp",
+            "underlying_price",
+            "acquired_at"
+          ],
+          "size": 23165631
+        },
+        {
+          "metadata": {
+            "dskit.export.acq_id": "20261017T074030Z-backfill-de653198",
+            "dskit.export.export_class": "dskit.onboarding.libs.thetadata:ThetaOptionEodExport",
+            "dskit.export.manifest_sha256": "b4b9c2385314bd23df0c08542e1cd67e7fffab7a0f4c6382374623d8fca9ca2f",
+            "dskit.export.missing_fields": "{}",
+            "dskit.export.schema_digest": "bf370513f490d277b98d283b11cd346bf25863b9ab4c9215c3ef517f50928ba3",
+            "dskit.export.schema_version": "2",
+            "dskit.export.snapshot_hash": "de653198785c6884487b9adaea7d161b34a49c47b88191adc5edde925be68759",
+            "dskit.export.source": "theta",
+            "dskit.export.stream": "option_eod",
+            "dskit.export.timezones": "{\"acquired_at\": \"UTC\", \"timestamp\": \"America/New_York wall clock as the vendor reports it (naive)\", \"underlying_timestamp\": \"America/New_York wall clock as the vendor reports it (naive)\"}",
+            "dskit.export.windows": "{\"IBM\": [\"2017-05-30\", \"2022-03-14\"]}"
+          },
+          "path": "/home/russell/data/thetadata/parquet-v2-clean/options-tested/theta/20261017T074030Z-backfill-de653198.parquet",
+          "rows": 1201025,
+          "schema": [
+            "symbol",
+            "expiration",
+            "strike",
+            "right",
+            "date",
+            "created",
+            "last_trade",
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "count",
+            "bid_size",
+            "bid_exchange",
+            "bid_condition",
+            "bid",
+            "ask_size",
+            "ask_exchange",
+            "ask_condition",
+            "ask",
+            "open_interest",
+            "delta",
+            "theta",
+            "vega",
+            "rho",
+            "epsilon",
+            "lambda",
+            "gamma",
+            "vanna",
+            "charm",
+            "vomma",
+            "veta",
+            "vera",
+            "speed",
+            "zomma",
+            "color",
+            "ultima",
+            "d1",
+            "d2",
+            "dual_delta",
+            "dual_gamma",
+            "implied_vol",
+            "iv_error",
+            "underlying_timestamp",
+            "underlying_price",
+            "acquired_at"
+          ],
+          "size": 89043743
+        }
+      ],
+      "O": [
+        {
+          "metadata": {
+            "dskit.export.acq_id": "20261025T194009Z-backfill-acc42dcc",
+            "dskit.export.export_class": "dskit.onboarding.libs.thetadata:ThetaOptionEodExport",
+            "dskit.export.manifest_sha256": "259da906b055ec624d1b028ae03944f921a76dea4f460856bab621f89bac0726",
+            "dskit.export.missing_fields": "{}",
+            "dskit.export.schema_digest": "bf370513f490d277b98d283b11cd346bf25863b9ab4c9215c3ef517f50928ba3",
+            "dskit.export.schema_version": "2",
+            "dskit.export.snapshot_hash": "acc42dccdd8594beb8712df4613fe0d0ea80abca78e8637ffe43505895e172ec",
+            "dskit.export.source": "theta",
+            "dskit.export.stream": "option_eod",
+            "dskit.export.timezones": "{\"acquired_at\": \"UTC\", \"timestamp\": \"America/New_York wall clock as the vendor reports it (naive)\", \"underlying_timestamp\": \"America/New_York wall clock as the vendor reports it (naive)\"}",
+            "dskit.export.windows": "{\"O\": [\"2016-01-04\", \"2018-03-23\"], \"OKLO\": [\"2024-05-10\", \"2025-12-31\"]}"
+          },
+          "path": "/home/russell/data/thetadata/parquet-v2-clean/options-tested/theta/20261025T194009Z-backfill-acc42dcc.parquet",
+          "rows": 518092,
+          "schema": [
+            "symbol",
+            "expiration",
+            "strike",
+            "right",
+            "date",
+            "created",
+            "last_trade",
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "count",
+            "bid_size",
+            "bid_exchange",
+            "bid_condition",
+            "bid",
+            "ask_size",
+            "ask_exchange",
+            "ask_condition",
+            "ask",
+            "open_interest",
+            "delta",
+            "theta",
+            "vega",
+            "rho",
+            "epsilon",
+            "lambda",
+            "gamma",
+            "vanna",
+            "charm",
+            "vomma",
+            "veta",
+            "vera",
+            "speed",
+            "zomma",
+            "color",
+            "ultima",
+            "d1",
+            "d2",
+            "dual_delta",
+            "dual_gamma",
+            "implied_vol",
+            "iv_error",
+            "underlying_timestamp",
+            "underlying_price",
+            "acquired_at"
+          ],
+          "size": 36201251
+        },
+        {
+          "metadata": {
+            "dskit.export.acq_id": "20261025T193655Z-backfill-c57be448",
+            "dskit.export.export_class": "dskit.onboarding.libs.thetadata:ThetaOptionEodExport",
+            "dskit.export.manifest_sha256": "d1917dc141e896abf8af82307cb91784c31df3a6846b28c791ab441d5a89bb5e",
+            "dskit.export.missing_fields": "{}",
+            "dskit.export.schema_digest": "bf370513f490d277b98d283b11cd346bf25863b9ab4c9215c3ef517f50928ba3",
+            "dskit.export.schema_version": "2",
+            "dskit.export.snapshot_hash": "c57be44822a91fc1ab04cb8d3a6d5ec9a055e85523099fe4a38af80922a47873",
+            "dskit.export.source": "theta",
+            "dskit.export.stream": "option_eod",
+            "dskit.export.timezones": "{\"acquired_at\": \"UTC\", \"timestamp\": \"America/New_York wall clock as the vendor reports it (naive)\", \"underlying_timestamp\": \"America/New_York wall clock as the vendor reports it (naive)\"}",
+            "dskit.export.windows": "{\"O\": [\"2018-03-26\", \"2023-01-06\"]}"
+          },
+          "path": "/home/russell/data/thetadata/parquet-v2-clean/options-tested/theta/20261025T193655Z-backfill-c57be448.parquet",
+          "rows": 330004,
+          "schema": [
+            "symbol",
+            "expiration",
+            "strike",
+            "right",
+            "date",
+            "created",
+            "last_trade",
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "count",
+            "bid_size",
+            "bid_exchange",
+            "bid_condition",
+            "bid",
+            "ask_size",
+            "ask_exchange",
+            "ask_condition",
+            "ask",
+            "open_interest",
+            "delta",
+            "theta",
+            "vega",
+            "rho",
+            "epsilon",
+            "lambda",
+            "gamma",
+            "vanna",
+            "charm",
+            "vomma",
+            "veta",
+            "vera",
+            "speed",
+            "zomma",
+            "color",
+            "ultima",
+            "d1",
+            "d2",
+            "dual_delta",
+            "dual_gamma",
+            "implied_vol",
+            "iv_error",
+            "underlying_timestamp",
+            "underlying_price",
+            "acquired_at"
+          ],
+          "size": 23298795
+        }
+      ]
+    },
+    "request_semantics": [
+      "Theta connector sends symbol=<declared root>, expiration=* and declared dates: thetadata.py:480-503.",
+      "The parent independently verified official API documentation that v3 symbol is the direct v2 root identifier and returned contracts match the requested symbol.",
+      "The acquisition normalizer keys expiration/strike/right then sets symbol to the requested root: thetadata.py:522-531,582-603.",
+      "There is no separate OCC-root, adjusted-contract flag, multiplier or deliverable column in the exported48-field Parquet schema or the normalized12-field MIO chain schema."
+    ],
+    "retained_response_limit": "Parquet does not retain an independent response root. The connector preserves other vendor fields in raw records but overwrites symbol; whether any unprojected raw gzip record carries another identity field was not inspected because payload scans were outside scope. No such field is required once the documented exact-root API contract is accepted.",
+    "standard_after_action": "Given the documented exact-root request contract, the IBM/O query roots identify standard IBM/O classes after their standard listing resumes; they do not request IBM1/O2. Parent-verified MIAX notices explicitly separate adjusted IBM1/O2 from resumed standard IBM/O. This is sufficient practical identity evidence without requiring an independent delivered-share field absent from the source."
+  },
+  "specific_prelaunch_requirements": [
+    "Prepare and retain the announced-policy exclusion census before replay, including root/symbol, decision date, expiry, public-notice source/date, cutoff rule and reason.",
+    "Verify the chain-only Derive/Filter variant preserves forecasts/contexts/predictive receipt, bars, all nonexcluded quote values,212 names and three method settings. No silent removal of post-action standard IBM/O.",
+    "Verify the approved preparation does not remove required marks/settlement rows for prior valid holdings or use future factors as eligibility conditions. Keep chronology and supported-instrument rules separately auditable.",
+    "Bind the new source/protocol identity to a new attempt and retain all prior failures/exposures. Existing source-readiness and Phase0 findings are evidence, not a replay pass.",
+    "Correct the current narrative for the Oct27 OCC49461 date while preserving earlier history and later-wrapper provenance."
+  ],
+  "verdict": "PHASE0_SOURCE_IDENTITY_SUFFICIENT_WITH_DOCUMENTED_VENDOR_CONTRACT_ASSUMPTION; Q2/Q3 comparison requires explicit policy caveat or demonstrated equivalence"
+}
