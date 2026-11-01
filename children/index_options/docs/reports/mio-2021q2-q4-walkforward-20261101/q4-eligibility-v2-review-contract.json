@@ -1,0 +1,31 @@
+{
+  "base": "e7f7abd9312666ee2e5c9d782fbfb0adca66bffa",
+  "owner_approval": {
+    "at": "2026-11-01T13:08:30.517096+00:00",
+    "answer": "Approve the config-only eligibility policy",
+    "scope": "Exclude new positions crossing publicly announced unsupported spinoffs consistently across all methods; retain verified standard contracts. No new ADR/runtime code.",
+    "question_item": "call_af28d5aaae47413c83a9ccf0410118ac"
+  },
+  "scope": "Corrected Q4 public-notice entry eligibility using existing paired forecast/context filter; original full quote/basis data unchanged. No runtime changes. Two fresh sequential correctness and integration lenses. Earlier model/implementation/report scope remains closed.",
+  "source_verification": "/home/russell/wt/q2-reconcile-20261031/children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-eligibility-v2-source.json",
+  "phase0": "/home/russell/wt/q2-reconcile-20261031/children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-eligibility-forecast-phase0.json",
+  "run_config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q4-eligibility-v2.json",
+  "preparation_config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/run-q4-eligibility-forecast-prep.json",
+  "matrix": [
+    "Known announcement/resumption dates only; identical deterministic paired eligibility and exclusions retained",
+    "All122removed key identities match across sources;81,821retained values/schema/order match prepared and original producer rows; all212names/64sessions remain",
+    "Full original chain/bars/sessions/actions restored and unchanged, so IBM Oct29 basis is present; supported pre-action positions remain settleable",
+    "Original M53 producer, source file hashes, training protocol and artifact bytes unchanged; only stitched files and preparation references change truthfully",
+    "All six runtime nodes bind same new source; original methods/economics/runtime remain byte-identical",
+    "Unused registryrevision0 has nofreeze/claim; initial schedule and complete prior exposure import valid for this corrected config; failedtail-v2 disposed once revision6",
+    "No repair/backdating of unsupported preannouncement holdings; they must still refuse",
+    "Q2/Q3 original eligibility and newQ4 policy are explicitly different; no uniform-comparison claim"
+  ],
+  "checks": [
+    "12node preparation attested complete",
+    "Exact deterministic partition and independent original producer value comparisons",
+    "All270runtime files unchanged",
+    "Existing JSON validation and StudyContract.build runnable"
+  ],
+  "launch_gate": "Zero in-scope Critical/Major in both lenses. Future3method success/report verification remains required before merge/purge."
+}

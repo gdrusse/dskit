@@ -1,0 +1,279 @@
+{
+  "schema": "q4-eligibility-correctness-review-v1",
+  "at_utc": "2026-11-01T13:32:32.150642+00:00",
+  "reviewer": "/root/q4_eligibility_correctness",
+  "model": "GPT-6 Astra",
+  "lens": "independent correctness and authority",
+  "base": "e072957b056bf07900ad21415c711e8b1af67d68",
+  "candidate": "e7f7abd9312666ee2e5c9d782fbfb0adca66bffa",
+  "owner_approval": {
+    "at": "2026-11-01T13:08:30.517096+00:00",
+    "answer": "Approve the config-only eligibility policy",
+    "scope": "Exclude new positions crossing publicly announced unsupported spinoffs consistently across all methods; retain verified standard contracts. No new ADR/runtime code.",
+    "question_item": "call_af28d5aaae47413c83a9ccf0410118ac"
+  },
+  "scope": "Bounded Q4 source eligibility launch review only. Existing implementation, model, HPO, and previous reporting scopes not reopened. No replay, registry mutations, provider acquisition, runtime edits, or full test suite.",
+  "verdict": "NO_GO_LAUNCH_M1",
+  "counts": {
+    "Critical": 0,
+    "Major": 1,
+    "Minor": 0,
+    "Nit": 0
+  },
+  "unresolved": {
+    "Critical": 0,
+    "Major": 1,
+    "Minor": 0,
+    "Nit": 0
+  },
+  "finding": {
+    "id": "Q4-ELIG-C1",
+    "severity": "Major",
+    "invariant": "Approved exclusion of unsupported crossing entries must preserve valid standard-contract settlement and daily basis metadata.",
+    "family": "Eligibility filtering removes metadata needed independently of quote eligibility.",
+    "locations": [
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/run-q4-eligibility-chain-prep.json: ibm_kept/o_kept",
+      "children/index_options/index_options/observations.py:805-849",
+      "children/index_options/index_options/ledger_studies.py:2015-2017"
+    ],
+    "worked_counterexample": {
+      "quote_identity": {
+        "symbol": "IBM",
+        "quote_date": "2021-10-25",
+        "expiry": "2021-10-29",
+        "right": "call",
+        "strike_raw": 128.0
+      },
+      "actual_quote": {
+        "symbol": "IBM",
+        "date": "2021-10-25",
+        "expiration": "2021-10-29",
+        "type": "call",
+        "strike_raw": 128.0,
+        "strike": 122.37093908978412,
+        "bid": 0.7839388285439295,
+        "ask": 0.946462732022549,
+        "bid_size": 45,
+        "ask_size": 52,
+        "basis_factor": 0.9560229616389384,
+        "underlying_price": 122.0267708235941
+      },
+      "forecast_identity_present": {
+        "symbol": "IBM",
+        "quote_date": "2021-10-25",
+        "expiry": "2021-10-29",
+        "fold": 4,
+        "band": "val"
+      },
+      "admission_dte_range": [
+        1,
+        60
+      ],
+      "original_basis": 0.9560229616389384,
+      "observed_expiry_bar": {
+        "close": 119.5985,
+        "date": "2021-10-29",
+        "dividend_amount": 0.0,
+        "high": 120.7648,
+        "low": 119.4168,
+        "open": 119.914,
+        "symbol": "IBM",
+        "volume": 6188973
+      },
+      "probe": "Unbound existing WeeklyOptionPortfolioStudy._settlements method on an in-memory hypothetical one-contract book; old and new actual source-derived factor maps, identical actual bar. This is a compatibility probe, not a portfolio replay or assertion that the optimizer selected this book.",
+      "result": {
+        "original_tail_v2": {
+          "status": "settled",
+          "books": 1
+        },
+        "candidate_filtered_chain": {
+          "status": "refused",
+          "error": "unsettleable selected book: supported_IBM_2021-10-29"
+        }
+      }
+    },
+    "consequence": "The accepted October29 pre-spinoff expiry can be prepared and filled, but its otherwise supported book cannot settle because filtering later-expiry rows removes all daily basis on its expiry day. The authoritative run may fail if this book is selected; deleting additional valid forecasts to avoid it would alter the approved policy.",
+    "disposition": "Open; stop e7f7abd9 before launch. Parent acknowledged and will preserve the full chain, applying eligibility to paired forecast/context origins using existing JSON machinery. New candidate requires fresh two-lens review."
+  },
+  "matrix": [
+    {
+      "invariant": "Chronology uses only known announcements and release notices; no outcome/basis predicates",
+      "status": "pass",
+      "evidence": "Rules use only symbol, quote date, expiration. IBM announced Oct12 -> application Oct13; O announced Oct22 -> application Oct25. Resumption notices Nov3/Nov12 predate Nov5/Nov16 reopening. Before the resumption notice, the literal future bound does not change exclusions, so no earlier decision depends on the later notice."
+    },
+    {
+      "invariant": "All excluded rows retained; exact original-value/schema/order partition and210identical files",
+      "status": "pass_for_values_partition_only",
+      "evidence": "All 195714 original IBM/O rows partition exactly and in original order into retained JSONL/Parquet and excluded JSONL; Arrow schemas including metadata match. 210 other files hash equal and share original inode. This does not prove downstream metadata completeness: Q4-ELIG-C1."
+    },
+    {
+      "invariant": "No unexpected method, training, forecast, economics or runtime delta; all212names retained",
+      "status": "pass",
+      "evidence": "All six study copies have only chain pin, registry, packet identity changes; parameters, all212symbols, admission, predictive pins, nonchain sources, code and dependencies unchanged. All270 pinned runtime files hash equal. No runtime/ADR file in candidate diff."
+    },
+    {
+      "invariant": "Historical false strong basis statement and failed publications remain visible; new source registry imports all exposure",
+      "status": "pass_in_assigned_readonly_scope",
+      "evidence": "Existing false strong coverage statement and failure reports unchanged in candidate diff. New prior-exposure record links the attested partial tail-v2 result, its abandoned disposition and earlier-exposure file. Actual new registry lifecycle checks belong to the unstarted integration lens; not claimed closed here."
+    },
+    {
+      "invariant": "Existing guards remain; unsupported preannouncement holdings must refuse rather than be repaired",
+      "status": "fail_compatibility",
+      "evidence": "No factor1/default or guard bypass exists. Missing/mismatched basis is NaN-refused at fill/settlement; unsupported preannouncement held books still refuse. However a supported Oct29 IBM book also refuses because eligibility removed its daily basis."
+    },
+    {
+      "invariant": "Q2/Q3 originals and new Q4 eligibility differ and must be labelled explicitly",
+      "status": "pass",
+      "evidence": "Source policy and limits explicitly say only Q4 eligibility changes; Q2/Q3 retain original eligibility. Their results cannot be described as a uniform-policy three-quarter comparison without a separate demonstrated equivalence or rerun."
+    }
+  ],
+  "data_checks": {
+    "IBM": {
+      "original_rows": 171914,
+      "retained_rows": 164338,
+      "excluded_rows": 7576,
+      "kept_before_start": 111696,
+      "kept_after_standard_resume": 50618,
+      "kept_noncrossing_during_policy": 2024,
+      "removed_basis_dates": [
+        "2021-10-29",
+        "2021-11-01",
+        "2021-11-02",
+        "2021-11-03"
+      ]
+    },
+    "O": {
+      "original_rows": 23800,
+      "retained_rows": 22630,
+      "excluded_rows": 1170,
+      "kept_before_start": 16468,
+      "kept_after_standard_resume": 6162,
+      "kept_noncrossing_during_policy": 0,
+      "removed_basis_dates": [
+        "2021-10-25",
+        "2021-10-26",
+        "2021-10-27",
+        "2021-10-28",
+        "2021-10-29",
+        "2021-11-01",
+        "2021-11-02",
+        "2021-11-03",
+        "2021-11-04",
+        "2021-11-05",
+        "2021-11-08",
+        "2021-11-09",
+        "2021-11-10",
+        "2021-11-11",
+        "2021-11-12"
+      ]
+    },
+    "unchanged_other_files": 210,
+    "runtime_hashes_verified": 270,
+    "all_remaining_basis_values_unchanged": true,
+    "bars_and_correlation": "Bars source pins and values unchanged. observations.py retains every valid bar close even when no factor exists; nodes._market stores close independently of factor; ledger_studies._returns/_components/_betas use only those closes and prior sessions. No return or correlation value changes arise solely from removed factor metadata.",
+    "prepared_nodes": 12,
+    "prepared_node_states": "all ok",
+    "prep_document_hash": "430b46e3978112af4c6e52c7a98a60609f5c852c327b3ddab78257beb1568a97",
+    "prep_run_hash": "62e97ca64bf542990d3f82c0fb6b7118fd6dbabcafa75637e54cfd7f34342486"
+  },
+  "standard_identity": {
+    "verdict": "Sufficient practical source identity under an explicit vendor-contract assumption; not independent per-row deliverable attestation.",
+    "assumption": "Theta honors its documented exact symbol/root request semantics; retained source provenance requests IBM/O with zero stitching, and exchange notices distinguish IBM1/O2 from resumed standard IBM/O. Independent per-row root/deliverable is not preserved in normalized files.",
+    "sources": "Official vendor v2root->v3symbol mapping and symbol-match endpoint, official MIAX IBM1/O2 notices separating adjusted roots from resumed IBM/O. Phase0 retained provenance reports exact requested roots and zero stitching.",
+    "occ_dates": "OCC49461 dated October27 and effective November4; OCC49557 dated November9 and effective November15. Earlier wrapper dates are retained history, not the underlying memo date."
+  },
+  "commands_and_assertions": [
+    {
+      "interpreter": "SSH russell@localhost /home/russell/dskit/.venv/bin/python -",
+      "operation": "git show candidate blobs; git diff --name-only base candidate; compare every changed working blob to frozen candidate",
+      "result": "pass"
+    },
+    {
+      "operation": "hashlib.sha256 over212 old/new chain files and270 pinned runtime files; compare210 unchanged inodes",
+      "result": "pass"
+    },
+    {
+      "operation": "PyArrow read IBM/O normalized sources and JSONL; independently evaluate metadata predicate; compare full Python rows and Arrow schemas/values/order; compare source and audit hashes",
+      "result": "pass"
+    },
+    {
+      "operation": "Read existing prep result.json/resolved.json and compare node states/fingerprinted input hashes",
+      "result": "12 ok; input hashes match source pins"
+    },
+    {
+      "operation": "Read narrow IBM forecast identity (Oct25 -> Oct29) and actual expiry bar; invoke existing _settlements on hypothetical supported near-ATM book with old/new actual factor maps",
+      "result": {
+        "original_tail_v2": {
+          "status": "settled",
+          "books": 1
+        },
+        "candidate_filtered_chain": {
+          "status": "refused",
+          "error": "unsettleable selected book: supported_IBM_2021-10-29"
+        }
+      }
+    },
+    {
+      "operation": "Manual unchanged-code tracing of basis extraction, market bar retention, correlation/beta returns, fill and expiry guards",
+      "result": "No silent defaults; supported expiry metadata regression proven"
+    },
+    {
+      "operation": "Official IBM/SEC/MIAX/OCC/Theta documents via web open/click/find",
+      "result": "Chronology and standard-root assumption corroborated"
+    }
+  ],
+  "correction_lineage_invariants": [
+    "Keep original complete chain source including all basis rows; do not fabricate factors or relax the settlement guard.",
+    "Filter matching forecast/context identities together with the approved symbol, origin date, expiry and public-notice rules. Retained CDFs/context numerical values, original producer, fits and M53 weights must remain exactly unchanged.",
+    "MIOStudyContract._receipt_source requires forecasts, contexts and predictive receipt to share one new pinned manifest (mio_contract.py258-273). _stitched_sources binds new prepared file hashes (276-290). _pinned_selection checks packet interval/fold, original producer/source records, preparation/cohort and training (390-442). Update derived receipt/preparation truthfully using existing schema; preserve original receipt and producer artifacts.",
+    "Retain exclusion audit and preannouncement holdings; earlier unsupported positions must continue to refuse rather than be silently repaired.",
+    "Retain failed chain-filter candidate and reviews as evidence; do not replay or publish it."
+  ],
+  "limits": [
+    "Actual optimizer selections and successful three-method replay not reviewed or claimed.",
+    "No full suite or new market replay run. Only a targeted in-memory existing-method compatibility probe was executed.",
+    "No2024+payload read; opened IBM/O normalized 2020-2022 chain, a2021 bar and a2021 forecast identity.",
+    "New registry mutation/lifecycle not independently reviewed in this correctness lens; candidate stopped before integration."
+  ],
+  "evidence_hashes": {
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-eligibility-review-contract.json": "5e6356478781ee535818b21a222b03ede7ada0e8f2889ebfd53e363a0ceec90e",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-eligibility-source.json": "b216201d58f62a7a94c078437480c894de71732d3eec72be0e2ec112e84eaf04",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-eligibility-phase0.json": "fc9ef7a8e2874011eb02a98cdc606706fb800f72b4a9d88824b34e6c15dc761c",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/run-q4-eligibility-chain-prep.json": "03d1981b89e372d64f74891d31914ad6b87b0164b5d5479227433e1fc39f5d5f",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q4-eligibility-v1.json": "a6825cc47b3c67ff16bc169118d66bfae7cc7e6196ba115f250ac7056b247512"
+  },
+  "primary_sources": [
+    {
+      "url": "https://newsroom.ibm.com/2021-10-12-IBM-Board-of-Directors-Approves-Separation-of-Kyndryl",
+      "supports": "Oct12 announced expected Nov3 after-close distribution."
+    },
+    {
+      "url": "https://www.sec.gov/Archives/edgar/data/1507385/000150738521000210/exhibit991-mergerclosingda.htm",
+      "supports": "Oct22 announced Nov12 distribution."
+    },
+    {
+      "url": "https://www.miaxglobal.com/alert/2021/11/03/miax-exchange-group-options-markets-corporate-action-alert-international-1",
+      "supports": "Nov3 notice distinguishes adjustedIBM1 effectiveNov4 from standardIBM resumesNov5."
+    },
+    {
+      "url": "https://www.miaxglobal.com/alert/2021/11/12/miax-exchange-group-options-markets-corporate-action-alert-realty-income",
+      "supports": "Nov12 notice distinguishes adjustedO2 effectiveNov15 from standardO resumesNov16."
+    },
+    {
+      "url": "https://www.miaxglobal.com/sites/default/files/alert-files/IBM_Distribution_49461.pdf",
+      "supports": "OCC49461 datedOct27; new mixedIBM/KD deliverable effectiveNov4."
+    },
+    {
+      "url": "https://www.miaxglobal.com/sites/default/files/alert-files/O_Distribution_49557.pdf",
+      "supports": "OCC49557 datedNov9; new mixedO/ONL deliverable effectiveNov15."
+    },
+    {
+      "url": "https://thetadata.net/docs/Articles/Getting-Started/v2-migration-guide.html",
+      "supports": "v2root maps to v3symbol as direct identifier."
+    },
+    {
+      "url": "https://thetadata.net/docs/operations/option_list_contracts.html",
+      "supports": "Requested symbol restricts matching contract results."
+    }
+  ]
+}

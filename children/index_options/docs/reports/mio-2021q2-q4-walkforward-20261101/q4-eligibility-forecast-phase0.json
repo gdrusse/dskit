@@ -1,0 +1,270 @@
+{
+  "authority": "Owner-approved config-only preannounced unsupported-spinoff eligibility policy; no runtime changes/new ADR. Parent proposes moving the same predicate from quotes to paired prepared forecast/context rows after the quote-only candidate failed review.",
+  "bounded_seam_assessment": [
+    {
+      "case": "Prepared inputs are already projections/subsets",
+      "evidence": [
+        "mio-inputs-q4/preparation.json",
+        "mio-inputs-q4/predictive-receipt.json",
+        "Parquet footers only"
+      ],
+      "result": "Original forecast and context each contain655,220 rows. Prepared files each contain81,943 quarter rows. Prepared forecast has19 fields; context has8 identity/market/settlement-date fields, no realized y or PIT columns. Thus existing exact_source_row_equality cannot mean byte or whole-file equality."
+    },
+    {
+      "case": "Prepared versus original source identity",
+      "evidence": [
+        "mio_contract.py:259-290",
+        "mio_contract.py:314-344",
+        "mio_contract.py:390-442"
+      ],
+      "result": "The contract separately binds receipt.stitched to the consumed prepared files and receipt.sources to original producer outputs. Both must be in the same newly onboarded manifest, with original hashes preserved. New stitched subset hashes may differ without changing saved producer identity."
+    },
+    {
+      "case": "Training/provenance preservation",
+      "evidence": [
+        "mio_contract.py:445-527"
+      ],
+      "result": "Keep receipt.sources and training_protocol structurally exact and preserve original forecast/context and all training artifact bytes/hashes. Existing validation checks producer attestation, original context digest, saved forecast digest, model/fold evidence, frozen method and training chronology against those original references."
+    },
+    {
+      "case": "Truthful preparation flags",
+      "evidence": [
+        "mio_contract.py:348-379"
+      ],
+      "result": "Define exact_source_row_equality explicitly as every retained key having exactly the original values after the already established projection. Separately verify retained keys equal original prepared keys minus precisely the public-notice predicate. Existing validator only checks declared booleans, pin hashes and cohort/coverage shape; verification cannot be replaced by setting true."
+    },
+    {
+      "case": "Configuration metadata placement",
+      "evidence": [
+        "mio_contract.py:393-398",
+        "mio_contract.py:414-423",
+        "mio_contract.py:369-379"
+      ],
+      "result": "Keep exact receipt root/source-record schemas. Put policy, predicate, excluded-key audit, row census and subset/value-equality evidence as additional preparation.json top-level fields. Per-source coverage remains exactly row_count/expected_names/missing_names; row_count must be the actual retained prepared count."
+    },
+    {
+      "case": "Daily basis survives filtered entry menus",
+      "evidence": [
+        "observations.py:805-815",
+        "observations.py:827-857",
+        "ledger_studies.py:1413-1429"
+      ],
+      "result": "MIOPacketInputs reads all daily date/basis_factor metadata from full chain before applying forecast-expiry quote-index pruning. Weekly study imports that independent factor map. Keeping the original chain pin/files restores valid Oct29 basis even if no matching expiry quote exists that date."
+    },
+    {
+      "case": "Entry admission is forecast/context based",
+      "evidence": [
+        "ledger_studies.py:1808-1838"
+      ],
+      "result": "An entry candidate requires matching forecast and context key. Identically filtering both removes only those new entry opportunities; excluded reasons must remain in the external preparation audit because runtime emits generic no_eligible_forecast_expiry for an empty day."
+    },
+    {
+      "case": "Outstanding holdings remain independently priced",
+      "evidence": [
+        "observations.py:796,832-856",
+        "ledger_studies.py:2005-2021"
+      ],
+      "result": "The full chain/bars preserve marks and settlement factors. Quote-index expiry inventory is the set of all retained forecast expiries; any legitimately entered book has a retained origin forecast, so its expiry remains indexed. Filtering later forecast origins does not delete its market history."
+    }
+  ],
+  "candidate_inspected": "e7f7abd9312666ee2e5c9d782fbfb0adca66bffa",
+  "code_sha256": {
+    "children/index_options/index_options/ledger_studies.py": "961e0077231479885e7eb625a29af2c5989e70d5169e3e6e9b60d808547908b1",
+    "children/index_options/index_options/mio_contract.py": "88528806ac12db3b32b732cff111f7ba95942b350eed42528a5fbc360a97cc7a",
+    "children/index_options/index_options/observations.py": "6c9db1d30b1c26c647577446ca1cebeae4901956ee6613604ad3e7fde485b611"
+  },
+  "counts": {
+    "Critical": 0,
+    "Major": 0,
+    "Minor": 0,
+    "Nit": 0
+  },
+  "counts_scope": "Phase0 feasibility and semantics only; not a pass on unbuilt/unreviewed preparation outputs or replay.",
+  "created_utc": "2026-11-01T13:33:29.878806+00:00",
+  "evidence_sha256": {
+    "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/mio-inputs-q4/predictive-receipt.json": "1a9ea7303cf362cbc65c0c0733b3cbd6fa05a6353c9884a81ff14c0da4bbde72",
+    "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/mio-inputs-q4/preparation.json": "b432e5a46090e44b53eb84168f913c5ab0fab38b0a78d1de7e8051eb88d6caf9",
+    "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/verification/q4-eligibility-phase0.json": "fc9ef7a8e2874011eb02a98cdc606706fb800f72b4a9d88824b34e6c15dc761c",
+    "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/verification/q4-ibm-phase0-correctness.json": "0324f1df9653dbe620bc47a008129deaaa7263076bee4b6400a82d936eb66b52"
+  },
+  "limits": [
+    "Read-only code/receipt/preparation JSON and Parquet footer inspection. No actual forecast/context/quote/bar record scan, outcomes, replay, tests, source/config/runtime edits or registry writes.",
+    "Proposed new forecast/context filtering outputs and receipt do not yet have a correctness verdict here. Parent-reported candidate failure was accepted as context; this reviewer did not reproduce the failed source pipeline.",
+    "Original q4-ibm-phase0-correctness.json and q4-eligibility-phase0.json are retained unchanged; this supplement narrows the implementation seam after the quote-only failure."
+  ],
+  "original_bundle_metadata": {
+    "contexts.parquet": {
+      "fields": [
+        "symbol",
+        "quote_date",
+        "expiry",
+        "fold",
+        "band",
+        "spot",
+        "reference_scale",
+        "settlement_date"
+      ],
+      "rows": 81943
+    },
+    "forecasts.parquet": {
+      "fields": [
+        "symbol",
+        "quote_date",
+        "expiry",
+        "fold",
+        "band",
+        "method_cdf_zm3",
+        "method_cdf_zm2.5",
+        "method_cdf_zm2",
+        "method_cdf_zm1.5",
+        "method_cdf_zm1",
+        "method_cdf_zm0.5",
+        "method_cdf_zp0",
+        "method_cdf_zp0.5",
+        "method_cdf_zp1",
+        "method_cdf_zp1.5",
+        "method_cdf_zp2",
+        "method_cdf_zp2.5",
+        "method_cdf_zp3",
+        "fitted"
+      ],
+      "rows": 81943
+    },
+    "original/contexts.parquet": {
+      "fields": [
+        "band",
+        "quote_date",
+        "actual_calendar_dte",
+        "market_eligible",
+        "fold",
+        "symbol",
+        "expiry",
+        "y",
+        "settlement_date",
+        "market_sd_z",
+        "spot",
+        "reference_scale",
+        "model_cdf_zm3",
+        "model_cdf_zm2.5",
+        "model_cdf_zm2",
+        "model_cdf_zm1.5",
+        "model_cdf_zm1",
+        "model_cdf_zm0.5",
+        "model_cdf_zp0",
+        "model_cdf_zp0.5",
+        "model_cdf_zp1",
+        "model_cdf_zp1.5",
+        "model_cdf_zp2",
+        "model_cdf_zp2.5",
+        "model_cdf_zp3",
+        "model_pit",
+        "market_cdf_zm3",
+        "market_cdf_zm2.5",
+        "market_cdf_zm2",
+        "market_cdf_zm1.5",
+        "market_cdf_zm1",
+        "market_cdf_zm0.5",
+        "market_cdf_zp0",
+        "market_cdf_zp0.5",
+        "market_cdf_zp1",
+        "market_cdf_zp1.5",
+        "market_cdf_zp2",
+        "market_cdf_zp2.5",
+        "market_cdf_zp3",
+        "market_pit",
+        "pooled_cdf_zm3",
+        "pooled_cdf_zm2.5",
+        "pooled_cdf_zm2",
+        "pooled_cdf_zm1.5",
+        "pooled_cdf_zm1",
+        "pooled_cdf_zm0.5",
+        "pooled_cdf_zp0",
+        "pooled_cdf_zp0.5",
+        "pooled_cdf_zp1",
+        "pooled_cdf_zp1.5",
+        "pooled_cdf_zp2",
+        "pooled_cdf_zp2.5",
+        "pooled_cdf_zp3",
+        "pooled_pit",
+        "baseline_cdf_zm3",
+        "baseline_cdf_zm2.5",
+        "baseline_cdf_zm2",
+        "baseline_cdf_zm1.5",
+        "baseline_cdf_zm1",
+        "baseline_cdf_zm0.5",
+        "baseline_cdf_zp0",
+        "baseline_cdf_zp0.5",
+        "baseline_cdf_zp1",
+        "baseline_cdf_zp1.5",
+        "baseline_cdf_zp2",
+        "baseline_cdf_zp2.5",
+        "baseline_cdf_zp3",
+        "baseline_pit"
+      ],
+      "rows": 655220
+    },
+    "original/forecasts.parquet": {
+      "fields": [
+        "symbol",
+        "quote_date",
+        "expiry",
+        "fold",
+        "band",
+        "method_cdf_zm3",
+        "method_cdf_zm2.5",
+        "method_cdf_zm2",
+        "method_cdf_zm1.5",
+        "method_cdf_zm1",
+        "method_cdf_zm0.5",
+        "method_cdf_zp0",
+        "method_cdf_zp0.5",
+        "method_cdf_zp1",
+        "method_cdf_zp1.5",
+        "method_cdf_zp2",
+        "method_cdf_zp2.5",
+        "method_cdf_zp3",
+        "fitted"
+      ],
+      "rows": 655220
+    }
+  },
+  "original_preparation_checks": {
+    "declared_universe_inventory": true,
+    "exact_source_row_equality": true,
+    "label_maturity": true,
+    "matching_forecast_context_keys": true,
+    "source_bounds": true,
+    "unique_context_keys": true,
+    "unique_forecast_keys": true
+  },
+  "original_prepared_row_count": 81943,
+  "original_receipt_sources_sha256": "92091ab4437779c8c5258034866a9e7cf87c9017264dc357d379b9615726f241",
+  "original_receipt_training_protocol_sha256": "70c222ff681b5dd7fcb75fb2e0b7f942ba17c437b057b10ba5204399d183126b",
+  "remaining_preannouncement_holding_limit": {
+    "allowed_handling": "Preserve all existing positions and full market data; retain the existing unsupported-held-book refusal if a preannouncement holding crosses an unsupported action. Log any such new failure and stop that method honestly. Do not backdate O exclusion, use realized outcomes, drop the symbol, liquidate silently or fabricate mixed-deliverable economics.",
+    "phase0_conclusion": "The proposed preparation fixes the evidenced daily-basis-loss bug and is compatible with the existing input contract. It cannot guarantee all methods finish because permitted preannouncement exposure may still reach an unsupported action. That is a separate realized execution gate, not a reason to alter the approved predicate.",
+    "rule": "The approved policy governs new entries only after public announcement; it must not delete or retroactively disallow positions opened before knowledge.",
+    "why_original_selection_history_is_insufficient": "Removing IBM entries afterOct13 can alter portfolio allocations before O policy beginsOct25, potentially creating a new O holding onOct18. Original-run O-unselected observations therefore do not prove the new run has no preannouncement exposure."
+  },
+  "required_invariants_before_launch": [
+    "Chain, bars, sessions, standard-split source pins and all their files are exactly the original tail-v2 identities; do not substitute the rejected quote-filter chain.",
+    "Use only the19-field prepared forecasts and8-field prepared contexts as preparation input. Predicate depends only on symbol, quote_date, expiry and public known-at policy constants; no outcome, price, selection, solver or future factor affects exclusion.",
+    "Use identical canonical keys(symbol,quote_date,expiry,fold,band) and identical exclusion rules on both streams. Prove unique keys, equal forecast/context retained and excluded key sets, and exact deterministic subset equality.",
+    "Retained forecast/context values equal the original prepared values and the corresponding original producer-row projection exactly; preserve original schemas, data types, null/NaN semantics, CDF values, fitted flag and row order or declare canonical ordering.",
+    "Retain all212 declared names. Derive actual expected_names/missing_names inventories from retained output, and retain before/excluded/after counts by rule, symbol and date outside exact per-source coverage schema.",
+    "Keep original/forecasts.parquet, original/contexts.parquet, all training artifacts, receipt.sources, receipt.training_protocol, producer attestations, saved_method and all economic/solver settings unchanged. Record hashes/object equality explicitly.",
+    "Update only stitched hashes, preparation reference/hash, source pin/receipt digest and corresponding domain forecast/context bindings; preserve original forecast-window/source interval coverage and maturity evidence.",
+    "Preserve the rejected quote-filter candidate and all original/failed runs, sources and exposures; use a new source/protocol identity only after required review. No old evidence rewrite.",
+    "Check the specific valid IBM Oct29 settlement factor path and retained origin/expiry quote-index coverage with the restored full chain. Do not claim correctness from the same presence-only check that missed corporate-action continuity.",
+    "Carry Q2/Q3 pre-policy comparison caveats and the explicit documented Theta exact-root assumption into the updated source/report narrative."
+  ],
+  "reviewer": "/root/q4_final_source_correctness",
+  "schema": "q4-eligibility-forecast-phase0-v1",
+  "superseded_candidate": {
+    "commit": "e7f7abd9312666ee2e5c9d782fbfb0adca66bffa",
+    "failure": "Quote filtering removes IBM daily basis on2021-10-29 when only later-expiry quotes supply that metadata, despite a valid preaction2021-10-29 settlement.",
+    "resolution_design": "Keep complete original tail-v2 chain/bars/sessions unchanged. Change only paired entry-admission forecast/context identity rows.",
+    "status": "Parent reports blocked before launch; no new MIO claim. Retain rejected config/source and independent finding."
+  },
+  "verdict": "EXISTING_FORECAST_CONTEXT_PREPARATION_SEAM_IS_VALID; actual new subset/receipts require bounded correctness and integration verification before launch"
+}

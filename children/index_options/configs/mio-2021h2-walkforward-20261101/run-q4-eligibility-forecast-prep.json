@@ -1,0 +1,298 @@
+{
+  "name": "mio-q4-approved-spinoff-forecast-eligibility",
+  "notes": "Owner-approved entry eligibility only. Full original chain/bars and daily basis remain intact. Apply exactly the same public-notice rule to paired prepared forecast/context rows. No forecast numerical values, fits, weights or outcomes used to select eligibility. Retain both accepted and excluded audit rows.",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/q4-eligibility-forecast-prep"
+  },
+  "pipeline": {
+    "forecasts_read": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/mio-2021h2-exact-q2-20261031/ob",
+        "source": "mio-2021q4-complete-inputs",
+        "stream": "files",
+        "key": "forecasts",
+        "relpath_by_key": {
+          "forecasts": "forecasts.parquet"
+        },
+        "columns": {
+          "symbol": "symbol",
+          "quote_date": "quote_date",
+          "expiry": "expiry",
+          "fold": "fold",
+          "band": "band",
+          "method_cdf_zm3": "method_cdf_zm3",
+          "method_cdf_zm2.5": "method_cdf_zm2.5",
+          "method_cdf_zm2": "method_cdf_zm2",
+          "method_cdf_zm1.5": "method_cdf_zm1.5",
+          "method_cdf_zm1": "method_cdf_zm1",
+          "method_cdf_zm0.5": "method_cdf_zm0.5",
+          "method_cdf_zp0": "method_cdf_zp0",
+          "method_cdf_zp0.5": "method_cdf_zp0.5",
+          "method_cdf_zp1": "method_cdf_zp1",
+          "method_cdf_zp1.5": "method_cdf_zp1.5",
+          "method_cdf_zp2": "method_cdf_zp2",
+          "method_cdf_zp2.5": "method_cdf_zp2.5",
+          "method_cdf_zp3": "method_cdf_zp3",
+          "fitted": "fitted"
+        }
+      },
+      "notes": "Existing prepared quarter source; original source pin and output values are verified and retained."
+    },
+    "forecasts_policy": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$forecasts_read.records"
+      },
+      "params": {
+        "field": "eligibility_reason",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "symbol",
+                "op": "==",
+                "value": "IBM"
+              },
+              {
+                "field": "quote_date",
+                "op": ">=",
+                "value": "2021-10-13"
+              },
+              {
+                "field": "quote_date",
+                "op": "<",
+                "value": "2021-11-05"
+              },
+              {
+                "field": "expiry",
+                "op": ">=",
+                "value": "2021-11-03"
+              }
+            ],
+            "value": "IBM_preannounced_Kyndryl_distribution"
+          },
+          {
+            "when": [
+              {
+                "field": "symbol",
+                "op": "==",
+                "value": "O"
+              },
+              {
+                "field": "quote_date",
+                "op": ">=",
+                "value": "2021-10-25"
+              },
+              {
+                "field": "quote_date",
+                "op": "<",
+                "value": "2021-11-16"
+              },
+              {
+                "field": "expiry",
+                "op": ">=",
+                "value": "2021-11-12"
+              }
+            ],
+            "value": "O_preannounced_Orion_distribution"
+          },
+          {
+            "value": "supported",
+            "when": []
+          }
+        ]
+      },
+      "notes": "Only symbol, origin and expiry plus dated public notices. Identical predicates for both paired sources."
+    },
+    "forecasts_kept": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$forecasts_policy.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "eligibility_reason",
+            "op": "==",
+            "value": "supported"
+          }
+        ]
+      }
+    },
+    "forecasts_kept_write": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$forecasts_kept.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/q4-eligibility-forecast-prep/forecasts-kept.jsonl",
+        "source": "Approved public-notice eligibility kept; numerical values unchanged; original full chain retained"
+      }
+    },
+    "forecasts_excluded": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$forecasts_policy.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "eligibility_reason",
+            "op": "!=",
+            "value": "supported"
+          }
+        ]
+      }
+    },
+    "forecasts_excluded_write": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$forecasts_excluded.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/q4-eligibility-forecast-prep/forecasts-excluded.jsonl",
+        "source": "Approved public-notice eligibility excluded; numerical values unchanged; original full chain retained"
+      }
+    },
+    "contexts_read": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetRows",
+      "params": {
+        "root": "/home/russell/data/index_options/mio-2021h2-exact-q2-20261031/ob",
+        "source": "mio-2021q4-complete-inputs",
+        "stream": "files",
+        "key": "contexts",
+        "relpath_by_key": {
+          "contexts": "contexts.parquet"
+        },
+        "columns": {
+          "symbol": "symbol",
+          "quote_date": "quote_date",
+          "expiry": "expiry",
+          "fold": "fold",
+          "band": "band",
+          "spot": "spot",
+          "reference_scale": "reference_scale",
+          "settlement_date": "settlement_date"
+        }
+      },
+      "notes": "Existing prepared quarter source; original source pin and output values are verified and retained."
+    },
+    "contexts_policy": {
+      "uses": "derive",
+      "inputs": {
+        "records": "$contexts_read.records"
+      },
+      "params": {
+        "field": "eligibility_reason",
+        "cases": [
+          {
+            "when": [
+              {
+                "field": "symbol",
+                "op": "==",
+                "value": "IBM"
+              },
+              {
+                "field": "quote_date",
+                "op": ">=",
+                "value": "2021-10-13"
+              },
+              {
+                "field": "quote_date",
+                "op": "<",
+                "value": "2021-11-05"
+              },
+              {
+                "field": "expiry",
+                "op": ">=",
+                "value": "2021-11-03"
+              }
+            ],
+            "value": "IBM_preannounced_Kyndryl_distribution"
+          },
+          {
+            "when": [
+              {
+                "field": "symbol",
+                "op": "==",
+                "value": "O"
+              },
+              {
+                "field": "quote_date",
+                "op": ">=",
+                "value": "2021-10-25"
+              },
+              {
+                "field": "quote_date",
+                "op": "<",
+                "value": "2021-11-16"
+              },
+              {
+                "field": "expiry",
+                "op": ">=",
+                "value": "2021-11-12"
+              }
+            ],
+            "value": "O_preannounced_Orion_distribution"
+          },
+          {
+            "value": "supported",
+            "when": []
+          }
+        ]
+      },
+      "notes": "Only symbol, origin and expiry plus dated public notices. Identical predicates for both paired sources."
+    },
+    "contexts_kept": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$contexts_policy.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "eligibility_reason",
+            "op": "==",
+            "value": "supported"
+          }
+        ]
+      }
+    },
+    "contexts_kept_write": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$contexts_kept.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/q4-eligibility-forecast-prep/contexts-kept.jsonl",
+        "source": "Approved public-notice eligibility kept; numerical values unchanged; original full chain retained"
+      }
+    },
+    "contexts_excluded": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$contexts_policy.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "eligibility_reason",
+            "op": "!=",
+            "value": "supported"
+          }
+        ]
+      }
+    },
+    "contexts_excluded_write": {
+      "uses": "records-write",
+      "inputs": {
+        "records": "$contexts_excluded.records"
+      },
+      "params": {
+        "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/q4-eligibility-forecast-prep/contexts-excluded.jsonl",
+        "source": "Approved public-notice eligibility excluded; numerical values unchanged; original full chain retained"
+      }
+    }
+  }
+}
