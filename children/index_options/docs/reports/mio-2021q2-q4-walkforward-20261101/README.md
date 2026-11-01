@@ -1,6 +1,6 @@
 # MIO 2021 Q2–Q4: quarterly walk-forward evaluation
 
-Eight of nine standard method reports are verified. Q2 and Q3 are complete. Q4 shock and w1 completed; nominal_lp failed at the IBM/Kyndryl contract change and has no valid final totals. The overall evaluation remains incomplete.
+Q2 and Q3 have six verified final method reports. Two additional reports retain the earlier incomplete Q4 attempt; its nominal_lp method failed at the IBM/Kyndryl contract change. The owner-approved eligibility rerun of all three Q4 methods started on 2026-11-01 at 14:02 UTC and is still running. The overall evaluation remains incomplete until that run and its three reports pass verification.
 
 ## Evaluation
 
@@ -74,4 +74,4 @@ The supplemental source review found that an earlier claim of protected row-grou
 
 The attested close receipt is complete=false. The failed IBM contract delivered 100 IBM plus 20 Kyndryl shares; the pinned standard-split ledger cannot settle it. [Exchange notice](https://boxoptions.com/assets/BOXOnnMemo205264.pdf).
 
-[Independent capability review](q4-ibm-phase0-correctness.json) found no existing MIO config switch. A public-notice-based eligibility policy is proposed but unapplied. Original results and exposures remain retained. Merge and task cleanup await resolution.
+[Independent capability review](q4-ibm-phase0-correctness.json) found no existing MIO config switch for mixed-share spinoff settlement. The owner approved config-only public-notice entry eligibility on 2026-11-01. Existing JSON derive/filter nodes now exclude 122 paired forecast/context rows (92 IBM, 30 Realty Income) from new candidate entries; 81,821 remain. Full quote and settlement-basis inputs, all 212 names, fitted models and portfolio settings are unchanged. Q2/Q3 retain their original eligibility, so this is not a uniform eligibility comparison across quarters.\n\nThe first quote-filter proposal was rejected before a MIO run because it also removed needed settlement-day basis observations. The corrected paired candidate filter passed both independent reviews with zero findings: [launch lock](q4-eligibility-v2-review-lock.json), [source evidence](q4-eligibility-v2-source.json). Original results, failed attempts and exposures remain retained. Final Q4 results, reports, merge and task cleanup are pending.
