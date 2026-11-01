@@ -1,0 +1,207 @@
+{
+  "base": "e7f7abd9312666ee2e5c9d782fbfb0adca66bffa",
+  "candidate": "ae2c9f986fb6fb88e07a3dc362b5873813fd7d23",
+  "checks": [
+    {
+      "evidence": "Candidate HEAD and clean worktree verified. Seven added config/evidence files, no runtime changes. Read root/child AGENTS, locked Path A0002/A0003/A0008, configuration standard, implementation workflow and skeptic policy. origin/main workflow/skeptic/wrap match local.",
+      "id": "candidate_scope",
+      "result": "pass"
+    },
+    {
+      "evidence": "All six study objects exactly equal; existing node validate_params returns [] for each. Params, pairs, code, dependencies and full chain/bars/sessions/actions bindings equal original tail-v2. Prepared predictive source/receipt and separate registry/packet identities are the only study changes.",
+      "id": "six_entrypoint_wiring",
+      "nodes": [
+        "plan",
+        "freeze_development",
+        "open_packet",
+        "intake",
+        "study",
+        "close_packet"
+      ],
+      "result": "pass",
+      "study_hash": "7c9d22b35fb8b5d447f34aa6de5335f11f38c533fa9d45f7f4f303af61776fc6"
+    },
+    {
+      "evidence": "Both python -m dskit.pipeline validate commands exit0. StudyContract.build returns runnable=true, missing=[] and the retained source-verification plan hash. No new parameter or execution setting required.",
+      "id": "readiness_and_validation",
+      "plan_sha256": "31cae335322224e05c0529d98dd260c5906fba19ecb3432242727eebbc639522",
+      "preparation_document_hash": "fcf972bbd0e5c33aaf42785711d8f90576f07280e82b30070a2b0ed9f776a7d5",
+      "result": "pass",
+      "run_document_hash": "4f1bed0c95e02f20548eef8b462df50e583d3c1c4dc33f1110839624efde3987"
+    },
+    {
+      "attested_nodes": 12,
+      "evidence": "All 12 nodes completed under the current canonical document identity. Writer path ports attest against node record and carry. Independently hashed writer files and onboarded copies agree with carry metrics and new source manifest. Saved config has normal default expansion; uses, params and inputs match current config.",
+      "id": "preparation_handoff",
+      "result": "pass",
+      "run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/q4-eligibility-forecast-prep/mio-q4-approved-spinoff-forecast-eligibility-2021-12-31-8de823b5",
+      "run_hash": "8de823b59cd174ed37f77902a5f447536218b10a533ddf3be7204f45653699fc",
+      "writers": [
+        {
+          "node": "contexts_excluded_write",
+          "rows": 122,
+          "sha256": "6ca773ecdd7e335550f5d0d4815edcae30eb272d04025eb0789844d644657fc5"
+        },
+        {
+          "node": "contexts_kept_write",
+          "rows": 81821,
+          "sha256": "ac26243fe5feaf907a5179075e8a917f7261afbed99a28113bd6c7547ac15a72"
+        },
+        {
+          "node": "forecasts_excluded_write",
+          "rows": 122,
+          "sha256": "29262d49a7cde86159f1df1d6ba4bd982431f5fbcda8e8d3d0c0445a5ed61467"
+        },
+        {
+          "node": "forecasts_kept_write",
+          "rows": 81821,
+          "sha256": "13f38ae809e0291a589a3201558e923ab9dfb749b095e6c903a390bc6ba8b16f"
+        }
+      ]
+    },
+    {
+      "evidence": "Existing StudyContract accepts exact receipt/preparation schemas and validates saved producer/training chronology. Both prepared source pins equal receipt source. Original receipt sources/training_protocol and ten original producer/training file bytes match. M53 method, all economics, methods, solver settings and runtime source pins unchanged.",
+      "id": "receipt_model_economics",
+      "identical_original_and_training_files": 10,
+      "receipt_changed_keys": [
+        "preparation",
+        "stitched"
+      ],
+      "receipt_sources_hash": "92091ab4437779c8c5258034866a9e7cf87c9017264dc357d379b9615726f241",
+      "result": "pass",
+      "runtime_files_verified": 270,
+      "training_protocol_hash": "70c222ff681b5dd7fcb75fb2e0b7f942ba17c437b057b10ba5204399d183126b"
+    },
+    {
+      "active": null,
+      "claims": 0,
+      "evidence": "Read-only SQLite event/state chain verifies. Identity, packets, prior and protected cutoff equal initialization. StudyProtocolControl.initialize validates its study, then stores only schedule/prior/cutoff; rejected source is not a persisted binding. Existing ExposureRegistry._release on verified snapshot/new plan returns development. Imported2017-01-03..2024-01-01 covers every full read bound, including tail through2022-03-08. Registry bytes unchanged.",
+      "freezes": 0,
+      "id": "unused_registry_and_init",
+      "registry_sha256": "dc6f81f830433e0e94899317294990fe15a20ee4536b130e7728e0c01b6b8673",
+      "result": "pass",
+      "revision": 0
+    },
+    {
+      "actions": [
+        "initialize",
+        "freeze",
+        "claim",
+        "bind_inputs",
+        "bind_execution",
+        "publish_attested_close",
+        "abandon"
+      ],
+      "claim": "d2bcc77d-e3f7-4def-91e1-e1432ed840b3",
+      "close_artifact_sha256": "8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a",
+      "complete": false,
+      "evidence": "Exactly one publication and one abandonment. Existing _attested_result verifies close artifact; result/execution/provenance/permit hashes bind to claim. Three exposure-link JSON hashes verify; linked registry hashes/revisions/dispositions match tail6, complete16, earlier6. Original failed runs, sources, quote-filter candidate and outputs retained.",
+      "id": "prior_failure_and_history",
+      "registry_sha256": "38140d8fc8273e128dec7ac740fe14174f4aecb60c169339fc418f469638ae1e",
+      "result": "pass",
+      "revision": 6,
+      "status": "abandoned_exposed"
+    },
+    {
+      "changed_expiry_inventories": 0,
+      "evidence": "Prepared old/new forecast key columns yield identical per-symbol expiry inventories. Recomputed exact existing SQLiteParquetIndex reuse keys from unchanged full chain digest/bounds/validator/code/dependencies. Every input manifest resolves to same inode as prior tail-v2 run quote index. No build or cache write.",
+      "id": "reusable_indexes",
+      "matching_input_keys_and_old_run_cache_inodes": 212,
+      "misses": [],
+      "result": "pass",
+      "symbols": 212
+    },
+    {
+      "evidence": "Identical paired predicates use only symbol/origin/expiry and approved notice constants. No price or outcome selects eligibility. Full market data and unsupported-held-book runtime refusal remain. Config explicitly discloses Q2/Q3 original eligibility and retrospective development; policy retains exact-root assumption and preannouncement-holding limits.",
+      "id": "knowledge_and_comparison_limits",
+      "predicate_fields": [
+        "expiry",
+        "quote_date",
+        "symbol"
+      ],
+      "result": "pass"
+    }
+  ],
+  "contract": {
+    "matrix": [
+      "Known announcement/resumption dates only; identical deterministic paired eligibility and exclusions retained",
+      "All122removed key identities match across sources;81,821retained values/schema/order match prepared and original producer rows; all212names/64sessions remain",
+      "Full original chain/bars/sessions/actions restored and unchanged, so IBM Oct29 basis is present; supported pre-action positions remain settleable",
+      "Original M53 producer, source file hashes, training protocol and artifact bytes unchanged; only stitched files and preparation references change truthfully",
+      "All six runtime nodes bind same new source; original methods/economics/runtime remain byte-identical",
+      "Unused registryrevision0 has nofreeze/claim; initial schedule and complete prior exposure import valid for this corrected config; failedtail-v2 disposed once revision6",
+      "No repair/backdating of unsupported preannouncement holdings; they must still refuse",
+      "Q2/Q3 original eligibility and newQ4 policy are explicitly different; no uniform-comparison claim"
+    ],
+    "path": "/home/russell/wt/q2-reconcile-20261031/children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-eligibility-v2-review-contract.json",
+    "sha256": "341ee3011116ac0920ba46ae0f31f1e6694008f64852e715744edb7eef9be454"
+  },
+  "correctness_dependency": {
+    "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/verification/q4-eligibility-v2-correctness.json",
+    "scope": "Independent full partition/value/schema/order, public-notice/root semantics, 427market payloads and supported/unsupported settlement probes; not repeated here.",
+    "sha256": "b368e00e8418af1d98a8751f899fdad52afedabbae811898e8b1ce2f07c84881"
+  },
+  "counts": {
+    "Critical": 0,
+    "Major": 0,
+    "Minor": 0,
+    "Nit": 0
+  },
+  "created_utc": "2026-11-01T13:58:48.633340+00:00",
+  "evidence_sha256": {
+    "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/mio-inputs-q4-eligibility-v2/predictive-receipt.json": "ef7ff2fe9e3d6f6adc7e554c5911e1c6730478555c5414860b0ed34906f153b5",
+    "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/mio-inputs-q4-eligibility-v2/preparation.json": "3b964aa372c3682dbcb487bd5be688ec4ce2f322266dcdbe626d6a319fe4b8ce",
+    "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/prior-exposure-link.json": "644565e45f3af661eb272c618110e704ce27262f342a714537dcd813ebc2b94c",
+    "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/q4-eligibility-prior-exposure.json": "09f5d6360d2cf946f7cd69539738ac0ecb211d7fe4e9807cf5ee1f182473f65b",
+    "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/q4-tail-prior-exposure.json": "830f1df00fcf87df88660f4cebae2820737402b68c91a7ad124c164ed0eef180",
+    "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q4-eligibility-v2.json": "502417df96f227f37dea168753991d9e387497ce1f729abd60302a82b6461d2a",
+    "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/run-q4-eligibility-forecast-prep.json": "44693cad72dfd357f2c88d117f1ed15d752398c30b4338a9882b8116248f31ac",
+    "/home/russell/wt/q2-reconcile-20261031/children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-eligibility-forecast-phase0.json": "732338a906640e821374a2881d9c836f9a49bed9618968660b6e4a769a7ebb33",
+    "/home/russell/wt/q2-reconcile-20261031/children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-eligibility-v2-review-contract.json": "341ee3011116ac0920ba46ae0f31f1e6694008f64852e715744edb7eef9be454",
+    "/home/russell/wt/q2-reconcile-20261031/children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-eligibility-v2-source.json": "efa41092f5ea7d859bbd7ce2cd9dd278f914080d45a7c45f47c02dd7d8bade1a"
+  },
+  "execution": {
+    "checks": "Focused readonly JSON/contract/attestation/registry assertions; no pytest/full suite.",
+    "mutations": "Only this requested retained review file. No registry transition, repository edit, index build, MIO or replay.",
+    "python": "/home/russell/dskit/.venv/bin/python",
+    "pythonpath": [
+      "/home/russell/wt/q2-reconcile-20261031",
+      "/home/russell/wt/q2-reconcile-20261031/children/index_options"
+    ],
+    "transport": "SSH russell@localhost from PowerShell literal heredoc; execution in WSL2"
+  },
+  "findings": [],
+  "lens": "Fresh sequential independent test-quality/integration",
+  "limits": [
+    "Launch readiness does not establish three-method simulation success. Permitted preannouncement holdings can still trigger the intentional unsupported-action refusal. Successful simulation and report verification remain required before merge/purge.",
+    "Public notice/root semantics, complete row equality and settlement cases rely on the separate independent correctness review. This lens checked integration, provenance and predicate flow.",
+    "Cache identities and old-run inode reuse verified; existing runtime intake must still hash cache bytes and replay validators. No cache content rescan or rebuild.",
+    "Read-only release used verified SQLite snapshot and existing _release implementation, without freeze/open/intake or registry mutation."
+  ],
+  "model": "GPT-6 (session identity)",
+  "next_action": "Parent may close the two-lens launch gate for the unchanged candidate. Successful simulation/report gate remains outstanding.",
+  "pinned_dependencies": {
+    "exchange_calendars": "4.13.2",
+    "highspy": "1.15.1",
+    "numpy": "2.5.2",
+    "pandas": "2.3.3",
+    "pyarrow": "25.0.1",
+    "pyomo": "6.10.1",
+    "scipy": "1.18.1"
+  },
+  "review_harness_notes": [
+    "Saved configs expand Document defaults; compared canonical document identity and uses/params/inputs after identifying this benign representation difference.",
+    "Actual publication action is publish_attested_close, and oldest exposure-link previous_registry is a string path; corrected initial harness assumptions.",
+    "RecordsWrite attests its declared path port. Hash/count metrics are retained separately; verified file digests independently rather than treating metrics/provenance as declared attested ports."
+  ],
+  "reviewer": "/root/q4_eligibility_v2_integration",
+  "schema": "q4-eligibility-v2-integration-review-v1",
+  "scope": "Config-only launch readiness; no runtime/HPO/model/report redesign or execution.",
+  "unresolved_counts": {
+    "Critical": 0,
+    "Major": 0,
+    "Minor": 0,
+    "Nit": 0
+  },
+  "verdict": "PASS_LAUNCH_GATE_INTEGRATION_C0_M0_MINOR0_NIT0"
+}

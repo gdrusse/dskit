@@ -1,0 +1,363 @@
+{
+  "authority": {
+    "local_rules": "AGENTS.md, child AGENTS.md, implementation-workflow.md, configuration.md, data-onboarding.md and origin/main skeptic-review.md read.",
+    "locked_path_rows": [
+      "A0002: no subset selected using outcomes",
+      "A0003: 2024+ protected data sealed",
+      "A0008: periodic refits; unchanged earlier model/training review is a dependency"
+    ],
+    "scope": "Exclude new entries crossing publicly announced unsupported spinoffs consistently across all methods, retain standard contracts; no new ADR or runtime code.",
+    "user_approval": "Approve the config-only eligibility policy"
+  },
+  "base": "e7f7abd9312666ee2e5c9d782fbfb0adca66bffa",
+  "candidate": "ae2c9f986fb6fb88e07a3dc362b5873813fd7d23",
+  "commands": {
+    "broad_tests": "None. No pytest suite or MIO replay executed.",
+    "completed_checks": [
+      {
+        "command": "Inline Python through the stated SSH transport: hash all 270 study.code files; compare all six study objects and old/new domain.params; PinnedPayloadSource.file(..., verify=True) and SHA-256 for all 19 acquired files; compare both receipt objects and 10 original/training files; recompute public-notice predicate on every old prepared row; compare kept/excluded JSONL, exact keys, retained schema/order/values and projected original producer rows; StudyContract.build(study).",
+        "exit_code": 0,
+        "output_chunk": "0ea039"
+      },
+      {
+        "command": "Inline Python through SSH: StudyContract.build(study), assert runnable and no missing; verify full IBM/O chain and bar files; invoke unchanged WeeklyOptionPortfolioStudy._settlements on one supported IBM Oct29 synthetic book and two preannouncement-crossing books; RunAttestation.node_output_for_document for all 12 preparation nodes; SQLite SELECT using mode=ro for current and previous registry; inspect original Parquet footer date ranges.",
+        "exit_code": 0,
+        "output_chunk": "3c44b9"
+      },
+      {
+        "command": "Inline Python through SSH: PinnedPayloadSource.file(..., verify=True) plus SHA-256 for each of 427 market payloads; recursively enumerate old/new study deltas; verify 1,104 causal date/expiry cases; inspect/hash prior-exposure linkage; compare Arrow filtered tables/schema and raw floating-value buffers; git rev-parse HEAD and hash each candidate config/contract/evidence file.",
+        "exit_code": 0,
+        "output_chunk": "deb03a"
+      }
+    ],
+    "first_attempt": "Initial main audit stopped at ImportError for an incorrectly located reviewer import (PinnedPayloadSource). No assertions or mutations executed. Retried with dskit.onboarding.artifacts, the actual owner.",
+    "predicate_reproducer": "Exclude if (symbol == IBM and 2021-10-13 <= quote_date < 2021-11-05 and expiry >= 2021-11-03) OR (symbol == O and 2021-10-25 <= quote_date < 2021-11-16 and expiry >= 2021-11-12). Canonical key = (symbol, quote_date, expiry, fold, band). Verify independent list filter of old prepared rows equals new rows exactly; audit complement equals every excluded row/reason.",
+    "repository_reads": "git rev-parse HEAD; git status --short; git diff --stat e7f7abd9 ae2c9f98; git show origin/main:docs/skills/skeptic-review.md; bounded Path reads of the review contract, JSON configs, source proof and existing runtime seams.",
+    "transport": "PowerShell single-quoted here-string piped to ssh.exe -o BatchMode=yes -o ConnectTimeout=5 russell@localhost '/home/russell/dskit/.venv/bin/python -'"
+  },
+  "counts": {
+    "Critical": 0,
+    "Major": 0,
+    "Minor": 0,
+    "Nit": 0
+  },
+  "created_utc": "2026-11-01T13:44:50.976637+00:00",
+  "final_checks": {
+    "candidate": "ae2c9f986fb6fb88e07a3dc362b5873813fd7d23",
+    "candidate_files_sha256": {
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q4-eligibility-v2.json": "502417df96f227f37dea168753991d9e387497ce1f729abd60302a82b6461d2a",
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/run-q4-eligibility-forecast-prep.json": "44693cad72dfd357f2c88d117f1ed15d752398c30b4338a9882b8116248f31ac",
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/source-q4-eligibility-v2.json": "14c6ac8b9d690d26e40631b39190bacb55ae0d7f127921bcaadea5aa9a00aad1",
+      "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-eligibility-forecast-phase0.json": "732338a906640e821374a2881d9c836f9a49bed9618968660b6e4a769a7ebb33",
+      "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-eligibility-v2-review-contract.json": "341ee3011116ac0920ba46ae0f31f1e6694008f64852e715744edb7eef9be454",
+      "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-eligibility-v2-source.json": "efa41092f5ea7d859bbd7ce2cd9dd278f914080d45a7c45f47c02dd7d8bade1a"
+    },
+    "causal_public_notice_cases": 1104,
+    "contexts_floating_columns_bitwise_equal": 2,
+    "contract_sha256": "341ee3011116ac0920ba46ae0f31f1e6694008f64852e715744edb7eef9be454",
+    "exposure_range_retained": [
+      "2017-01-03",
+      "2024-01-01"
+    ],
+    "forecasts_floating_columns_bitwise_equal": 13,
+    "full_market_bound_payloads_sha256_verified": 427,
+    "only_changed_study_branches": [
+      ".domain.predictive.receipt",
+      ".domain.sources.contexts.pin",
+      ".domain.sources.forecasts.pin",
+      ".packets[0].id",
+      ".registry",
+      ".selected_packet"
+    ],
+    "prior_exposure": {
+      "keys": [
+        "previous_registry",
+        "previous_registry_sha256",
+        "previous_revision",
+        "previous_dispositions",
+        "earlier_exposure_link",
+        "partial_run",
+        "owner_approval",
+        "new_registry",
+        "classification"
+      ],
+      "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/q4-eligibility-prior-exposure.json",
+      "sha256": "09f5d6360d2cf946f7cd69539738ac0ecb211d7fe4e9807cf5ee1f182473f65b"
+    }
+  },
+  "findings": [],
+  "lens": "independent correctness and authority",
+  "limits": [
+    "This scoped launch review is not a prediction that all methods complete. Removing postannouncement IBM opportunities can change allocation before O's announcement; a newly selected preannouncement O position can still refuse. Preserve any such result instead of backdating eligibility.",
+    "The settlement probes invoke the unchanged existing settlement function on small synthetic book objects with actual source factors and bars. They prove the repaired metadata path and refusal behavior, not a completed portfolio replay.",
+    "No registry mutations, protocol claims, market replay, model retraining, parameter tuning, source/config edits or broad tests were made. The only intended write is this requested review evidence.",
+    "Original producer row scans projected only retained forecast/context schema fields; original Parquet quote-date metadata spans 2017-01-03 through 2021-12-31. No protected 2024+ price/outcome data was used.",
+    "Standard-root identity after each resumption remains the disclosed Theta exact-symbol assumption. Normalized files lack independent per-row root/deliverable fields. This unchanged input limitation was not silently promoted to independent root proof.",
+    "The complete event chain and application of prior-exposure protocol history remain also assigned to the independent integration lens. This lens verified read-only current state, schedule equality, prior range and linkage digest.",
+    "Q2/Q3 eligibility policy comparability is explicitly limited; their earlier completed numerical results were not recomputed or certified under the new policy here."
+  ],
+  "main_checks": {
+    "contexts": {
+      "after": 81821,
+      "before": 81943,
+      "earliest_excluded_by_symbol": {
+        "IBM": "2021-10-13",
+        "O": "2021-10-25"
+      },
+      "excluded": 122,
+      "excluded_by_rule": {
+        "IBM_preannounced_Kyndryl_distribution": 92,
+        "O_preannounced_Orion_distribution": 30
+      },
+      "retained_crossing_before_announcement": {
+        "IBM": 28,
+        "O": 21
+      },
+      "retained_original_producer_matches": 81821,
+      "schema_and_order_exact": true,
+      "sessions": 64,
+      "symbols": 212
+    },
+    "forecasts": {
+      "after": 81821,
+      "before": 81943,
+      "earliest_excluded_by_symbol": {
+        "IBM": "2021-10-13",
+        "O": "2021-10-25"
+      },
+      "excluded": 122,
+      "excluded_by_rule": {
+        "IBM_preannounced_Kyndryl_distribution": 92,
+        "O_preannounced_Orion_distribution": 30
+      },
+      "retained_crossing_before_announcement": {
+        "IBM": 28,
+        "O": 21
+      },
+      "retained_original_producer_matches": 81821,
+      "schema_and_order_exact": true,
+      "sessions": 64,
+      "symbols": 212
+    },
+    "lineage": {
+      "original_and_training_files_verified": 10,
+      "producer_and_training_protocol_equal": true,
+      "receipt_changed_keys": [
+        "stitched",
+        "preparation"
+      ]
+    },
+    "paired_kept_excluded_keys_exact": true,
+    "pinned_payload_files_verified": 19,
+    "runtime_economics_market_pins": {
+      "all_six_nodes_identical": true,
+      "market_roles_unchanged": [
+        "chain",
+        "bars",
+        "sessions",
+        "corporate_actions"
+      ],
+      "runtime_code_dependencies_economics_unchanged": true,
+      "runtime_files_verified": 270
+    },
+    "study_contract_build": {
+      "keys": [
+        "study",
+        "packet",
+        "cohort_sha256",
+        "missing",
+        "read_bounds",
+        "cohort",
+        "source_pins",
+        "runnable",
+        "sha256"
+      ],
+      "type": "dict"
+    }
+  },
+  "matrix_dispositions": [
+    {
+      "evidence": "Read the IBM October 12 and Realty Income October 22 primary announcements plus MIAX November 3/12 resumption notices. Independently reconstructed both predicates and checked 1,104 date/expiry cases against a policy that learns resumption only after the notice date. Exclusion uses only symbol, quote_date and expiry; no numerical forecast, price, return, fitted weight or prior selection enters it.",
+      "invariant": "Eligibility is causal and independent of outcomes.",
+      "qualification": "The O distribution-date cutoff is conservatively November 12, while the option adjustment becomes effective November 15; this is the documented approved public-distribution-date policy.",
+      "result": "PASS"
+    },
+    {
+      "evidence": "Both streams contain 81,943 before and 81,821 after; exactly 122 paired keys excluded (92 IBM, 30 O). Independently recomputed original-row predicate partition; compared every kept/excluded canonical JSONL row and reason; proved unique/equal retained and excluded key sets. Every retained row matches the original producer projection, schema and order. Float buffers match bitwise for 13 forecast and two context numerical columns. All 212 names and 64 quote sessions remain.",
+      "invariant": "Paired deterministic subset, retained value integrity and universe/session preservation.",
+      "result": "PASS"
+    },
+    {
+      "evidence": "Chain, bars, sessions and corporate_actions bindings exactly equal the failed tail-v2 study; all 427 bound market payload hashes verified. IBM Oct29 daily factor is 0.9560229616389384, equal to Oct25. The existing _settlements method successfully settles a bounded synthetic positive probe with actual original factor/bar inputs. Retained IBM Oct29 forecasts and original quote inventory remain available.",
+      "invariant": "Full unchanged market history preserves supported settlement.",
+      "result": "PASS"
+    },
+    {
+      "evidence": "28 IBM and 21 O candidate keys crossing the distribution dates remain before each announcement cutoff. Actual original factors supplied to the existing _settlements function reject bounded preannouncement IBM Oct11/Dec17 and O Oct18/Nov19 probes. No fabricated adjustment, backdated ban, changed factor or early liquidation is introduced.",
+      "invariant": "Preannouncement exposure is not retrospectively removed or repaired.",
+      "result": "PASS"
+    },
+    {
+      "evidence": "Receipt source records, producer identities, saved method, training_protocol and 10 original/training artifacts match original bytes/objects. Only receipt.stitched and receipt.preparation changed. All 19 files in the new acquired payload were checked against manifest digests and local preparation files. Existing StudyContract.build is runnable and yields plan 31cae335322224e05c0529d98dd260c5906fba19ecb3432242727eebbc639522.",
+      "invariant": "Original predictive lineage and training/weights are unchanged.",
+      "result": "PASS"
+    },
+    {
+      "evidence": "All six runtime node study objects are identical. All 270 runtime files, dependency pins and full economic/method parameter objects exactly match the tail-v2 study. Recursive study diff contains only the allowed forecast/context pins, predictive receipt, registry and packet identities.",
+      "invariant": "All methods, economics and runtime share one bounded input variant.",
+      "result": "PASS"
+    },
+    {
+      "evidence": "All 12 preparation nodes have attested outputs for document fcf972bbd0e5c33aaf42785711d8f90576f07280e82b30070a2b0ed9f776a7d5. Registry opened with SQLite mode=ro: new revision 0, no claim or freeze, configured schedule exact; prior tail registry revision 6, previous failed claim abandoned_exposed. New prior range covers 2017-01-03 through 2024-01-01 exclusive and binds the existing complete prior-exposure linkage hash.",
+      "invariant": "Preparation is attested and prior exposure is retained without writes.",
+      "result": "PASS"
+    },
+    {
+      "evidence": "Source policy/preparation and phase-0 artifact explicitly say Q2/Q3 retain original eligibility, MRK/GE policy applicability remains unresolved, post-action standard identity assumes documented Theta exact-symbol semantics, and unsupported preannouncement holdings still refuse. No claim that Q2/Q3 share the revised Q4 eligibility or that this is fresh holdout evidence appears in the reviewed launch contract.",
+      "invariant": "Comparative limitations are truthful.",
+      "result": "PASS"
+    }
+  ],
+  "model": "GPT-6 Astra",
+  "primary_sources": [
+    {
+      "url": "https://newsroom.ibm.com/2021-10-12-IBM-Board-of-Directors-Approves-Separation-of-Kyndryl",
+      "verified": "Dated October 12, 2021; anticipated distribution after the market closes November 3."
+    },
+    {
+      "url": "https://www.sec.gov/Archives/edgar/data/1507385/000150738521000210/exhibit991-mergerclosingda.htm",
+      "verified": "Dated October 22, 2021; announced November 12 distribution."
+    },
+    {
+      "url": "https://www.miaxglobal.com/alert/2021/11/03/miax-exchange-group-options-markets-corporate-action-alert-international-1",
+      "verified": "November 3 10:16 AM notice identifies adjusted IBM1 November 4 and resumed IBM trading November 5."
+    },
+    {
+      "url": "https://www.miaxglobal.com/alert/2021/11/12/miax-exchange-group-options-markets-corporate-action-alert-realty-income",
+      "verified": "November 12 10:36 AM notice identifies adjusted O2 November 15 and resumed O trading November 16."
+    }
+  ],
+  "reviewer": "/root/q4_eligibility_v2_correctness",
+  "schema": "q4-eligibility-v2-correctness-review-v1",
+  "scope": "Bounded launch gate for owner-approved Q4 public-notice entry eligibility through existing paired forecast/context filtering. This review does not certify future MIO completion, final reports, merge, purge or deployment.",
+  "settlement_attestation_and_registry": {
+    "IBM": {
+      "all_retained_expiries_have_original_quotes": true,
+      "basis_values": {
+        "2021-10-11": 0.9560229616389384,
+        "2021-10-18": 0.9560229616389384,
+        "2021-10-25": 0.9560229616389384,
+        "2021-10-29": 0.9560229616389384,
+        "2021-11-05": 1,
+        "2021-11-12": 1,
+        "2021-11-16": 1,
+        "2021-11-19": 1,
+        "2021-12-17": 1
+      },
+      "retained_expiry_count": 20
+    },
+    "O": {
+      "all_retained_expiries_have_original_quotes": true,
+      "basis_values": {
+        "2021-10-11": 0.9689922480620154,
+        "2021-10-18": 0.9689922480620154,
+        "2021-10-25": 0.9689922480620154,
+        "2021-10-29": 0.9689922480620154,
+        "2021-11-05": 0.9689922480620154,
+        "2021-11-12": 0.9689922480620154,
+        "2021-11-16": 1,
+        "2021-11-19": 1,
+        "2021-12-17": 1
+      },
+      "retained_expiry_count": 5
+    },
+    "bounded_settlement_probes": {
+      "IBM_preannouncement_crossing": {
+        "entry": "2021-10-11",
+        "entry_factor": 0.9560229616389384,
+        "expiry": "2021-12-17",
+        "result": "existing refusal preserved",
+        "settlement_factor": 1
+      },
+      "IBM_supported_Oct29": {
+        "entry": "2021-10-25",
+        "entry_factor": 0.9560229616389384,
+        "expiry": "2021-10-29",
+        "result": "settles using unchanged existing method",
+        "settlement_factor": 0.9560229616389384
+      },
+      "O_preannouncement_crossing": {
+        "entry": "2021-10-18",
+        "entry_factor": 0.9689922480620154,
+        "expiry": "2021-11-19",
+        "result": "existing refusal preserved",
+        "settlement_factor": 1
+      }
+    },
+    "contexts_original_quote_date_metadata": {
+      "max": "2021-12-31",
+      "min": "2017-01-03",
+      "rowgroups": 1
+    },
+    "forecasts_original_quote_date_metadata": {
+      "max": "2021-12-31",
+      "min": "2017-01-03",
+      "rowgroups": 1
+    },
+    "market_inventory": {
+      "bars": {
+        "bytes": 2106754,
+        "files": 212
+      },
+      "chain": {
+        "bytes": 151239224,
+        "files": 212
+      },
+      "corporate_actions": {
+        "bytes": 1295,
+        "files": 2
+      },
+      "sessions": {
+        "bytes": 1315,
+        "files": 1
+      }
+    },
+    "plan_runnable": true,
+    "plan_sha256": "31cae335322224e05c0529d98dd260c5906fba19ecb3432242727eebbc639522",
+    "preparation_attestation": {
+      "document_hash": "fcf972bbd0e5c33aaf42785711d8f90576f07280e82b30070a2b0ed9f776a7d5",
+      "input_hashes": {
+        "contexts_read": {
+          "kind": "ParquetRows",
+          "relpath": "contexts.parquet",
+          "sha256": "2ff0433e2e8999e6dfb0f79e9d5956a0dbb65055dd48637eec88a420fc903a3a"
+        },
+        "forecasts_read": {
+          "kind": "ParquetRows",
+          "relpath": "forecasts.parquet",
+          "sha256": "81b99793725267db019d2d83bb5ff9de7731ab5f6aafc61285845da9e54fea83"
+        }
+      },
+      "nodes": 12
+    },
+    "registry_read_only_states": {
+      "new": {
+        "active": null,
+        "claims": {},
+        "events_count": 1,
+        "freezes_count": 0,
+        "revision": 0
+      },
+      "previous": {
+        "active": null,
+        "claims": {
+          "d2bcc77d-e3f7-4def-91e1-e1432ed840b3": "abandoned_exposed"
+        },
+        "events_count": 7,
+        "freezes_count": 1,
+        "revision": 6
+      }
+    }
+  },
+  "verdict": "PASS_SCOPED_LAUNCH_CORRECTNESS; requires the separate sequential integration lens before launch and actual replay/report gates after launch."
+}
