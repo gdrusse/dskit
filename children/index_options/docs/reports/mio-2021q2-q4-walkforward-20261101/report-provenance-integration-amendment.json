@@ -1,0 +1,588 @@
+{
+  "reviewer": "/root/q4_final_source_integration",
+  "model": "GPT-6 Astra",
+  "lens": "Independent bounded integration re-review of report provenance finding",
+  "candidate": "dfaddebfbe60ad488455f68268ae454464512b4d",
+  "base": "4db14b3c9e80dbd5e8f6cd84575a0bb1f7437900",
+  "finding": "Q4FINAL-INT-MAJ-001",
+  "started_at": "2026-11-01T11:56:25.649294+00:00",
+  "original_review": {
+    "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/verification/q4-final-source-integration.json",
+    "sha256": "d190a6de405e1bb242c46a7a2689afe726e073d65f073a8e1b782b99bfc6f018"
+  },
+  "scope": "Six corrected Q2/Q3 standard reports and corrected report-config pattern only. No source/data re-scan, simulation, registry mutation or report regeneration. Actual Q4 outputs remain pending.",
+  "quarters": {
+    "2": {
+      "report_config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/report-q2-complete-v2.json",
+      "report_config_sha256": "a21d0e3357bc73ca7ec018b09bdc444cb8c28ee83b343391a45245db9ffed901",
+      "report_document_hash": "937169cf5ba2cf829657c91b62542f196459acf103f28bfde0498afe95e842b1",
+      "report_run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/reports-q2-v2/mio-2021q2-complete-quarter-evaluation-2021-06-30-6c661015",
+      "report_status": "ran",
+      "report_node_states": {
+        "nominal_lp_events": "ok",
+        "nominal_lp_filled_band": "ok",
+        "nominal_lp_filled_ticker_dte": "ok",
+        "nominal_lp_gate": "ok",
+        "nominal_lp_refused_band": "ok",
+        "nominal_lp_refused_ticker_dte": "ok",
+        "nominal_lp_report": "ok",
+        "nominal_lp_rows": "ok",
+        "nominal_lp_solve_rows": "ok",
+        "nominal_lp_source_links": "ok",
+        "result": "ok",
+        "w1_003_lp_events": "ok",
+        "w1_003_lp_filled_band": "ok",
+        "w1_003_lp_filled_ticker_dte": "ok",
+        "w1_003_lp_gate": "ok",
+        "w1_003_lp_refused_band": "ok",
+        "w1_003_lp_refused_ticker_dte": "ok",
+        "w1_003_lp_report": "ok",
+        "w1_003_lp_rows": "ok",
+        "w1_003_lp_solve_rows": "ok",
+        "w1_003_lp_source_links": "ok",
+        "w1_003_shock10_lp_events": "ok",
+        "w1_003_shock10_lp_filled_band": "ok",
+        "w1_003_shock10_lp_filled_ticker_dte": "ok",
+        "w1_003_shock10_lp_gate": "ok",
+        "w1_003_shock10_lp_refused_band": "ok",
+        "w1_003_shock10_lp_refused_ticker_dte": "ok",
+        "w1_003_shock10_lp_report": "ok",
+        "w1_003_shock10_lp_rows": "ok",
+        "w1_003_shock10_lp_solve_rows": "ok",
+        "w1_003_shock10_lp_source_links": "ok"
+      },
+      "artifact_index_sha256": "fc31ce0514ce6e99f75b3b8ec9bbcb69681cdab08844b75cafa37883e77332aa",
+      "reports_verification_sha256": "384c009ddd44ba6db5458514861f3a6e0ba78b57b8ff1ead9bb1cf814d7ccf02",
+      "mirrored_files_verified": 46,
+      "original_output_files_verified": 44,
+      "methods": [
+        {
+          "method": "w1_003_shock10_lp",
+          "title": "MIO 2021 Q2 complete walk-forward replay: w1_003_shock10_lp",
+          "source_document_hash": "052cf9e20b6b3c4e91e689335e64117a3ae7d565bcc63d3f1300142f965143d3",
+          "source_result_sha256": "d34467f5bef67e3ec136be0ed166782a1876fc7dd36552cef0cf5f8fce63949d",
+          "source_config_sha256": "6ef07eff1069f680a6a170c1cb9dcc95ef0e6bad105cd86b6c2e1a31124cc913",
+          "source_receipt": {
+            "run_dir": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q2/mio-2021q2-complete-walkforward-frozen-m53-development-2021-06-30-7ef19de4",
+            "document_hash": "052cf9e20b6b3c4e91e689335e64117a3ae7d565bcc63d3f1300142f965143d3",
+            "node": "close_packet",
+            "port": "receipt"
+          },
+          "coverage": {
+            "start": "2021-04-01",
+            "end_before": "2021-07-01",
+            "account_sessions": 63,
+            "decision_dates": 14,
+            "reused_sessions": 0,
+            "new_sessions": 63,
+            "source": "attested Q2 calendar and completed method, receipt verified"
+          },
+          "event_sha256": "01575c2a877c5f91e69a568d9ac98a7a694fbc48a430e5777dd75c8867657bde",
+          "html_sha256": "c0e19411ab0834f7e29cac145442e2a94e442ac07b885295fa12cf94766d042d",
+          "embedded_config_exact_to_saved_renderer": true,
+          "event_render_identity_documented": true,
+          "source_link_hashes_verified": 4,
+          "gates_passed": 7,
+          "numerical_csvs_unchanged": [
+            {
+              "path": "gate-comparison.csv",
+              "sha256": "43aeecb0413f4a0c3eb8ea86911e482004292d0cfb55ea498a7daa8bd946d263"
+            },
+            {
+              "path": "marked-figures.csv",
+              "sha256": "57d4ec127e979cc4bb7daa71be25cc8ac83a16ef8f0ee155fffacd6355b1800f"
+            },
+            {
+              "path": "trades.csv",
+              "sha256": "8ef7553da65df773c808be3e160cdbffab3a30f05ba94423166abe583f178914"
+            },
+            {
+              "path": "ledger.csv",
+              "sha256": "63ddacbbf8887fe06f5a72b324a7d8d101b9e1abc47292c7f7cceb294e5f2216"
+            },
+            {
+              "path": "quarter-boundary.csv",
+              "sha256": "efaadc989a8c000b67b45ccd42476883e00bb0d1390e97d748e330f8057ec1ab"
+            },
+            {
+              "path": "ticker-dte.csv",
+              "sha256": "0b44574a7666e860a04be90ef7329ea4ee3a2a5fcf076ff42d4304e892704826"
+            },
+            {
+              "path": "decisions.csv",
+              "sha256": "f8975c2e5b99734aef59630c96dd968ad33ae625a538639640cb0e303272a925"
+            },
+            {
+              "path": "refusals-ticker-dte.csv",
+              "sha256": "dd536143d871ceae298a1ef02fc4264559861d67829c0e5e97cb69651cd0e908"
+            }
+          ],
+          "original_html_sha256_unchanged": "be85484f20089baafab0130748c8a7aba95b6b06eb3a81f12b49729788e38487"
+        },
+        {
+          "method": "nominal_lp",
+          "title": "MIO 2021 Q2 complete walk-forward replay: nominal_lp",
+          "source_document_hash": "052cf9e20b6b3c4e91e689335e64117a3ae7d565bcc63d3f1300142f965143d3",
+          "source_result_sha256": "d34467f5bef67e3ec136be0ed166782a1876fc7dd36552cef0cf5f8fce63949d",
+          "source_config_sha256": "6ef07eff1069f680a6a170c1cb9dcc95ef0e6bad105cd86b6c2e1a31124cc913",
+          "source_receipt": {
+            "run_dir": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q2/mio-2021q2-complete-walkforward-frozen-m53-development-2021-06-30-7ef19de4",
+            "document_hash": "052cf9e20b6b3c4e91e689335e64117a3ae7d565bcc63d3f1300142f965143d3",
+            "node": "close_packet",
+            "port": "receipt"
+          },
+          "coverage": {
+            "start": "2021-04-01",
+            "end_before": "2021-07-01",
+            "account_sessions": 63,
+            "decision_dates": 14,
+            "reused_sessions": 0,
+            "new_sessions": 63,
+            "source": "attested Q2 calendar and completed method, receipt verified"
+          },
+          "event_sha256": "bbb7f2d14dc3d6b2d9d3d31f2184cca64e3e48eac0775b91bb5988214e6823b0",
+          "html_sha256": "f64593cf880b89e6b3344161086c4384191a5d4916d73cc7fcbb956365972081",
+          "embedded_config_exact_to_saved_renderer": true,
+          "event_render_identity_documented": true,
+          "source_link_hashes_verified": 4,
+          "gates_passed": 7,
+          "numerical_csvs_unchanged": [
+            {
+              "path": "gate-comparison.csv",
+              "sha256": "879ca3afbe45228c2ed993119a192071f731ba291335cf539a9ef063a168b0a5"
+            },
+            {
+              "path": "marked-figures.csv",
+              "sha256": "e68a95780d478eaf250561976ff9952674b23598315d58aa4e63fa8e8fe759cd"
+            },
+            {
+              "path": "trades.csv",
+              "sha256": "1203a2e3c097c4da80351607eedea18085ae3e5e869ced2a6729cbc7d40cc9fa"
+            },
+            {
+              "path": "ledger.csv",
+              "sha256": "e166c8258bee90d5ea6e6b51ffad7825b4731650db7e8387d4aa2e87f309dfb0"
+            },
+            {
+              "path": "quarter-boundary.csv",
+              "sha256": "c8e33062f36444188eb4f5182ba756a80059b6d453b2c182774f48aa6f166984"
+            },
+            {
+              "path": "ticker-dte.csv",
+              "sha256": "c3700d7d27cc7fae6547403f75dc5c6ee0daf629704807bb1377726636b9228e"
+            },
+            {
+              "path": "decisions.csv",
+              "sha256": "d58d6edd9c9b583189ce15680b55cf7f4926cc0dfeb69d52d0ab975ae1dfa628"
+            },
+            {
+              "path": "refusals-ticker-dte.csv",
+              "sha256": "169ca7641f44c6ee87dea8afec49b575cc5ef7668a4b4288e01abea8675510e1"
+            }
+          ],
+          "original_html_sha256_unchanged": "12b9eae284d2b6322e5c90acd593df3c8160c457a460980196862bb01a51ed51"
+        },
+        {
+          "method": "w1_003_lp",
+          "title": "MIO 2021 Q2 complete walk-forward replay: w1_003_lp",
+          "source_document_hash": "052cf9e20b6b3c4e91e689335e64117a3ae7d565bcc63d3f1300142f965143d3",
+          "source_result_sha256": "d34467f5bef67e3ec136be0ed166782a1876fc7dd36552cef0cf5f8fce63949d",
+          "source_config_sha256": "6ef07eff1069f680a6a170c1cb9dcc95ef0e6bad105cd86b6c2e1a31124cc913",
+          "source_receipt": {
+            "run_dir": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q2/mio-2021q2-complete-walkforward-frozen-m53-development-2021-06-30-7ef19de4",
+            "document_hash": "052cf9e20b6b3c4e91e689335e64117a3ae7d565bcc63d3f1300142f965143d3",
+            "node": "close_packet",
+            "port": "receipt"
+          },
+          "coverage": {
+            "start": "2021-04-01",
+            "end_before": "2021-07-01",
+            "account_sessions": 63,
+            "decision_dates": 14,
+            "reused_sessions": 0,
+            "new_sessions": 63,
+            "source": "attested Q2 calendar and completed method, receipt verified"
+          },
+          "event_sha256": "f58dd80c563b4b230a4bce4c357a76acda644227a3dfa0e016801bf4566147d5",
+          "html_sha256": "f706c5dff4eeb142ccf50f699b4ab2768d243448cfb1146f692d4bebad7679f7",
+          "embedded_config_exact_to_saved_renderer": true,
+          "event_render_identity_documented": true,
+          "source_link_hashes_verified": 4,
+          "gates_passed": 7,
+          "numerical_csvs_unchanged": [
+            {
+              "path": "gate-comparison.csv",
+              "sha256": "80be9add6c292718395a8e0f9a57f0441bbec7069696d6b1f4db6c44126880d9"
+            },
+            {
+              "path": "marked-figures.csv",
+              "sha256": "469dcc329f1101ddc63ef4d842437a8675c874a9976fe192855524d7e986b5e8"
+            },
+            {
+              "path": "trades.csv",
+              "sha256": "9c1de453c852e8fe4b3a01e8c0e0aca32e48d7bcc759c48c964befd42e46ebca"
+            },
+            {
+              "path": "ledger.csv",
+              "sha256": "d5c715f2331f7437f9bf42cb5aba54a27dc2e66f21731d1036052c7d7792140f"
+            },
+            {
+              "path": "quarter-boundary.csv",
+              "sha256": "d2271f922515b328b7a1c6ac685f191e5511f045f47d19a57ea81f7c78158d54"
+            },
+            {
+              "path": "ticker-dte.csv",
+              "sha256": "c51fab208001c0a94d5dfd797cdb33c09d433d2c0a7d8177b63a1360e54a625f"
+            },
+            {
+              "path": "decisions.csv",
+              "sha256": "d936182ec4afd67464718f40c9d866fa34ae8a8f0398d3d54f9a48690acd6acf"
+            },
+            {
+              "path": "refusals-ticker-dte.csv",
+              "sha256": "f47c0cd3c84cd465c3fd3935391e0b2ae17c883e0585231b19fdf215b23f6461"
+            }
+          ],
+          "original_html_sha256_unchanged": "ac5ce2b7e0f51849eb3e8ad9f65cf26ec0bf76b065ec8be32827edc90effec19"
+        }
+      ]
+    },
+    "3": {
+      "report_config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/report-q3-complete-v2.json",
+      "report_config_sha256": "ad9c8fa9cce062baa4c480eacc835ab1e312fae781a82b55f162945fddf4fa64",
+      "report_document_hash": "dc5fbd1a41911a6b4f3650221394a749b62a35fadd93387dccd8a68aec5e6461",
+      "report_run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/reports-q3-v2/mio-2021q3-complete-quarter-evaluation-2021-09-30-9a2412be",
+      "report_status": "ran",
+      "report_node_states": {
+        "nominal_lp_events": "ok",
+        "nominal_lp_filled_band": "ok",
+        "nominal_lp_filled_ticker_dte": "ok",
+        "nominal_lp_gate": "ok",
+        "nominal_lp_refused_band": "ok",
+        "nominal_lp_refused_ticker_dte": "ok",
+        "nominal_lp_report": "ok",
+        "nominal_lp_rows": "ok",
+        "nominal_lp_solve_rows": "ok",
+        "nominal_lp_source_links": "ok",
+        "result": "ok",
+        "w1_003_lp_events": "ok",
+        "w1_003_lp_filled_band": "ok",
+        "w1_003_lp_filled_ticker_dte": "ok",
+        "w1_003_lp_gate": "ok",
+        "w1_003_lp_refused_band": "ok",
+        "w1_003_lp_refused_ticker_dte": "ok",
+        "w1_003_lp_report": "ok",
+        "w1_003_lp_rows": "ok",
+        "w1_003_lp_solve_rows": "ok",
+        "w1_003_lp_source_links": "ok",
+        "w1_003_shock10_lp_events": "ok",
+        "w1_003_shock10_lp_filled_band": "ok",
+        "w1_003_shock10_lp_filled_ticker_dte": "ok",
+        "w1_003_shock10_lp_gate": "ok",
+        "w1_003_shock10_lp_refused_band": "ok",
+        "w1_003_shock10_lp_refused_ticker_dte": "ok",
+        "w1_003_shock10_lp_report": "ok",
+        "w1_003_shock10_lp_rows": "ok",
+        "w1_003_shock10_lp_solve_rows": "ok",
+        "w1_003_shock10_lp_source_links": "ok"
+      },
+      "artifact_index_sha256": "056133ef9fb537e8fd84c29d0b9fbb881e41e2e2c98dea8bed238b6e4d5f9ca4",
+      "reports_verification_sha256": "dc3f3ad0e92c490a57f2c419f2752dbec1173e0a91921f1c2fbb16aecbbe7a18",
+      "mirrored_files_verified": 46,
+      "original_output_files_verified": 44,
+      "methods": [
+        {
+          "method": "w1_003_shock10_lp",
+          "title": "MIO 2021 Q3 complete walk-forward replay: w1_003_shock10_lp",
+          "source_document_hash": "94d33ae4d93cb7accf4b949beec201bce365e38c4ad6a68ae27aab2d7dfb0be7",
+          "source_result_sha256": "378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786",
+          "source_config_sha256": "a0a8cd793c3a9816a079ffb9ce9fcaf896cf28578404c8a0ccd934aff1d01b93",
+          "source_receipt": {
+            "run_dir": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q3/mio-2021q3-complete-walkforward-frozen-m53-development-2021-09-30-5d31e90e",
+            "document_hash": "94d33ae4d93cb7accf4b949beec201bce365e38c4ad6a68ae27aab2d7dfb0be7",
+            "node": "close_packet",
+            "port": "receipt"
+          },
+          "coverage": {
+            "start": "2021-07-01",
+            "end_before": "2021-10-01",
+            "account_sessions": 64,
+            "decision_dates": 14,
+            "reused_sessions": 0,
+            "new_sessions": 64,
+            "source": "attested Q3 calendar and completed method, receipt verified"
+          },
+          "event_sha256": "6e839ddf1e363f26539ae68be85a86c05ce743cf6726d741d23c52da8486a378",
+          "html_sha256": "1db79a57d72d814c8533efcc5d724a61d34d13654d4453cc62d9bc818591fef0",
+          "embedded_config_exact_to_saved_renderer": true,
+          "event_render_identity_documented": true,
+          "source_link_hashes_verified": 4,
+          "gates_passed": 7,
+          "numerical_csvs_unchanged": [
+            {
+              "path": "gate-comparison.csv",
+              "sha256": "2ec11fa5290a6fff06c4ca01e9bd44348db0b05be34af8320a771b35539d1655"
+            },
+            {
+              "path": "marked-figures.csv",
+              "sha256": "61a3ab31a0d328cf84f79c5cd92bb3dfee7aa04504d8594fd36a1321c9a78367"
+            },
+            {
+              "path": "trades.csv",
+              "sha256": "c2301a1b800b992ccd0c9f15688da3b078a53eb4017d09709d4684ac021e2971"
+            },
+            {
+              "path": "ledger.csv",
+              "sha256": "563668926954627c3e8d3c254d612c34853ca52b9a8aaa00fc9a86c7e7d025f7"
+            },
+            {
+              "path": "quarter-boundary.csv",
+              "sha256": "8d71240aa50e7024fd7d86a05e5359227765046445ac9debda71c2de87759bc6"
+            },
+            {
+              "path": "ticker-dte.csv",
+              "sha256": "74358e99988e14b0c6978a35ae51b619bb93ab23f7807b2eee830d6bb30f2da8"
+            },
+            {
+              "path": "decisions.csv",
+              "sha256": "ed371fec7cb84f1582c6974073e92556a73cd25240cd2c14f9fff55fcb1cda35"
+            },
+            {
+              "path": "refusals-ticker-dte.csv",
+              "sha256": "78120b851dcc5fa78a0dd7857d96dae5870ea2c07df20a93af051ccf56a80d71"
+            }
+          ],
+          "original_html_sha256_unchanged": "499e85d2af42431a4831e877a442cbe4c46b144f0ee89c3e89b96c642d29c0ca"
+        },
+        {
+          "method": "nominal_lp",
+          "title": "MIO 2021 Q3 complete walk-forward replay: nominal_lp",
+          "source_document_hash": "94d33ae4d93cb7accf4b949beec201bce365e38c4ad6a68ae27aab2d7dfb0be7",
+          "source_result_sha256": "378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786",
+          "source_config_sha256": "a0a8cd793c3a9816a079ffb9ce9fcaf896cf28578404c8a0ccd934aff1d01b93",
+          "source_receipt": {
+            "run_dir": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q3/mio-2021q3-complete-walkforward-frozen-m53-development-2021-09-30-5d31e90e",
+            "document_hash": "94d33ae4d93cb7accf4b949beec201bce365e38c4ad6a68ae27aab2d7dfb0be7",
+            "node": "close_packet",
+            "port": "receipt"
+          },
+          "coverage": {
+            "start": "2021-07-01",
+            "end_before": "2021-10-01",
+            "account_sessions": 64,
+            "decision_dates": 14,
+            "reused_sessions": 0,
+            "new_sessions": 64,
+            "source": "attested Q3 calendar and completed method, receipt verified"
+          },
+          "event_sha256": "b37f2eade9e80a772e1d0e50c95ac661010f1591d31c4d6642bfa070495f4756",
+          "html_sha256": "e4e54dbcd07c0dbb8486fb83b4df6caa116a3b4cdfb45156ae9b935de3936cb8",
+          "embedded_config_exact_to_saved_renderer": true,
+          "event_render_identity_documented": true,
+          "source_link_hashes_verified": 4,
+          "gates_passed": 7,
+          "numerical_csvs_unchanged": [
+            {
+              "path": "gate-comparison.csv",
+              "sha256": "ae0a9f8c16a30f2ec6bde611768a31addf2a9c85052f97f4515d4ae9a29aadb9"
+            },
+            {
+              "path": "marked-figures.csv",
+              "sha256": "0c157fb6e7790e859e3f6b57cbedb2a55accf88b41378c8fa92a58aa5010a5ec"
+            },
+            {
+              "path": "trades.csv",
+              "sha256": "bf41d44a4ddcd89b7552dc810dd90b85447fcd9b43f29a468e199d3cc2a215b4"
+            },
+            {
+              "path": "ledger.csv",
+              "sha256": "22e6bb7dc98c45b8e453635f88086b92e583fd0dd2f58f4abef1c56866443b03"
+            },
+            {
+              "path": "quarter-boundary.csv",
+              "sha256": "35a06bc37e44640c621c7bce443c1a8bdd65ebf1d15e39aa5566057fc9a096ed"
+            },
+            {
+              "path": "ticker-dte.csv",
+              "sha256": "1713400d4ddc023721d3f83f2176c8add363efe19b49d0bc4992090a0d4289dc"
+            },
+            {
+              "path": "decisions.csv",
+              "sha256": "77c19c7fea77ac24f29db1d9bc5ac13c23c332330444a8fbce3d41d0e5e3dcab"
+            },
+            {
+              "path": "refusals-ticker-dte.csv",
+              "sha256": "5725b86fa5ab92d5f5b4122491879b8e6cc63ebde95d0460d07cb5426f68f807"
+            }
+          ],
+          "original_html_sha256_unchanged": "1dddd49a1917ac03a91bbbfed7bee4c70cd93b0d6c936019c592e64e7349b557"
+        },
+        {
+          "method": "w1_003_lp",
+          "title": "MIO 2021 Q3 complete walk-forward replay: w1_003_lp",
+          "source_document_hash": "94d33ae4d93cb7accf4b949beec201bce365e38c4ad6a68ae27aab2d7dfb0be7",
+          "source_result_sha256": "378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786",
+          "source_config_sha256": "a0a8cd793c3a9816a079ffb9ce9fcaf896cf28578404c8a0ccd934aff1d01b93",
+          "source_receipt": {
+            "run_dir": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q3/mio-2021q3-complete-walkforward-frozen-m53-development-2021-09-30-5d31e90e",
+            "document_hash": "94d33ae4d93cb7accf4b949beec201bce365e38c4ad6a68ae27aab2d7dfb0be7",
+            "node": "close_packet",
+            "port": "receipt"
+          },
+          "coverage": {
+            "start": "2021-07-01",
+            "end_before": "2021-10-01",
+            "account_sessions": 64,
+            "decision_dates": 14,
+            "reused_sessions": 0,
+            "new_sessions": 64,
+            "source": "attested Q3 calendar and completed method, receipt verified"
+          },
+          "event_sha256": "ff595ec416dc53d7844155843b181d438bda92c3c2216709db5473ec705adf53",
+          "html_sha256": "cdb08e77912ccf94b632c70702c6d87eb4e2e3b243728e930655c2d8ae3c6c70",
+          "embedded_config_exact_to_saved_renderer": true,
+          "event_render_identity_documented": true,
+          "source_link_hashes_verified": 4,
+          "gates_passed": 7,
+          "numerical_csvs_unchanged": [
+            {
+              "path": "gate-comparison.csv",
+              "sha256": "2d0e09b7e4f3bc6d770fbb35248378789b2055969d06f027490cd11635f76096"
+            },
+            {
+              "path": "marked-figures.csv",
+              "sha256": "e7c2635f943be34d6226c846e499e05f21576046cf99f5ad8ad82d076f64bb0b"
+            },
+            {
+              "path": "trades.csv",
+              "sha256": "78e3c968f1f12bb05f7ca895527d381f959757aa8fd71fb37b1d328f4a6e9b0c"
+            },
+            {
+              "path": "ledger.csv",
+              "sha256": "c15f61087cac1313e422a76225fdf0fdf43decdd334c1640b6e5e7734df42cd3"
+            },
+            {
+              "path": "quarter-boundary.csv",
+              "sha256": "87719264e4520390b94f5f8639c76b9c39bb501399222558934f4fb1ffb6db9c"
+            },
+            {
+              "path": "ticker-dte.csv",
+              "sha256": "2991b7e91bca2de4ea634cc328db5337a45510db0c391d44fdd5b1d366ee3ff1"
+            },
+            {
+              "path": "decisions.csv",
+              "sha256": "4b8689d7a5d3b24d5130b6dee79dfdb6ca310417c0c1e801ba5a698075036cc1"
+            },
+            {
+              "path": "refusals-ticker-dte.csv",
+              "sha256": "fd4c2452b78f35a2cda0851c592c7ba64b4b04ec462475a1bc711ad951288438"
+            }
+          ],
+          "original_html_sha256_unchanged": "17a93c99bbd4974a8309c82a3ec2847344a13e225f5c1506b3977b724bcb8515"
+        }
+      ]
+    }
+  },
+  "matrix": [
+    {
+      "case": "Immutable original finding and evidence retained",
+      "result": "pass; original review SHA unchanged, all six old HTML hashes unchanged; original versioned configs preserved in candidate history."
+    },
+    {
+      "case": "Correct title, model description, source document/result/config/receipt and quarter coverage",
+      "result": "pass; independently checked all six JSON mappings against actual completed source result and source config; coverage recomputed from saved curves/decisions."
+    },
+    {
+      "case": "First-event and HTML binding",
+      "result": "pass; six first events embed exact saved renderer config, six HTML config blocks parse to the same object; per-method source mapping exact; stale old result hash and frozen-2019 attribution absent."
+    },
+    {
+      "case": "Documented event envelope contract",
+      "result": "pass; run_id/config_hash bind renderer run/document, data equals renderer data_fingerprint {}, code.document_hash binds source MIO; no top-level data equality assumption."
+    },
+    {
+      "case": "Standard gates and unchanged economics",
+      "result": "pass; 42 gate comparisons independently match actual MIO figures/counts at $0.005 or exact counts; 48 numerical CSVs and six source-links CSVs byte-identical to originals."
+    },
+    {
+      "case": "Mirrors and preservation",
+      "result": "pass; every indexed mirror hash/size verified, all corresponding v2 output files exact; original existing output files verified against old candidate indices."
+    },
+    {
+      "case": "Runtime and active-Q4 scope preserved",
+      "result": "pass; no Python changes and Q4 launch config byte-identical to 4db14b3c; no market source reads, no runtime, registry, process, config or output mutation by reviewer."
+    }
+  ],
+  "resolved_findings": [
+    {
+      "id": "Q4FINAL-INT-MAJ-001",
+      "original_severity": "Major",
+      "disposition": "Resolved for Q2/Q3 versioned reports and corrected report-config pattern on dfaddebf. Existing report nodes remain unchanged. Future Q4 report must bind its eventual actual attested result and pass the same checks.",
+      "correction_evidence": "/home/russell/wt/q2-reconcile-20261031/children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/report-provenance-correction.json",
+      "correction_evidence_sha256": "915348ef779ad1cbae7ba1f4f12e82d14a7b1b47aadb6b6460d9f863d95e8be4"
+    }
+  ],
+  "counts": {
+    "Critical": 0,
+    "Major": 0,
+    "Minor": 0,
+    "Nit": 0
+  },
+  "historical_resolved_counts": {
+    "Critical": 0,
+    "Major": 1,
+    "Minor": 0,
+    "Nit": 0
+  },
+  "inherited_out_of_scope_backlog": [
+    {
+      "id": "Q4FINAL-COR-NIT-001",
+      "severity": "Nit",
+      "disposition": "Unchanged, disclosed projection recipe wording; outside this report-only amendment."
+    }
+  ],
+  "verdict": "C0/M0/Minor0/Nit0 for the report-provenance amendment. Q4FINAL-INT-MAJ-001 is closed for the six Q2/Q3 reports and corrected existing-JSON mapping pattern. Q4 simulation/report completion and final wrap/release gates remain pending.",
+  "limits": [
+    "This is a bounded amendment by the original independent integration reviewer, not a re-review of unchanged sources/runtime.",
+    "No full suite, market replay, model fit, heavy source scan, report regeneration, registry access/mutation or active-process interference.",
+    "The Q4 report is not yet created or reviewed; this amendment does not claim a complete nine-report deliverable.",
+    "The initial integration report remains immutable with its original M1 verdict; this amendment records resolution separately."
+  ],
+  "changed_paths": [
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/report-q2-complete-v2.json",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/report-q3-complete-v2.json",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/README.md",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/combined-status.json",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q2/README.md",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q2/artifact-index.json",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q2/nominal_lp/events.jsonl",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q2/nominal_lp/report.html",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q2/nominal_lp/summary.md",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q2/reports-verification.json",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q2/w1_003_lp/events.jsonl",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q2/w1_003_lp/report.html",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q2/w1_003_lp/summary.md",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q2/w1_003_shock10_lp/events.jsonl",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q2/w1_003_shock10_lp/report.html",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q2/w1_003_shock10_lp/summary.md",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q3/README.md",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q3/artifact-index.json",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q3/nominal_lp/events.jsonl",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q3/nominal_lp/report.html",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q3/nominal_lp/summary.md",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q3/reports-verification.json",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q3/w1_003_lp/events.jsonl",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q3/w1_003_lp/report.html",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q3/w1_003_lp/summary.md",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q3/w1_003_shock10_lp/events.jsonl",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q3/w1_003_shock10_lp/report.html",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q3/w1_003_shock10_lp/summary.md",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-final-source-correctness-amendment.json",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-final-source-integration.json",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-supplemental-review-lock.json",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/report-provenance-correction.json"
+  ],
+  "final_candidate_verified": true,
+  "worktree_status": "",
+  "completed_at": "2026-11-01T11:56:26.435760+00:00"
+}

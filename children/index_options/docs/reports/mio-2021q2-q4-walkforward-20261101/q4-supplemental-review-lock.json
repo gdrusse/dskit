@@ -312,11 +312,25 @@
     "/home/russell/wt/q2-reconcile-20261031/children/index_options/index_options/ledger_studies.py": "961e0077231479885e7eb625a29af2c5989e70d5169e3e6e9b60d808547908b1"
   },
   "deferred_nit": "Immutable projection recipe says string date filter; actual typed date32 scalar use and exact independent reconstruction are disclosed. Do not rewrite evidence.",
-  "remaining_report_major": "Q4FINAL-INT-MAJ-001: repair all six Q2/Q3 embedded run_start provenance fields, render versioned outputs and independently re-review; Q4 report generator must use repaired mapping.",
+  "remaining_report_major": null,
   "other_release_gates": [
     "Attested completed Q4 results with all three methods, exact calendar, replay parity and settled accounting",
     "All nine standard reports, corrected event/HTML provenance checks and combined report",
     "Wrap/integrate/push/remote verification and contained task cleanup"
   ],
-  "locked_at": "2026-11-01T11:46:14.677464+00:00"
+  "locked_at": "2026-11-01T11:46:14.677464+00:00",
+  "report_provenance_amendment": {
+    "candidate": "dfaddebfbe60ad488455f68268ae454464512b4d",
+    "reviewer": "/root/q4_final_source_integration",
+    "path": "report-provenance-integration-amendment.json",
+    "sha256": "d1ab0bb752dba8d3cce409c4f514e5b6b0d460605bc498ecb89b9cb2a6c74bd8",
+    "counts": {
+      "Critical": 0,
+      "Major": 0,
+      "Minor": 0,
+      "Nit": 0
+    },
+    "scope": "Six corrected Q2/Q3 reports and corrected metadata pattern only; Q4 actual outputs pending."
+  },
+  "resolved_report_major": "Q4FINAL-INT-MAJ-001: corrected all six reports; independent amendment verifies 42 gates, 48 unchanged numerical CSVs and preserved originals."
 }
