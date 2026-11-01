@@ -1,0 +1,136 @@
+{
+  "name": "mio-q4-two-name-continuous-settlement-inputs",
+  "notes": "Restore omitted CMCSA/HAL January-March 2022 observations with the existing bounded reader and continuous-basis converter. Same canonical interval and quality rules; this preparation fits no predictive model and runs no MIO method.",
+  "outputs": {
+    "run_root": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/q4-two-name-tables"
+  },
+  "pipeline": {
+    "chain": {
+      "uses": "dskit.pipeline.libs.chain_parquet:ParquetChainRows",
+      "params": {
+        "directories": [
+          "/home/russell/data/thetadata/parquet-v2-clean/options-tested/theta"
+        ],
+        "symbol_field": "symbol",
+        "date_field": "date",
+        "fields": [
+          "symbol",
+          "date",
+          "expiration",
+          "strike",
+          "right",
+          "bid",
+          "ask",
+          "bid_size",
+          "ask_size",
+          "open_interest",
+          "volume",
+          "implied_vol",
+          "delta",
+          "gamma",
+          "vega",
+          "underlying_price"
+        ],
+        "start": "2016-01-04",
+        "end_before": "2022-03-10",
+        "symbols": [
+          "CMCSA",
+          "HAL"
+        ],
+        "members": [
+          "20261016T022119Z-backfill-8d90ce64.parquet",
+          "20261016T020853Z-backfill-49c0c854.parquet",
+          "20261016T015950Z-backfill-9b76f1e2.parquet",
+          "20261017T033530Z-backfill-ec2936a5.parquet",
+          "20261017T032013Z-backfill-f73244d7.parquet",
+          "20261017T031113Z-backfill-e926b2ea.parquet"
+        ]
+      },
+      "notes": "Frozen six-member list; existing Arrow date predicate returns only 2016-01-04 <= date < 2022-03-10. Footer inspection proves surviving row groups in the two additional members end no later than 2023-05-25; 2024+ row groups are excluded. Metadata is not market-row exposure."
+    },
+    "tables": {
+      "uses": "index_options.theta_exact_expiry:ThetaExactExpiryTables",
+      "inputs": {
+        "records": "$chain.records",
+        "bars": "$bars.records"
+      },
+      "params": {
+        "output_root": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/q4-two-name-continuous-tables",
+        "max_dte": 60,
+        "start": "2020-09-01",
+        "end_before": "2022-03-10",
+        "atm_band": 0.025,
+        "wing_delta": 0.25,
+        "wing_delta_width": 0.05,
+        "min_two_sided_strikes": 2,
+        "own_iv_target_dte": 30,
+        "own_iv_max_gap_days": 15,
+        "flush_rows": 1000000,
+        "bar_price_field": "close",
+        "basis_tolerance": 0.01,
+        "lifecycle_start": "2016-01-04"
+      },
+      "notes": "Same continuous 2020-09-01 through 2022-03-09 basis estimation and quote rules as original converter. Compare factors and old observations before deciding source assembly."
+    },
+    "bars": {
+      "uses": "dskit.pipeline.libs.parquet:ParquetStreamRows",
+      "params": {
+        "sources": [
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "stock-daily-bars",
+            "stream": "files",
+            "snapshot": "be101b086780548c810b7f4bf9c111c957eb8271b25522087c220f61246c0d97",
+            "include": [
+              "*/underlying_prices.parquet"
+            ],
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "high": "high",
+              "low": "low",
+              "close": "close",
+              "volume": "volume",
+              "dividend_amount": "dividend_amount",
+              "split_coefficient": "split_coefficient"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2016-01-04",
+                "end_before": "2022-03-10"
+              }
+            }
+          },
+          {
+            "root": "/home/russell/data/index_options/ob",
+            "source": "stock-daily-bars-300",
+            "stream": "files",
+            "snapshot": "8df98554098bc08c0e6772010cec81d518f33334319427b136c215a961b78b6c",
+            "include": [
+              "*/underlying_prices.parquet"
+            ],
+            "columns": {
+              "symbol": "symbol",
+              "date": "date",
+              "open": "open",
+              "high": "high",
+              "low": "low",
+              "close": "close",
+              "volume": "volume",
+              "dividend_amount": "dividend_amount",
+              "split_coefficient": "split_coefficient"
+            },
+            "read_bounds": {
+              "date": {
+                "start": "2016-01-04",
+                "end_before": "2022-03-10"
+              }
+            }
+          }
+        ]
+      },
+      "notes": "Same pinned onboarded stock-bar snapshots, with original read_bounds ending 2022-03-10."
+    }
+  }
+}

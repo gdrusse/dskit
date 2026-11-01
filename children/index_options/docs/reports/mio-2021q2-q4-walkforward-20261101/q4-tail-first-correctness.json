@@ -1,0 +1,4767 @@
+{
+  "status": "review_complete",
+  "reviewer": "GPT-6 Astra",
+  "agent": "/root/q4_tail_correctness",
+  "lens": "correctness/authority",
+  "candidate": "2a3f780e2058dec3f40d4d0e6c7a9aa500c4fb3a",
+  "base": "cbd429d974eb04ed74472f54f6ed5dfd1ca86421",
+  "started_at": "2026-11-01T11:04:36.668393+00:00",
+  "scope": "Q4 tail source correction and corresponding config/registry bindings only; no runtime implementation, model, method or economic changes; runnable correction, not completed Q4.",
+  "source_checks": [
+    {
+      "symbol": "AAPL",
+      "old_rows": 220510,
+      "new_rows": 231092,
+      "added_rows": 10582,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "ABBV",
+      "old_rows": 156960,
+      "new_rows": 167064,
+      "added_rows": 10104,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "ABT",
+      "old_rows": 163142,
+      "new_rows": 174200,
+      "added_rows": 11058,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "ABUS",
+      "old_rows": 7990,
+      "new_rows": 9278,
+      "added_rows": 1288,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "ACN",
+      "old_rows": 221308,
+      "new_rows": 237864,
+      "added_rows": 16556,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "ADBE",
+      "old_rows": 380692,
+      "new_rows": 405706,
+      "added_rows": 25014,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "ADI",
+      "old_rows": 144616,
+      "new_rows": 153168,
+      "added_rows": 8552,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "AEO",
+      "old_rows": 115046,
+      "new_rows": 120320,
+      "added_rows": 5274,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "AG",
+      "old_rows": 119684,
+      "new_rows": 126700,
+      "added_rows": 7016,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "AGNC",
+      "old_rows": 105098,
+      "new_rows": 111536,
+      "added_rows": 6438,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "AKAM",
+      "old_rows": 164864,
+      "new_rows": 175196,
+      "added_rows": 10332,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "ALB",
+      "old_rows": 38656,
+      "new_rows": 42838,
+      "added_rows": 4182,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "ALLY",
+      "old_rows": 24882,
+      "new_rows": 26576,
+      "added_rows": 1694,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "AMAT",
+      "old_rows": 191028,
+      "new_rows": 199966,
+      "added_rows": 8938,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "AMC",
+      "old_rows": 196956,
+      "new_rows": 208872,
+      "added_rows": 11916,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "AMD",
+      "old_rows": 229500,
+      "new_rows": 246866,
+      "added_rows": 17366,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "AMGN",
+      "old_rows": 182808,
+      "new_rows": 193808,
+      "added_rows": 11000,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "AMKR",
+      "old_rows": 25256,
+      "new_rows": 27570,
+      "added_rows": 2314,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "AMZN",
+      "old_rows": 914200,
+      "new_rows": 977206,
+      "added_rows": 63006,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "ANET",
+      "old_rows": 245214,
+      "new_rows": 259664,
+      "added_rows": 14450,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "APA",
+      "old_rows": 108336,
+      "new_rows": 114206,
+      "added_rows": 5870,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "APH",
+      "old_rows": 23480,
+      "new_rows": 25146,
+      "added_rows": 1666,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "APO",
+      "old_rows": 124210,
+      "new_rows": 131992,
+      "added_rows": 7782,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "AVAV",
+      "old_rows": 27506,
+      "new_rows": 29766,
+      "added_rows": 2260,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "AVGO",
+      "old_rows": 292576,
+      "new_rows": 313558,
+      "added_rows": 20982,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "AXP",
+      "old_rows": 146250,
+      "new_rows": 155178,
+      "added_rows": 8928,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "BA",
+      "old_rows": 224852,
+      "new_rows": 237356,
+      "added_rows": 12504,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "BAC",
+      "old_rows": 127180,
+      "new_rows": 134106,
+      "added_rows": 6926,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "BB",
+      "old_rows": 123964,
+      "new_rows": 130470,
+      "added_rows": 6506,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "BBY",
+      "old_rows": 176962,
+      "new_rows": 187718,
+      "added_rows": 10756,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "BIDU",
+      "old_rows": 221328,
+      "new_rows": 232114,
+      "added_rows": 10786,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "BLK",
+      "old_rows": 319528,
+      "new_rows": 340730,
+      "added_rows": 21202,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "BMY",
+      "old_rows": 88850,
+      "new_rows": 95432,
+      "added_rows": 6582,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "BP",
+      "old_rows": 105950,
+      "new_rows": 112908,
+      "added_rows": 6958,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "BSX",
+      "old_rows": 103966,
+      "new_rows": 109432,
+      "added_rows": 5466,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "BTG",
+      "old_rows": 3980,
+      "new_rows": 4286,
+      "added_rows": 306,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "BX",
+      "old_rows": 150060,
+      "new_rows": 162906,
+      "added_rows": 12846,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "C",
+      "old_rows": 141460,
+      "new_rows": 149348,
+      "added_rows": 7888,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CAG",
+      "old_rows": 93654,
+      "new_rows": 98610,
+      "added_rows": 4956,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CAT",
+      "old_rows": 179978,
+      "new_rows": 190558,
+      "added_rows": 10580,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CCJ",
+      "old_rows": 129946,
+      "new_rows": 138470,
+      "added_rows": 8524,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CCL",
+      "old_rows": 106062,
+      "new_rows": 113220,
+      "added_rows": 7158,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CDE",
+      "old_rows": 17594,
+      "new_rows": 19026,
+      "added_rows": 1432,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CHTR",
+      "old_rows": 297808,
+      "new_rows": 311872,
+      "added_rows": 14064,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CIEN",
+      "old_rows": 124790,
+      "new_rows": 131724,
+      "added_rows": 6934,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CLF",
+      "old_rows": 125194,
+      "new_rows": 133484,
+      "added_rows": 8290,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CLS",
+      "old_rows": 7088,
+      "new_rows": 7988,
+      "added_rows": 900,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CMCSA",
+      "old_rows": 104330,
+      "new_rows": 104330,
+      "added_rows": 0,
+      "new_basis_dates": [],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CME",
+      "old_rows": 154086,
+      "new_rows": 163818,
+      "added_rows": 9732,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CMG",
+      "old_rows": 661364,
+      "new_rows": 701708,
+      "added_rows": 40344,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CNC",
+      "old_rows": 145832,
+      "new_rows": 154694,
+      "added_rows": 8862,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "COF",
+      "old_rows": 166480,
+      "new_rows": 177898,
+      "added_rows": 11418,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "COP",
+      "old_rows": 137900,
+      "new_rows": 147566,
+      "added_rows": 9666,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "COST",
+      "old_rows": 270356,
+      "new_rows": 292118,
+      "added_rows": 21762,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CPB",
+      "old_rows": 101996,
+      "new_rows": 107366,
+      "added_rows": 5370,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CRM",
+      "old_rows": 202890,
+      "new_rows": 215180,
+      "added_rows": 12290,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CSCO",
+      "old_rows": 117456,
+      "new_rows": 124742,
+      "added_rows": 7286,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CVE",
+      "old_rows": 17044,
+      "new_rows": 19264,
+      "added_rows": 2220,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CVNA",
+      "old_rows": 266508,
+      "new_rows": 278936,
+      "added_rows": 12428,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CVS",
+      "old_rows": 132902,
+      "new_rows": 142162,
+      "added_rows": 9260,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "CVX",
+      "old_rows": 160620,
+      "new_rows": 172390,
+      "added_rows": 11770,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "DAL",
+      "old_rows": 93860,
+      "new_rows": 101448,
+      "added_rows": 7588,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "DE",
+      "old_rows": 236952,
+      "new_rows": 249638,
+      "added_rows": 12686,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "DHR",
+      "old_rows": 83762,
+      "new_rows": 95892,
+      "added_rows": 12130,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "DHT",
+      "old_rows": 12950,
+      "new_rows": 14072,
+      "added_rows": 1122,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "DIS",
+      "old_rows": 164536,
+      "new_rows": 174176,
+      "added_rows": 9640,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "DKS",
+      "old_rows": 184438,
+      "new_rows": 195916,
+      "added_rows": 11478,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "DUK",
+      "old_rows": 26408,
+      "new_rows": 28722,
+      "added_rows": 2314,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "DVN",
+      "old_rows": 117996,
+      "new_rows": 125632,
+      "added_rows": 7636,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "EIX",
+      "old_rows": 24246,
+      "new_rows": 26278,
+      "added_rows": 2032,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "ENPH",
+      "old_rows": 173482,
+      "new_rows": 182972,
+      "added_rows": 9490,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "EOG",
+      "old_rows": 168816,
+      "new_rows": 180096,
+      "added_rows": 11280,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "EPD",
+      "old_rows": 110420,
+      "new_rows": 117134,
+      "added_rows": 6714,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "EQT",
+      "old_rows": 22388,
+      "new_rows": 24500,
+      "added_rows": 2112,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "EXPE",
+      "old_rows": 168388,
+      "new_rows": 178574,
+      "added_rows": 10186,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "F",
+      "old_rows": 142192,
+      "new_rows": 151532,
+      "added_rows": 9340,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "FCEL",
+      "old_rows": 111040,
+      "new_rows": 115746,
+      "added_rows": 4706,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "FCX",
+      "old_rows": 132104,
+      "new_rows": 140222,
+      "added_rows": 8118,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "FDX",
+      "old_rows": 208660,
+      "new_rows": 220758,
+      "added_rows": 12098,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "FISV",
+      "old_rows": 154350,
+      "new_rows": 164458,
+      "added_rows": 10108,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "FRO",
+      "old_rows": 16364,
+      "new_rows": 17740,
+      "added_rows": 1376,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "FSLR",
+      "old_rows": 186986,
+      "new_rows": 196016,
+      "added_rows": 9030,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "FTNT",
+      "old_rows": 41428,
+      "new_rows": 45528,
+      "added_rows": 4100,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "GE",
+      "old_rows": 133264,
+      "new_rows": 142606,
+      "added_rows": 9342,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "GEO",
+      "old_rows": 19728,
+      "new_rows": 21460,
+      "added_rows": 1732,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "GILD",
+      "old_rows": 126972,
+      "new_rows": 134380,
+      "added_rows": 7408,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "GIS",
+      "old_rows": 22216,
+      "new_rows": 24074,
+      "added_rows": 1858,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "GLW",
+      "old_rows": 104088,
+      "new_rows": 110294,
+      "added_rows": 6206,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "GM",
+      "old_rows": 135060,
+      "new_rows": 143118,
+      "added_rows": 8058,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "GME",
+      "old_rows": 352694,
+      "new_rows": 373092,
+      "added_rows": 20398,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "GOOG",
+      "old_rows": 772020,
+      "new_rows": 822888,
+      "added_rows": 50868,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "GOOGL",
+      "old_rows": 786526,
+      "new_rows": 840480,
+      "added_rows": 53954,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "GPRO",
+      "old_rows": 120392,
+      "new_rows": 126414,
+      "added_rows": 6022,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "GS",
+      "old_rows": 281194,
+      "new_rows": 297872,
+      "added_rows": 16678,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "HAL",
+      "old_rows": 109634,
+      "new_rows": 109634,
+      "added_rows": 0,
+      "new_basis_dates": [],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "HD",
+      "old_rows": 235886,
+      "new_rows": 253000,
+      "added_rows": 17114,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "HL",
+      "old_rows": 85764,
+      "new_rows": 90562,
+      "added_rows": 4798,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "HON",
+      "old_rows": 152530,
+      "new_rows": 161762,
+      "added_rows": 9232,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "HPE",
+      "old_rows": 91932,
+      "new_rows": 93564,
+      "added_rows": 1632,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "HPQ",
+      "old_rows": 106388,
+      "new_rows": 112944,
+      "added_rows": 6556,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "HUM",
+      "old_rows": 275652,
+      "new_rows": 294486,
+      "added_rows": 18834,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "IBM",
+      "old_rows": 160206,
+      "new_rows": 171914,
+      "added_rows": 11708,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "INTC",
+      "old_rows": 145180,
+      "new_rows": 151936,
+      "added_rows": 6756,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "INTU",
+      "old_rows": 263100,
+      "new_rows": 277472,
+      "added_rows": 14372,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "IOVA",
+      "old_rows": 14560,
+      "new_rows": 16264,
+      "added_rows": 1704,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "ISRG",
+      "old_rows": 384110,
+      "new_rows": 400708,
+      "added_rows": 16598,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "JBLU",
+      "old_rows": 25612,
+      "new_rows": 27608,
+      "added_rows": 1996,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "JNJ",
+      "old_rows": 127626,
+      "new_rows": 135590,
+      "added_rows": 7964,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "JPM",
+      "old_rows": 152810,
+      "new_rows": 161896,
+      "added_rows": 9086,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "KGC",
+      "old_rows": 80380,
+      "new_rows": 85286,
+      "added_rows": 4906,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "KHC",
+      "old_rows": 93334,
+      "new_rows": 98604,
+      "added_rows": 5270,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "KKR",
+      "old_rows": 126374,
+      "new_rows": 133540,
+      "added_rows": 7166,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "KLAC",
+      "old_rows": 246278,
+      "new_rows": 260566,
+      "added_rows": 14288,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "KMI",
+      "old_rows": 110642,
+      "new_rows": 117064,
+      "added_rows": 6422,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "KO",
+      "old_rows": 116380,
+      "new_rows": 122930,
+      "added_rows": 6550,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "KR",
+      "old_rows": 108974,
+      "new_rows": 116258,
+      "added_rows": 7284,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "KSS",
+      "old_rows": 134584,
+      "new_rows": 142676,
+      "added_rows": 8092,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "KTOS",
+      "old_rows": 15810,
+      "new_rows": 17186,
+      "added_rows": 1376,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "LLY",
+      "old_rows": 184010,
+      "new_rows": 194710,
+      "added_rows": 10700,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "MDT",
+      "old_rows": 158938,
+      "new_rows": 167940,
+      "added_rows": 9002,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "MGM",
+      "old_rows": 120022,
+      "new_rows": 127100,
+      "added_rows": 7078,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "MO",
+      "old_rows": 101310,
+      "new_rows": 107492,
+      "added_rows": 6182,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "MOS",
+      "old_rows": 113186,
+      "new_rows": 121412,
+      "added_rows": 8226,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "MPC",
+      "old_rows": 129126,
+      "new_rows": 137196,
+      "added_rows": 8070,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "MRK",
+      "old_rows": 132431,
+      "new_rows": 140139,
+      "added_rows": 7708,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "NAT",
+      "old_rows": 12666,
+      "new_rows": 13448,
+      "added_rows": 782,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "NEE",
+      "old_rows": 32052,
+      "new_rows": 34452,
+      "added_rows": 2400,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "NEM",
+      "old_rows": 125800,
+      "new_rows": 133574,
+      "added_rows": 7774,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "NLY",
+      "old_rows": 83422,
+      "new_rows": 89136,
+      "added_rows": 5714,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "NOK",
+      "old_rows": 74134,
+      "new_rows": 78910,
+      "added_rows": 4776,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "NOW",
+      "old_rows": 339672,
+      "new_rows": 359956,
+      "added_rows": 20284,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "NRG",
+      "old_rows": 38860,
+      "new_rows": 41594,
+      "added_rows": 2734,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "NVO",
+      "old_rows": 29222,
+      "new_rows": 32104,
+      "added_rows": 2882,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "O",
+      "old_rows": 21790,
+      "new_rows": 23800,
+      "added_rows": 2010,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "OKTA",
+      "old_rows": 227008,
+      "new_rows": 238170,
+      "added_rows": 11162,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "ON",
+      "old_rows": 123631,
+      "new_rows": 130921,
+      "added_rows": 7290,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "ORCL",
+      "old_rows": 143063,
+      "new_rows": 151191,
+      "added_rows": 8128,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "OXY",
+      "old_rows": 94792,
+      "new_rows": 103430,
+      "added_rows": 8638,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "PAAS",
+      "old_rows": 28100,
+      "new_rows": 30174,
+      "added_rows": 2074,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "PACB",
+      "old_rows": 63264,
+      "new_rows": 70236,
+      "added_rows": 6972,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "PANW",
+      "old_rows": 264740,
+      "new_rows": 283630,
+      "added_rows": 18890,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "PBF",
+      "old_rows": 25172,
+      "new_rows": 27674,
+      "added_rows": 2502,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "PBR",
+      "old_rows": 105710,
+      "new_rows": 112402,
+      "added_rows": 6692,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "PCG",
+      "old_rows": 95460,
+      "new_rows": 102488,
+      "added_rows": 7028,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "PEP",
+      "old_rows": 140354,
+      "new_rows": 148662,
+      "added_rows": 8308,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "PFE",
+      "old_rows": 127870,
+      "new_rows": 136054,
+      "added_rows": 8184,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "PG",
+      "old_rows": 150390,
+      "new_rows": 158484,
+      "added_rows": 8094,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "PLAY",
+      "old_rows": 108422,
+      "new_rows": 113576,
+      "added_rows": 5154,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "PLUG",
+      "old_rows": 149837,
+      "new_rows": 155733,
+      "added_rows": 5896,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "PM",
+      "old_rows": 143990,
+      "new_rows": 154386,
+      "added_rows": 10396,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "PNC",
+      "old_rows": 159870,
+      "new_rows": 170150,
+      "added_rows": 10280,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "PSX",
+      "old_rows": 154842,
+      "new_rows": 162660,
+      "added_rows": 7818,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "PYPL",
+      "old_rows": 222906,
+      "new_rows": 234818,
+      "added_rows": 11912,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "QCOM",
+      "old_rows": 182450,
+      "new_rows": 192316,
+      "added_rows": 9866,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "RARE",
+      "old_rows": 29654,
+      "new_rows": 31094,
+      "added_rows": 1440,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "RCL",
+      "old_rows": 162894,
+      "new_rows": 171852,
+      "added_rows": 8958,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "REGN",
+      "old_rows": 299546,
+      "new_rows": 305916,
+      "added_rows": 6370,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "RIG",
+      "old_rows": 56454,
+      "new_rows": 60246,
+      "added_rows": 3792,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "RIOT",
+      "old_rows": 178808,
+      "new_rows": 189592,
+      "added_rows": 10784,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "RUN",
+      "old_rows": 28882,
+      "new_rows": 29784,
+      "added_rows": 902,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "SBUX",
+      "old_rows": 159116,
+      "new_rows": 168090,
+      "added_rows": 8974,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "SCHW",
+      "old_rows": 134070,
+      "new_rows": 142908,
+      "added_rows": 8838,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "SEDG",
+      "old_rows": 50912,
+      "new_rows": 55688,
+      "added_rows": 4776,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "SHOP",
+      "old_rows": 730748,
+      "new_rows": 776348,
+      "added_rows": 45600,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "SIRI",
+      "old_rows": 76144,
+      "new_rows": 81128,
+      "added_rows": 4984,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "SLB",
+      "old_rows": 103346,
+      "new_rows": 110206,
+      "added_rows": 6860,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "SMCI",
+      "old_rows": 10322,
+      "new_rows": 11186,
+      "added_rows": 864,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "SNAP",
+      "old_rows": 181008,
+      "new_rows": 192174,
+      "added_rows": 11166,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "SNPS",
+      "old_rows": 105810,
+      "new_rows": 109946,
+      "added_rows": 4136,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "SO",
+      "old_rows": 112884,
+      "new_rows": 119174,
+      "added_rows": 6290,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "STM",
+      "old_rows": 11692,
+      "new_rows": 12782,
+      "added_rows": 1090,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "T",
+      "old_rows": 102076,
+      "new_rows": 109682,
+      "added_rows": 7606,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "TEAM",
+      "old_rows": 231706,
+      "new_rows": 246304,
+      "added_rows": 14598,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "TER",
+      "old_rows": 32934,
+      "new_rows": 36180,
+      "added_rows": 3246,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "TEVA",
+      "old_rows": 103088,
+      "new_rows": 109164,
+      "added_rows": 6076,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "TGT",
+      "old_rows": 170432,
+      "new_rows": 182696,
+      "added_rows": 12264,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "TJX",
+      "old_rows": 130080,
+      "new_rows": 137412,
+      "added_rows": 7332,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "TMO",
+      "old_rows": 55450,
+      "new_rows": 60866,
+      "added_rows": 5416,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "TMUS",
+      "old_rows": 170346,
+      "new_rows": 182146,
+      "added_rows": 11800,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "TRIP",
+      "old_rows": 102784,
+      "new_rows": 109200,
+      "added_rows": 6416,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "TSLA",
+      "old_rows": 667262,
+      "new_rows": 718424,
+      "added_rows": 51162,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "TSM",
+      "old_rows": 181808,
+      "new_rows": 193110,
+      "added_rows": 11302,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "TTD",
+      "old_rows": 383216,
+      "new_rows": 392232,
+      "added_rows": 9016,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "TTWO",
+      "old_rows": 159202,
+      "new_rows": 168792,
+      "added_rows": 9590,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "TWLO",
+      "old_rows": 288804,
+      "new_rows": 303392,
+      "added_rows": 14588,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "TXN",
+      "old_rows": 146384,
+      "new_rows": 155686,
+      "added_rows": 9302,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "UAA",
+      "old_rows": 103524,
+      "new_rows": 110370,
+      "added_rows": 6846,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "UAL",
+      "old_rows": 111172,
+      "new_rows": 119246,
+      "added_rows": 8074,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "UAMY",
+      "old_rows": 4286,
+      "new_rows": 4514,
+      "added_rows": 228,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "UEC",
+      "old_rows": 12686,
+      "new_rows": 13838,
+      "added_rows": 1152,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "UMC",
+      "old_rows": 8630,
+      "new_rows": 9548,
+      "added_rows": 918,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "UNH",
+      "old_rows": 234558,
+      "new_rows": 249324,
+      "added_rows": 14766,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "UPS",
+      "old_rows": 158048,
+      "new_rows": 168914,
+      "added_rows": 10866,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "USB",
+      "old_rows": 114722,
+      "new_rows": 121174,
+      "added_rows": 6452,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "UUUU",
+      "old_rows": 14580,
+      "new_rows": 16110,
+      "added_rows": 1530,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "V",
+      "old_rows": 179012,
+      "new_rows": 191102,
+      "added_rows": 12090,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "VALE",
+      "old_rows": 115950,
+      "new_rows": 124476,
+      "added_rows": 8526,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "VFC",
+      "old_rows": 141152,
+      "new_rows": 148286,
+      "added_rows": 7134,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "VLO",
+      "old_rows": 140086,
+      "new_rows": 147708,
+      "added_rows": 7622,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "VRTX",
+      "old_rows": 186180,
+      "new_rows": 197034,
+      "added_rows": 10854,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "VST",
+      "old_rows": 22592,
+      "new_rows": 24524,
+      "added_rows": 1932,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "VZ",
+      "old_rows": 82960,
+      "new_rows": 88472,
+      "added_rows": 5512,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "W",
+      "old_rows": 261958,
+      "new_rows": 272840,
+      "added_rows": 10882,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "WDC",
+      "old_rows": 148930,
+      "new_rows": 156504,
+      "added_rows": 7574,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "WEN",
+      "old_rows": 25560,
+      "new_rows": 27536,
+      "added_rows": 1976,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "WFC",
+      "old_rows": 112810,
+      "new_rows": 119878,
+      "added_rows": 7068,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "WHR",
+      "old_rows": 180108,
+      "new_rows": 190512,
+      "added_rows": 10404,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "WMB",
+      "old_rows": 93602,
+      "new_rows": 98766,
+      "added_rows": 5164,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "WMT",
+      "old_rows": 157914,
+      "new_rows": 169056,
+      "added_rows": 11142,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "WU",
+      "old_rows": 22660,
+      "new_rows": 24648,
+      "added_rows": 1988,
+      "new_basis_dates": [
+        "2022-02-18",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25",
+        "2022-02-28",
+        "2022-03-01",
+        "2022-03-02",
+        "2022-03-03",
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "WYNN",
+      "old_rows": 185347,
+      "new_rows": 195387,
+      "added_rows": 10040,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    },
+    {
+      "symbol": "XOM",
+      "old_rows": 130286,
+      "new_rows": 139940,
+      "added_rows": 9654,
+      "new_basis_dates": [
+        "2022-03-04",
+        "2022-03-07",
+        "2022-03-08",
+        "2022-03-09"
+      ],
+      "dtype_changes": {},
+      "hashes_verified": true,
+      "original_values_exact": true,
+      "added_values_exact_retained_source": true,
+      "only_2022_tail_additions": true,
+      "no_forecast_expiry_additions": true,
+      "consistent_daily_basis": true
+    }
+  ],
+  "source_summary": {
+    "symbols": 212,
+    "failures": 0,
+    "original_rows": 31596079,
+    "added_rows": 1933590,
+    "additional_basis_days": 1243,
+    "dtype_promoted_symbols": 0,
+    "seconds": 37.0
+  },
+  "probe_diagnostics": [
+    {
+      "symbol": "CMCSA",
+      "error": "AssertionError: DataFrame.index are different\n\nAttribute \"inferred_type\" are different\n[left]:  empty\n[right]: string"
+    },
+    {
+      "symbol": "HAL",
+      "error": "AssertionError: DataFrame.index are different\n\nAttribute \"inferred_type\" are different\n[left]:  empty\n[right]: string"
+    }
+  ],
+  "probe_diagnostics_disposition": "Both were reviewer harness metadata mismatches comparing empty added-row indexes. Each rechecked with explicit zero-addition assertion and exact original-value comparison; no candidate defect.",
+  "plan_check": {
+    "sha256": "3c11aa63bf387251b540151da8be89bcab668ad42890abf4f0d7fdd7b49feed8",
+    "runnable": true,
+    "missing": [],
+    "read_bounds": {
+      "forecasts": {
+        "start": "2021-10-01",
+        "end_before": "2022-01-01"
+      },
+      "contexts": {
+        "start": "2021-10-01",
+        "end_before": "2022-01-01"
+      },
+      "chain": {
+        "start": "2021-10-01",
+        "end_before": "2022-03-09"
+      },
+      "bars": {
+        "start": "2021-07-01",
+        "end_before": "2022-03-09"
+      },
+      "sessions": {
+        "start": "2021-07-01",
+        "end_before": "2022-03-09"
+      }
+    },
+    "cohort_sha256": "6b98c10d30d3aa1851011f90f76c50679ac7e1018c3c6a63a9fb9561df774b4e",
+    "preview": {
+      "ready": true,
+      "classification": "development",
+      "revision": 0
+    },
+    "registry_bytes_unchanged_by_preview": true
+  },
+  "registry_checks": [
+    {
+      "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/exposure-registry.sqlite",
+      "sha256": "bd584e8b1078bf65b0fd59bc40ed0dad74ad1fa092aaca894746becd826d4f50",
+      "revision": 16,
+      "events": 17,
+      "hash_chain_valid": true,
+      "active": null,
+      "claims": {
+        "2fd8f63a-2629-411a-933d-a7041493b07e": "reviewed_closed",
+        "91f7e0b5-eba8-4ae8-89b9-68b33c048b25": "reviewed_closed",
+        "b0f5314f-bf4d-437e-a592-dd3dee402a03": "abandoned_exposed"
+      },
+      "prior": [
+        {
+          "end_before": "2024-01-01",
+          "evidence": "Previously exposed development and retrospective model selection: M53 selected on 2020-2023 scores; 2019/Q1/Q2/Q3/Q4 results already examined. Previous terminal registry /home/russell/data/index_options/mio-2021h2-walkforward-20261101/protocol/exposure-registry.sqlite, id a3a3704c-94c0-442b-87e8-b377926c86cb, revision 6, SHA256 ca4c727c00b2dedf4d39d58d40eebd5057a47dc18c71bbf6ebe610e29d05e6d9. See prior-exposure-link.json. No fresh/holdout classification requested.",
+          "start": "2017-01-03"
+        }
+      ],
+      "identity": {
+        "domain": "index_options_MIO_complete_coverage_20261101",
+        "id": "df32f3df-3963-4de0-b1d8-04016c246fb4",
+        "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/exposure-registry.sqlite"
+      }
+    },
+    {
+      "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/q4-tail-exposure-registry.sqlite",
+      "sha256": "3afc84a5290634ea16faa938effa7b348be7f6906e2bc6574997aa4ca5506e99",
+      "revision": 0,
+      "events": 1,
+      "hash_chain_valid": true,
+      "active": null,
+      "claims": {},
+      "prior": [
+        {
+          "end_before": "2024-01-01",
+          "evidence": "All model-selection and evaluation exposure retained, including Q2/Q3 reviewed and Q4 failed/abandoned in registry df32f3df-3963-4de0-b1d8-04016c246fb4 revision 16 sha256 bd584e8b1078bf65b0fd59bc40ed0dad74ad1fa092aaca894746becd826d4f50. See /home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/q4-tail-prior-exposure.json. No fresh holdout classification.",
+          "start": "2017-01-03"
+        }
+      ],
+      "identity": {
+        "domain": "index_options_MIO_q4_settlement_20261101",
+        "id": "5b6924e9-2cf7-486f-90f5-62db8fb60b38",
+        "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/q4-tail-exposure-registry.sqlite"
+      }
+    }
+  ],
+  "code_tree_check": {
+    "dskit": {
+      "cbd429d974eb04ed74472f54f6ed5dfd1ca86421": "0e2a8185d4a9a319b2bf428bfe0b51efb276f0d2",
+      "2a3f780e2058dec3f40d4d0e6c7a9aa500c4fb3a": "0e2a8185d4a9a319b2bf428bfe0b51efb276f0d2"
+    },
+    "tests": {
+      "cbd429d974eb04ed74472f54f6ed5dfd1ca86421": "0936d635b75f87447b8412c2ea07d83cf77113e4",
+      "2a3f780e2058dec3f40d4d0e6c7a9aa500c4fb3a": "0936d635b75f87447b8412c2ea07d83cf77113e4"
+    },
+    "children/index_options/index_options": {
+      "cbd429d974eb04ed74472f54f6ed5dfd1ca86421": "6e21ec901228ec9eac96adfb1333a1594cac15d7",
+      "2a3f780e2058dec3f40d4d0e6c7a9aa500c4fb3a": "6e21ec901228ec9eac96adfb1333a1594cac15d7"
+    },
+    "children/index_options/tests": {
+      "cbd429d974eb04ed74472f54f6ed5dfd1ca86421": "7fe2c5c8d3c9a955feeb3b015a86878d323b822d",
+      "2a3f780e2058dec3f40d4d0e6c7a9aa500c4fb3a": "7fe2c5c8d3c9a955feeb3b015a86878d323b822d"
+    },
+    "children/index_options/docs/decisioning/path.csv": {
+      "cbd429d974eb04ed74472f54f6ed5dfd1ca86421": "82d156cae087c724654a6b18e6d8baac9879e40a",
+      "2a3f780e2058dec3f40d4d0e6c7a9aa500c4fb3a": "82d156cae087c724654a6b18e6d8baac9879e40a"
+    }
+  },
+  "candidate_paths": [
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/abandon-q4-settlement-input.json",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/initialize-q4-tail-complete-development.json",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q4-tail-complete.json",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/source-q4-tail-complete.json",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/README.md",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/protocol-evidence.json",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-tail-input-correction.json",
+    "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-tail-input-verification.json"
+  ],
+  "binding_checks": {
+    "all_six_run_studies_equal": true,
+    "initialize_study_matches_run": true,
+    "abandon_study_matches_failed_run": true,
+    "predictive_identity_unchanged": true,
+    "economic_parameters_unchanged": true,
+    "cohort_unchanged": true,
+    "all_270_runtime_pins_match_actual_files": true,
+    "all_217_unchanged_bound_payloads_hash_verified": true,
+    "all_14_predictive_payloads_hash_verified": true,
+    "new_213_file_manifest_verified": true,
+    "prior_exposure_links_and_hashes_verified": true
+  },
+  "remaining_expiry_basis_gaps": [
+    {
+      "symbol": "CMCSA",
+      "missing_basis_expiries": [
+        "2022-01-14",
+        "2022-01-21",
+        "2022-01-28",
+        "2022-02-04",
+        "2022-02-11",
+        "2022-02-18"
+      ],
+      "affected_forecast_rows": 82,
+      "basis_last_date": "2022-01-11",
+      "bars_available_for_all_missing": true,
+      "guard": "selected books requiring missing basis remain unsettleable under unchanged guard"
+    },
+    {
+      "symbol": "HAL",
+      "missing_basis_expiries": [
+        "2022-01-14",
+        "2022-01-21",
+        "2022-01-28",
+        "2022-02-04",
+        "2022-02-11",
+        "2022-02-18"
+      ],
+      "affected_forecast_rows": 82,
+      "basis_last_date": "2022-01-07",
+      "bars_available_for_all_missing": true,
+      "guard": "selected books requiring missing basis remain unsettleable under unchanged guard"
+    }
+  ],
+  "verdict": "C0/M0/Minor1/Nit0 scoped correctness/authority pass for the retained-tail correction; remaining CMCSA/HAL settlement-basis coverage is disclosed and deferred. This does not certify full Q4 coverage or completed replay.",
+  "counts": {
+    "Critical": 0,
+    "Major": 0,
+    "Minor": 1,
+    "Nit": 0
+  },
+  "unresolved_counts": {
+    "Critical": 0,
+    "Major": 0,
+    "Minor": 1,
+    "Nit": 0
+  },
+  "completed_at": "2026-11-01T11:10:09.295416+00:00",
+  "findings": [
+    {
+      "id": "Q4TAIL-COR-MIN-001",
+      "severity": "Minor",
+      "invariant": "A runnable source/config correction must not be represented as complete settlement coverage or an attested Q4 result.",
+      "location": "Q4 corrected chain source, CMCSA.parquet and HAL.parquet; observations.py:805 and ledger_studies.py:2015",
+      "evidence": [
+        {
+          "symbol": "CMCSA",
+          "missing_basis_expiries": [
+            "2022-01-14",
+            "2022-01-21",
+            "2022-01-28",
+            "2022-02-04",
+            "2022-02-11",
+            "2022-02-18"
+          ],
+          "affected_forecast_rows": 82,
+          "basis_last_date": "2022-01-11",
+          "bars_available_for_all_missing": true,
+          "guard": "selected books requiring missing basis remain unsettleable under unchanged guard"
+        },
+        {
+          "symbol": "HAL",
+          "missing_basis_expiries": [
+            "2022-01-14",
+            "2022-01-21",
+            "2022-01-28",
+            "2022-02-04",
+            "2022-02-11",
+            "2022-02-18"
+          ],
+          "affected_forecast_rows": 82,
+          "basis_last_date": "2022-01-07",
+          "bars_available_for_all_missing": true,
+          "guard": "selected books requiring missing basis remain unsettleable under unchanged guard"
+        }
+      ],
+      "reproducer": "For each symbol, take Q4 fold-4 val forecasts with DTE 1..60 and quote_date in [2021-10-01,2022-01-01); subtract observed corrected-chain date values from forecast expiry values. CMCSA and HAL each leave Jan14/21/28 and Feb4/11/18 2022, affecting 82 forecasts each.",
+      "worked_consequence": "If an eligible CMCSA/HAL book with one of these expiries is selected and filled, _settlements gets no daily basis and raises unsettleable selected book. Existing guards prevent an incorrect settled result and publication. No selected-book counterexample or completed corrected replay was asserted.",
+      "defect_family": "pre-existing retained-source coverage gap beyond the compact-tail omission repaired here",
+      "introduced_by_candidate": false,
+      "disposition": "Disclosed as remaining operational coverage risk; defer source completion to a separately pinned correction or preserve any later guarded failure. No change to method selection, economic parameters, protection, or approval scope.",
+      "rationale": "The assigned correction contract preserves all inputs and adds only available retained tail observations; it does not promise all possible forecast expiries are covered or a completed run. The branch honestly marks replay pending, and the settlement guard remains effective. No material incorrect result or authority breach was demonstrated in this candidate."
+    }
+  ],
+  "authority": {
+    "owner": "Russell",
+    "authorization_record": "/home/russell/wt/q2-reconcile-20261031/children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/review-contract.json",
+    "authorization": "Owner authorized Q2-Q4 retrospective config-only reruns and reports; this review itself was explicitly requested read-only except this retained JSON. No new market replay, claim, source mutation or code edit was performed.",
+    "locked_path": "A0002 predictability metrics unchanged; A0003 sealed 2024+ boundary preserved; A0008 training choice and existing forecast/model pins unchanged. Retrospective development economics remain the already authorized experiment, with no profitability or fresh-holdout claim.",
+    "workflow": [
+      "AGENTS.md",
+      "children/index_options/AGENTS.md",
+      "docs/skills/implementation-workflow.md",
+      "docs/skills/skeptic-review.md",
+      "docs/standards/configuration.md",
+      "docs/standards/data-onboarding.md"
+    ],
+    "origin_workflow_same_as_candidate": true,
+    "runtime": "WSL2 via Windows PowerShell single-quoted heredoc to ssh.exe -o BatchMode=yes -o ConnectTimeout=5 russell@localhost /home/russell/dskit/.venv/bin/python -; Python bytecode writes disabled during probes."
+  },
+  "avav_correction": {
+    "symbol": "AVAV",
+    "expiry": "2022-02-18",
+    "underlying_close": 59.46,
+    "old_source_rows_on_date": 0,
+    "new_source_rows_on_date": 78,
+    "retained_source_rows_on_date": 78,
+    "observed_basis_factor": 1.0,
+    "added_quote_expiries_on_date": [
+      "2022-03-18",
+      "2022-04-14"
+    ],
+    "outside_forecast_expiry_inventory": true,
+    "intake_owner": "children/index_options/index_options/observations.py:805-815 scans daily basis before quote-index forecast-expiry filtering at 832-835 and attaches basis to bars at 847-849",
+    "imputation": false
+  },
+  "failure_preservation": {
+    "old_config_sha256": "79a5d791f11295d72de70ee98d92cec85218b64d86839d924905e9605e943535",
+    "old_log_sha256": "95a2bf92806d520b4c4f4a6190acba4b1de907d0da4851b952c0fa462e0847de",
+    "both_hashes_verified": true,
+    "method_failed_log_line": 24750,
+    "failed_method": "w1_003_shock10_lp",
+    "packet": "dev_2021q4_complete_20261101",
+    "claim": "b0f5314f-bf4d-437e-a592-dd3dee402a03",
+    "status": "abandoned_exposed",
+    "old_registry_revision": 16,
+    "old_registry_active": null,
+    "pid_75150_present": false,
+    "corrected_run_exists": false,
+    "corrected_run_log_exists": false,
+    "termination_limit": "Exact-PID SIGTERM is retained author evidence; review independently observed no such process, preserved failed log/config hashes, and abandoned registry state."
+  },
+  "tests_and_probes": [
+    {
+      "name": "candidate diff/tree equality",
+      "result": "Eight config/evidence files only; dskit, root tests, child implementation/tests, and locked Path blob/tree identities equal base."
+    },
+    {
+      "name": "all-symbol retained-source exactness",
+      "result": "212 symbols; 31,596,079 original rows exact; 1,933,590 added rows exact against retained raw 2022 source; additions are after 2021 and outside actual Q4 forecast-expiry inventory; 1,243 extra observed basis dates; all old/new/raw consumed file hashes verified."
+    },
+    {
+      "name": "runtime/config binding",
+      "result": "All 270 runtime code pins match actual files; all six run study bindings equal; initialize binding equals corrected study and abandon binding equals original study. Same 212 names, three methods, code/dependencies, predictive identity, economic parameters, bars, sessions and corporate-action source bindings."
+    },
+    {
+      "name": "source and artifact pins",
+      "result": "Pinned manifest resolution passed; all 213 new files verified including preparation, 217 unchanged bound payloads and all 14 predictive payloads verified. Correction/verification/config/log/link hashes match retained records."
+    },
+    {
+      "name": "read-only plan and registry preview",
+      "result": "Plan 3c11aa63bf387251b540151da8be89bcab668ad42890abf4f0d7fdd7b49feed8 runnable with no missing metadata; preview ready development revision0; registry byte hash unchanged by preview; both registry event chains and state hashes valid."
+    },
+    {
+      "name": "forecast-expiry basis completeness probe",
+      "result": "Only CMCSA/HAL retain six missing expiry basis dates each; disclosed Minor1. No claim of full coverage."
+    }
+  ],
+  "limits": [
+    "No market replay, fitting, model selection, pipeline run, source/onboarding write, registry transition, or full test suite was executed.",
+    "The review certifies this immutable source/config candidate only. Completed Q4 still requires all three methods, an attested close receipt, accounting/replay parity, and verified reports.",
+    "CMCSA/HAL potential settlement failures remain; pass must not be read as full expiry coverage.",
+    "Actual SIGTERM provenance was not independently reconstructed beyond preserved evidence and absent process.",
+    "Broader review inherited Minor findings WF-COR-MIN-001 and WF-COR-MIN-002 remain in the previous review lock; no runtime or relevant model/test blobs changed here."
+  ],
+  "evidence_hashes": {
+    "/home/russell/wt/q2-reconcile-20261031/children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-tail-input-correction.json": "3b8b7fc43193e5d1b216685e616084c42e5a0313da7098fd3652c0de11301aae",
+    "/home/russell/wt/q2-reconcile-20261031/children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/q4-tail-input-verification.json": "4bee847de8111b931c4ec57fe8044170c1491bd5db13c04e487e9c6bca5ddd05",
+    "/home/russell/wt/q2-reconcile-20261031/children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/review-contract.json": "c1fc0885f41fc9a3839d524d08d8e7c64581c7346b85a90394f544bb0687695a",
+    "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/market-q4-tail-complete/preparation.json": "088e270eb161f587f30b495efebf6ca8d8fa048b167697552d25901ea101cc7b",
+    "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/q4-tail-prior-exposure.json": "830f1df00fcf87df88660f4cebae2820737402b68c91a7ad124c164ed0eef180",
+    "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/prior-exposure-link.json": "644565e45f3af661eb272c618110e704ce27262f342a714537dcd813ebc2b94c",
+    "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q4-tail-complete.json": "3f93645b39ad987c6de3fbe26f55e5c7c8b81c5ea2d0840548e229b519cad048",
+    "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/initialize-q4-tail-complete-development.json": "fad889977a5172c349d62f9275ee2f3e13496774552350e09233c1dfd19d6bcb",
+    "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/abandon-q4-settlement-input.json": "207aa2c74e463442b9935e1da608d57f8e5f0783ed6668cc3b7f8f0cc30b1c30",
+    "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/source-q4-tail-complete.json": "9fe433751b9cd8eb5a28824143d1bc8c2dda5f779da5d421364f30d285edba69"
+  },
+  "candidate_head_verified": "2a3f780e2058dec3f40d4d0e6c7a9aa500c4fb3a",
+  "worktree_clean": true
+}

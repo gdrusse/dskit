@@ -1,5 +1,5 @@
 {
-  "status": "Q2/Q3 verified and reported; failed Q4 retained; settlement input correction prepared for supplemental review",
+  "status": "Q2/Q3 complete and reported; original Q4 failed and retained; tail-v2 input complete, fresh review before replay",
   "classification": "retrospective development",
   "run_root": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2",
   "proofs": {
@@ -704,5 +704,6 @@
       "scope": "64 quarter sessions, 110 sessions including padded settlement calendar; 3 methods; replay parity and accounting verified"
     }
   },
-  "q4_settlement_correction": "q4-tail-input-correction.json"
+  "q4_settlement_correction": "q4-tail-input-correction.json",
+  "q4_final_input_correction": "q4-tail-v2-correction.json"
 }

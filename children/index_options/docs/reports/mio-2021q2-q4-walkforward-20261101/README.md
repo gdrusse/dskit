@@ -43,10 +43,6 @@ Epochs were selected on chronological pre-quarter monitoring data. The outer dia
 
 Q4 includes mature Q3 outcomes in training and retains the pre-Q3 choice of 36 epochs. Its model does not reuse old fitted weights. M53 is fitted once at each quarter start using only prior forecast outcomes already settled at that time, then frozen during the quarter. A prior quarter forecast row named val may teach the next quarter once its outcome is known; it does not select the next quarter neural epoch count.
 
-## Q4 settlement input correction
-
-The first Q4 attempt failed when AVAV expired on 2022-02-18: its closing price existed, but compact chain inputs omitted later-expiry rows used to observe that day's adjustment basis. The failed run and exposure are retained and abandoned. A corrected source restores retained post-quarter rows outside forecast expiries; all original 2021 values, forecast-expiry quotes, fitted models and trading settings are unchanged. The corrected replay is pending supplemental review. [Correction and failure evidence](q4-tail-input-correction.json).
-
 ## Verification and limits
 
 - Each quarterly result requires an attested close receipt, all three completed methods, recorded replay parity, complete quarter calendars, no remaining open books after settlement, and reconciled trade profit, fees, contract counts and equity. The standard reports use MioRunRows → RowsToEvents → EventTotalsGate → EvaluationReport → ArtifactLinks. Money gates allow $0.005; count gates are exact.
@@ -57,3 +53,7 @@ The first Q4 attempt failed when AVAV expired on 2022-02-18: its closing price e
 - Earlier 2019/Q1 runs had truncated coverage; this Q2–Q4 correction does not repair them. Original attempts, failures, prior exposure, raw sources, model artifacts and full results are retained. The model-selection history prevents calling 2021 a fresh holdout.
 
 [Protocol and training evidence](protocol-evidence.json) includes the prior-exposure linkage and exact model proof hashes. Each quarter index binds source result/receipt, report configuration, renderer commit and generated file hashes.
+
+## Q4 settlement input correction
+
+The first Q4 attempt failed at AVAV expiry on 2022-02-18. Its closing price existed, but compact chain inputs omitted later-expiry observations used to establish the settlement-day adjustment basis. The failed run remains exposed and retained. The first correction restored retained post-quarter rows outside forecast expiries. A subsequent coverage check found omitted CMCSA/HAL source members. The final source adds their observed settlement-tail quotes and uses one consistent CMCSA adjustment factor; its raw price units and nonprice fields are preserved. CMCSA adjusted prices change by about 0.000005% because the full-interval measured factor changed. Models, 212 names, three methods and trading settings are unchanged. [Initial correction](q4-tail-input-correction.json) and [final correction](q4-tail-v2-correction.json) preserve the original failure, source revisions and exposure linkage.
