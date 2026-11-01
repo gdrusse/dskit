@@ -332,5 +332,11 @@
     },
     "scope": "Six corrected Q2/Q3 reports and corrected metadata pattern only; Q4 actual outputs pending."
   },
-  "resolved_report_major": "Q4FINAL-INT-MAJ-001: corrected all six reports; independent amendment verifies 42 gates, 48 unchanged numerical CSVs and preserved originals."
+  "resolved_report_major": "Q4FINAL-INT-MAJ-001: corrected all six reports; independent amendment verifies 42 gates, 48 unchanged numerical CSVs and preserved originals.",
+  "remaining_completion_major": {
+    "id": "Q4-IBM-PHASE0-MAJ-001",
+    "status": "owner scope decision pending",
+    "evidence": "q4-partial-failure.json",
+    "note": "The source launch review remains scoped to source presence. Attested Q4 complete=false; partial method reports do not close the all-three-method completion gate."
+  }
 }

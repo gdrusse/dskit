@@ -1,0 +1,194 @@
+{
+  "bounded_recommendation": {
+    "alternative": "If owner requires unchanged eligibility, stop at a truthful failed/partial Q4 result under current scope; a general PIT admission or mixed-deliverable runtime extension is outside no-code authorization.",
+    "announcement_boundary": "Use the actual notice publication time available for each rule; if only a date is known, conservatively apply after that session. Do not assume the exact Nov4 effective date or IBM1 deliverable was knowable from an earlier notice without checking its contents.",
+    "approval_boundary": "This is a new eligibility policy. Parent should obtain owner approval of the concrete rule/source scope before implementing it. No approval is inferred from the broad config-only rerun authorization.",
+    "config_only_proposal_for_owner_review": "Use existing source preparation/onboarding machinery to make a separately pinned market/context eligibility variant. Keep all212 symbols, model artifacts, three methods and economic settings. At each decision, exclude contracts only under a public action notice available before that decision and whose unsupported deliverable begins during their holding interval. Keep an explicit sidecar of every excluded symbol/date/expiry, policy reason, announcement timestamp, source notice and before/after counts. Rebind source/protocol identity as a new attempt; retain the original failed source/run.",
+    "existing_positions": "A pre-entry filter cannot repair holdings entered before the action became publicly known. Parent reports no selected IBM holdings before Oct12, but that observation is not the policy predicate. If another action affected already-open holdings, existing config lacks a general close/convert mechanism.",
+    "immediate": "Allow the already running final method and audit to finish; retain full attempt and explicit failed nominal_lp. Do not relaunch or call a successful-quarter publish/report helper on incomplete results.",
+    "post_action_boundary": "Do not exclude all IBM or all post-action decisions. Preserve positively identified standard IBM contracts after the effective date; unsupported IBM1 contracts remain refused. If current normalized quotes cannot distinguish the two, a date-only filter is not sufficient proof of supported instrument identity.",
+    "uniformity": "Apply the approved support policy consistently across all methods and affected instruments using predecision information, not only the realized losing/failed book."
+  },
+  "candidate": "5a09c840cceb2071e68765148f48c73884d5556a",
+  "count_meaning": "Major is an unresolved completion/policy boundary in this requested task, not evidence that the deliberate settlement refusal is a runtime defect.",
+  "counts": {
+    "Critical": 0,
+    "Major": 1,
+    "Minor": 0,
+    "Nit": 0
+  },
+  "created_utc": "2026-11-01T12:51:26.675829+00:00",
+  "current_config": {
+    "methods": [
+      "w1_003_shock10_lp",
+      "nominal_lp",
+      "w1_003_lp"
+    ],
+    "pair_keys": [
+      "dte_max",
+      "dte_min",
+      "id",
+      "symbol"
+    ],
+    "params_keys": [
+      "bridge",
+      "correlation_lookback",
+      "correlation_min_pairs",
+      "correlation_threshold",
+      "deposit",
+      "deposit_every_days",
+      "fill_sizing",
+      "initial",
+      "methods",
+      "solver",
+      "symbols",
+      "weekly_fraction"
+    ],
+    "sha256": "2acce9d9b7dffc33fe6d4092035f8f3ad910907840fa855982b04ee04382c241",
+    "source_roles": [
+      "bars",
+      "chain",
+      "contexts",
+      "corporate_actions",
+      "forecasts",
+      "sessions"
+    ],
+    "symbol_count": 212
+  },
+  "file_sha256": {
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q4-tail-v2.json": "2acce9d9b7dffc33fe6d4092035f8f3ad910907840fa855982b04ee04382c241",
+    "children/index_options/index_options/cdf_study.py": "1d71b23c0ce4b94fc8049c1904ec5fca538b0c0d3b46145ff2445be1cff988af",
+    "children/index_options/index_options/ledger_studies.py": "961e0077231479885e7eb625a29af2c5989e70d5169e3e6e9b60d808547908b1",
+    "children/index_options/index_options/mio_contract.py": "88528806ac12db3b32b732cff111f7ba95942b350eed42528a5fbc360a97cc7a",
+    "children/index_options/index_options/nodes.py": "b824383fc580c20cd4eb69d0e727f59daea322a0b22384763c8af702ecfad219",
+    "children/index_options/index_options/observations.py": "6c9db1d30b1c26c647577446ca1cebeae4901956ee6613604ad3e7fde485b611",
+    "dskit/pipeline/kinds_flow.py": "3ea7ce0e15888aaeb887e94678c9f153b6a57eba9c7fedc75f8369424e1db7f2",
+    "dskit/pipeline/libs/option_ledger.py": "b6b53ca2a1ba6c4fc6e93ff18be755aee9d5a05cd1f4f8b2948bfbf02fb70c03"
+  },
+  "findings": [
+    {
+      "category": "completion and policy boundary",
+      "effect": "A successful all-three-method Q4 close/report cannot be claimed for this attempt. A config-only rerun using newly filtered sources would alter eligibility and needs an explicit owner policy decision.",
+      "evidence": "Current source/config reader accepts no dated contract eligibility policy; StandardSplitAdjustment requires same root,100-share deliverable and integer split. Parent observed nominal_lp settlement refusal on selected2021-10-25 IBM expiry2021-12-17; official action evidence identifies IBM1 mixed IBM/KD deliverable.",
+      "id": "Q4-IBM-PHASE0-MAJ-001",
+      "required_resolution": "Preserve current attempt and its failure. Propose a concrete preannounced unsupported-contract policy and source derivation for owner approval, or accept/report the existing failed quarter. Do not invent split economics or silently suppress selected losers.",
+      "severity": "Major",
+      "title": "Locked MIO path cannot settle the selected IBM spin-off crossing and has no point-in-time exclusion knob"
+    }
+  ],
+  "forbidden_workarounds": [
+    "remove IBM from212 symbols",
+    "alter static DTE bands to avoid observed failures",
+    "change method/risk/solver settings",
+    "compare with realized future-expiry factor to select entries",
+    "force basis to1 or substitute composite IBM/KD prices in a shared standard-IBM bar series",
+    "encode IBM/Kyndryl as an integer split",
+    "relax settlement-basis tolerance or ignore the refusal",
+    "drop only selected/losing books",
+    "claim prior presence-only coverage proved supported held-contract continuity"
+  ],
+  "independent_checks": [
+    {
+      "references": [
+        "ledger_studies.py:1337-1362",
+        "ledger_studies.py:1477-1480",
+        "ledger_studies.py:1542-1569",
+        "mio_contract.py:529-545"
+      ],
+      "result": "Only fill_sizing is an optional study parameter. Pair schema is exactly id/symbol/dte_min/dte_max and must cover the exact symbol set. No decision-date, known_at, root/deliverable or holding-exclusions policy is accepted.",
+      "seam": "WeeklyOptionPortfolioStudy params and static pairs"
+    },
+    {
+      "references": [
+        "observations.py:749-791",
+        "mio_contract.py:642-655"
+      ],
+      "result": "Pinned forecasts/contexts are filtered by symbol/DTE/fold/band and clocks. Context projection is identity plus spot/reference_scale/settlement_date. Corporate actions use only StandardSplitAdjustment.parse. No eligibility-policy role or exclusion reason enters the accepted MIO runtime.",
+      "seam": "Input contract"
+    },
+    {
+      "references": [
+        "ledger_studies.py:1808-1877",
+        "ledger_studies.py:1955-1983",
+        "ledger_studies.py:2005-2021",
+        "ledger_studies.py:2043-2045",
+        "ledger_studies.py:2165-2167"
+      ],
+      "result": "Preparation passes only current-day basis to _prepare; fill checks next-session basis; settlement fails closed when active-position basis and observed expiry basis differ. The runtime does not support arbitrary composite underlying deliverables.",
+      "seam": "Current preparation/fill/settlement path"
+    },
+    {
+      "references": [
+        "option_ledger.py:98-133",
+        "option_ledger.py:144-147",
+        "ledger_studies.py:1628-1670"
+      ],
+      "result": "Exact same-root standard100-share integer split, ratio>1, equal strike divisor, fixed multiplier, and basis_after approximately basis_before*ratio. IBM-to-IBM1 with100IBM+20KD cannot truthfully be encoded here.",
+      "seam": "Supported action transform"
+    },
+    {
+      "references": [
+        "nodes.py:4886-4903",
+        "ledger_studies.py:1255-1259",
+        "ledger_studies.py:1832-1834"
+      ],
+      "result": "CDFQuoteCondorSelect.run compares entry basis against both next-fill and future-expiry factors and records basis_change. Weekly MIO calls _prepare, not this run method. Moving this guard into entry eligibility would use future realized basis; switching selectors also changes execution/accounting.",
+      "seam": "Standalone CDF selector guard"
+    },
+    {
+      "references": [
+        "nodes.py:3957",
+        "nodes.py:4232-4248",
+        "nodes.py:4267-4274",
+        "cdf_study.py:487-505"
+      ],
+      "result": "Other condor/calibration paths accept symbol/quote_date/expiry/reason exclusions. Their existence does not make them valid MIO input ports. No known_at enforcement is provided by these exclusion rows themselves.",
+      "seam": "Existing holding_exclusions"
+    },
+    {
+      "references": [
+        "cdf_study.py:2756-2780",
+        "cdf_study.py:2805-2821",
+        "cdf_study.py:2842-2888",
+        "cdf_study.py:4147-4166"
+      ],
+      "result": "Declares observed dividend/split-jump or symbol/date windows and excludes feature-through-settlement spans. It is a model-panel filter, not a point-in-time MIO contract-admission policy; it has no publication/known_at field.",
+      "seam": "Feature-panel CorporateActionRule"
+    },
+    {
+      "references": [
+        "kinds_flow.py:130-145",
+        "kinds_flow.py:216-256",
+        "kinds_flow.py:1157-1218"
+      ],
+      "result": "Generic Filter supports declared clauses; Join supports declared lookup tables. They can support preparation of a separately pinned eligibility-filtered dataset. They do not infer corporate actions, enforce announcement chronology, convert existing holdings or create a MIO refusal audit. Such a source would be a new admission policy, not a configuration switch on the locked MIO method.",
+      "seam": "Generic source preparation"
+    }
+  ],
+  "parent_supplied_execution_evidence": {
+    "book": "2021-10-25:IBM:2021-12-17",
+    "diagnostic_agent": "/root/q4_final_source_correctness",
+    "evidence": "Entry IBM basis0.956023 before November4; expiry basis1.0; expiry adjusted bar127.4 exists. Official exchange notice OCC49461 says IBM1 delivers100IBM+20KD startingNovember4. The approved runtime only supports pinned standard splits. No invented ratio, changed data, silent symbol removal or relaxed settlement check.",
+    "failure": "ValueError: unsettleable selected book",
+    "first_observed_at": "2026-11-01T12:41:36+00:00",
+    "kind": "Existing unsupported corporate-action refusal, not missing expiry bar/basis",
+    "method": "nominal_lp",
+    "next": "Let final method finish and retain full attempt. Do not call successful-quarter report/publish/review helpers on incomplete result.",
+    "scope": "Find existing point-in-time config-only eligibility capability; determine whether owner scope change needed",
+    "source_urls": [
+      "https://boxoptions.com/assets/BOXOnnMemo205264.pdf",
+      "https://newsroom.ibm.com/2021-10-12-IBM-Board-of-Directors-Approves-Separation-of-Kyndryl"
+    ]
+  },
+  "prior_review_limit": "Prior source-readiness review checked presence and recorded basis-change occurrences including IBM/O; it explicitly preserved unsupported-held-book refusal and did not certify successful simulation completion. This diagnosis does not rewrite that evidence.",
+  "reviewer": "/root/q4_final_source_correctness",
+  "schema": "bounded-phase0-correctness-diagnosis-v1",
+  "scope": "Existing JSON/config capability for point-in-time unsupported-corporate-action eligibility in the locked Q4 MIO portfolio execution; no runtime or config changes.",
+  "verdict": "OWNER_SCOPE_DECISION_REQUIRED; no overlooked MIO eligibility knob found",
+  "verification_limits": [
+    "Read-only code/config inspection at pinned HEAD and parent continuation issue; no source payload scans, official-source browsing, market replay, tests, process control or registry writes.",
+    "Official spin-off terms, actual selected-book identities and current process status are parent-supplied evidence, not independently re-read in this scope.",
+    "No new source policy or transformation was implemented; generic preparation capability is a proposal boundary, not proof that an unchanged MIO knob exists.",
+    "The final completed execution and accounting/report gates remain separate."
+  ]
+}

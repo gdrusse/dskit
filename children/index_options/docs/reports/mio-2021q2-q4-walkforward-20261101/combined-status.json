@@ -1,14 +1,22 @@
 {
-  "updated_at": "2026-11-01T11:52:46.447730+00:00",
+  "updated_at": "2026-11-01T13:04:22.982437+00:00",
   "completed_quarters": [
     2,
     3
   ],
-  "verified_method_reports": 6,
+  "verified_method_reports": 8,
   "required_method_reports": 9,
   "complete": false,
   "classification": "retrospective development",
-  "comparison_sha256": "3df94cd8dabcf0c5be225765dfaf273068c24b6a28e45e92506c79303d12f06f",
+  "comparison_sha256": "897d2f32d5b7c44308bf01e9214f4e6642545b774e00163bd27be57307f0f151",
   "learning_sha256": "03f375f805c0f8eb2f434a6f2ff3f056fcaaa37238d2902ea61a0c91455179ee",
-  "report_index_sha256": "492e0334aa1d1ff513bec7f33814f39bf5d22b1644165f3056f2af444262b263"
+  "report_index_sha256": "d6850b972ad55eea3684da8a3cb8863cd38dcb75a313b71fc1c85e680f87060d",
+  "partial_quarters": [
+    4
+  ],
+  "failed_methods": {
+    "2021Q4": [
+      "nominal_lp"
+    ]
+  }
 }

@@ -1,0 +1,194 @@
+{
+  "quarter": 4,
+  "classification": "retrospective development",
+  "study_complete": false,
+  "failed_methods": [
+    {
+      "error": "ValueError: unsettleable selected book: 2021-10-25:IBM:2021-12-17",
+      "id": "nominal_lp",
+      "replay_parity": false,
+      "status": "failed"
+    }
+  ],
+  "source_run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2/mio-2021q4-tail-v2-walkforward-frozen-m53-development-2021-12-31-9add6949",
+  "source_result": {
+    "bytes": 9885084,
+    "media_type": "application/json",
+    "path": "artifacts/json/8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a.json",
+    "sha256": "8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a"
+  },
+  "source_receipt": {
+    "node": "close_packet",
+    "port": "receipt",
+    "document_hash": "75520d7b0be89dbc066a3b9928b15a162f719600e6a46d17da5b6182eeed8949"
+  },
+  "report_run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/reports-q4-partial/mio-2021q4-partial-tail-v2-evaluation-2021-12-31-82296675",
+  "report_document_hash": "86e94b58757d8e808edb8d9b02e643da33057c645c40873f335d908c5c2b8d48",
+  "report_config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/report-q4-partial-tail-v2.json",
+  "report_config_sha256": "0df72da85e88391fd82794de155b0c5770dd45e43af243bbe5302590946d2d4b",
+  "renderer_commit": "5a09c840cceb2071e68765148f48c73884d5556a",
+  "source_model_bundle": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/mio-inputs-q4",
+  "source_model_pin": {
+    "root": "/home/russell/data/index_options/mio-2021h2-exact-q2-20261031/ob",
+    "source": "mio-2021q4-complete-inputs",
+    "stream": "files",
+    "snapshot": "20261101T083207Z-backfill-a67e9c4a",
+    "manifest_sha256": "a67e9c4aa5a8e4812d13c5c53779891f9375bfe0021e256391f5a5f57f81362d",
+    "files": {
+      "contexts.parquet": "2ff0433e2e8999e6dfb0f79e9d5956a0dbb65055dd48637eec88a420fc903a3a",
+      "forecasts.parquet": "81b99793725267db019d2d83bb5ff9de7731ab5f6aafc61285845da9e54fea83",
+      "original/contexts.parquet": "d2c9a7bc6635b4461e7b58763b4506fe4c01656fc3cbe9683e6cd07e94805e0e",
+      "original/forecasts.parquet": "c6e5bf26d0957bb4dbc97809fa79ee8a0aaddc576c412e9cacc36d851a213f66",
+      "predictive-receipt.json": "1a9ea7303cf362cbc65c0c0733b3cbd6fa05a6353c9884a81ff14c0da4bbde72",
+      "preparation.json": "b432e5a46090e44b53eb84168f913c5ab0fab38b0a78d1de7e8051eb88d6caf9",
+      "training/epoch-selection.json": "e4df8a2b80403c5d78d7867230d8ed019b561e7d136ac31ff12c6cee9c24f579",
+      "training/fit-config.json": "ec9ffdef534aa5001be689a4066f173f29ecce4664e3feac1887c0c7410df47f",
+      "training/fit-verification.json": "2a0315558c315faf72c5f8247fd2b45c632aee2eb4ed63c0cc904e814fcb26cd",
+      "training/folds.jsonl": "3de8b7109f78ecba6f77ae0c2e593547c3c3ff13d69c54a18abef024e97ac262",
+      "training/forecast-coverage.json": "c5f122537c86505773da627a8eba725b43e4d5aa29cfa31c7e602d1bcc9fbd4d",
+      "training/hpo-provenance.json": "a6a32bbeb579e114791a42a67f44ed0c0ffe5c03651e807ca12885fb73d6495b",
+      "training/m53-provenance.json": "3ee9391a41c9693836442692333924d8b6eb360df7322d976a118060dc2c01ee",
+      "training/m53-verification.json": "eca7f9233e7fe2cd083394bf67b2d0f8f0e2f3562cf6b09be5b2fe4454aa421b"
+    }
+  },
+  "extract_counts": {
+    "selected_leg_rows": 154,
+    "filled_books": 23,
+    "refused_books": 46,
+    "account_rows": 218
+  },
+  "files": {
+    "README.md": {
+      "sha256": "457801a934543b64b933d81e5fbc8e69f3e31a6bf705ac3cfc03e10cdad20ac2",
+      "bytes": 4263
+    },
+    "daily-account.csv": {
+      "sha256": "65a2bfb4b8e7a004f5e1ed6fb5946280a0c25780152915712daf6360813cf6a3",
+      "bytes": 46291
+    },
+    "mio-verification.json": {
+      "sha256": "4f86f24ea15bbcd6caefa80aaab351b5d8971a7024e79a4b9d585dc4eefe55d3",
+      "bytes": 3249
+    },
+    "orders-and-fills.csv": {
+      "sha256": "6e3055d5ad9832f3d5cef7c360d620cf76a80aa958750f6168896f58d449b510",
+      "bytes": 20790
+    },
+    "rejected-orders.csv": {
+      "sha256": "988602eb512322f6916066b7be8ed4989781807f9e1b97569a5d4de52033d082",
+      "bytes": 39187
+    },
+    "reports-verification.json": {
+      "sha256": "630fb48235f01aaa804babdcdba8dbee8a7d76baa835a3c71d48013d286d3588",
+      "bytes": 10071
+    },
+    "trades.csv": {
+      "sha256": "52ebe9a3da9253e3545eadc263edcee0b38631c684470522f49b6064176c1912",
+      "bytes": 15064
+    },
+    "w1_003_lp/decisions.csv": {
+      "sha256": "5dd1d8f53b9f64f469a55eeacd409f3f0cc48544329bf3d7a1674929f86133ec",
+      "bytes": 265571
+    },
+    "w1_003_lp/events.jsonl": {
+      "sha256": "b7677e6afc193bdf2ed2d6e5d852cfd8f7b12fc98fcb7567c5346586b0647682",
+      "bytes": 1756735
+    },
+    "w1_003_lp/gate-comparison.csv": {
+      "sha256": "61e334161b0d2036cd5f73c14cfcc525f564e6ab4f6f981c4aa739d666a03532",
+      "bytes": 295
+    },
+    "w1_003_lp/ledger.csv": {
+      "sha256": "1bf12a6c0dff6ad5473b7ba1c3b002aafb58f3bdc97ca31034c5da330b2ded56",
+      "bytes": 13081
+    },
+    "w1_003_lp/marked-figures.csv": {
+      "sha256": "556e13ff821abd97be7748d408f6b9dbb1d504b0628480b090d62c0a8cff7178",
+      "bytes": 145
+    },
+    "w1_003_lp/quarter-boundary.csv": {
+      "sha256": "c4eb8f1edcce25043274f49f2c87839cb7ce772b8f19298387129ec62d8c3a7f",
+      "bytes": 671
+    },
+    "w1_003_lp/refusals-ticker-dte.csv": {
+      "sha256": "9a681be645abd111b7c3fa5b07d77f94226696cd7848bfcd466fc42d2aa7f440",
+      "bytes": 606
+    },
+    "w1_003_lp/report.html": {
+      "sha256": "48f388a87c04c64c5769d235ea929c57c5e4815760c9c9970d6b05e3c3cd1837",
+      "bytes": 779004
+    },
+    "w1_003_lp/run-identity.csv": {
+      "sha256": "1f50e91e12fb8c10c2c61e68743be65bd88ef72957ed68ac29b95a0e49f1a30f",
+      "bytes": 824
+    },
+    "w1_003_lp/source-links.csv": {
+      "sha256": "ddf18fcc9c907ad4fb79d566c61e763ade9db997e021705ca5bfe515f876437f",
+      "bytes": 1208
+    },
+    "w1_003_lp/summary.md": {
+      "sha256": "aa5e6e21b120cec9030ca7df3746c609c36ecbc134c5bf37f5c9eb509665dd6d",
+      "bytes": 11549
+    },
+    "w1_003_lp/ticker-dte.csv": {
+      "sha256": "8029d5eb590460451fe5d53f1b8c4fdaca93adf59a30e9d6bdd03d648e1a064f",
+      "bytes": 134
+    },
+    "w1_003_lp/trades.csv": {
+      "sha256": "23b73d96f2fe74fb5bc80c42b00f0007fb521311e4e36a13a391430c848899d2",
+      "bytes": 984
+    },
+    "w1_003_shock10_lp/decisions.csv": {
+      "sha256": "6af4a044f56e73179c0e38f4f7a20c04d66938e5addb64170109899e0a38c327",
+      "bytes": 266306
+    },
+    "w1_003_shock10_lp/events.jsonl": {
+      "sha256": "e34a227d96d97dc95aeb1ff1add17a5b32d7d8ce38ee802bc11d68cea80a80e6",
+      "bytes": 1773655
+    },
+    "w1_003_shock10_lp/gate-comparison.csv": {
+      "sha256": "a2b3f9a951ea52a22ed8b0253f421bb667307e2e45362e79814a7328988c60b8",
+      "bytes": 291
+    },
+    "w1_003_shock10_lp/ledger.csv": {
+      "sha256": "e652acb93ff4c4dc27909f92cd03c8d4fdadd62cb03d33d25fefeea1f03e4175",
+      "bytes": 13256
+    },
+    "w1_003_shock10_lp/marked-figures.csv": {
+      "sha256": "455950dceb9225364a9826bd00ad2dc7440c7723a1dede80a41961a766eb389b",
+      "bytes": 141
+    },
+    "w1_003_shock10_lp/quarter-boundary.csv": {
+      "sha256": "01ba574d3fc8c3be297955e0b29421914a8810a0edc0ee9529f9803344192205",
+      "bytes": 657
+    },
+    "w1_003_shock10_lp/refusals-ticker-dte.csv": {
+      "sha256": "196223b63b0e6a3f275d0d2a0d73fd2e1bdb75a05fd88e99f1913f44359039d9",
+      "bytes": 867
+    },
+    "w1_003_shock10_lp/report.html": {
+      "sha256": "aba6c4929b849388c0a2211983744b301fc6b4b68e10b2e00da1e9ae40ed8a5a",
+      "bytes": 862823
+    },
+    "w1_003_shock10_lp/run-identity.csv": {
+      "sha256": "b4fc89f3c080e77f50c8b77b5c2b497300c533a34afc5c87000e29182509f182",
+      "bytes": 832
+    },
+    "w1_003_shock10_lp/source-links.csv": {
+      "sha256": "ddf18fcc9c907ad4fb79d566c61e763ade9db997e021705ca5bfe515f876437f",
+      "bytes": 1208
+    },
+    "w1_003_shock10_lp/summary.md": {
+      "sha256": "28ec8a610a34c70bbcb2f4a041578a8b3645153180fe1c2b91afaf541b3605a0",
+      "bytes": 11608
+    },
+    "w1_003_shock10_lp/ticker-dte.csv": {
+      "sha256": "27b57f40ac2d01cef135962f32b4c0ad410931251b5446238cde88ac66e13130",
+      "bytes": 587
+    },
+    "w1_003_shock10_lp/trades.csv": {
+      "sha256": "6ab3143e51f8799a71b6ce3c79e9f3738b4f60fbae7651c2d4cc8b1cc3d5d61d",
+      "bytes": 3999
+    }
+  }
+}

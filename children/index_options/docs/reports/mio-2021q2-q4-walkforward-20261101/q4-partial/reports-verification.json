@@ -1,0 +1,243 @@
+{
+  "run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/reports-q4-partial/mio-2021q4-partial-tail-v2-evaluation-2021-12-31-82296675",
+  "document_hash": "86e94b58757d8e808edb8d9b02e643da33057c645c40873f335d908c5c2b8d48",
+  "reports": [
+    {
+      "method": "w1_003_shock10_lp",
+      "gates": [
+        {
+          "measure": "net_pnl",
+          "expected": "-7937.5",
+          "actual": "-7937.5",
+          "diff": "0.0",
+          "tolerance": "0.005",
+          "ok": "True"
+        },
+        {
+          "measure": "final_equity",
+          "expected": "8062.5",
+          "actual": "8062.5",
+          "diff": "0.0",
+          "tolerance": "0.005",
+          "ok": "True"
+        },
+        {
+          "measure": "contributions",
+          "expected": "16000.0",
+          "actual": "16000.0",
+          "diff": "0.0",
+          "tolerance": "0.005",
+          "ok": "True"
+        },
+        {
+          "measure": "fees",
+          "expected": "71.5",
+          "actual": "71.5",
+          "diff": "0.0",
+          "tolerance": "0.005",
+          "ok": "True"
+        },
+        {
+          "measure": "fill_count",
+          "expected": "38",
+          "actual": "38",
+          "diff": "0",
+          "tolerance": "0",
+          "ok": "True"
+        },
+        {
+          "measure": "refusal_count",
+          "expected": "27",
+          "actual": "27",
+          "diff": "0",
+          "tolerance": "0",
+          "ok": "True"
+        },
+        {
+          "measure": "decision_count",
+          "expected": "14",
+          "actual": "14",
+          "diff": "0",
+          "tolerance": "0",
+          "ok": "True"
+        }
+      ],
+      "source_links": [
+        {
+          "id": "result",
+          "key": "",
+          "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2/mio-2021q4-tail-v2-walkforward-frozen-m53-development-2021-12-31-9add6949/artifacts/json/8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a.json",
+          "status": "present",
+          "sha256": "8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a",
+          "bytes": "9885084"
+        },
+        {
+          "id": "receipt",
+          "key": "",
+          "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2/mio-2021q4-tail-v2-walkforward-frozen-m53-development-2021-12-31-9add6949/nodes/06-close_packet.json",
+          "status": "present",
+          "sha256": "082ce3aefbee45ee70fc1d7cb3967c1b957f3cb818aa7a495efeab9eef9dbc0f",
+          "bytes": "531"
+        },
+        {
+          "id": "resolved",
+          "key": "",
+          "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2/mio-2021q4-tail-v2-walkforward-frozen-m53-development-2021-12-31-9add6949/resolved.json",
+          "status": "present",
+          "sha256": "6f97eca73cb0596435de2513461c8c491e00d2cfb0e64b918743b6701b1043a0",
+          "bytes": "308"
+        },
+        {
+          "id": "run_report",
+          "key": "",
+          "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2/mio-2021q4-tail-v2-walkforward-frozen-m53-development-2021-12-31-9add6949/report.md",
+          "status": "present",
+          "sha256": "81b4b215753a419711738fcbc4904a07226133ad7d4b78b527ed586444e12b5f",
+          "bytes": "513"
+        }
+      ],
+      "files": {
+        "gate-comparison.csv": "a2b3f9a951ea52a22ed8b0253f421bb667307e2e45362e79814a7328988c60b8",
+        "marked-figures.csv": "455950dceb9225364a9826bd00ad2dc7440c7723a1dede80a41961a766eb389b",
+        "trades.csv": "6ab3143e51f8799a71b6ce3c79e9f3738b4f60fbae7651c2d4cc8b1cc3d5d61d",
+        "events.jsonl": "e34a227d96d97dc95aeb1ff1add17a5b32d7d8ce38ee802bc11d68cea80a80e6",
+        "summary.md": "28ec8a610a34c70bbcb2f4a041578a8b3645153180fe1c2b91afaf541b3605a0",
+        "ledger.csv": "e652acb93ff4c4dc27909f92cd03c8d4fdadd62cb03d33d25fefeea1f03e4175",
+        "source-links.csv": "ddf18fcc9c907ad4fb79d566c61e763ade9db997e021705ca5bfe515f876437f",
+        "quarter-boundary.csv": "01ba574d3fc8c3be297955e0b29421914a8810a0edc0ee9529f9803344192205",
+        "ticker-dte.csv": "27b57f40ac2d01cef135962f32b4c0ad410931251b5446238cde88ac66e13130",
+        "run-identity.csv": "b4fc89f3c080e77f50c8b77b5c2b497300c533a34afc5c87000e29182509f182",
+        "report.html": "aba6c4929b849388c0a2211983744b301fc6b4b68e10b2e00da1e9ae40ed8a5a",
+        "decisions.csv": "6af4a044f56e73179c0e38f4f7a20c04d66938e5addb64170109899e0a38c327",
+        "refusals-ticker-dte.csv": "196223b63b0e6a3f275d0d2a0d73fd2e1bdb75a05fd88e99f1913f44359039d9"
+      },
+      "ledger_rows": 109,
+      "trade_rows": 19,
+      "verified": true,
+      "event_and_html_provenance_verified": true,
+      "actual_result_sha256": "8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a",
+      "actual_document_hash": "75520d7b0be89dbc066a3b9928b15a162f719600e6a46d17da5b6182eeed8949"
+    },
+    {
+      "method": "w1_003_lp",
+      "gates": [
+        {
+          "measure": "net_pnl",
+          "expected": "-8239.85",
+          "actual": "-8239.85",
+          "diff": "0.0",
+          "tolerance": "0.005",
+          "ok": "True"
+        },
+        {
+          "measure": "final_equity",
+          "expected": "7760.15",
+          "actual": "7760.15",
+          "diff": "0.0",
+          "tolerance": "0.005",
+          "ok": "True"
+        },
+        {
+          "measure": "contributions",
+          "expected": "16000.0",
+          "actual": "16000.0",
+          "diff": "0.0",
+          "tolerance": "0.005",
+          "ok": "True"
+        },
+        {
+          "measure": "fees",
+          "expected": "44.85",
+          "actual": "44.85",
+          "diff": "0.0",
+          "tolerance": "0.005",
+          "ok": "True"
+        },
+        {
+          "measure": "fill_count",
+          "expected": "8",
+          "actual": "8",
+          "diff": "0",
+          "tolerance": "0",
+          "ok": "True"
+        },
+        {
+          "measure": "refusal_count",
+          "expected": "19",
+          "actual": "19",
+          "diff": "0",
+          "tolerance": "0",
+          "ok": "True"
+        },
+        {
+          "measure": "decision_count",
+          "expected": "14",
+          "actual": "14",
+          "diff": "0",
+          "tolerance": "0",
+          "ok": "True"
+        }
+      ],
+      "source_links": [
+        {
+          "id": "result",
+          "key": "",
+          "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2/mio-2021q4-tail-v2-walkforward-frozen-m53-development-2021-12-31-9add6949/artifacts/json/8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a.json",
+          "status": "present",
+          "sha256": "8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a",
+          "bytes": "9885084"
+        },
+        {
+          "id": "receipt",
+          "key": "",
+          "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2/mio-2021q4-tail-v2-walkforward-frozen-m53-development-2021-12-31-9add6949/nodes/06-close_packet.json",
+          "status": "present",
+          "sha256": "082ce3aefbee45ee70fc1d7cb3967c1b957f3cb818aa7a495efeab9eef9dbc0f",
+          "bytes": "531"
+        },
+        {
+          "id": "resolved",
+          "key": "",
+          "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2/mio-2021q4-tail-v2-walkforward-frozen-m53-development-2021-12-31-9add6949/resolved.json",
+          "status": "present",
+          "sha256": "6f97eca73cb0596435de2513461c8c491e00d2cfb0e64b918743b6701b1043a0",
+          "bytes": "308"
+        },
+        {
+          "id": "run_report",
+          "key": "",
+          "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2/mio-2021q4-tail-v2-walkforward-frozen-m53-development-2021-12-31-9add6949/report.md",
+          "status": "present",
+          "sha256": "81b4b215753a419711738fcbc4904a07226133ad7d4b78b527ed586444e12b5f",
+          "bytes": "513"
+        }
+      ],
+      "files": {
+        "gate-comparison.csv": "61e334161b0d2036cd5f73c14cfcc525f564e6ab4f6f981c4aa739d666a03532",
+        "marked-figures.csv": "556e13ff821abd97be7748d408f6b9dbb1d504b0628480b090d62c0a8cff7178",
+        "trades.csv": "23b73d96f2fe74fb5bc80c42b00f0007fb521311e4e36a13a391430c848899d2",
+        "events.jsonl": "b7677e6afc193bdf2ed2d6e5d852cfd8f7b12fc98fcb7567c5346586b0647682",
+        "summary.md": "aa5e6e21b120cec9030ca7df3746c609c36ecbc134c5bf37f5c9eb509665dd6d",
+        "ledger.csv": "1bf12a6c0dff6ad5473b7ba1c3b002aafb58f3bdc97ca31034c5da330b2ded56",
+        "source-links.csv": "ddf18fcc9c907ad4fb79d566c61e763ade9db997e021705ca5bfe515f876437f",
+        "quarter-boundary.csv": "c4eb8f1edcce25043274f49f2c87839cb7ce772b8f19298387129ec62d8c3a7f",
+        "ticker-dte.csv": "8029d5eb590460451fe5d53f1b8c4fdaca93adf59a30e9d6bdd03d648e1a064f",
+        "run-identity.csv": "1f50e91e12fb8c10c2c61e68743be65bd88ef72957ed68ac29b95a0e49f1a30f",
+        "report.html": "48f388a87c04c64c5769d235ea929c57c5e4815760c9c9970d6b05e3c3cd1837",
+        "decisions.csv": "5dd1d8f53b9f64f469a55eeacd409f3f0cc48544329bf3d7a1674929f86133ec",
+        "refusals-ticker-dte.csv": "9a681be645abd111b7c3fa5b07d77f94226696cd7848bfcd466fc42d2aa7f440"
+      },
+      "ledger_rows": 109,
+      "trade_rows": 4,
+      "verified": true,
+      "event_and_html_provenance_verified": true,
+      "actual_result_sha256": "8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a",
+      "actual_document_hash": "75520d7b0be89dbc066a3b9928b15a162f719600e6a46d17da5b6182eeed8949"
+    }
+  ],
+  "standard_reports_verified": true,
+  "study_complete": false,
+  "completed_method_reports": 2,
+  "failed_method": "nominal_lp",
+  "companion_execution_detail_and_combined_index": "pending delivery appendix"
+}

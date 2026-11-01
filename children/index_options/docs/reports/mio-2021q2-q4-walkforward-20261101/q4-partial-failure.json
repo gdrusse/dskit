@@ -1,0 +1,128 @@
+{
+  "schema": "q4-partial-failure-evidence-v1",
+  "created_utc": "2026-11-01T12:59:56.979385+00:00",
+  "source_run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2/mio-2021q4-tail-v2-walkforward-frozen-m53-development-2021-12-31-9add6949",
+  "config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q4-tail-v2.json",
+  "config_sha256": "2acce9d9b7dffc33fe6d4092035f8f3ad910907840fa855982b04ee04382c241",
+  "document_hash": "75520d7b0be89dbc066a3b9928b15a162f719600e6a46d17da5b6182eeed8949",
+  "receipt": {
+    "bytes": 9885084,
+    "media_type": "application/json",
+    "path": "artifacts/json/8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a.json",
+    "sha256": "8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a"
+  },
+  "close_node": {
+    "nodes/06-close_packet.json": "082ce3aefbee45ee70fc1d7cb3967c1b957f3cb818aa7a495efeab9eef9dbc0f"
+  },
+  "pipeline_completed": true,
+  "study_complete": false,
+  "methods": [
+    {
+      "id": "w1_003_shock10_lp",
+      "status": "completed",
+      "replay_parity": true,
+      "error": null
+    },
+    {
+      "id": "nominal_lp",
+      "status": "failed",
+      "replay_parity": false,
+      "error": "ValueError: unsettleable selected book: 2021-10-25:IBM:2021-12-17"
+    },
+    {
+      "id": "w1_003_lp",
+      "status": "completed",
+      "replay_parity": true,
+      "error": null
+    }
+  ],
+  "failure_book": "2021-10-25:IBM:2021-12-17",
+  "reason": "IBM became IBM1 on 2021-11-04; deliverable is 100 IBM shares plus 20 KD shares, unsupported by the pinned standard-split ledger. Expiry bar and basis exist, so this is not a missing source tail.",
+  "failed_method_totals": null,
+  "failure_accounting_note": "The failed method has no result payload. Do not invent final profit, trade count, or settled account from provisional decisions.",
+  "log": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/mio-q4-tail-v2.log",
+  "log_sha256": "bee7d15bb6ce6941cbcca68c81f9fcc0d4784c85d1e00aa9e42ef1c421d46e1c",
+  "run_log_sha256": "53f9d2048e129ade906b4923b518a889004fe635d51a54b87cd2df0cb60756f5",
+  "registry": {
+    "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/q4-tail-exposure-registry.sqlite",
+    "id": "5b6924e9-2cf7-486f-90f5-62db8fb60b38",
+    "revision": 4,
+    "active": "d2bcc77d-e3f7-4def-91e1-e1432ed840b3",
+    "claim_status": "claimed_exposed"
+  },
+  "authoritative_notice": "https://boxoptions.com/assets/BOXOnnMemo205264.pdf",
+  "earlier_announcement": "https://newsroom.ibm.com/2021-10-12-IBM-Board-of-Directors-Approves-Separation-of-Kyndryl",
+  "chronology_note": "The Oct12 company release announced the expected Nov3 after-close distribution. The Nov3 exchange notice proves exact IBM1 adjustment terms/effective date. Do not backdate that later notice.",
+  "phase0_review": {
+    "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/verification/q4-ibm-phase0-correctness.json",
+    "sha256": "0324f1df9653dbe620bc47a008129deaaa7263076bee4b6400a82d936eb66b52"
+  },
+  "resolution_status": "Owner scope decision required. No runtime edits, policy/source mutation, rerun or successful-quarter disposition performed.",
+  "scope_proposal": {
+    "status": "proposed_not_applied",
+    "decision_needed": "Changing tradable-contract eligibility exceeds the request to rerun identical settings. Existing MIO has no mixed-deliverable support or point-in-time exclusion knob.",
+    "recommended_option": "Config-only support policy via separately pinned input preparation, consistently across all three methods; preserve original attempts.",
+    "rule": "After a public dated notice announces a scheduled noncash spinoff, do not initiate a contract whose holding interval reaches the announced distribution date while it remains exposed to that unsupported deliverable. Use the next session after a date-only announcement. Admit post-action standard contracts only after positive source identity verification. No future price, realized basis change or P&L is an eligibility predicate.",
+    "known_notices": [
+      {
+        "symbol": "IBM",
+        "announcement_date": "2021-10-12",
+        "usable_from_session": "2021-10-13",
+        "announced_distribution_date": "2021-11-03",
+        "source": "https://newsroom.ibm.com/2021-10-12-IBM-Board-of-Directors-Approves-Separation-of-Kyndryl",
+        "later_terms_notice": "https://boxoptions.com/assets/BOXOnnMemo205264.pdf",
+        "later_terms_publication_date": "2021-11-03",
+        "later_terms_effective_date": "2021-11-04"
+      },
+      {
+        "symbol": "O",
+        "announcement_date": "2021-10-22",
+        "usable_from_session": "2021-10-25",
+        "announced_distribution_date": "2021-11-12",
+        "source": "https://www.sec.gov/Archives/edgar/data/1507385/000150738521000210/exhibit991-mergerclosingda.htm",
+        "later_terms_notice": "https://infomemo.theocc.com/infomemos?number=49557",
+        "later_terms_publication_date": "2021-11-09",
+        "later_terms_effective_date": "2021-11-15"
+      }
+    ],
+    "implementation_seam": "Existing Filter/Join preparation and onboarding nodes over paired forecast/context identity rows, separately certified source/protocol identity, matching audited exclusions. No runtime extension or ADR.",
+    "retained_settings": [
+      "212-name universe",
+      "three accepted methods",
+      "M53 frozen at quarter start",
+      "trained model artifacts",
+      "risk limits, solver settings, fees, fills and deposits"
+    ],
+    "required_before_launch": [
+      "Audit unsupported actions uniformly, using public notice chronology.",
+      "Verify standard post-action contract identity from retained raw-source provenance; normalized quotes alone do not contain a root/deliverable field.",
+      "Do not repair already-open positions by filtering future rows; disclose and stop if unsupported preannouncement holdings occur.",
+      "Retain row-level exclusions with symbol/decision/expiry, notice source/date, reason and counts; no silent deletion.",
+      "Recheck effects on Q2/Q3 comparability before claiming one unchanged protocol.",
+      "Run all three methods under the same approved eligibility source; retain the current failed result."
+    ],
+    "alternatives": [
+      "Keep exact existing eligibility and accept/report Q4 as incomplete for nominal_lp.",
+      "Separately authorize runtime support for mixed deliverables if preserving these contracts is mandatory; outside current no-code scope."
+    ],
+    "not_guaranteed": "Approval of the proposed policy does not establish source identity or a successful rerun; those gates must be proven."
+  },
+  "failed_publication": {
+    "config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/publish-q4-partial-tail-v2.json",
+    "config_sha256": "f69479022f6cf6fc75738641b91cdb966c0f073f63a68dc8dfa60a75d9ffcaef",
+    "run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/publish-q4-partial/publish-q4-partial-tail-v2-2021-12-31-ea09e910",
+    "document_hash": "91e2da948c6cf56fe3dac656b005000ff760e2c03b005274bad4f5b0b2911e42",
+    "registry_revision": 5,
+    "claim_status": "failed_exposed_pending_review",
+    "publication": {
+      "artifact_sha256": "8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a",
+      "receipt": {
+        "document_hash": "75520d7b0be89dbc066a3b9928b15a162f719600e6a46d17da5b6182eeed8949",
+        "node": "close_packet",
+        "port": "receipt",
+        "run_dir": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2/mio-2021q4-tail-v2-walkforward-frozen-m53-development-2021-12-31-9add6949"
+      }
+    },
+    "disposition": "No success review or abandonment. Keep failure exposed pending owner scope decision."
+  }
+}

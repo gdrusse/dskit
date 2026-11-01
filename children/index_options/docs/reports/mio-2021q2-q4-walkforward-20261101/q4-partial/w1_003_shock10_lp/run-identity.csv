@@ -1,0 +1,11 @@
+field,value
+MIO method,w1_003_shock10_lp
+cohort,212 accepted names
+account window,2021-10-01 through 2021-12-31; 64 sessions
+decision dates,14
+coverage action,full quarter for this completed method; overall three-method study incomplete; independent reset account
+source MIO result SHA256,8001a7aee4fd3b702568ca1a3e99e58bedc3aa9580352c0b7989d177d9dd691a
+source MIO document hash,75520d7b0be89dbc066a3b9928b15a162f719600e6a46d17da5b6182eeed8949
+source MIO config SHA256,2acce9d9b7dffc33fe6d4092035f8f3ad910907840fa855982b04ee04382c241
+predictive recipe,M53 frozen at quarter start; mature pre-quarter MLP64 seed29 refit; selected epochs 36
+source run,/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-tail-v2/mio-2021q4-tail-v2-walkforward-frozen-m53-development-2021-12-31-9add6949

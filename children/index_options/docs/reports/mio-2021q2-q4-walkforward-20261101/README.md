@@ -1,6 +1,6 @@
 # MIO 2021 Q2–Q4: quarterly walk-forward evaluation
 
-6 of nine standard method reports are verified. Remaining quarters: Q4.
+Eight of nine standard method reports are verified. Q2 and Q3 are complete. Q4 shock and w1 completed; nominal_lp failed at the IBM/Kyndryl contract change and has no valid final totals. The overall evaluation remains incomplete.
 
 ## Evaluation
 
@@ -8,7 +8,7 @@ The accepted M53 predictor feeds three unchanged portfolio methods across the sa
 
 Quarter-end values mark open books on the final session of the named quarter. Settled cohort values include all later expiries of those books. P&L is net of fees and excludes deposits; time-weighted return adjusts for deposit timing. Generic event charts value open books at cost and are labeled accordingly; the MIO marked ledger is authoritative.
 
-[Comparison data and source hashes](comparison.csv). Returns and drawdowns in the CSV are fractions; money is USD. It contains only completed, verified quarters.
+[Comparison data and source hashes](comparison.csv). Returns and drawdowns in the CSV are fractions; money is USD. It contains only completed, verified method results. Q4 nominal_lp is unavailable, not zero.
 
 ### Q2
 
@@ -25,6 +25,14 @@ Quarter-end values mark open books on the final session of the named quarter. Se
 - [w1_003_shock10_lp](q3/w1_003_shock10_lp/summary.md) · [HTML](q3/w1_003_shock10_lp/report.html): quarter-end marked P&L $-3,648.15, TWR -26.24%; settled cohort profit $-5,193.65, TWR -35.47%; 21 filled books / 40 leg rows / 161 contracts.
 - [nominal_lp](q3/nominal_lp/summary.md) · [HTML](q3/nominal_lp/report.html): quarter-end marked P&L $-3,864.75, TWR -29.10%; settled cohort profit $-1,303.75, TWR -14.14%; 16 filled books / 18 leg rows / 395 contracts.
 - [w1_003_lp](q3/w1_003_lp/summary.md) · [HTML](q3/w1_003_lp/report.html): quarter-end marked P&L $-2,990.90, TWR -23.56%; settled cohort profit $-3,636.40, TWR -27.35%; 6 filled books / 9 leg rows / 56 contracts.
+
+### Q4: partial study
+
+[Two completed reports and execution detail](q4-partial/README.md).
+
+- [w1_003_shock10_lp](q4-partial/w1_003_shock10_lp/summary.md): quarter-end marked P&L -3,045.50 USD; settled cohort P&L -7,937.50 USD; 19 filled books / 25 leg rows / 110 contracts.
+- [w1_003_lp](q4-partial/w1_003_lp/summary.md): quarter-end marked P&L -1,873.35 USD; settled cohort P&L -8,239.85 USD; 4 filled books / 6 leg rows / 69 contracts.
+- **nominal_lp: FAILED.** No valid final profit or trade count. [Failure evidence and scope proposal](q4-partial-failure.json).
 
 ## Training and early stopping
 
@@ -61,3 +69,9 @@ The first Q4 attempt failed at AVAV expiry on 2022-02-18. Its closing price exis
 The supplemental source review found that an earlier claim of protected row-group exclusion was false: Arrow could scan protected-date date/symbol columns before filtering. No protected price/outcome records entered conversion. An independent regeneration using physically pre-2024 chain files and the existing sealed_from guard reproduced every market value exactly. [Boundary correction and regeneration evidence](q4-bounded-regeneration.json) retains this distinction and the original failed review.
 
 [Q4 supplemental source review lock](q4-supplemental-review-lock.json) binds the final correction and both independent review verdicts.
+
+## Q4 unsupported deliverable
+
+The attested close receipt is complete=false. The failed IBM contract delivered 100 IBM plus 20 Kyndryl shares; the pinned standard-split ledger cannot settle it. [Exchange notice](https://boxoptions.com/assets/BOXOnnMemo205264.pdf).
+
+[Independent capability review](q4-ibm-phase0-correctness.json) found no existing MIO config switch. A public-notice-based eligibility policy is proposed but unapplied. Original results and exposures remain retained. Merge and task cleanup await resolution.
