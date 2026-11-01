@@ -1,6 +1,6 @@
 {
-  "run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/reports-q2/mio-2021q2-complete-quarter-evaluation-2021-06-30-54da7ca0",
-  "document_hash": "6bf2990bbe7ba06c83b397a2c109d07f612ece3130855bf5629772cf7b3fceff",
+  "run": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/reports-q2-v2/mio-2021q2-complete-quarter-evaluation-2021-06-30-6c661015",
+  "document_hash": "937169cf5ba2cf829657c91b62542f196459acf103f28bfde0498afe95e842b1",
   "reports": [
     {
       "method": "w1_003_shock10_lp",
@@ -100,20 +100,23 @@
         "gate-comparison.csv": "43aeecb0413f4a0c3eb8ea86911e482004292d0cfb55ea498a7daa8bd946d263",
         "marked-figures.csv": "57d4ec127e979cc4bb7daa71be25cc8ac83a16ef8f0ee155fffacd6355b1800f",
         "trades.csv": "8ef7553da65df773c808be3e160cdbffab3a30f05ba94423166abe583f178914",
-        "events.jsonl": "90d905dd6663ba2e77dbfd520412e62a13dd139d081ff6ea40ba7f77268cc0d6",
-        "summary.md": "9e39281c2913dabc3403cf5c69ce83ca9fe3eccf02cfcb0d4c90a096b58e326d",
+        "events.jsonl": "01575c2a877c5f91e69a568d9ac98a7a694fbc48a430e5777dd75c8867657bde",
+        "summary.md": "03a67faa8672767e2a18ec82cddb91d6aa4d757d37d766a9a54ef05187a994ea",
         "ledger.csv": "63ddacbbf8887fe06f5a72b324a7d8d101b9e1abc47292c7f7cceb294e5f2216",
         "source-links.csv": "47209c7f32f19be8ae039a47b83ed77f25948172c0486be81aeb879f328979ca",
         "quarter-boundary.csv": "efaadc989a8c000b67b45ccd42476883e00bb0d1390e97d748e330f8057ec1ab",
         "ticker-dte.csv": "0b44574a7666e860a04be90ef7329ea4ee3a2a5fcf076ff42d4304e892704826",
         "run-identity.csv": "9caf16d7762ff80efe05948af410602f813269f018237cfe2c953955f7b0f027",
-        "report.html": "be85484f20089baafab0130748c8a7aba95b6b06eb3a81f12b49729788e38487",
+        "report.html": "c0e19411ab0834f7e29cac145442e2a94e442ac07b885295fa12cf94766d042d",
         "decisions.csv": "f8975c2e5b99734aef59630c96dd968ad33ae625a538639640cb0e303272a925",
         "refusals-ticker-dte.csv": "dd536143d871ceae298a1ef02fc4264559861d67829c0e5e97cb69651cd0e908"
       },
       "ledger_rows": 109,
       "trade_rows": 22,
-      "verified": true
+      "verified": true,
+      "event_and_html_provenance_verified": true,
+      "actual_result_sha256": "d34467f5bef67e3ec136be0ed166782a1876fc7dd36552cef0cf5f8fce63949d",
+      "actual_document_hash": "052cf9e20b6b3c4e91e689335e64117a3ae7d565bcc63d3f1300142f965143d3"
     },
     {
       "method": "nominal_lp",
@@ -213,20 +216,23 @@
         "gate-comparison.csv": "879ca3afbe45228c2ed993119a192071f731ba291335cf539a9ef063a168b0a5",
         "marked-figures.csv": "e68a95780d478eaf250561976ff9952674b23598315d58aa4e63fa8e8fe759cd",
         "trades.csv": "1203a2e3c097c4da80351607eedea18085ae3e5e869ced2a6729cbc7d40cc9fa",
-        "events.jsonl": "0fe08d727d27e1d9553bd8ecc3e150581a8c56271ec160238cc4a36f63f4d023",
-        "summary.md": "0538d9f0a80cb8932725720d5e0838311e98f73eccd78c575d731bf1a8dd6cb6",
+        "events.jsonl": "bbb7f2d14dc3d6b2d9d3d31f2184cca64e3e48eac0775b91bb5988214e6823b0",
+        "summary.md": "057f929f561cdb4e82fb5ba30da64360aac8c4fdd33529724de9239da850285a",
         "ledger.csv": "e166c8258bee90d5ea6e6b51ffad7825b4731650db7e8387d4aa2e87f309dfb0",
         "source-links.csv": "47209c7f32f19be8ae039a47b83ed77f25948172c0486be81aeb879f328979ca",
         "quarter-boundary.csv": "c8e33062f36444188eb4f5182ba756a80059b6d453b2c182774f48aa6f166984",
         "ticker-dte.csv": "c3700d7d27cc7fae6547403f75dc5c6ee0daf629704807bb1377726636b9228e",
         "run-identity.csv": "7d4c454c3b3c20751a798c84d97851cc9df3e7a8357d822661903f3fb3c6e16a",
-        "report.html": "12b9eae284d2b6322e5c90acd593df3c8160c457a460980196862bb01a51ed51",
+        "report.html": "f64593cf880b89e6b3344161086c4384191a5d4916d73cc7fcbb956365972081",
         "decisions.csv": "d58d6edd9c9b583189ce15680b55cf7f4926cc0dfeb69d52d0ab975ae1dfa628",
         "refusals-ticker-dte.csv": "169ca7641f44c6ee87dea8afec49b575cc5ef7668a4b4288e01abea8675510e1"
       },
       "ledger_rows": 109,
       "trade_rows": 11,
-      "verified": true
+      "verified": true,
+      "event_and_html_provenance_verified": true,
+      "actual_result_sha256": "d34467f5bef67e3ec136be0ed166782a1876fc7dd36552cef0cf5f8fce63949d",
+      "actual_document_hash": "052cf9e20b6b3c4e91e689335e64117a3ae7d565bcc63d3f1300142f965143d3"
     },
     {
       "method": "w1_003_lp",
@@ -326,20 +332,23 @@
         "gate-comparison.csv": "80be9add6c292718395a8e0f9a57f0441bbec7069696d6b1f4db6c44126880d9",
         "marked-figures.csv": "469dcc329f1101ddc63ef4d842437a8675c874a9976fe192855524d7e986b5e8",
         "trades.csv": "9c1de453c852e8fe4b3a01e8c0e0aca32e48d7bcc759c48c964befd42e46ebca",
-        "events.jsonl": "d6b3b54faff163db09b205667dd1f090a71b9ed15336c0b7fe2ccd9237e15903",
-        "summary.md": "9b04750a342c447f703bf6b237519f814101367d96cf7e79f0895473b5408c6f",
+        "events.jsonl": "f58dd80c563b4b230a4bce4c357a76acda644227a3dfa0e016801bf4566147d5",
+        "summary.md": "8282d692ce9c53402b306d872bed6e08bdbc4978f3e8db3a56e6c5eed3c23840",
         "ledger.csv": "d5c715f2331f7437f9bf42cb5aba54a27dc2e66f21731d1036052c7d7792140f",
         "source-links.csv": "47209c7f32f19be8ae039a47b83ed77f25948172c0486be81aeb879f328979ca",
         "quarter-boundary.csv": "d2271f922515b328b7a1c6ac685f191e5511f045f47d19a57ea81f7c78158d54",
         "ticker-dte.csv": "c51fab208001c0a94d5dfd797cdb33c09d433d2c0a7d8177b63a1360e54a625f",
         "run-identity.csv": "d94e495e2f6b401bd8144f6f3698517c533d648eb2d68fecd093c4ce223d825b",
-        "report.html": "ac5ce2b7e0f51849eb3e8ad9f65cf26ec0bf76b065ec8be32827edc90effec19",
+        "report.html": "f706c5dff4eeb142ccf50f699b4ab2768d243448cfb1146f692d4bebad7679f7",
         "decisions.csv": "d936182ec4afd67464718f40c9d866fa34ae8a8f0398d3d54f9a48690acd6acf",
         "refusals-ticker-dte.csv": "f47c0cd3c84cd465c3fd3935391e0b2ae17c883e0585231b19fdf215b23f6461"
       },
       "ledger_rows": 109,
       "trade_rows": 12,
-      "verified": true
+      "verified": true,
+      "event_and_html_provenance_verified": true,
+      "actual_result_sha256": "d34467f5bef67e3ec136be0ed166782a1876fc7dd36552cef0cf5f8fce63949d",
+      "actual_document_hash": "052cf9e20b6b3c4e91e689335e64117a3ae7d565bcc63d3f1300142f965143d3"
     }
   ],
   "standard_reports_verified": true,

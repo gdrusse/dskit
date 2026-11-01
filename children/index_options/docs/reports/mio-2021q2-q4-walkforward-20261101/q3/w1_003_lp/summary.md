@@ -30,7 +30,7 @@
 
 | field | value |
 |---|---|
-| run | c783fabdf5b8dea57ae0ee9543051a68663437bfabbafe2148086de4ff1a13d0 |
+| run | 9a2412be0ce2e686404e3915e23e47d6a1d1e30ba57738bfb12490680ddd39eb |
 | project | index_options |
 | decision window | 2021-07-01 16:00 → 2021-09-27 16:00 (14 sessions) |
 | data window | 2021-07-01 08:00 → 2021-10-29 16:00 (37 sessions) |
@@ -157,15 +157,15 @@ All accounted for.
 | field | value | source |
 |---|---|---|
 | schema | dskit-eval-v1 | — |
-| run_id | c783fabdf5b8dea57ae0ee9543051a68663437bfabbafe2148086de4ff1a13d0 | — |
-| config_hash | aea596022a463d502af6cbcab9d71de537c2fbb6234e4eb711e7fdd1a2746963 | — |
+| run_id | 9a2412be0ce2e686404e3915e23e47d6a1d1e30ba57738bfb12490680ddd39eb | — |
+| config_hash | dc5fbd1a41911a6b4f3650221394a749b62a35fadd93387dccd8a68aec5e6461 | — |
 | code commit | — | — |
 | code dirty | — | — |
 | trials | 1 | — |
 | python | 3.12.3 | RuntimeFingerprint of the interpreter that rendered the report |
 | platform | Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39 | RuntimeFingerprint of the interpreter that rendered the report |
 | packages | 178 | RuntimeFingerprint of the interpreter that rendered the report |
-| wall time | 0.4390 s | report node: now minus config.json mtime (run start); excludes rendering |
+| wall time | 0.4680 s | report node: now minus config.json mtime (run start); excludes rendering |
 | events | cashflow=7, decision=14, fill=12, order=21, refusal=15, run_end=1, run_start=1, skip=8018, solve=14 | — |
 
 <!-- artifact-links:begin -->

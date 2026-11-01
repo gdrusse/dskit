@@ -1,0 +1,259 @@
+{
+  "finding": "Q4FINAL-INT-MAJ-001",
+  "status": "Corrected and locally verified; independent re-review pending",
+  "quarters": {
+    "2": {
+      "original_output": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/reports/q2",
+      "corrected_output": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/reports/q2-v2",
+      "config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/report-q2-complete-v2.json",
+      "config_sha256": "a21d0e3357bc73ca7ec018b09bdc444cb8c28ee83b343391a45245db9ffed901",
+      "verification_sha256": "384c009ddd44ba6db5458514861f3a6e0ba78b57b8ff1ead9bb1cf814d7ccf02",
+      "methods": [
+        {
+          "method": "w1_003_shock10_lp",
+          "byte_identical_numerical_csvs": [
+            {
+              "name": "gate-comparison.csv",
+              "sha256": "43aeecb0413f4a0c3eb8ea86911e482004292d0cfb55ea498a7daa8bd946d263"
+            },
+            {
+              "name": "marked-figures.csv",
+              "sha256": "57d4ec127e979cc4bb7daa71be25cc8ac83a16ef8f0ee155fffacd6355b1800f"
+            },
+            {
+              "name": "trades.csv",
+              "sha256": "8ef7553da65df773c808be3e160cdbffab3a30f05ba94423166abe583f178914"
+            },
+            {
+              "name": "ledger.csv",
+              "sha256": "63ddacbbf8887fe06f5a72b324a7d8d101b9e1abc47292c7f7cceb294e5f2216"
+            },
+            {
+              "name": "quarter-boundary.csv",
+              "sha256": "efaadc989a8c000b67b45ccd42476883e00bb0d1390e97d748e330f8057ec1ab"
+            },
+            {
+              "name": "ticker-dte.csv",
+              "sha256": "0b44574a7666e860a04be90ef7329ea4ee3a2a5fcf076ff42d4304e892704826"
+            },
+            {
+              "name": "decisions.csv",
+              "sha256": "f8975c2e5b99734aef59630c96dd968ad33ae625a538639640cb0e303272a925"
+            },
+            {
+              "name": "refusals-ticker-dte.csv",
+              "sha256": "dd536143d871ceae298a1ef02fc4264559861d67829c0e5e97cb69651cd0e908"
+            }
+          ],
+          "source_links_byte_identical": true
+        },
+        {
+          "method": "nominal_lp",
+          "byte_identical_numerical_csvs": [
+            {
+              "name": "gate-comparison.csv",
+              "sha256": "879ca3afbe45228c2ed993119a192071f731ba291335cf539a9ef063a168b0a5"
+            },
+            {
+              "name": "marked-figures.csv",
+              "sha256": "e68a95780d478eaf250561976ff9952674b23598315d58aa4e63fa8e8fe759cd"
+            },
+            {
+              "name": "trades.csv",
+              "sha256": "1203a2e3c097c4da80351607eedea18085ae3e5e869ced2a6729cbc7d40cc9fa"
+            },
+            {
+              "name": "ledger.csv",
+              "sha256": "e166c8258bee90d5ea6e6b51ffad7825b4731650db7e8387d4aa2e87f309dfb0"
+            },
+            {
+              "name": "quarter-boundary.csv",
+              "sha256": "c8e33062f36444188eb4f5182ba756a80059b6d453b2c182774f48aa6f166984"
+            },
+            {
+              "name": "ticker-dte.csv",
+              "sha256": "c3700d7d27cc7fae6547403f75dc5c6ee0daf629704807bb1377726636b9228e"
+            },
+            {
+              "name": "decisions.csv",
+              "sha256": "d58d6edd9c9b583189ce15680b55cf7f4926cc0dfeb69d52d0ab975ae1dfa628"
+            },
+            {
+              "name": "refusals-ticker-dte.csv",
+              "sha256": "169ca7641f44c6ee87dea8afec49b575cc5ef7668a4b4288e01abea8675510e1"
+            }
+          ],
+          "source_links_byte_identical": true
+        },
+        {
+          "method": "w1_003_lp",
+          "byte_identical_numerical_csvs": [
+            {
+              "name": "gate-comparison.csv",
+              "sha256": "80be9add6c292718395a8e0f9a57f0441bbec7069696d6b1f4db6c44126880d9"
+            },
+            {
+              "name": "marked-figures.csv",
+              "sha256": "469dcc329f1101ddc63ef4d842437a8675c874a9976fe192855524d7e986b5e8"
+            },
+            {
+              "name": "trades.csv",
+              "sha256": "9c1de453c852e8fe4b3a01e8c0e0aca32e48d7bcc759c48c964befd42e46ebca"
+            },
+            {
+              "name": "ledger.csv",
+              "sha256": "d5c715f2331f7437f9bf42cb5aba54a27dc2e66f21731d1036052c7d7792140f"
+            },
+            {
+              "name": "quarter-boundary.csv",
+              "sha256": "d2271f922515b328b7a1c6ac685f191e5511f045f47d19a57ea81f7c78158d54"
+            },
+            {
+              "name": "ticker-dte.csv",
+              "sha256": "c51fab208001c0a94d5dfd797cdb33c09d433d2c0a7d8177b63a1360e54a625f"
+            },
+            {
+              "name": "decisions.csv",
+              "sha256": "d936182ec4afd67464718f40c9d866fa34ae8a8f0398d3d54f9a48690acd6acf"
+            },
+            {
+              "name": "refusals-ticker-dte.csv",
+              "sha256": "f47c0cd3c84cd465c3fd3935391e0b2ae17c883e0585231b19fdf215b23f6461"
+            }
+          ],
+          "source_links_byte_identical": true
+        }
+      ]
+    },
+    "3": {
+      "original_output": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/reports/q3",
+      "corrected_output": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/reports/q3-v2",
+      "config": "/home/russell/wt/q2-reconcile-20261031/children/index_options/configs/mio-2021h2-walkforward-20261101/report-q3-complete-v2.json",
+      "config_sha256": "ad9c8fa9cce062baa4c480eacc835ab1e312fae781a82b55f162945fddf4fa64",
+      "verification_sha256": "dc3f3ad0e92c490a57f2c419f2752dbec1173e0a91921f1c2fbb16aecbbe7a18",
+      "methods": [
+        {
+          "method": "w1_003_shock10_lp",
+          "byte_identical_numerical_csvs": [
+            {
+              "name": "gate-comparison.csv",
+              "sha256": "2ec11fa5290a6fff06c4ca01e9bd44348db0b05be34af8320a771b35539d1655"
+            },
+            {
+              "name": "marked-figures.csv",
+              "sha256": "61a3ab31a0d328cf84f79c5cd92bb3dfee7aa04504d8594fd36a1321c9a78367"
+            },
+            {
+              "name": "trades.csv",
+              "sha256": "c2301a1b800b992ccd0c9f15688da3b078a53eb4017d09709d4684ac021e2971"
+            },
+            {
+              "name": "ledger.csv",
+              "sha256": "563668926954627c3e8d3c254d612c34853ca52b9a8aaa00fc9a86c7e7d025f7"
+            },
+            {
+              "name": "quarter-boundary.csv",
+              "sha256": "8d71240aa50e7024fd7d86a05e5359227765046445ac9debda71c2de87759bc6"
+            },
+            {
+              "name": "ticker-dte.csv",
+              "sha256": "74358e99988e14b0c6978a35ae51b619bb93ab23f7807b2eee830d6bb30f2da8"
+            },
+            {
+              "name": "decisions.csv",
+              "sha256": "ed371fec7cb84f1582c6974073e92556a73cd25240cd2c14f9fff55fcb1cda35"
+            },
+            {
+              "name": "refusals-ticker-dte.csv",
+              "sha256": "78120b851dcc5fa78a0dd7857d96dae5870ea2c07df20a93af051ccf56a80d71"
+            }
+          ],
+          "source_links_byte_identical": true
+        },
+        {
+          "method": "nominal_lp",
+          "byte_identical_numerical_csvs": [
+            {
+              "name": "gate-comparison.csv",
+              "sha256": "ae0a9f8c16a30f2ec6bde611768a31addf2a9c85052f97f4515d4ae9a29aadb9"
+            },
+            {
+              "name": "marked-figures.csv",
+              "sha256": "0c157fb6e7790e859e3f6b57cbedb2a55accf88b41378c8fa92a58aa5010a5ec"
+            },
+            {
+              "name": "trades.csv",
+              "sha256": "bf41d44a4ddcd89b7552dc810dd90b85447fcd9b43f29a468e199d3cc2a215b4"
+            },
+            {
+              "name": "ledger.csv",
+              "sha256": "22e6bb7dc98c45b8e453635f88086b92e583fd0dd2f58f4abef1c56866443b03"
+            },
+            {
+              "name": "quarter-boundary.csv",
+              "sha256": "35a06bc37e44640c621c7bce443c1a8bdd65ebf1d15e39aa5566057fc9a096ed"
+            },
+            {
+              "name": "ticker-dte.csv",
+              "sha256": "1713400d4ddc023721d3f83f2176c8add363efe19b49d0bc4992090a0d4289dc"
+            },
+            {
+              "name": "decisions.csv",
+              "sha256": "77c19c7fea77ac24f29db1d9bc5ac13c23c332330444a8fbce3d41d0e5e3dcab"
+            },
+            {
+              "name": "refusals-ticker-dte.csv",
+              "sha256": "5725b86fa5ab92d5f5b4122491879b8e6cc63ebde95d0460d07cb5426f68f807"
+            }
+          ],
+          "source_links_byte_identical": true
+        },
+        {
+          "method": "w1_003_lp",
+          "byte_identical_numerical_csvs": [
+            {
+              "name": "gate-comparison.csv",
+              "sha256": "2d0e09b7e4f3bc6d770fbb35248378789b2055969d06f027490cd11635f76096"
+            },
+            {
+              "name": "marked-figures.csv",
+              "sha256": "e7c2635f943be34d6226c846e499e05f21576046cf99f5ad8ad82d076f64bb0b"
+            },
+            {
+              "name": "trades.csv",
+              "sha256": "78e3c968f1f12bb05f7ca895527d381f959757aa8fd71fb37b1d328f4a6e9b0c"
+            },
+            {
+              "name": "ledger.csv",
+              "sha256": "c15f61087cac1313e422a76225fdf0fdf43decdd334c1640b6e5e7734df42cd3"
+            },
+            {
+              "name": "quarter-boundary.csv",
+              "sha256": "87719264e4520390b94f5f8639c76b9c39bb501399222558934f4fb1ffb6db9c"
+            },
+            {
+              "name": "ticker-dte.csv",
+              "sha256": "2991b7e91bca2de4ea634cc328db5337a45510db0c391d44fdd5b1d366ee3ff1"
+            },
+            {
+              "name": "decisions.csv",
+              "sha256": "4b8689d7a5d3b24d5130b6dee79dfdb6ca310417c0c1e801ba5a698075036cc1"
+            },
+            {
+              "name": "refusals-ticker-dte.csv",
+              "sha256": "fd4c2452b78f35a2cda0851c592c7ba64b4b04ec462475a1bc711ad951288438"
+            }
+          ],
+          "source_links_byte_identical": true
+        }
+      ]
+    }
+  },
+  "runtime_changed": false,
+  "mio_reruns": false,
+  "original_outputs_retained": true,
+  "notes": [
+    "RowsToEvents replaces run_start.data with the report-run fingerprint. Source provenance is correctly bound in the saved config embedded in the first event and report HTML; the source document hash and title are also on the first event.",
+    "Every numerical CSV is byte-identical. Only run metadata, provenance-bearing artifacts and renderer timing changed."
+  ]
+}

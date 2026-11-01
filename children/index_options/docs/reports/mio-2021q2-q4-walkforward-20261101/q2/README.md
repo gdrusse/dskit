@@ -28,7 +28,7 @@ For refused books, the standard ledger may show a reduced fill-stage quantity. T
 
 The neural final fit uses 46 epochs. Pre-Q2 selected 46 of 96 run; pre-Q3 selected 36 of 86 run with patience 50 and maximum 150. Q4 reuses the pre-Q3 epoch choice and adds mature Q3 outcomes. Q3/Q4 outcomes do not select epochs. M53 uses only settled prior outcomes at each quarter start.
 
-M53 had no separate formal HPO and was chosen among 67 saved methods using 2020–2023 scores. These 2021 results are retrospective development evidence, not an untouched holdout or a prospective profitability claim. No 2024+ data were used. Earlier 2019/Q1 coverage was truncated and is not corrected by this report.
+M53 had no separate formal HPO and was chosen among 67 saved methods using 2020–2023 scores. These 2021 results are retrospective development evidence, not an untouched holdout or a prospective profitability claim. No 2024+ price or outcome records entered model fitting or evaluation. Earlier 2019/Q1 coverage was truncated and is not corrected by this report.
 
 The outer portfolio solver uses 900 seconds, one thread, relative gap 0.01 and absolute gap $50; inner book construction limits differ. American early assignment is unmodeled. Displayed-depth simulated fills do not establish broker execution. No new execution-stress scenarios were run.
 
