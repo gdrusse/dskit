@@ -1,14 +1,20 @@
 # MIO 2021 Q2–Q4: quarterly walk-forward evaluation
 
-Q2 and Q3 have six verified final method reports. Two additional reports retain the earlier incomplete Q4 attempt; its nominal_lp method failed at the IBM/Kyndryl contract change. The owner-approved eligibility rerun of all three Q4 methods started on 2026-11-01 at 14:02 UTC and is still running. The overall evaluation remains incomplete until that run and its three reports pass verification.
+All nine standard method reports are verified.
 
 ## Evaluation
+
+Only **2 of 9** fully settled method-quarter results were profitable: Q2 shock (**$1,853.85**) and Q4 nominal (**$19,190.15**). All three Q3 methods lost money, so none was profitable in every quarter. Q2 W1 showed a positive quarter-end mark but finished with a settled loss. These nine results are correlated development comparisons, not independent evidence of a stable winner.
+
+Q4 nominal won on only **2 of 25 filled books (8%)**. Its largest gain, the October 18 COST book expiring November 19, was **$22,287.10**, exceeding the entire quarter cohort's net profit. The positive result is concentrated and does not establish a reliable strategy.
+
+Q4 uses the subsequently approved public-notice spinoff eligibility policy; Q2/Q3 retain their original eligibility. The table is a comparison of these documented variants, not a single unchanged-eligibility experiment. MRK in Q2 and GE in Q3 still require separate applicability/equivalence analysis before claiming one uniform support policy.
 
 The accepted M53 predictor feeds three unchanged portfolio methods across the same 212-name universe. Each method and quarter starts its own $10,000 account, with $1,000 deposits every 14 days during that quarter. Returns across these reset accounts must not be compounded.
 
 Quarter-end values mark open books on the final session of the named quarter. Settled cohort values include all later expiries of those books. P&L is net of fees and excludes deposits; time-weighted return adjusts for deposit timing. Generic event charts value open books at cost and are labeled accordingly; the MIO marked ledger is authoritative.
 
-[Comparison data and source hashes](comparison.csv). Returns and drawdowns in the CSV are fractions; money is USD. It contains only completed, verified method results. Q4 nominal_lp is unavailable, not zero.
+[Comparison data and source hashes](comparison.csv). Returns and drawdowns in the CSV are fractions; money is USD. It contains only completed, verified quarters.
 
 ### Q2
 
@@ -26,13 +32,13 @@ Quarter-end values mark open books on the final session of the named quarter. Se
 - [nominal_lp](q3/nominal_lp/summary.md) · [HTML](q3/nominal_lp/report.html): quarter-end marked P&L $-3,864.75, TWR -29.10%; settled cohort profit $-1,303.75, TWR -14.14%; 16 filled books / 18 leg rows / 395 contracts.
 - [w1_003_lp](q3/w1_003_lp/summary.md) · [HTML](q3/w1_003_lp/report.html): quarter-end marked P&L $-2,990.90, TWR -23.56%; settled cohort profit $-3,636.40, TWR -27.35%; 6 filled books / 9 leg rows / 56 contracts.
 
-### Q4: partial study
+### Q4
 
-[Two completed reports and execution detail](q4-partial/README.md).
+[Quarter report and execution detail](q4/README.md).
 
-- [w1_003_shock10_lp](q4-partial/w1_003_shock10_lp/summary.md): quarter-end marked P&L -3,045.50 USD; settled cohort P&L -7,937.50 USD; 19 filled books / 25 leg rows / 110 contracts.
-- [w1_003_lp](q4-partial/w1_003_lp/summary.md): quarter-end marked P&L -1,873.35 USD; settled cohort P&L -8,239.85 USD; 4 filled books / 6 leg rows / 69 contracts.
-- **nominal_lp: FAILED.** No valid final profit or trade count. [Failure evidence and scope proposal](q4-partial-failure.json).
+- [w1_003_shock10_lp](q4/w1_003_shock10_lp/summary.md) · [HTML](q4/w1_003_shock10_lp/report.html): quarter-end marked P&L $-3,154.55, TWR -13.55%; settled cohort profit $-8,133.55, TWR -47.06%; 20 filled books / 31 leg rows / 167 contracts.
+- [nominal_lp](q4/nominal_lp/summary.md) · [HTML](q4/nominal_lp/report.html): quarter-end marked P&L $26,057.65, TWR 215.06%; settled cohort profit $19,190.15, TWR 163.61%; 25 filled books / 33 leg rows / 609 contracts.
+- [w1_003_lp](q4/w1_003_lp/summary.md) · [HTML](q4/w1_003_lp/report.html): quarter-end marked P&L $-1,769.00, TWR -3.78%; settled cohort profit $-8,135.50, TWR -46.82%; 4 filled books / 7 leg rows / 70 contracts.
 
 ## Training and early stopping
 
@@ -70,8 +76,14 @@ The supplemental source review found that an earlier claim of protected row-grou
 
 [Q4 supplemental source review lock](q4-supplemental-review-lock.json) binds the final correction and both independent review verdicts.
 
-## Q4 unsupported deliverable
+## Q4 approved eligibility and retained failed attempts
 
-The attested close receipt is complete=false. The failed IBM contract delivered 100 IBM plus 20 Kyndryl shares; the pinned standard-split ledger cannot settle it. [Exchange notice](https://boxoptions.com/assets/BOXOnnMemo205264.pdf).
+The complete settlement-tail Q4 attempt failed for nominal_lp at the IBM/Kyndryl mixed deliverable; its two successful method reports remain in [q4-partial](q4-partial/README.md). That failure was published once and then abandoned with its exposure retained. [Failure evidence](q4-partial-failure.json) and [partial report correctness](q4-partial-report-correctness.json) / [integration](q4-partial-report-integration.json) preserve that attempt.
 
-[Independent capability review](q4-ibm-phase0-correctness.json) found no existing MIO config switch for mixed-share spinoff settlement. The owner approved config-only public-notice entry eligibility on 2026-11-01. Existing JSON derive/filter nodes now exclude 122 paired forecast/context rows (92 IBM, 30 Realty Income) from new candidate entries; 81,821 remain. Full quote and settlement-basis inputs, all 212 names, fitted models and portfolio settings are unchanged. Q2/Q3 retain their original eligibility, so this is not a uniform eligibility comparison across quarters.\n\nThe first quote-filter proposal was rejected before a MIO run because it also removed needed settlement-day basis observations. The corrected paired candidate filter passed both independent reviews with zero findings: [launch lock](q4-eligibility-v2-review-lock.json), [source evidence](q4-eligibility-v2-source.json). Original results, failed attempts and exposures remain retained. Final Q4 results, reports, merge and task cleanup are pending.
+The owner then approved a config-only public-notice eligibility policy. Existing JSON Derive/Filter nodes exclude122paired forecast/context candidates (92IBM,30O) whose expiries reach publicly announced unsupported distributions. The same81,821retained candidates feed every method. Full quote/basis history, retained prediction values, fitted models, frozen M53 weights, all212names and portfolio economics are unchanged. The first quote-filter proposal was rejected before a MIO claim because it removed needed settlement metadata; the corrected variant retains the complete chain.
+
+IBM exclusions start October13 following the October12 announcement and end when standard IBM resumes November5; O exclusions start October25 after the October22 announcement and end at standard O resumption November16. Release notices were public before resumption. No realized profit, future price or future measured basis is an eligibility predicate. Post-action standard identity assumes Theta honors documented exact-symbol request semantics. Unsupported holdings opened before a notice would still refuse; no backdated repair is applied.
+
+[Corrected source and exact subset evidence](q4-eligibility-v2-source.json), [independent design assessment](q4-eligibility-forecast-phase0.json) and [prior-exposure linkage](q4-eligibility-prior-exposure.json) retain the approved scope, all original producer/training evidence and historical limitations. The revised policy was adopted after prior Q4 outcomes were exposed; all results remain retrospective development.
+
+[Execution and correction memo](../../memos/2026-11-01-mio-q2-q4-walkforward.md) records storage causes, training/HPO findings, retained failures, automation limits and reproducibility.

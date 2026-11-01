@@ -1,22 +1,15 @@
 {
-  "updated_at": "2026-11-01T13:04:22.982437+00:00",
+  "updated_at": "2026-11-01T15:23:41.955170+00:00",
   "completed_quarters": [
     2,
-    3
-  ],
-  "verified_method_reports": 8,
-  "required_method_reports": 9,
-  "complete": false,
-  "classification": "retrospective development",
-  "comparison_sha256": "897d2f32d5b7c44308bf01e9214f4e6642545b774e00163bd27be57307f0f151",
-  "learning_sha256": "03f375f805c0f8eb2f434a6f2ff3f056fcaaa37238d2902ea61a0c91455179ee",
-  "report_index_sha256": "d6850b972ad55eea3684da8a3cb8863cd38dcb75a313b71fc1c85e680f87060d",
-  "partial_quarters": [
+    3,
     4
   ],
-  "failed_methods": {
-    "2021Q4": [
-      "nominal_lp"
-    ]
-  }
+  "verified_method_reports": 9,
+  "required_method_reports": 9,
+  "complete": true,
+  "classification": "retrospective development",
+  "comparison_sha256": "a145610216164c5682a1dd798927cc13b5cd2cea7017f0e559f1a4930181ea14",
+  "learning_sha256": "03f375f805c0f8eb2f434a6f2ff3f056fcaaa37238d2902ea61a0c91455179ee",
+  "report_index_sha256": "521694738b9d16d7513b56b75b0e18d8c3c6f72bab85276c4625b3d0e194ce3e"
 }

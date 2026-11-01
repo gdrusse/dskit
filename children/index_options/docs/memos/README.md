@@ -18,3 +18,5 @@ with its approved scaffold proposal in the incubating repository.
 - [MIO high-level status and best-run trade history](2026-10-26-mio-high-level-status.md): project position, completed funded leader, every traded ticker/DTE and results, contrasted with the audited full-DTE loss.
 
 - [2019 broad and limited MIO comparison](2026-10-28-mio-2019-comparison.md): all eight weekly runs, candidate/trade/PnL CSVs, known-contract outcomes, actual stress coverage and exact run/delivery pins. [Eight-row summary](2026-10-28-mio-2019-comparison.csv).
+
+- [Q2–Q4 2021 walk-forward evaluation and correction memo](2026-11-01-mio-q2-q4-walkforward.md): quarterly results, training/HPO evidence, storage repair, retained failures and execution limits.
