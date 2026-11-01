@@ -1,5 +1,5 @@
 {
-  "status": "Q2 verified and reported; Q3 executing; Q4 prepared",
+  "status": "Q2 and Q3 verified and reported; Q4 executing",
   "classification": "retrospective development",
   "run_root": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2",
   "proofs": {
