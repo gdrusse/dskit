@@ -1,0 +1,440 @@
+{
+  "schema": "dskit-independent-review/v1",
+  "reviewed_at": "2026-11-01T09:02:56.877950+00:00",
+  "reviewer": {
+    "identity": "/root/walkforward_final_integration",
+    "model": "GPT-6 Astra",
+    "lens": "test-quality/integration",
+    "independence": "Fresh independent context; neither implementer nor correctness reviewer; sequential second lens."
+  },
+  "candidate": "159ce6aa5d30aba2e01533950657067846c9b743",
+  "base": "978d72fa14294ba00fdb0251195540b0ab0d9004",
+  "branch": "codex/q2-reconcile-20261031",
+  "worktree": "/home/russell/wt/q2-reconcile-20261031",
+  "working_tree_clean": true,
+  "scope": [
+    "dskit/pipeline/libs/cdf_experiment.py optional full-train refit",
+    "tests/pipeline_libs/test_cdf_experiment.py",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/*complete*.json and referenced folds/sources",
+    "Preserved original/exposed configs and Q3/Q4 original-date runs in mio-2021h2-exact-q2-20261031"
+  ],
+  "authority": {
+    "source": "Owner continuation relayed by parent plus frozen review-contract.json",
+    "scope": "Read-only independent final review of implementation/config candidate; authorized retained report only. No new ADR or runtime change.",
+    "locked_path_rows": [
+      "A0002",
+      "A0003",
+      "A0008"
+    ],
+    "classification": "retrospective development; conservative 2017-2023 prior exposure; no untouched-2021 claim"
+  },
+  "lock": {
+    "reviewed_blobs": {
+      "dskit/pipeline/libs/cdf_experiment.py": {
+        "git_blob": "2e23cffa88253c4fd59e620005132bb34b35a8ad",
+        "sha256": "ca97a7ce58ff42d53e6a778288153dd28f9e9b09ad5503a8afca0c48e53eec7a"
+      },
+      "tests/pipeline_libs/test_cdf_experiment.py": {
+        "git_blob": "9d9573804a4d4c3eccfc838bd383835cf3492f8a",
+        "sha256": "a5d4352bea5ca701ee063d68e71ed5ae6b851681e5e14c906c1088518a745131"
+      },
+      "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/review-contract.json": {
+        "git_blob": "24d1f3835a73631895f08779af3c5a24c7e16e10",
+        "sha256": "c1fc0885f41fc9a3839d524d08d8e7c64581c7346b85a90394f544bb0687695a"
+      },
+      "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/protocol-evidence.json": {
+        "git_blob": "93a7bc07ddb230fc7b7d77205d65ca1a2916edf4",
+        "sha256": "ceff181fad3bb9b80e8aa7ac893dce942fa29c34ebb712458b48337aa7118156"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/abandon-q2-incomplete-forecast-coverage.json": {
+        "git_blob": "023f24b1fc7e94ae07296e8c226b4a499e664842",
+        "sha256": "665a469d75e6edf6e28ceecd6150724b61e818a0f0d1867d886ccb191fb7f4e1"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/fit-refit-2021q2-complete-cuda.json": {
+        "git_blob": "4b04a38d1fb10410bf25024b7896d779448f923d",
+        "sha256": "af74f00ac667ac036a0671db42242e83ec82c1b1e866a6a21188c7bbd951adcc"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/fit-refit-2021q3-complete-cuda.json": {
+        "git_blob": "ebba93ce53115a15dde23a9148f5097c1b1b0efb",
+        "sha256": "91d5735bddde3ecbf1524669f9e22b3b91187ce21e0c5ecfe971813a7701a591"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/fit-refit-2021q4-complete-cuda.json": {
+        "git_blob": "6a8403d5ad29b6e1611524479657e2c5694fc86c",
+        "sha256": "ec9ffdef534aa5001be689a4066f173f29ecce4664e3feac1887c0c7410df47f"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/fit-select-preq2-complete-cuda.json": {
+        "git_blob": "1dffffbca0f57292d0318f38f46f0fcdd422d8d2",
+        "sha256": "bcc4ff5499a84d009b4949d2cce2e4d4071cdf53224653232c2c5dd22b3ba269"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/fit-select-preq3-complete-cuda.json": {
+        "git_blob": "4a4d0f13f3813a8be248576e73820e3c986b2ea6",
+        "sha256": "9df31ba01b3851deed0565ad0d7c0898f0c7585ac4bd1ab99ff8a4a1334db329"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/initialize-complete-coverage-development.json": {
+        "git_blob": "d6290284d35e5e13472dbe4b532be9fb4103c31a",
+        "sha256": "7d5980f4e74666a323d8ef96eacc6dece0c10d44d633daa479eff5f8256f9019"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/method-m53-2021q2-complete.json": {
+        "git_blob": "427bcc1d39e2a5cdbb175613b5b5904db1088d21",
+        "sha256": "31ea2da51ce4e7a82dceb2f22b8ccc2609d9c419e6121489b2d9b7fd22bebaba"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/method-m53-2021q3-complete.json": {
+        "git_blob": "a27275cfc1f64b659524959e0d1b9a5686a86fd6",
+        "sha256": "f42ed1b1beab538516d1077073c5b04788c28452b817e0c189d9e7475ff1b639"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/method-m53-2021q4-complete.json": {
+        "git_blob": "c063344c63139e8002a5988de6c73843189b5613",
+        "sha256": "0efcf3b014fb5865e7e98107a5bc016ca1214df3b93d6a6cfad28d822d87d5bc"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/retire-unread-q3-incomplete-forecast-coverage.json": {
+        "git_blob": "f4a239fbd8995d7a516fdb73fa142f8559fceb76",
+        "sha256": "0071f6067f86ed8d3dced1aa0fd47f722ee628f3ed41e8d4de1d753fff8d07da"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/retire-unread-q4-incomplete-forecast-coverage.json": {
+        "git_blob": "b7abbf2f76fa8ab309ff538b8ecedfd29877aad3",
+        "sha256": "df934ba41676d180509bee434e6c5a07626464e408464412e15b87919e01d9fe"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q2-complete.json": {
+        "git_blob": "caa37397b4f62e8905a9a559e5a543d7af22471c",
+        "sha256": "6ef07eff1069f680a6a170c1cb9dcc95ef0e6bad105cd86b6c2e1a31124cc913"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q3-complete.json": {
+        "git_blob": "56b76741e31ec53721a5615edd3238015c131754",
+        "sha256": "a0a8cd793c3a9816a079ffb9ce9fcaf896cf28578404c8a0ccd934aff1d01b93"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q4-complete.json": {
+        "git_blob": "62a46d0514011006fead73e87ab433cbb27b0e55",
+        "sha256": "79a5d791f11295d72de70ee98d92cec85218b64d86839d924905e9605e943535"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/score-refit-2021q2-complete.json": {
+        "git_blob": "9406c60e76af000ce28a42d7ae09079f007ff7be",
+        "sha256": "dba8a72cc35fae232cfbc310c20df90b9ba8c6b23ed5737cd3575309cc6d22ef"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/score-refit-2021q3-complete.json": {
+        "git_blob": "8b7f20ea4c44aa42bdaab143a4a5be51b81915e6",
+        "sha256": "194720f62dc65be890512b283983b058cc048c98136ba101b81317caab59f507"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/score-refit-2021q4-complete.json": {
+        "git_blob": "489a6ed9f1c7cf822c39ee7e68c0bf94fef39817",
+        "sha256": "43134c00b9c879489aee1db619a5148943566cc5b15429a4d6468f25a6f3e844"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/source-combined-panel-complete.json": {
+        "git_blob": "7f8478fd49ced8110def2a84439dbf9e4fd6b530",
+        "sha256": "a9cc1146e8a5887a87566ac812fd1e3ec3254e7536d407a852fe64142a1b510e"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/source-m53-complete-q2.json": {
+        "git_blob": "3ae3292734fc2a9248c4586bac11d87b4c17ef8e",
+        "sha256": "807ba1bf190ff897fbd8d27cfb7c5244f8dbf386391b83510617fc8baf64fa4d"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/source-m53-complete-q3.json": {
+        "git_blob": "80caa331d2795069a4f9c007103737fa4ddc4516",
+        "sha256": "41d8fe93569c4621bb699dceae0046959badd79d245c689da3b6db2f5667231e"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/source-m53-complete-q4.json": {
+        "git_blob": "e131a2843f7054736a7029113cc9e561a3e81cc2",
+        "sha256": "48aedfca64fc9e655f30db34ac54f3571a137c507e1243bf7a0cde442abb50e9"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/source-market-complete.json": {
+        "git_blob": "519fee59bfeffc8ea6a4b91d8da5fb56229d9e14",
+        "sha256": "ce92049fecea11467816747c67c020178a1b9b620fb0730b555d1dd39b2460b3"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/source-mio-2021q2-complete-inputs.json": {
+        "git_blob": "e27a2af94d28fb3636a319a4212cca6bee1e5a62",
+        "sha256": "f4cb62563101fee5e7abdddb64546f74a61e32d8c9b54d3dbad2c96b02afc599"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/source-mio-2021q3-complete-inputs.json": {
+        "git_blob": "2159e957e6142cc7016e5010ffb68d4ff5b6cb61",
+        "sha256": "eb0844fca4b4723d441d6bf7cc60a00b159b9564a392d5b79abfb9ee3b7a8fae"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/source-mio-2021q4-complete-inputs.json": {
+        "git_blob": "72fd5d79052be23a84b3e916bb0132148678636f",
+        "sha256": "1080cc20a934d64d8b1e772f8da76ab7ab117b3b701e33f898f0bcda7dcfe805"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/verify-m53-2021q2-complete.json": {
+        "git_blob": "65c8d80efb49a77cff1ab4c3d38b904ae7cffd91",
+        "sha256": "76f65ae80b0e09f0392ca8fb6c5b0708abd86859500a3e31f7340560123416ff"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/fold-refit-2021q2-complete.jsonl": {
+        "git_blob": "d987b63c8b6097842776c7078a5e9d98e82ea9a6",
+        "sha256": "358e931c07f510a212cc8ce9d180b942a6d195fb860c39a14c7ec4c7bfe24585"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/fold-refit-2021q3-complete.jsonl": {
+        "git_blob": "2710dc835ed8df7c5d97b43ac8282931e59c97bf",
+        "sha256": "fd698e477b51496cbed3333c3dc6b23bf522478353410426f44b2b41c8bb87fe"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/fold-refit-2021q4-complete.jsonl": {
+        "git_blob": "04636001bbe2aea7377ce1daada7000628c421fd",
+        "sha256": "3de8b7109f78ecba6f77ae0c2e593547c3c3ff13d69c54a18abef024e97ac262"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/fold-select-preq2-complete.jsonl": {
+        "git_blob": "fcfa2a22196dee9aeb10b0db6c56c8e44bcd490a",
+        "sha256": "add1f53af4d48105e3ce3d9aa474e566f8255a3756c7ac75c369c18215f2c545"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/fold-select-preq3-complete.jsonl": {
+        "git_blob": "ebcc9a5bf6e6ef5edd83705aea4910a037a03742",
+        "sha256": "579072451d3768a296666d70bb58fd6b73cb5a6eb3bf604c519b01216f1e5a4b"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/run-exact-expiry-continuous-market.json": {
+        "git_blob": "96c8044ac6513f770ba18ba465be007e21de9e46",
+        "sha256": "73cd04ac212a80ce6084137ba977fbfc3b0429cee5c48f06b0e7b147a8c7c87e"
+      },
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/source-continuous-market-tables.json": {
+        "git_blob": "97db77ea20b480cf3a0f94194b02ae4187ed36bb",
+        "sha256": "642f8dd4e2b29cd25756e9a3c560b49b75b87b0cb171bc3a479ddb4cf74a7c48"
+      }
+    },
+    "unchanged_integration_owners": {
+      "dskit/pipeline/libs/option_ledger.py": "2b1db32bd3abee6a9b4b378e23a9044d4d0c1425",
+      "dskit/pipeline/study_protocol.py": "344a9945faf51507f1265ec85914693f122a0203",
+      "children/index_options/index_options/mio_contract.py": "2ae776ce34e6adda9c5248170dfc6f356bc2bbb6",
+      "children/index_options/index_options/observations.py": "5f3a350a5d30b32920449ac82e746ca9b6c06a0c",
+      "children/index_options/index_options/ledger_studies.py": "f5102182b5bfe8f0835bb86ba61a710490b26a73",
+      "dskit/pipeline/libs/cdf_grid_methods.py": "3218342ff2954453c49ecd1bda19a7562d51ae25"
+    },
+    "unchanged_since": "85e9187e",
+    "first_lens": {
+      "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/verification/final-correctness.json",
+      "sha256": "383560fa94553b8f57328d7acdec57dbca1f17ab29558fbc67118e208732eace",
+      "counts": {
+        "Critical": 0,
+        "Major": 0,
+        "Minor": 2,
+        "Nit": 0
+      }
+    },
+    "frozen_matrix": [
+      "config schema/default/flag",
+      "maturity boundaries including missing/unsettled labels",
+      "calibration/refit identity/sourcepins",
+      "epoch selection/optimizer diagnostics",
+      "M53 masks/PITmaps/freeze/fallback",
+      "quote/settlement coverage/corporateactions",
+      "prior exposure and serialquarterclaims",
+      "method/accountparameter parity",
+      "focused test quality/compatibility"
+    ]
+  },
+  "verdict": "PASS_WITH_DISCLOSED_MINORS for the runnable implementation/config candidate. Zero unresolved Critical/Major; execution, report and release gates remain pending.",
+  "unresolved_counts": {
+    "Critical": 0,
+    "Major": 0,
+    "Minor": 2,
+    "Nit": 0
+  },
+  "findings": [
+    {
+      "id": "WF-INT-MIN-001",
+      "same_as": "WF-COR-MIN-001",
+      "severity": "Minor",
+      "invariant": "Maturity boundaries and focused negative regression coverage",
+      "location": "tests/pipeline_libs/test_cdf_experiment.py:155; experiment_config fixture at lines 134-147",
+      "entry_point": "test_full_train_refit_is_configured_and_purges_unsettled_labels",
+      "reproducer": "Fixture training quote dates end 2001-01-25, each settlement is quote plus one day, and val_start is 2001-02-01. No fixture label reaches the boundary. The test would still satisfy its expected fit membership after removal of the new purge predicate. Independent probes changed the Jan 10 rows for both tickers to settlement Feb 1 and Feb 2; each case retained 48 mature rows and excluded both changed rows. Jan 31 settlement retained all 50 rows.",
+      "consequence": "The committed test leaves the negative maturity case unprotected; no current runtime failure was demonstrated. A later purge regression could reject otherwise valid mixed-maturity panels while this test remains green.",
+      "family": "negative-boundary-regression-coverage",
+      "introduced_in": "159ce6aa5d30aba2e01533950657067846c9b743",
+      "disposition": "Deferred and disclosed, same backlog item as first lens. Preserve immutable candidate and running replay; future test change should add exact/later boundary fixtures."
+    },
+    {
+      "id": "WF-INT-MIN-002",
+      "same_as": "WF-COR-MIN-002",
+      "severity": "Minor",
+      "invariant": "Consistent epoch-selection receipt semantics",
+      "location": "coverage-v2/verification/fit-q4.json selection_summary_sha256; committed protocol-evidence.json",
+      "entry_point": "Q4 epoch provenance consumer",
+      "reproducer": "SHA256 of verification/select-preq3.json is e4df8a2b80403c5d78d7867230d8ed019b561e7d136ac31ff12c6cee9c24f579, equal to Q4 selection_summary_sha256. The wrapper contains underlying summary SHA256 6c4ac486c125f57a48bd8cde543775860bee7760eb38b99b0182080dba9de459. Q2/Q3 use the underlying summary hash in the same field. Both levels independently matched their actual artifacts.",
+      "consequence": "A direct same-field summary comparison reports an inconsistency. Traceability survives through the wrapper, and Q4 checkpoint actually ran the verified 36 epochs with no monitor history or best-epoch selection. No altered or wrong-epoch fit was demonstrated.",
+      "family": "provenance-field-artifact-level",
+      "introduced_in": "159ce6aa5d30aba2e01533950657067846c9b743",
+      "disposition": "Deferred and disclosed, same backlog item as first lens. Preserve immutable onboarded receipt and explain that Q4 hashes the verification wrapper."
+    }
+  ],
+  "matrix_results": [
+    {
+      "row": "config schema/default/flag",
+      "status": "passed",
+      "evidence": "Legacy class from 85e9187e and candidate had identical omitted-flag identity, DataFrame bands and admission. Explicit false bands/admission also matched. None, 0, 1, string true, list and dict flag values refused. Focused patience-refusal test passed. All three complete run documents parsed with PipelineDocument.from_obj."
+    },
+    {
+      "row": "maturity boundaries including missing/unsettled labels",
+      "status": "passed with Minor coverage backlog",
+      "evidence": "Synthetic equal/later settlement rows were excluded, one-day-before rows retained. Public load_panel refused null settlement metadata before fit. Full fit included calibration rows (50 fit/10 calibration/6 scored); actual refit metadata had training settlements strictly before each quarter start."
+    },
+    {
+      "row": "calibration/refit identity/sourcepins",
+      "status": "passed",
+      "evidence": "Verified 270 runtime code pins, current dependency versions, five fit-config source maps, combined-panel SHA256, five fold hashes, fit/completed manifest inventories and checkpoint hashes. All 14 files in each of three onboarded predictive sources matched byte hashes; metadata source pins validated with PinnedPayloadSource. Receipt training config and saved M53 recipe matched canonical configs."
+    },
+    {
+      "row": "epoch selection/optimizer diagnostics",
+      "status": "passed with Minor provenance backlog",
+      "evidence": "Recomputed monitor minima: pre-Q2 46 of 96, pre-Q3 36 of 86, each stopping 50 epochs after minimum under max150/patience50. Final checkpoints ran46/36/36, patience=None, no monitor histories or best epochs; finite gradients, positive optimizer steps and parameter movement. Q4 training settlement maximum2021-09-24, beforeOct1."
+    },
+    {
+      "row": "M53 masks/PITmaps/freeze/fallback",
+      "status": "passed",
+      "evidence": "Independent 8192-row streaming comparison over 324415/475799/655220 source/output rows checked every identity and fitted flag. Exact empirical21-knot PIT maps reproduced for all folds; mature earlier validation learning counts33850/70729/123261 matched. One block anchoredApr1/Jul1/Oct1; all unfitted outputs exactly equal model fallback including NaNs. No optimizer rerun."
+    },
+    {
+      "row": "quote/settlement coverage/corporateactions",
+      "status": "passed at config/evidence integration boundary",
+      "evidence": "All212 declared names present and forecast/context identities matched. Forecast dates cover exactly63/64/64 recorded quarter sessions throughJun30/Sep30/Dec31. Maximum settlementsAug27/Nov19/Feb18. Shared continuous market source binds all three quarters;298 sessions and bar sample reachMar9; AAPL/ISRG/ANET chain samples reachMar3, beyond maximum forecast settlement. Q3/Q4 source binds bothISRG/ANET actions with matching payload hashes. Unsupported-action refusal remains in unchanged reviewed ledger owner."
+    },
+    {
+      "row": "prior exposure and serialquarterclaims",
+      "status": "passed",
+      "evidence": "Old registry SHA256 exactly matches retained link, revision6, activeNone, Q2abandon/Q3retire/Q4retire dispositions preserved. Corrected registry differs in identity/domain, declares2017-01-03 through2024-01-01 prior exposure, and was revision3 with onlyQ2active when read. All three canonical packet chains require Q2->Q3->Q4 predecessors. No registry writes performed."
+    },
+    {
+      "row": "method/accountparameter parity",
+      "status": "passed",
+      "evidence": "All six embedded study specs per quarter equal. Compared all domain account/solver/method/quote parameters and212 pairs to approved85e9187e Q2 document; identical after excluding only bridge start/end_before/fold. Exactly w1_003_shock10_lp, nominal_lp and w1_003_lp remain."
+    },
+    {
+      "row": "focused test quality/compatibility",
+      "status": "passed with Minor coverage backlog",
+      "evidence": "Focused pytest selection4passed/84deselected, plus independent synthetic boundary/default/refusal and CPU queue/resume probes. Full-refit queue completed with50/10/6 bands and2epochs; resume left all12 immutable artifacts unchanged. Six integration owners are byte-identical to85e9187e; git diff --check passed. Prior86passed/2skipped CDF-module result retained as inherited evidence, not rerun here."
+    }
+  ],
+  "observed_results": {
+    "epoch_selection": {
+      "pre_q2": {
+        "best": 46,
+        "total": 96
+      },
+      "pre_q3": {
+        "best": 36,
+        "total": 86
+      }
+    },
+    "refit_epochs": [
+      46,
+      36,
+      36
+    ],
+    "refit_band_counts": {
+      "q2": [
+        1220953,
+        27878,
+        81269
+      ],
+      "q3": [
+        1302290,
+        28525,
+        83028
+      ],
+      "q4": [
+        1383824,
+        27461,
+        81943
+      ]
+    },
+    "m53": {
+      "q2": {
+        "rows": 324415,
+        "quarter_learning_rows": 33850,
+        "quarter_fitted_rows": 102151,
+        "fallback_rows": 222264
+      },
+      "q3": {
+        "rows": 475799,
+        "quarter_learning_rows": 70729,
+        "quarter_fitted_rows": 100865,
+        "fallback_rows": 289510
+      },
+      "q4": {
+        "rows": 655220,
+        "quarter_learning_rows": 123261,
+        "quarter_fitted_rows": 103784,
+        "fallback_rows": 364834
+      }
+    },
+    "forecast_coverage": {
+      "q2": {
+        "rows": 81256,
+        "sessions": 63,
+        "names": 212,
+        "quote_end": "2021-06-30",
+        "settlement_end": "2021-08-27"
+      },
+      "q3": {
+        "rows": 83008,
+        "sessions": 64,
+        "names": 212,
+        "quote_end": "2021-09-30",
+        "settlement_end": "2021-11-19"
+      },
+      "q4": {
+        "rows": 81943,
+        "sessions": 64,
+        "names": 212,
+        "quote_end": "2021-12-31",
+        "settlement_end": "2022-02-18"
+      }
+    },
+    "stream_hash_checks": {
+      "files": 346,
+      "bytes": 1411395213,
+      "materialized_full_panel": false
+    },
+    "environment": {
+      "interpreter": "/home/russell/dskit/.venv/bin/python",
+      "transport": "Windows ssh.exe to russell@localhost, existing WSL; no wsl.exe invocation",
+      "threads": {
+        "OMP_NUM_THREADS": 1,
+        "MKL_NUM_THREADS": 1,
+        "OPENBLAS_NUM_THREADS": 1
+      },
+      "dependencies": {
+        "numpy": "2.5.2",
+        "pandas": "2.3.3",
+        "pyarrow": "25.0.1",
+        "torch": "2.11.0+cu128",
+        "pytest": "9.1.1"
+      }
+    }
+  },
+  "commands_and_checks": [
+    {
+      "command": "git rev-parse HEAD origin/main; git status --short; git diff85e9187e HEAD -- six integration owners; git diff --check85e9187e HEAD",
+      "result": "Candidate/base match; clean worktree; six owners unchanged; diff check exit0."
+    },
+    {
+      "command": "/home/russell/dskit/.venv/bin/python -m pytest -q -p no:cacheprovider tests/pipeline_libs/test_cdf_experiment.py -k \"full_train_refit or committed_documents_keep_their_identity_hash\"",
+      "result": "4passed,84deselected,224 existing NumPy timedelta deprecation warnings;2.57seconds;exit0."
+    },
+    {
+      "command": "Inline Python via SSH: runpy test fixture in TemporaryDirectory; compare prior/candidate bands and identities; six nonboolean flags; settlement boundary probes; public missing-settlement probe; CPU full-refit queue and resume",
+      "result": "All assertions passed;50/10/6 band counts;2epochs;no best epochs;473parameters;positive parameter movement;all12 immutable artifacts unchanged after resume."
+    },
+    {
+      "command": "Inline Python via SSH: ParquetFile.iter_batches(batch_size=8192) over all three pinned M53 source/output pairs; independent boolean learning masks, empirical PIT counts, fitted flags and fallback comparisons",
+      "result": "All assertions passed across1455434 total rows;bounded batches only."
+    },
+    {
+      "command": "Inline Python via SSH: hashlib.file_digest, PinnedPayloadSource, PipelineDocument.from_obj, checkpoint states/summary/metadata and dependency versions; read-only SQLite state queries",
+      "result": "All final assertions passed;346stream hashes,270runtime code pins;prior registry preserved. Initial reviewer assertion incorrectly compared raw manifest-file SHA to canonical snapshot identity; corrected to existing PinnedPayloadSource semantics. No product defect."
+    },
+    {
+      "command": "Inline Python via SSH: streaming forecast/context identity/date census, sessions comparison, selected parquet row-group bounds, unchanged-owner git comparisons",
+      "result": "All final assertions passed. Initial overly strict reviewer check expected option quotes throughMar9; metadata showsMar3, with bars/sessions throughMar9 and maximum needed forecast settlementFeb18. Corrected requirement check passed;no missing required quarter/tail coverage demonstrated."
+    }
+  ],
+  "untested_limits": [
+    "No full suite, GPU fit, real replay, provider pull, live order, registry mutation, recorder interruption or large panel allocation was performed.",
+    "The active Q2 replay and Q3/Q4 executions were not rerun or altered. Attested close receipts, accounting/replay parity and nine completed standard reports remain execution/report gates.",
+    "No independent optimizer rerun of existing real neural/M53 fits. Verified saved diagnostics, checkpoint/source hashes, exact learning masks, PIT maps, fitted flags and fallback output instead.",
+    "Market quote payloads were not exhaustively rehashed/rescored for all212names. Onboarded manifest/file bindings, full forecast/context coverage and representative AAPL/ISRG/ANET chain plus bar metadata were checked. Corporate-action refusal code is unchanged from prior two clean lenses.",
+    "Full combined panel was stream-hashed without row materialization. Actual fit-band membership is supported by retained metadata/source pins and independent synthetic maturity checks, not a second large-panel reconstruction.",
+    "Historical original/exposed configs remain retained evidence; this verdict targets the complete-quarter canonical candidate and unchanged integration owners. No2024+ data or untouched2021 claim."
+  ],
+  "forbidden_effects_observed": [],
+  "gate_status": {
+    "implementation_config_review": "complete for this lens;C0/M0 with two disclosed deferred Minors",
+    "execution": "pending Q2-Q4 attested close receipts",
+    "reports": "pending9reports, totals/count gates and quarter-end marked versus settled-cohort metrics",
+    "merge_push_purge": "pending execution/report completion and parent lock/integration checks",
+    "authorization": "This scoped review does not grant deployment or fresh-holdout authority."
+  },
+  "correction_commit": null
+}

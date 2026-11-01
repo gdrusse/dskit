@@ -1,0 +1,73 @@
+{
+  "schema": "dskit-scoped-review-lock/v1",
+  "candidate": "159ce6aa5d30aba2e01533950657067846c9b743",
+  "base": "978d72fa14294ba00fdb0251195540b0ab0d9004",
+  "locked_at": "2026-11-01T09:09:29.637816+00:00",
+  "scope": "Runnable full-refit and complete-quarter configuration implementation only; economic execution and evaluation release still pending.",
+  "contract_sha256": "c1fc0885f41fc9a3839d524d08d8e7c64581c7346b85a90394f544bb0687695a",
+  "code_test_blobs": {
+    "dskit/pipeline/libs/cdf_experiment.py": "2e23cffa88253c4fd59e620005132bb34b35a8ad",
+    "tests/pipeline_libs/test_cdf_experiment.py": "9d9573804a4d4c3eccfc838bd383835cf3492f8a"
+  },
+  "canonical_config_sha256": {
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/abandon-q2-incomplete-forecast-coverage.json": "665a469d75e6edf6e28ceecd6150724b61e818a0f0d1867d886ccb191fb7f4e1",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/fit-refit-2021q2-complete-cuda.json": "af74f00ac667ac036a0671db42242e83ec82c1b1e866a6a21188c7bbd951adcc",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/fit-refit-2021q3-complete-cuda.json": "91d5735bddde3ecbf1524669f9e22b3b91187ce21e0c5ecfe971813a7701a591",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/fit-refit-2021q4-complete-cuda.json": "ec9ffdef534aa5001be689a4066f173f29ecce4664e3feac1887c0c7410df47f",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/fit-select-preq2-complete-cuda.json": "bcc4ff5499a84d009b4949d2cce2e4d4071cdf53224653232c2c5dd22b3ba269",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/fit-select-preq3-complete-cuda.json": "9df31ba01b3851deed0565ad0d7c0898f0c7585ac4bd1ab99ff8a4a1334db329",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/fold-refit-2021q2-complete.jsonl": "358e931c07f510a212cc8ce9d180b942a6d195fb860c39a14c7ec4c7bfe24585",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/fold-refit-2021q3-complete.jsonl": "fd698e477b51496cbed3333c3dc6b23bf522478353410426f44b2b41c8bb87fe",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/fold-refit-2021q4-complete.jsonl": "3de8b7109f78ecba6f77ae0c2e593547c3c3ff13d69c54a18abef024e97ac262",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/fold-select-preq2-complete.jsonl": "add1f53af4d48105e3ce3d9aa474e566f8255a3756c7ac75c369c18215f2c545",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/fold-select-preq3-complete.jsonl": "579072451d3768a296666d70bb58fd6b73cb5a6eb3bf604c519b01216f1e5a4b",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/initialize-complete-coverage-development.json": "7d5980f4e74666a323d8ef96eacc6dece0c10d44d633daa479eff5f8256f9019",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/method-m53-2021q2-complete.json": "31ea2da51ce4e7a82dceb2f22b8ccc2609d9c419e6121489b2d9b7fd22bebaba",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/method-m53-2021q3-complete.json": "f42ed1b1beab538516d1077073c5b04788c28452b817e0c189d9e7475ff1b639",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/method-m53-2021q4-complete.json": "0efcf3b014fb5865e7e98107a5bc016ca1214df3b93d6a6cfad28d822d87d5bc",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/panel-source-full-2021.json": "1044b8c9a1b78f07cb235b6f12e2ddbd1c8329948e6c17f766af26f1a92ad1b4",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/retire-unread-q3-incomplete-forecast-coverage.json": "0071f6067f86ed8d3dced1aa0fd47f722ee628f3ed41e8d4de1d753fff8d07da",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/retire-unread-q4-incomplete-forecast-coverage.json": "df934ba41676d180509bee434e6c5a07626464e408464412e15b87919e01d9fe",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/run-exact-expiry-continuous-market.json": "73cd04ac212a80ce6084137ba977fbfc3b0429cee5c48f06b0e7b147a8c7c87e",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q2-complete.json": "6ef07eff1069f680a6a170c1cb9dcc95ef0e6bad105cd86b6c2e1a31124cc913",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q3-complete.json": "a0a8cd793c3a9816a079ffb9ce9fcaf896cf28578404c8a0ccd934aff1d01b93",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q4-complete.json": "79a5d791f11295d72de70ee98d92cec85218b64d86839d924905e9605e943535",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/score-refit-2021q2-complete.json": "dba8a72cc35fae232cfbc310c20df90b9ba8c6b23ed5737cd3575309cc6d22ef",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/score-refit-2021q3-complete.json": "194720f62dc65be890512b283983b058cc048c98136ba101b81317caab59f507",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/score-refit-2021q4-complete.json": "43134c00b9c879489aee1db619a5148943566cc5b15429a4d6468f25a6f3e844",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/source-combined-panel-complete.json": "a9cc1146e8a5887a87566ac812fd1e3ec3254e7536d407a852fe64142a1b510e",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/source-m53-complete-q2.json": "807ba1bf190ff897fbd8d27cfb7c5244f8dbf386391b83510617fc8baf64fa4d",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/source-m53-complete-q3.json": "41d8fe93569c4621bb699dceae0046959badd79d245c689da3b6db2f5667231e",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/source-m53-complete-q4.json": "48aedfca64fc9e655f30db34ac54f3571a137c507e1243bf7a0cde442abb50e9",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/source-market-complete.json": "ce92049fecea11467816747c67c020178a1b9b620fb0730b555d1dd39b2460b3",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/source-mio-2021q2-complete-inputs.json": "f4cb62563101fee5e7abdddb64546f74a61e32d8c9b54d3dbad2c96b02afc599",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/source-mio-2021q3-complete-inputs.json": "eb0844fca4b4723d441d6bf7cc60a00b159b9564a392d5b79abfb9ee3b7a8fae",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/source-mio-2021q4-complete-inputs.json": "1080cc20a934d64d8b1e772f8da76ab7ab117b3b701e33f898f0bcda7dcfe805",
+    "children/index_options/configs/mio-2021h2-walkforward-20261101/verify-m53-2021q2-complete.json": "76f65ae80b0e09f0392ca8fb6c5b0708abd86859500a3e31f7340560123416ff"
+  },
+  "reviewers": {
+    "final-correctness.json": {
+      "sha256": "383560fa94553b8f57328d7acdec57dbca1f17ab29558fbc67118e208732eace",
+      "candidate": "159ce6aa5d30aba2e01533950657067846c9b743",
+      "inherited_model": "GPT-6 Astra"
+    },
+    "final-integration.json": {
+      "sha256": "6d874b20b0bd0020d6c32e42f59a1d52daa824011f04a0ed4fd952f65804672b",
+      "candidate": "159ce6aa5d30aba2e01533950657067846c9b743",
+      "inherited_model": "GPT-6 Astra"
+    }
+  },
+  "unresolved_critical": 0,
+  "unresolved_major": 0,
+  "distinct_deferred_minors": 2,
+  "minor_disclosure": [
+    "Purging regression fixture lacks an unsettled label; both independent reviewers tested exact/later settlement boundaries successfully. Future test improvement deferred.",
+    "Q4 selection_summary_sha256 references the selection-verification wrapper, not the underlying summary. Its embedded summary_sha256 links the same pre-Q3 36-epoch choice; immutable receipt preserved."
+  ],
+  "pending_release_gates": [
+    "Attested completed Q2-Q4 results and replay/accounting parity",
+    "Nine gated standard reports and verified combined comparison",
+    "Authorized wrap, merge, push, remote verification and safe cleanup"
+  ],
+  "reviewed_identities_unchanged": true
+}

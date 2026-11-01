@@ -1,0 +1,223 @@
+{
+  "schema": "dskit-independent-review/v1",
+  "reviewed_at": "2026-11-01T08:47:30.197958+00:00",
+  "reviewer": {
+    "task": "/root/walkforward_final_correctness",
+    "model": "GPT-6",
+    "lens": "correctness and authority",
+    "independent_of_implementation": true
+  },
+  "candidate": "159ce6aa5d30aba2e01533950657067846c9b743",
+  "base": "978d72fa14294ba00fdb0251195540b0ab0d9004",
+  "branch": "codex/q2-reconcile-20261031",
+  "worktree": "/home/russell/wt/q2-reconcile-20261031",
+  "working_tree_clean": true,
+  "scope": {
+    "contract": "/home/russell/wt/q2-reconcile-20261031/children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/review-contract.json",
+    "contract_sha256": "c1fc0885f41fc9a3839d524d08d8e7c64581c7346b85a90394f544bb0687695a",
+    "protocol_evidence": "/home/russell/wt/q2-reconcile-20261031/children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/protocol-evidence.json",
+    "protocol_evidence_sha256": "ceff181fad3bb9b80e8aa7ac893dce942fa29c34ebb712458b48337aa7118156",
+    "config_tree": "8044165807657579c7a11000993ffaa895e95583",
+    "preserved_history_config_tree": "bbd8e1c928df549178316b161c38aaa7b3c1a3a5",
+    "code_blob": "2e23cffa88253c4fd59e620005132bb34b35a8ad",
+    "tests_blob": "9d9573804a4d4c3eccfc838bd383835cf3492f8a",
+    "previous_split_ledger_candidate": "85e9187e",
+    "new_scope": "Full-training CDF refit and canonical complete-quarter config/source/protocol integration; prior split-ledger mechanics unchanged."
+  },
+  "authority": {
+    "read_instructions": [
+      "AGENTS.md",
+      "children/index_options/AGENTS.md",
+      "dskit/pipeline/AGENTS.md",
+      "docs/skills/implementation-workflow.md",
+      "docs/skills/skeptic-review.md",
+      "docs/RE-ENTRY.md",
+      "children/index_options/docs/RE-ENTRY.md",
+      "children/index_options/docs/decisioning/path.csv"
+    ],
+    "binding_path_rows": [
+      "A0002",
+      "A0003",
+      "A0008"
+    ],
+    "task_authority": "Owner-authorized retrospective Q2-Q4 development reruns, existing machinery and earlier generic full-refit option; no promotion or fresh holdout claim. Review-only assignment; running replay and protocol left untouched.",
+    "actors": "Trusted local author/operator and configured data/recipe inputs; mutable in-process Python is not treated as an external security boundary."
+  },
+  "verdict": "PASS_WITH_DISCLOSED_MINORS_FOR_RUNNABLE_IMPLEMENTATION_AND_CONFIG_CANDIDATE_ONLY",
+  "unresolved_counts": {
+    "Critical": 0,
+    "Major": 0,
+    "Minor": 2,
+    "Nit": 0
+  },
+  "findings": [
+    {
+      "id": "WF-COR-MIN-001",
+      "severity": "Minor",
+      "invariant": "Maturity boundaries including missing and unsettled labels; focused regression quality",
+      "location": "tests/pipeline_libs/test_cdf_experiment.py:155 (fixture at lines 134-147)",
+      "entry_point": "test_full_train_refit_is_configured_and_purges_unsettled_labels",
+      "reproducer": "The fixture has training quote dates 2001-01-01 through 2001-01-25, labels one day later (latest 2001-01-26), and val_start 2001-02-01. Therefore it contains no training label settling on or after the validation boundary. Removing the new label_reaches mask would leave the asserted fixture fit rows unchanged.",
+      "consequence": "The named purge test does not protect its negative boundary case. A future mask regression could reject an otherwise valid panel containing both mature and unsettled labels without this test detecting it. Independent reviewer probes with settlement equal to and after val_start passed on the candidate; no current runtime maturity defect was found.",
+      "family": "negative-boundary-regression-coverage",
+      "introduced_in": "159ce6aa5d30aba2e01533950657067846c9b743",
+      "disposition": "Deferred Minor backlog. Preserve the active replay and immutable candidate; add a real equal-boundary/later-settlement row in a future test change."
+    },
+    {
+      "id": "WF-COR-MIN-002",
+      "severity": "Minor",
+      "invariant": "Epoch-selection provenance and exact source identities",
+      "location": "children/index_options/docs/reports/mio-2021q2-q4-walkforward-20261101/protocol-evidence.json:499; coverage-v2/verification/fit-q4.json",
+      "entry_point": "fit-q4.json.selection_summary_sha256",
+      "reproducer": "Q2 and Q3 selection_summary_sha256 are the underlying completed summary.json hashes. Q4 stores e4df8a2b80403c5d78d7867230d8ed019b561e7d136ac31ff12c6cee9c24f579, the SHA-256 of verification/select-preq3.json. The underlying pre-Q3 summary hash is 6c4ac486c125f57a48bd8cde543775860bee7760eb38b99b0182080dba9de459, also recorded inside that wrapper.",
+      "consequence": "The same field names different artifact levels, so a consumer comparing it directly with the pre-Q3 summary hash will report a mismatch. The trace remains intact through the wrapper, the onboarded epoch-selection artifact has the matching wrapper hash, and Q4 actually ran the verified pre-Q3 choice of 36 epochs. No wrong epoch selection or altered input was demonstrated.",
+      "family": "provenance-field-artifact-level",
+      "introduced_in": "159ce6aa5d30aba2e01533950657067846c9b743",
+      "disposition": "Deferred Minor with explicit disclosure in evaluation evidence, as parent acknowledged. Preserve the already onboarded immutable receipt; document that Q4 hashes the selection verification wrapper."
+    }
+  ],
+  "matrix_results": [
+    {
+      "row": "config schema/default/flag",
+      "result": "pass",
+      "evidence": "Omitted and false produce identical bands. Six non-bool values refused (None, 0, 1, string, list, dict). True plus non-None patience refused. Explicit flag is part of experiment content identity."
+    },
+    {
+      "row": "maturity boundaries including missing/unsettled labels",
+      "result": "pass with Minor test backlog",
+      "evidence": "Independent synthetic probes excluded labels settling exactly at val_start and later while retaining mature calibration rows in full fit. Missing settlement fails closed with IntegrityError from DateBoundedParquet. Actual projected panel counts match saved fit metadata for every quarter."
+    },
+    {
+      "row": "calibration/refit identity/sourcepins",
+      "result": "pass",
+      "evidence": "All 270 code pins in each repeated replay study and all eight code pins in each of five complete fit configs match executing worktree bytes. Fold hashes match. All 14 files in each onboarded forecast bundle match pins. All three checkpoint inventories and weights match their manifests and verification records. All six replay nodes repeat one identical study object."
+    },
+    {
+      "row": "epoch selection/optimizer diagnostics",
+      "result": "pass with Minor hash-field backlog",
+      "evidence": "Actual monitor argmin epochs are 46 and 36, histories 96 and 86, both patience tails 50. Raw summary hashes match. Final summary total_epochs are 46/36/36 with empty best_epochs; no checkpoint selection occurs in final Q3/Q4 fits. Optimizer steps, finite-gradient flags and positive parameter movement are present in retained artifacts."
+    },
+    {
+      "row": "M53 masks/PITmaps/freeze/fallback",
+      "result": "pass",
+      "evidence": "Independent projected-source masks reproduce 33850/70729/123261 eligible settled earlier validation rows. Target folds have exactly one block at 2021-04-01/07-01/10-01. All per-fold market PIT maps reproduce exactly from eligible fit PIT values, whose settlements precede their first validation date. Output identities equal source identities. Every unfitted CDF equals model fallback exactly; fitted flags equal eligible rows excluding the unlearned first fold."
+    },
+    {
+      "row": "quote/settlement coverage/corporateactions",
+      "result": "pass for prepared candidate; replay acceptance pending",
+      "evidence": "Forecast/context keys are equal and unique, contain all 212 admitted names, and cover all 63/64/64 source sessions through June 30, September 30 and December 31. Shared market source spans 2021-01-04 through 2022-03-09, with a continuous converter basis; ANET/ISRG/AAPL basis stable across year boundary. Q2 pins TTD and Q3/Q4 pin ISRG/ANET. Unchanged ledger refusal at ledger_studies.py:2044-2045 rejects an unbound basis change for an open book."
+    },
+    {
+      "row": "prior exposure and serialquarterclaims",
+      "result": "pass for candidate state and declared orchestration",
+      "evidence": "Old registry bytes match ca4c727c00b2dedf4d39d58d40eebd5057a47dc18c71bbf6ebe610e29d05e6d9 at revision 6, active null, Q2 abandoned_exposed and Q3/Q4 retired. Distinct corrected registry df32f3df-3963-4de0-b1d8-04016c246fb4 declares exposure 2017-01-03 through exclusive 2024-01-01 and links old identity/hash. It has a single active development Q2 claim. Existing re_exposed permits only prior non-development twins; no registry mutation was used to bypass that rule. Continuation explicitly sequences attested publish/review before next quarter."
+    },
+    {
+      "row": "method/accountparameter parity",
+      "result": "pass",
+      "evidence": "All three complete configs retain exactly w1_003_shock10_lp, nominal_lp and w1_003_lp and the same 212 pairs as the previously reviewed split-aware Q2 config. Recursive economic-parameter comparison differs only in bridge dates/fold. No funding, fees, solver, reserve, sizing, shock or limit change."
+    },
+    {
+      "row": "focused test quality/compatibility",
+      "result": "pass with Minor test backlog",
+      "evidence": "Both newly added tests passed when directly invoked against their fixture. Additional independent CPU-only boundary probes passed. Earlier 86 passed/2 skipped evidence was reviewed as inherited evidence, not rerun or claimed as an independent full run."
+    }
+  ],
+  "observed_results": {
+    "fit_rows": [
+      1220953,
+      1302290,
+      1383824
+    ],
+    "scored_model_rows": [
+      81269,
+      83028,
+      81943
+    ],
+    "mature_q3_rows_in_q4_fit": 56980,
+    "latest_training_settlements": [
+      "2021-03-26",
+      "2021-06-25",
+      "2021-09-24"
+    ],
+    "final_epochs": [
+      46,
+      36,
+      36
+    ],
+    "M53_learning_rows": [
+      33850,
+      70729,
+      123261
+    ],
+    "admitted_forecast_rows": [
+      81256,
+      83008,
+      81943
+    ],
+    "quarter_sessions": [
+      63,
+      64,
+      64
+    ],
+    "last_forecast_dates": [
+      "2021-06-30",
+      "2021-09-30",
+      "2021-12-31"
+    ],
+    "plan_hashes": {
+      "Q2": "96ab79acb1c375cf6d6610169a267ddcb10ed34c8fb660954bc216b4747b2dc7",
+      "Q3": "4ceb5cca9a839cef7a1cb40f40e9cbe6414bb66854e99b7cf3621a34b1c59938",
+      "Q4": "e17faac3d49ab8fa414b6067dbcf4472625cfe72fa0ae55009412883714b9dff"
+    },
+    "all_plans_runnable": true,
+    "all_plan_missing_lists": [],
+    "tail_bounds": "Prepared source end_before 2022-03-10 includes March 9; unchanged runtime plan Q4 tail end_before is 2022-03-09 (exclusive). Actual Q4 forecast settlement maximum is 2022-02-18."
+  },
+  "commands_and_checks": {
+    "transport": "Windows PowerShell here-string piped to ssh.exe -o BatchMode=yes -o ConnectTimeout=5 russell@localhost /home/russell/dskit/.venv/bin/python -",
+    "interpreter": "/home/russell/dskit/.venv/bin/python",
+    "imports": [
+      "/home/russell/wt/q2-reconcile-20261031",
+      "/home/russell/wt/q2-reconcile-20261031/children/index_options"
+    ],
+    "checks": [
+      "Read-only git diff, status and content/blob identity inspections.",
+      "Two newly added focused tests directly invoked with temporary synthetic fixtures.",
+      "Independent default/schema/patience/mature/equal/later/missing-label CPU-only probes.",
+      "Projected parquet identity/date/PIT/CDF checks; independent masks and empirical PIT reconstruction, no optimization or neural fit.",
+      "SHA-256 checks for code, complete forecast input bundles, small protocol receipts and neural checkpoint inventory.",
+      "StudyContract.build for Q2/Q3/Q4; each runnable with no missing inputs.",
+      "SQLite mode=ro snapshots and preserved old-registry SHA-256 check."
+    ],
+    "probe_notes": [
+      "Initial missing-label probe expected filtering, but correctly observed fail-closed IntegrityError; corrected oracle explicitly checked refusal and passed.",
+      "Initial fallback probe looked for cdf_ rather than actual method_cdf_ columns; corrected to inspected schema and exact equality passed for all quarters."
+    ],
+    "inherited_test_evidence": "86 passed, 2 skipped in tests/pipeline_libs/test_cdf_experiment.py reported by parent; not rerun."
+  },
+  "untested_limits": [
+    "No market replay, GPU training, optimizer refit, broad suite, provider pull or protected 2024+ payload read was launched.",
+    "Did not repeat prior broad split-ledger review; checked unchanged mechanics and new config bindings.",
+    "Did not independently regenerate every chain quote or rehash the entire continuous market archive; inspected its pins/provenance, source coverage and selected basis transitions.",
+    "Real Q2-Q4 attested closes, all-nine-method-report acceptance, exact cash/fees/reserve/replay parity and final settlement checks remain pending.",
+    "Unsupported basis events (including GE, IBM and O in the shared period) remain subject to existing refusal if a held book crosses them; this review does not certify that real replay will complete.",
+    "Final second independent integration/test lens, report gates, merge/push/purge are outside this scoped correctness approval."
+  ],
+  "forbidden_effects_observed": {
+    "code_or_config_edits": false,
+    "protocol_mutations": false,
+    "job_interruptions": false,
+    "market_replay_launch": false,
+    "gpu_or_heavy_suite_launch": false,
+    "provider_pull": false,
+    "protected_data_read": false
+  },
+  "gate_status": {
+    "correctness_authority_lens": "complete; C0/M0 with two disclosed Minors",
+    "execution_and_reports": "pending",
+    "whole_user_task_complete": false,
+    "merge_authorized_by_this_report": false
+  },
+  "correction_commit": null
+}
