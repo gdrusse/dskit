@@ -63,6 +63,9 @@ run-path methods (``tests/pipeline/test_purity.py`` enforces the rule).
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+
+import copy
 import hashlib
 import json
 import math
@@ -82,6 +85,7 @@ __all__ = [
     "ARTIFACT_FORMAT",
     "EPISODE_SCHEMA",
     "EPISODE_SPLITS",
+    "FiniteDecisionEnv",
     "NODE_KINDS",
     "Sb3Eval",
     "Sb3EvalEpisodes",
@@ -96,6 +100,7 @@ ARTIFACT_FORMAT = "dskit-sb3-v1"
 
 #: Keys every sidecar must carry — an artifact without them is refused.
 _SIDECAR_KEYS = ("algo", "env", "env_params", "format", "policy", "seed", "state_hash")
+_ENVIRONMENT_CONTRACT = "validation-hooks/v1"
 
 DEFAULT_POLICY = "MlpPolicy"
 DEFAULT_EPISODES = 5
@@ -353,23 +358,93 @@ class _Sb3Base(Node):
         return algo
 
     def _build_env(self, ref, env_params):
-        """The declared environment, constructed — a gymnasium ``Env``
-        subclass or a refusal naming the ref."""
+        """Construct a declared Gymnasium or finite-decision environment."""
         import gymnasium
 
-        cls = import_ref(ref)  # raises ValueError naming the ref
-        if not (isinstance(cls, type) and issubclass(cls, gymnasium.Env)):
+        cls = import_ref(ref)
+        is_gym_env = isinstance(cls, type) and issubclass(cls, gymnasium.Env)
+        is_finite_decision_env = (
+            isinstance(cls, type) and issubclass(cls, FiniteDecisionEnv)
+        )
+        if not (is_gym_env or is_finite_decision_env):
             raise ValueError(
-                f"{self.key}: env {ref!r} is not a gymnasium.Env subclass — "
-                "the declared seam builds environments, nothing else"
+                f"{self.key}: env {ref!r} is not a gymnasium.Env or "
+                "FiniteDecisionEnv subclass; the declared seam builds "
+                "environments, nothing else"
             )
         try:
-            return cls(**(env_params or {}))
+            env = cls(**(env_params or {}))
         except TypeError as exc:
             raise ValueError(
                 f"{self.key}: env {ref!r} rejected env_params "
                 f"{env_params or {}!r}: {exc}"
             ) from exc
+        if not isinstance(env, gymnasium.Env):
+            raise ValueError(
+                f"{self.key}: env {ref!r} constructed a "
+                f"{type(env).__name__}, not a gymnasium.Env instance"
+            )
+        return env
+
+    def _environment_hook(self, env_ref, hook_name):
+        """Return an optional class hook declared by an environment ref."""
+        env_cls = import_ref(env_ref)
+        hook = getattr(env_cls, hook_name, None)
+        if hook is not None and not callable(hook):
+            raise ValueError(
+                f"{self.key}: env {env_ref!r} {hook_name} must be callable"
+            )
+        return hook
+
+    def _call_environment_hook(self, env_ref, hook_name, hook, *args):
+        """Call an environment hook and validate its list-of-problems result."""
+        problems = hook(*args)
+        if (not isinstance(problems, list)
+                or any(not isinstance(problem, str) for problem in problems)):
+            raise ValueError(
+                f"{self.key}: env {env_ref!r} {hook_name} must return list[str]"
+            )
+        return problems
+
+    def _evaluation_environment(self, sidecar):
+        """Resolve an evaluation environment and check its training compatibility."""
+        env_ref = self.params.get("env") or sidecar["env"]
+        env_params = self.params.get("env_params")
+        if env_params is None:
+            env_params = sidecar["env_params"]
+
+        if "environment_contract" not in sidecar:
+            return env_ref, env_params
+        hook_name = "validate_evaluation_params"
+        hook = self._environment_hook(sidecar["env"], hook_name)
+        if hook is None:
+            raise ValueError(
+                f"{self.key}: artifact declares {_ENVIRONMENT_CONTRACT!r} "
+                f"but env {sidecar['env']!r} has no {hook_name} hook"
+            )
+        if hook is not None:
+            if env_ref != sidecar["env"]:
+                raise ValueError(
+                    f"{self.key}: evaluation environment {env_ref!r} must be "
+                    f"the same environment as the pinned training environment "
+                    f"{sidecar['env']!r}, which defines evaluation compatibility"
+                )
+            evaluation_split = self.params.get("split")
+            if ("split" in env_params and env_params["split"] != evaluation_split):
+                raise ValueError(
+                    f"{self.key}: evaluation env_params split "
+                    f"{env_params['split']!r} does not match declared split "
+                    f"{evaluation_split!r}"
+                )
+            problems = self._call_environment_hook(
+                sidecar["env"], hook_name, hook, sidecar["env_params"], env_params
+            )
+            if problems:
+                raise ValueError(
+                    f"{self.key}: evaluation env_params are incompatible "
+                    f"with the pinned training environment: {problems}"
+                )
+        return env_ref, env_params
 
     @staticmethod
     def _state_hash(zip_path, sidecar):
@@ -421,6 +496,12 @@ class _Sb3Base(Node):
         if sidecar["format"] != ARTIFACT_FORMAT:
             self._refuse(
                 f"artifact format {sidecar['format']!r} is not {ARTIFACT_FORMAT!r}"
+            )
+        if ("environment_contract" in sidecar
+                and sidecar["environment_contract"] != _ENVIRONMENT_CONTRACT):
+            self._refuse(
+                "artifact sidecar has unsupported environment_contract "
+                f"{sidecar['environment_contract']!r}"
             )
         got = self._state_hash(zip_path, sidecar)
         if got != sidecar["state_hash"]:
@@ -510,6 +591,20 @@ class Sb3Train(_Sb3Base, TrainableNode):
         policy = self.params.get("policy", DEFAULT_POLICY)
         seed = self.params.get("seed", 0)
         total = self.params["total_timesteps"]
+        hook_name = "validate_training_params"
+        hook = self._environment_hook(env_ref, hook_name)
+        evaluation_hook = self._environment_hook(
+            env_ref, "validate_evaluation_params"
+        )
+        if hook is not None:
+            problems = self._call_environment_hook(
+                env_ref, hook_name, hook, env_params
+            )
+            if problems:
+                raise ValueError(
+                    f"{self.key}: training env_params are incompatible "
+                    f"with the declared environment: {problems}"
+                )
         algo_cls = self._resolve_algo(self.key, algo_name)
         env = self._build_env(env_ref, env_params)
         try:  # the env closes on EVERY exit — a child env may hold real
@@ -529,17 +624,16 @@ class Sb3Train(_Sb3Base, TrainableNode):
                     f"its construction: {exc}"
                 ) from exc
             model.learn(total_timesteps=total, progress_bar=False)
-            artifact_path = self._save_artifact(
-                ctx,
-                model,
-                {
-                    "algo": algo_name,
-                    "policy": policy,
-                    "env": env_ref,
-                    "env_params": env_params,
-                    "seed": seed,
-                },
-            )
+            artifact_spec = {
+                "algo": algo_name,
+                "policy": policy,
+                "env": env_ref,
+                "env_params": env_params,
+                "seed": seed,
+            }
+            if hook is not None or evaluation_hook is not None:
+                artifact_spec["environment_contract"] = _ENVIRONMENT_CONTRACT
+            artifact_path = self._save_artifact(ctx, model, artifact_spec)
         finally:
             env.close()
         self.log.info(
@@ -707,10 +801,7 @@ class Sb3Eval(_Sb3Base):
             ),
         )
         sidecar = self._read_sidecar(reference)
-        env_ref = self.params.get("env") or sidecar["env"]
-        env_params = self.params.get("env_params")
-        if env_params is None:
-            env_params = sidecar["env_params"]
+        env_ref, env_params = self._evaluation_environment(sidecar)
         env = self._build_env(env_ref, env_params)
         try:
             env.reset(seed=self.params.get("seed", 0))
@@ -1045,10 +1136,7 @@ class Sb3EvalEpisodes(_Sb3Base):
         evidence, and a value JSON cannot hold would fail the write after
         every episode had already run.
         """
-        env_ref = self.params.get("env") or sidecar["env"]
-        env_params = self.params.get("env_params")
-        if env_params is None:
-            env_params = sidecar["env_params"]
+        env_ref, env_params = self._evaluation_environment(sidecar)
         problem = _json_safe_problem(env_params, "env_params")
         if problem:
             raise ValueError(
@@ -1279,3 +1367,223 @@ def register(registry=None) -> None:
     for name, cls in NODE_KINDS:
         if name not in registry:
             registry.register(name, cls)
+
+
+class FiniteDecisionEnv(ABC):
+    """Generic one-decision contextual policy environment.
+
+    Observation element zero is the current action count, followed by a
+    fixed-width context vector. Unused context slots are zero padded.
+    Discrete action indices beyond the current list explicitly alias index
+    zero, which child environments must reserve for cash.
+
+    Parameters
+    ----------
+    max_actions : int
+        Positive size of the fixed discrete action space.
+    max_features : int
+        Positive context vector width.
+    reward_scale : float
+        Positive finite divisor applied to raw rewards.
+
+    Examples
+    --------
+    A child provides the three hooks::
+
+        env = ChildEnv(max_actions=8, max_features=12, reward_scale=10)
+        observation, info = env.reset(seed=5)
+    """
+
+    _PARAMS = ("max_actions", "max_features", "reward_scale")
+
+    def __new__(cls, *args, **kwargs):
+        if cls is FiniteDecisionEnv:
+            raise TypeError("FiniteDecisionEnv must be subclassed")
+        try:
+            import gymnasium as gym
+        except ImportError as exc:
+            raise ImportError("FiniteDecisionEnv requires gymnasium") from exc
+        if issubclass(cls, gym.Env):
+            return object.__new__(cls)
+        dynamic = type(f"_{cls.__name__}Gym", (cls, gym.Env), {})
+        dynamic.__module__ = cls.__module__
+        return object.__new__(dynamic)
+
+    def __init__(self, *, max_actions, max_features, reward_scale):
+        import gymnasium as gym
+        import numpy as np
+
+        for name, value in (("max_actions", max_actions),
+                            ("max_features", max_features)):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if (isinstance(reward_scale, bool)
+                or not isinstance(reward_scale, (int, float))
+                or not math.isfinite(float(reward_scale))
+                or reward_scale <= 0):
+            raise ValueError("reward_scale must be a positive finite number")
+        self.max_actions = max_actions
+        self.max_features = max_features
+        self.reward_scale = float(reward_scale)
+        self.action_space = gym.spaces.Discrete(max_actions)
+        self.observation_space = gym.spaces.Box(
+            low=-np.inf, high=np.inf, shape=(max_features + 1,), dtype=np.float32)
+        self.actions = ()
+        self._active = False
+        self._done = True
+
+    @abstractmethod
+    def _start_episode(self, rng):
+        """Return a numeric context vector, candidate actions and reset info."""
+
+    @abstractmethod
+    def _finish_episode(self, selected_action):
+        """Return the selected action's raw reward and outcome info."""
+
+    @abstractmethod
+    def _close_episode(self):
+        """Release any resources held by an episode."""
+
+    def reset(self, *, seed=None, options=None):
+        """Start an episode and return its padded float32 observation.
+
+        Parameters
+        ----------
+        seed : int or None
+            Seed passed to Gymnasium's environment RNG.
+        options : dict or None
+            Must be absent or empty; this base has no option-controlled reset.
+
+        Returns
+        -------
+        tuple
+            A float32 observation array and the reset-info dict.
+
+        Raises
+        ------
+        ValueError
+            If options, context, action list, or reset info violate the contract.
+        """
+        import gymnasium as gym
+        import numpy as np
+
+        if options is not None and (not isinstance(options, dict) or options):
+            raise ValueError("options must be None or an empty dict")
+        gym.Env.reset(self, seed=seed)
+        self._close_active()
+        self._done = True
+        try:
+            self._active = True
+            features, actions, info = self._start_episode(self.np_random)
+            original = np.asarray(features)
+            if original.ndim != 1 or original.size > self.max_features:
+                raise ValueError("numeric_features must be flat and fit max_features")
+            if original.dtype.kind not in "iuf":
+                raise ValueError("numeric_features must contain numeric values")
+            if not np.all(np.isfinite(original)):
+                raise ValueError("numeric_features must be finite")
+            with np.errstate(over="ignore", invalid="ignore"):
+                values = original.astype(np.float32)
+            if not np.all(np.isfinite(values)):
+                raise ValueError("numeric_features must be finite and float32 representable")
+            if not isinstance(actions, (list, tuple)):
+                raise ValueError("actions must be a nonempty action list")
+            snapshot = copy.deepcopy(tuple(actions))
+            if not snapshot or len(snapshot) > self.max_actions:
+                raise ValueError("actions must be nonempty and at most max_actions")
+            if not isinstance(info, dict):
+                raise ValueError("reset info must be a dict")
+            observation = np.zeros(self.max_features + 1, dtype=np.float32)
+            observation[0] = len(snapshot)
+            observation[1:1 + values.size] = values
+            self.actions = snapshot
+            self._active = True
+            self._done = False
+            return observation, dict(info)
+        except Exception:
+            self._close_active()
+            self._done = True
+            raise
+
+    def step(self, action):
+        """Resolve one discrete action and return a terminal transition.
+
+        Parameters
+        ----------
+        action : int
+            Requested index in the fixed discrete action space.
+
+        Returns
+        -------
+        tuple
+            A zero float32 observation, scaled reward, terminal flag,
+            truncation flag, and outcome-info dict.
+
+        Raises
+        ------
+        RuntimeError
+            If no episode is active.
+        ValueError
+            If the requested action or child outcome violates the contract.
+        """
+        import operator
+        import numpy as np
+
+        if not self._active or self._done:
+            raise RuntimeError("reset must start an active episode before step")
+        if isinstance(action, (bool, np.bool_)):
+            raise ValueError("action must be an integer index")
+        try:
+            requested = operator.index(action)
+        except TypeError as exc:
+            raise ValueError("action must be an integer index") from exc
+        if requested < 0 or requested >= self.max_actions:
+            raise ValueError("action index is outside the fixed action space")
+        effective = requested if requested < len(self.actions) else 0
+        try:
+            raw_reward, info = self._finish_episode(
+                copy.deepcopy(self.actions[effective])
+            )
+            if (isinstance(raw_reward, (bool, np.bool_))
+                    or not isinstance(raw_reward, (int, float, np.number))):
+                raise ValueError("raw reward must be a finite number")
+            reward = float(raw_reward) / self.reward_scale
+            if not math.isfinite(reward):
+                raise ValueError("scaled reward must be finite")
+            if not isinstance(info, dict):
+                raise ValueError("step info must be a dict")
+            result = dict(info)
+            result.update(requested_action=requested, effective_action=effective,
+                          cash_alias=requested != effective)
+            self._done = True
+            self._close_active()
+            return (np.zeros(self.max_features + 1, dtype=np.float32),
+                    reward, True, False, result)
+        except Exception:
+            self._done = True
+            self._close_active()
+            raise
+
+    def _close_active(self):
+        if self._active:
+            self._active = False
+            self._close_episode()
+
+    def close(self):
+        """Idempotently close an active episode.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        Exception
+            Propagates an error raised by the child cleanup hook.
+        """
+        self._done = True
+        self._close_active()

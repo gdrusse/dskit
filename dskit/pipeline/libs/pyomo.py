@@ -125,10 +125,13 @@ __all__ = [
     "HARD_N_SCENARIOS_CEILING",
     "NODE_KINDS",
     "BudgetedSelect",
+    "DeviationCharge",
+    "MeanAbsoluteDeviation",
     "PyomoSolve",
     "ScenarioUtilitySolve",
     "SolveRecord",
     "WassersteinDual",
+    "TransportActionScore",
     "TransportPortfolioSolve",
     "register",
     "tangent_utility",
@@ -3370,6 +3373,264 @@ class WassersteinDual:
                                      for j in indices) + band_cost)
         return block
 
+
+class DeviationCharge(ABC):
+    """Price a deviation of one book's outcome losses into a linear objective.
+
+    The charge is ``price * D(L)``. ``L`` holds the book's loss at each
+    support point of a finite outcome grid, and ``D`` is a deviation of ``L``
+    under the nominal ``masses``: convex and positively homogeneous in the
+    actions (``D(2x) = 2 D(x)``), and zero for a loss that is the same in
+    every outcome. A subclass states ``D`` twice, on purpose.
+    :meth:`deviation` evaluates it exactly in numpy for the independent
+    audit. :meth:`epigraph` states it as linear rows over the losses and
+    auxiliary variables whose least cost is ``D``, so a maximizing program
+    that subtracts ``price`` times that cost stays a mixed-integer LP.
+
+    Parameters
+    ----------
+    masses : sequence of float
+        Finite nonnegative nominal outcome probabilities, one per outcome.
+    price : float
+        Finite nonnegative objective units per unit of deviation. Zero is
+        inactive: a caller adds nothing to its program.
+
+    Examples
+    --------
+    Declare a charge in configuration and build it for one outcome grid::
+
+        charge = DeviationCharge.from_spec({"measure": "mad", "price": .5}, [.2, .6, .2])
+    """
+
+    #: The configuration name a concrete subclass answers to.
+    measure = None
+
+    def __init__(self, masses, price):
+        import numpy as np
+
+        self.masses = np.asarray(masses, dtype=float)
+        if (self.masses.ndim != 1 or not len(self.masses)
+                or not np.isfinite(self.masses).all() or (self.masses < 0).any()):
+            raise ValueError("deviation masses must be finite and nonnegative")
+        if not number_ok(price) or price < 0:
+            raise ValueError("risk charge price must be finite and nonnegative")
+        self.price = float(price)
+
+    @staticmethod
+    def check_spec(spec):
+        """Refuse a malformed declaration ``{"measure": name, "price": >= 0}``.
+
+        Parameters
+        ----------
+        spec : object
+            Proposed declaration.
+
+        Returns
+        -------
+        dict
+            The declaration, unchanged.
+
+        Raises
+        ------
+        ValueError
+            Keys differ, the measure is unknown or the price is negative or not finite.
+        """
+        if (not isinstance(spec, dict) or set(spec) != {"measure", "price"}
+                or not isinstance(spec["measure"], str)
+                or spec["measure"] not in _DEVIATION_CHARGES
+                or not number_ok(spec["price"]) or spec["price"] < 0):
+            raise ValueError("risk_charge must be {measure: one of "
+                             f"{sorted(_DEVIATION_CHARGES)}, price: a finite number >= 0}}")
+        return spec
+
+    @classmethod
+    def from_spec(cls, spec, masses):
+        """Return the declared charge on one outcome grid's masses.
+
+        Parameters
+        ----------
+        spec : dict
+            Declaration accepted by :meth:`check_spec`.
+        masses : sequence of float
+            Nominal outcome probabilities.
+
+        Returns
+        -------
+        DeviationCharge
+            The concrete subclass the measure names.
+
+        Raises
+        ------
+        ValueError
+            The declaration or the masses are invalid.
+        """
+        cls.check_spec(spec)
+        return _DEVIATION_CHARGES[spec["measure"]](masses, spec["price"])
+
+    @property
+    def active(self):
+        """Whether the charge can change a program (a positive price)."""
+        return self.price > 0.
+
+    def charge(self, losses):
+        """Return ``price * D`` of one numeric loss vector, exactly."""
+        return self.price*self.deviation(losses)
+
+    @abstractmethod
+    def deviation(self, losses):
+        """Evaluate ``D`` of one finite numeric loss vector in closed form.
+
+        Parameters
+        ----------
+        losses : array-like
+            One loss per outcome, aligned with ``masses``.
+
+        Returns
+        -------
+        float
+            The nonnegative deviation.
+        """
+
+    @abstractmethod
+    def epigraph(self):
+        """State ``D`` as linear rows whose least auxiliary cost equals it.
+
+        Returns
+        -------
+        tuple
+            ``(lower, cost, rows)``: one lower bound per auxiliary variable
+            (``None`` is free), the cost coefficient of each auxiliary, and
+            rows ``(kind, loss_terms, aux_terms)`` reading
+            ``sum(c * L[k]) + sum(c * aux[t])`` ``== 0`` (kind ``"eq"``) or
+            ``<= 0`` (kind ``"ub"``), each terms dict mapping an index to its
+            coefficient.
+        """
+
+    def attach(self, model, losses, name):
+        """Add a block whose ``cost`` is ``price`` times the epigraph cost.
+
+        Subtracting the cost from a maximized objective charges ``price * D``
+        at every optimum, because the auxiliaries then sit at their least
+        feasible cost; at any other point the cost can only be larger.
+
+        Parameters
+        ----------
+        model : pyomo.environ.ConcreteModel
+            Caller-owned model; the component name must be unused.
+        losses : sequence of numeric expressions
+            One linear expression (or constant) per outcome.
+        name : str
+            Unique block component name.
+
+        Returns
+        -------
+        pyomo.environ.Block
+            Auxiliary variables, rows and the ``cost`` expression; no objective.
+
+        Raises
+        ------
+        ValueError
+            The loss shape or block name is invalid.
+        """
+        from pyomo.environ import Block, ConstraintList, Expression, Reals, Var
+
+        losses = list(losses)
+        if (len(losses) != len(self.masses) or not isinstance(name, str) or not name
+                or hasattr(model, name)):
+            raise ValueError("loss shape or unused block name is invalid")
+        lower, cost, rows = self.epigraph()
+        block = Block(concrete=True)
+        model.add_component(name, block)
+        block.aux = Var(range(len(lower)), domain=Reals,
+                        bounds=lambda b, t: (lower[t], None))
+        block.rows = ConstraintList()
+        for kind, loss_terms, aux_terms in rows:
+            expr = (sum(float(c)*losses[k] for k, c in loss_terms.items())
+                    + sum(float(c)*block.aux[t] for t, c in aux_terms.items()))
+            block.rows.add(expr == 0. if kind == "eq" else expr <= 0.)
+        block.cost = Expression(expr=self.price*sum(
+            float(c)*block.aux[t] for t, c in enumerate(cost) if c))
+        return block
+
+    def relaxation(self, losses):
+        """Return the epigraph as dense LP rows over actions and auxiliaries.
+
+        Parameters
+        ----------
+        losses : array-like
+            The ``(outcomes, actions)`` loss coefficient matrix.
+
+        Returns
+        -------
+        dict
+            ``ub`` and ``eq``: ``(action_rows, aux_rows)`` pairs with a zero
+            right-hand side; ``cost``: ``price`` times each auxiliary's cost;
+            ``bounds``: one ``(lower, None)`` per auxiliary.
+        """
+        import numpy as np
+
+        matrix = np.asarray(losses, dtype=float)
+        lower, cost, rows = self.epigraph()
+        parts = {"ub": ([], []), "eq": ([], [])}
+        for kind, loss_terms, aux_terms in rows:
+            action = np.zeros(matrix.shape[1])
+            for k, c in loss_terms.items():
+                action += float(c)*matrix[k]
+            aux = np.zeros(len(lower))
+            for t, c in aux_terms.items():
+                aux[t] = float(c)
+            parts[kind][0].append(action)
+            parts[kind][1].append(aux)
+        shaped = {kind: (np.reshape(a, (-1, matrix.shape[1])), np.reshape(b, (-1, len(lower))))
+                  for kind, (a, b) in parts.items()}
+        return {**shaped, "cost": self.price*np.asarray(cost, dtype=float),
+                "bounds": [(bound, None) for bound in lower]}
+
+
+class MeanAbsoluteDeviation(DeviationCharge):
+    """The mean absolute deviation of a book's loss under its nominal masses.
+
+    ``D = sum_k p_k |L_k - mu|`` with ``mu = sum_j p_j L_j``. It costs one
+    free auxiliary (``mu``) and one nonnegative ``d_k`` per positive-mass
+    outcome, with ``d_k >= +-(L_k - mu)`` and cost ``sum_k p_k d_k``; a
+    zero-mass outcome adds nothing to ``D`` and gets no row. For a binary
+    payoff of size ``A`` with probability ``q``, ``D = 2 A q (1 - q)``.
+
+    Examples
+    --------
+    A lottery ticket deviates more than a spread with the same mean::
+
+        MeanAbsoluteDeviation([.5, .3, .2], 1.).deviation([0., 0., -10.])  # 3.2
+    """
+
+    measure = "mad"
+
+    def deviation(self, losses):
+        """Return ``sum_k p_k |L_k - sum_j p_j L_j|`` (see :class:`DeviationCharge`)."""
+        import numpy as np
+
+        values = np.asarray(losses, dtype=float)
+        if values.shape != self.masses.shape or not np.isfinite(values).all():
+            raise ValueError("invalid deviation losses")
+        mean = float(np.dot(self.masses, values))
+        return float(np.dot(self.masses, np.abs(values-mean)))
+
+    def epigraph(self):
+        """Return the free mean and the two-sided absolute-deviation rows."""
+        support = [k for k, p in enumerate(self.masses) if p > 0]
+        lower = [None]+[0.]*len(support)
+        cost = [0.]+[float(self.masses[k]) for k in support]
+        rows = [("eq", {k: float(self.masses[k]) for k in support}, {0: -1.})]
+        for t, k in enumerate(support, start=1):
+            rows.append(("ub", {k: 1.}, {0: -1., t: -1.}))
+            rows.append(("ub", {k: -1.}, {0: 1., t: -1.}))
+        return lower, cost, rows
+
+
+#: Every deviation a ``risk_charge`` declaration may name, by measure.
+_DEVIATION_CHARGES = {cls.measure: cls for cls in (MeanAbsoluteDeviation,)}
+
+
 class TransportPortfolioSolve(PyomoSolve):
     """Size integer actions with marginal W1 profits and shared reserves.
 
@@ -3407,6 +3668,16 @@ class TransportPortfolioSolve(PyomoSolve):
         The reduction stays exact when no screened group carries a negative
         joint coefficient. All actions are nonnegative integers.
         Exclusive pairs cannot both be positive.
+        A group may add risk_charge {"measure", "price"} (ADR-0278
+        amendment, estimation risk): its value becomes credit minus the
+        W1-worst expected loss minus price times the measure's deviation of
+        its loss under the nominal masses (:class:`DeviationCharge`; "mad"
+        is :class:`MeanAbsoluteDeviation`), a linear epigraph, so the
+        program stays a MILP. The LP screen relaxes the same charged value.
+        With any positive price the selection adds risk_charges, one
+        charge per group; group_values stay uncharged (credit minus
+        W1-worst loss) and value is their sum minus the charges. An absent
+        key or a zero price builds the identical program and selection.
 
     Examples
     --------
@@ -3458,12 +3729,17 @@ class TransportPortfolioSolve(PyomoSolve):
 
     def _checked(self, inputs):
         """Validate and privately normalize the complete finite program."""
-        import copy
-        import numpy as np
-
         defects = self.validate_params(self.params)
         if defects:
             raise ValueError("; ".join(defects))
+        return self._checked_program(inputs)
+
+    @classmethod
+    def _checked_program(cls, inputs):
+        """Validate and normalize a finite transport program for shared callers."""
+        import copy
+        import numpy as np
+
         if (not isinstance(inputs, dict) or set(inputs)-{"joint_rows"} != {"groups", "caps"}
                 or not isinstance(inputs["groups"], list)):
             raise ValueError("inputs must contain groups and caps")
@@ -3471,17 +3747,18 @@ class TransportPortfolioSolve(PyomoSolve):
         joint = copy.deepcopy(inputs.get("joint_rows", []))
         if not groups or not isinstance(caps, list):
             raise ValueError("nonempty groups and a caps list required")
-        ids, duals = set(), []
+        ids, duals, charges = set(), [], []
         required = {"id", "grid", "masses", "radius", "scale", "credit",
                     "losses", "capacity", "exclusive", "reserve_rows", "linear_rows"}
         for g in groups:
-            if not isinstance(g, dict) or set(g) != required:
+            if not isinstance(g, dict) or set(g)-{"risk_charge"} != required:
                 raise ValueError("group fields differ from contract")
             if not isinstance(g["id"], str) or not g["id"] or g["id"] in ids:
                 raise ValueError("group identities must be unique")
             ids.add(g["id"])
             dual = WassersteinDual(g["grid"], g["masses"], g["radius"], g["scale"])
             duals.append(dual)
+            charges.append(cls._group_charge(g))
             n = len(g["capacity"])
             if not n or any(type(v) is not int or v < 1 for v in g["capacity"]):
                 raise ValueError("capacities must be positive integers")
@@ -3514,8 +3791,16 @@ class TransportPortfolioSolve(PyomoSolve):
         if ids != {key for c in caps for key in c["groups"]}:
             raise ValueError("every group must have a shared reserve cap")
         sizes = {g["id"]: len(g["capacity"]) for g in groups}
-        self._checked_joint(joint, sizes)
-        return groups, caps, duals, joint
+        cls._checked_joint(joint, sizes)
+        return groups, caps, duals, joint, charges
+
+    @staticmethod
+    def _group_charge(group):
+        """Return the group's priced deviation charge, None when absent or free."""
+        if "risk_charge" not in group:
+            return None
+        charge = DeviationCharge.from_spec(group["risk_charge"], group["masses"])
+        return charge if charge.active else None
 
     @staticmethod
     def _checked_joint(joint, sizes):
@@ -3544,8 +3829,9 @@ class TransportPortfolioSolve(PyomoSolve):
         """Upper-bound one group's best value by its own LP relaxation, caps ignored.
 
         The relaxation drops integrality only; it keeps capacities, linear
-        rows and the sparse W1 dual, so it is a valid bound on every integer
-        book of the group and is exact at radius zero up to integrality.
+        rows, the sparse W1 dual and a priced risk_charge epigraph, so it is
+        a valid bound on every integer book of the group and is exact at
+        radius zero up to integrality. A charge only lowers the bound.
         """
         import numpy as np
         from scipy.optimize import linprog
@@ -3554,8 +3840,12 @@ class TransportPortfolioSolve(PyomoSolve):
         grid = np.asarray(group["grid"], dtype=float)
         losses = np.asarray(group["losses"], dtype=float)
         n, m = len(group["capacity"]), len(grid)
-        width = n+m+1  # actions, potentials, gamma
-        rows = lil_matrix((m+2*(m-1)+len(group["linear_rows"]), width))
+        charge = TransportPortfolioSolve._group_charge(group)
+        extra = None if charge is None else charge.relaxation(losses)
+        aux = 0 if extra is None else len(extra["bounds"])
+        width = n+m+1+aux  # actions, potentials, gamma, charge auxiliaries
+        rows = lil_matrix((m+2*(m-1)+len(group["linear_rows"])
+                           + (0 if extra is None else len(extra["ub"][0])), width))
         rhs, r = [], 0
         for k in range(m):
             rows[r, :n] = losses[k]
@@ -3567,7 +3857,7 @@ class TransportPortfolioSolve(PyomoSolve):
             for sign in (1., -1.):
                 rows[r, n+j+1] = sign
                 rows[r, n+j] = -sign
-                rows[r, width-1] = -distance[j]
+                rows[r, n+m] = -distance[j]
                 rhs.append(0.)
                 r += 1
         for row in group["linear_rows"]:
@@ -3578,8 +3868,22 @@ class TransportPortfolioSolve(PyomoSolve):
                      np.asarray(group["masses"], dtype=float), float(group["radius"])]
         bounds = ([(0., float(c)) for c in group["capacity"]]
                   + [(None, None)]*m + [(0., None)])
+        equalities = {}
+        if extra is not None:
+            for action, auxiliary in zip(*extra["ub"]):
+                rows[r, :n] = action
+                for t in np.flatnonzero(auxiliary):
+                    rows[r, n+m+1+t] = auxiliary[t]
+                rhs.append(0.)
+                r += 1
+            cost = np.r_[cost, extra["cost"]]
+            bounds += extra["bounds"]
+            if len(extra["eq"][0]):
+                filler = np.zeros((len(extra["eq"][0]), m+1))
+                equalities = {"A_eq": csr_matrix(np.hstack([extra["eq"][0], filler, extra["eq"][1]])),
+                              "b_eq": np.zeros(len(extra["eq"][0]))}
         result = linprog(cost, A_ub=csr_matrix(rows), b_ub=np.asarray(rhs),
-                         bounds=bounds, method="highs")
+                         bounds=bounds, method="highs", **equalities)
         if not result.success or not np.isfinite(result.fun):
             raise ValueError(f"group LP relaxation failed: {result.message}")
         return float(-result.fun)
@@ -3641,8 +3945,10 @@ class TransportPortfolioSolve(PyomoSolve):
             NonNegativeReals, Objective, Var, maximize,
         )
 
-        groups, caps, duals, joint = self._checked(inputs)
+        groups, caps, duals, joint, charges = self._checked(inputs)
         self._groups, self._caps, self._duals, self._joint = groups, caps, duals, joint
+        self._charges = charges
+        self._charged = any(charge is not None for charge in charges)
         self._active = active = self._screened(groups)
         m = ConcreteModel()
         indices = [(i, j) for i in active for j in range(len(groups[i]["capacity"]))]
@@ -3678,7 +3984,10 @@ class TransportPortfolioSolve(PyomoSolve):
                 cost = sum(float(p)*loss for p, loss in zip(g["masses"], losses))
             else:
                 cost = dual.attach(m, losses, name=f"transport_{i}", sparse=True).cost
-            values.append(dot(g["credit"])-cost)
+            value = dot(g["credit"])-cost
+            if charges[i] is not None:
+                value = value-charges[i].attach(m, losses, name=f"risk_{i}").cost
+            values.append(value)
         lookup = {g["id"]: i for i, g in enumerate(groups)}
         for cap in caps:
             members = [lookup[key] for key in cap["groups"] if lookup[key] in m.reserve]
@@ -3760,17 +4069,14 @@ class TransportPortfolioSolve(PyomoSolve):
 
     def _incumbent(self, model):
         """Independently reprice and check actual integer actions and reserves."""
-        import numpy as np
         from pyomo.environ import value
 
         tolerance = max(self.params["parity_tolerance"], 1e-6)
-        quantities, reserves, values = [], [], []
+        quantities = []
         cleanup = {"removed_contracts": 0, "profit_gain": 0., "pairs": []}
-        for i, (g, dual) in enumerate(zip(self._groups, self._duals)):
+        for i, g in enumerate(self._groups):
             if i not in self._active:
                 quantities.append([0]*len(g["capacity"]))
-                reserves.append(0.)
-                values.append(0.)
                 continue
             raw = [value(model.x[i, j]) for j in range(len(g["capacity"]))]
             if any(not number_ok(v) or abs(v-round(v)) > 1e-5 for v in raw):
@@ -3792,33 +4098,17 @@ class TransportPortfolioSolve(PyomoSolve):
                     cleanup["pairs"].append({"group": g["id"], "pair": [a, b],
                                              "matched_quantity": matched})
             if changed:
-                # Keep the model's objective on the same actions as the primal
-                # audit, so a cleanup gain cannot hide an invalid dual value.
                 for j, quantity in enumerate(q):
                     model.x[i, j].set_value(quantity)
-            if any(q[a] and q[b] for a, b in g["exclusive"]):
-                raise ValueError("incumbent violates exclusive sides")
-            for row in g["linear_rows"]:
-                if np.dot(row["coefficients"], q) > row["upper"]+tolerance:
-                    raise ValueError("incumbent violates linear bound")
-            reserve = max(0., *np.asarray(g["reserve_rows"]) @ q)
-            loss = np.asarray(g["losses"]) @ q
-            worst = dual.distribution.worst_expected_loss(loss, g["radius"], g["scale"])
-            values.append(float(np.dot(g["credit"], q)-worst))
-            reserves.append(float(reserve))
             quantities.append(q)
-        lookup = {g["id"]: reserves[i] for i, g in enumerate(self._groups)}
-        for cap in self._caps:
-            if sum(lookup[key] for key in cap["groups"]) > cap["upper"]+tolerance:
-                raise ValueError("incumbent violates shared reserve cap")
-        index = {g["id"]: i for i, g in enumerate(self._groups)}
-        for row in self._joint:
-            total = sum(float(np.dot(coefficients, quantities[index[key]]))
-                        for key, coefficients in row["terms"].items())
-            if total > row["upper"]+tolerance:
-                raise ValueError("incumbent violates joint row "+row["id"])
-        return {"quantities": quantities, "reserves": reserves, "group_values": values,
-                "value": float(sum(values)), "canonicalization": cleanup}
+        program = {"groups": self._groups, "caps": self._caps, "joint_rows": self._joint}
+        scored = TransportActionScore(program, {"parity_tolerance": tolerance}).evaluate(quantities)
+        audited = {"quantities": scored["quantities"], "reserves": scored["reserves"],
+                   "group_values": scored["group_values"], "value": scored["value"],
+                   "canonicalization": cleanup}
+        if self._charged:
+            audited["risk_charges"] = scored["risk_charges"]
+        return audited
 
     def _recorded(self, inputs, selection, certificates):
         """Recheck executable selections or explicit non-executable timeouts."""
@@ -3849,7 +4139,7 @@ class TransportPortfolioSolve(PyomoSolve):
         json.dumps([selection, certificates], allow_nan=False)
         required = {"quantities", "reserves", "group_values", "value", "model_value",
                     "bound", "gap", "canonicalization", "primary_quantities"}
-        if (not isinstance(selection, dict) or set(selection) != required
+        if (not isinstance(selection, dict) or set(selection)-{"risk_charges"} != required
                 or not isinstance(certificates, list) or len(certificates) != 1):
             raise ValueError("incomplete recorded selection")
         certificate = certificates[0]
@@ -3886,6 +4176,8 @@ class TransportPortfolioSolve(PyomoSolve):
                 or not isinstance(primary["pairs"], list)):
             raise ValueError("invalid recorded primary cleanup")
         model = self.build_model(inputs, self.params)
+        if ("risk_charges" in selection) != self._charged:
+            raise ValueError("recorded risk charges differ from the program")
         for key, component in (("variables", Var), ("constraints", Constraint)):
             expected = sum(1 for _ in model.component_data_objects(component, active=True))
             if type(certificate[key]) is not int or certificate[key] != expected:
@@ -3931,18 +4223,19 @@ class TransportPortfolioSolve(PyomoSolve):
                 or (not missing_bound and (certificate["bound"] < certificate["objective"]-tol
                     or certificate["bound"] < audited["value"]-tol))):
             raise ValueError("invalid recorded primary valuation")
+        charged = ("risk_charges",) if self._charged else ()
         if audited["value"] <= 0:
             audited.update(quantities=[[0]*len(g["capacity"]) for g in self._groups],
                            reserves=[0.]*len(self._groups), group_values=[0.]*len(self._groups),
-                           value=0.)
+                           value=0., **{k: [0.]*len(self._groups) for k in charged})
         if (not isinstance(selection["quantities"], list)
                 or any(not isinstance(q, list) or any(type(v) is not int for v in q)
                        for q in selection["quantities"])
                 or any(not isinstance(selection[k], list)
                        or any(not number_ok(v) for v in selection[k])
-                       for k in ("reserves", "group_values"))):
+                       for k in ("reserves", "group_values", *charged))):
             raise ValueError("invalid recorded final audit types")
-        for key in ("quantities", "reserves", "group_values", "value"):
+        for key in ("quantities", "reserves", "group_values", "value", *charged):
             if selection[key] != audited[key]:
                 raise ValueError("recorded independent portfolio audit differs: "+key)
         gap = None if missing_bound else max(0., certificate["bound"]-audited["value"])
@@ -4007,6 +4300,8 @@ class TransportPortfolioSolve(PyomoSolve):
             zero = [[0]*len(g["capacity"]) for g in self._groups]
             chosen = {"quantities": zero, "reserves": [0.]*len(zero),
                       "group_values": [0.]*len(zero), "value": 0.}
+            if self._charged:
+                chosen["risk_charges"] = [0.]*len(zero)
         gap = None if missing_bound else max(0., first.bound-chosen["value"])
         allowance = max(self.params["absolute_gap"],
                         self.params["relative_gap"]*abs(chosen["value"]))
@@ -4022,3 +4317,223 @@ class TransportPortfolioSolve(PyomoSolve):
                       "candidate": {k: v for k, v in chosen.items() if k != "certificates"},
                       "certificates": chosen["certificates"]}
         return {"selection": chosen}
+
+class _TransportActionInfeasible(ValueError):
+    """A quantity vector fails a declared transport constraint."""
+
+
+class TransportActionScore:
+    """Value and check finite integer actions against a shared transport program.
+
+    Parameters
+    ----------
+    program : dict
+        Groups, shared reserve caps and optional joint rows accepted by the
+        transport portfolio solver.
+    params : dict
+        parity_tolerance (finite nonnegative objective units).
+
+    Examples
+    --------
+    Score a cash action without constructing or solving a MIO::
+
+        scorer = TransportActionScore(program, {"parity_tolerance": 1e-8})
+        result = scorer.evaluate([[0, 0]])
+    """
+
+    _PARAMS = ("parity_tolerance",)
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return configuration defects for the scorer's default-deny parameters.
+
+        Parameters
+        ----------
+        params : dict
+            Proposed scorer parameters.
+
+        Returns
+        -------
+        list of str
+            Configuration defects.
+        """
+        if (not isinstance(params, dict)
+                or any(not isinstance(key, str) for key in params)):
+            return ["params must be a dict with string keys"]
+        unknown = sorted(set(params)-set(cls._PARAMS))
+        problems = [] if not unknown else [f"unknown param(s) {unknown}"]
+        tolerance = params.get("parity_tolerance", 0.)
+        if not number_ok(tolerance) or tolerance < 0:
+            problems.append("parity_tolerance must be finite and nonnegative")
+        return problems
+
+    def __init__(self, program, params):
+        """Validate and retain a private copy of one transport program.
+
+        Parameters
+        ----------
+        program : dict
+            Finite transport objective and constraints.
+        params : dict
+            Scorer parameters.
+
+        Raises
+        ------
+        ValueError
+            Program or parameter validation fails.
+        """
+        import copy
+        import hashlib
+        import json
+
+        defects = self.validate_params(params)
+        if defects:
+            raise ValueError("; ".join(defects))
+        self.params = copy.deepcopy(params)
+        self.program = copy.deepcopy(program)
+        (self.groups, self.caps, self.duals, self.joint,
+         self.charges) = TransportPortfolioSolve._checked_program(self.program)
+        identity = {"groups": self.groups, "caps": self.caps, "joint_rows": self.joint}
+        self.program_identity = hashlib.sha256(json.dumps(
+            identity, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")).hexdigest()
+
+    def _quantities(self, quantities):
+        """Validate nested action shape, integer bounds and exclusivity."""
+        if not isinstance(quantities, (list, tuple)) or len(quantities) != len(self.groups):
+            raise ValueError("quantity groups differ from program")
+        result = []
+        for group, action in zip(self.groups, quantities):
+            if (not isinstance(action, (list, tuple))
+                    or len(action) != len(group["capacity"])
+                    or any(type(q) is not int or q < 0 or q > cap
+                           for q, cap in zip(action, group["capacity"]))):
+                raise ValueError("quantities must be in-range nonnegative integers")
+            if any(action[a] and action[b] for a, b in group["exclusive"]):
+                raise _TransportActionInfeasible("quantities violate exclusive sides")
+            result.append(list(action))
+        return result
+
+    def value(self, quantities):
+        """Return economic components for one integer action.
+
+        Parameters
+        ----------
+        quantities : sequence of sequence of int
+            One nonnegative contract quantity per configured action.
+
+        Returns
+        -------
+        dict
+            Quantities, reserves, robust group values, nominal values,
+            uncertainty deductions, risk charges, objective value and
+            program identity. This is economic valuation, not admission.
+        """
+        import numpy as np
+
+        quantities = self._quantities(quantities)
+        reserves, group_values, nominal_values, deductions, risk_charges = [], [], [], [], []
+        for group, dual, charge, action in zip(
+                self.groups, self.duals, self.charges, quantities):
+            q = np.asarray(action, dtype=float)
+            loss = np.asarray(group["losses"], dtype=float) @ q
+            nominal_loss = float(np.dot(group["masses"], loss))
+            worst_loss = float(dual.distribution.worst_expected_loss(
+                loss, group["radius"], group["scale"]))
+            reserves.append(float(max(0., *(np.asarray(group["reserve_rows"]) @ q))))
+            nominal_values.append(float(np.dot(group["credit"], q)-nominal_loss))
+            group_values.append(float(np.dot(group["credit"], q)-worst_loss))
+            deductions.append(float(worst_loss-nominal_loss))
+            risk_charges.append(0. if charge is None else float(charge.charge(loss)))
+        return {
+            "quantities": quantities, "reserves": reserves,
+            "group_values": group_values, "nominal_values": nominal_values,
+            "uncertainty_deductions": deductions, "risk_charges": risk_charges,
+            "value": float(sum(group_values)-sum(risk_charges)),
+            "program_identity": self.program_identity,
+        }
+
+    def evaluate(self, quantities):
+        """Value an action and refuse it unless every shared constraint holds.
+
+        Parameters
+        ----------
+        quantities : sequence of sequence of int
+            One nonnegative contract quantity per configured action.
+
+        Returns
+        -------
+        dict
+            Economic valuation with feasible set true.
+
+        Raises
+        ------
+        ValueError
+            An action violates a group linear row, shared reserve cap or joint row.
+        """
+        import numpy as np
+
+        result = self.value(quantities)
+        tol = float(self.params.get("parity_tolerance", 0.))
+        for group, action in zip(self.groups, result["quantities"]):
+            for row in group["linear_rows"]:
+                if float(np.dot(row["coefficients"], action)) > row["upper"]+tol:
+                    raise _TransportActionInfeasible("quantities violate group linear bound")
+        reserve_by_id = {g["id"]: result["reserves"][i]
+                         for i, g in enumerate(self.groups)}
+        for cap in self.caps:
+            if sum(reserve_by_id[key] for key in cap["groups"]) > cap["upper"]+tol:
+                raise _TransportActionInfeasible("quantities violate shared reserve cap")
+        index = {g["id"]: i for i, g in enumerate(self.groups)}
+        for row in self.joint:
+            total = sum(float(np.dot(coefficients, result["quantities"][index[key]]))
+                        for key, coefficients in row["terms"].items())
+            if total > row["upper"]+tol:
+                raise _TransportActionInfeasible("quantities violate joint row "+row["id"])
+        return {**result, "feasible": True}
+
+    def catalogue(self, max_combinations):
+        """Enumerate every feasible integer action under a full-space bound.
+
+        Parameters
+        ----------
+        max_combinations : int
+            Positive upper bound on the complete Cartesian action space.
+
+        Returns
+        -------
+        list of sequence of sequence of int
+            Every feasible action, with cash first.
+
+        Raises
+        ------
+        ValueError
+            Bound invalid or full action space exceeds the bound.
+        """
+        import itertools
+
+        if type(max_combinations) is not int or max_combinations < 1:
+            raise ValueError("max_combinations must be a positive integer")
+        size = 1
+        for group in self.groups:
+            for capacity in group["capacity"]:
+                size *= capacity+1
+                if size > max_combinations:
+                    raise ValueError("complete action space exceeds max_combinations")
+        bounds = [range(capacity+1) for group in self.groups
+                  for capacity in group["capacity"]]
+        actions = []
+        for flat in itertools.product(*bounds):
+            nested, offset = [], 0
+            for group in self.groups:
+                width = len(group["capacity"])
+                nested.append(list(flat[offset:offset+width]))
+                offset += width
+            try:
+                self.evaluate(nested)
+            except _TransportActionInfeasible:
+                continue
+            actions.append(nested)
+        actions.sort(key=lambda action: (sum(sum(group) for group in action),
+                                         tuple(q for group in action for q in group)))
+        return actions

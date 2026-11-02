@@ -119,6 +119,12 @@ Use README.md for installation, the temporary demo and focused tests.
 - Keep AGENTS.md and CLAUDE.md identical and both layout trees current.
   No new files outside an owner-approved manifest.
 
+2026-11-02 owner-approved RL control: `rl_env.py` adds OptionEntryEnv and
+OptionEntryCompare, thin adapters over the shared MIO lifecycle and SB3 pack.
+The approval covers implementation and the tiny inline synthetic fixture fit,
+restoration and comparison only. No real-data training, HPO, backtest, protected
+window access or paper/live execution is authorized by this build.
+
 ## Data sources (index_options)
 
 Read the repo-level rule "Data enters through onboarding" first. For this child:
@@ -148,6 +154,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
                            # ledger_studies.py (read-only CLI over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0258)
+                           # rl_env.py: OptionEntryEnv and OptionEntryCompare (single-decision RL/MIO control)
                            # mio_run_events.py (ADR-0283: MioRunRows, one method of a saved MIO result.json as event rows; the
                            # report document is configs/mio-report-limited36-available-size-20261029.json);
                            # MioBookOutcomes: every filled and refused book of a saved result.json with its realized or
@@ -167,6 +174,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # listed strikes on fit and validation rows; rows/cells/curves/summary; no fit)
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
+                           # rl-entry-synthetic.json (tiny pinned PPO/restore/paired MIO smoke),
                            # run-option-scenario-stress.json (synthetic JSON book and shocks),
                            # run-predictive-cdf-qqq-torch-{zoo,smoke}.json (ADR-0211 generic Torch/local HPO)
                            # run-predictive-cdf-comparison.json (ADR-0189 bounded comparison),
@@ -235,7 +243,7 @@ docs/plans/mio-json/       # study.json (future schedule design); executable pla
 docs/memos/README.md        # execution-evidence convention; 2026-09-24 real-data closeout
 docs/research/              # README.md, .gitkeep; distribution-modeling/, real-data-backtest/ notes
 tests/                     # conftest.py; test_contracts, observations, nodes,
-                           # configs, integration, distribution,
+                           # configs, integration, distribution, rl_env,
                            # synthetic_distribution_run, distribution_zoo, real_data,
                            # quote_backtest, debit_backtest, ledger_studies, theta_hypotheses (+ theta_synthetic.py, its
                            # synthetic world), theta_exact_expiry, strike_screen_panel_source, strike_screen_fits, strike_region_scores,

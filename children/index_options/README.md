@@ -154,6 +154,30 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
 
 ## Interfaces and limits
 
+- `index_options.rl_env:OptionEntryEnv` is the tier-3 entry-only policy adapter.
+  One episode chooses a complete feasible integer allocation, then uses the
+  existing `WeeklyOptionPortfolioStudy.policy_steps` admission, fills and expiry
+  settlement. Both fill modes retain the paired MIO rules. Cash is action zero;
+  unused discrete slots also mean cash. Oversized catalogues refuse, never prune.
+- Reward is settled net profit minus the filled book's Wasserstein uncertainty
+  deduction and configured MAD charge, divided by a fixed dollar scale. Deposits
+  earn no reward. Under the frozen nominal model and identical execution,
+  expected unscaled reward is the MIO objective; historical averages need not be.
+- `OptionEntryCompare` subclasses DSKit's bounded SB3 episode evaluator. It
+  restores a pinned policy, records dollar diagnostics, and runs MIO with the
+  same cohort seed and settings. Its reward difference is RL minus MIO. Cohorts
+  settle independently; this first control measures entry selection, not a
+  sequential account or discretionary exits.
+- `configs/rl-entry-synthetic.json` runs a tiny PPO fit, policy restoration and
+  paired validation through the normal pipeline. Inputs, source owners, action
+  bounds, splits and settings are pinned in JSON. Source changes require an
+  intentional reviewed re-pin. Inline synthetic data is a fixture, not a market
+  data intake route. Real runs require the established onboarding and study
+  approvals; Path A0003's sealed windows remain inaccessible.
+  Run from this child in WSL with the parent environment and optional SB3/Pyomo
+  dependencies: `python -m dskit.pipeline run configs/rl-entry-synthetic.json --asof 2026-11-02`. This smoke run demonstrates integration, not learning
+  quality or trading profitability.
+
 - LocalFilesConnector supplies acquisition. source-fixture.json names the path
   and effective-time field; no child connector exists.
 - ContractRows, QuoteRows and SettlementRows retain only root, source and the

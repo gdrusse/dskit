@@ -2643,3 +2643,138 @@ def test_standard_split_conversion_is_atomic_across_open_books():
         study._apply_adjustments(account, effective, study._charge(params["methods"][0]))
     assert all("active_legs" not in book and "applied_adjustments" not in book
                for book in account.open.values())
+
+
+# ---------------------------------------------------------------------------
+# risk_charge method key (ADR-0278 amendment, estimation risk)
+# ---------------------------------------------------------------------------
+
+
+def _without_seconds(decision):
+    """One decision with every certificate's wall-clock seconds removed."""
+    return {**decision, "certificates": [{k: v for k, v in c.items() if k != "seconds"}
+                                         for c in decision.get("certificates", [])]}
+
+
+def test_weekly_portfolio_risk_charge_absent_or_zero_is_identity(monkeypatch):
+    """kappa 0 leaves every program, decision, certificate, book and trade exactly as no key."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    programs = _capture_programs(monkeypatch)
+    base = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    free = copy.deepcopy(params)
+    free["methods"][0]["risk_charge"] = {"measure": "mad", "price": 0.}
+    count = len(programs)
+    same = ledger_studies.WeeklyOptionPortfolioStudy(free, inputs).run()["methods"][0]
+    assert count and programs[count:] == programs[:count]
+    assert not any("risk_charge" in g for p in programs for g in p["groups"])
+    assert [_without_seconds(d) for d in same["decisions"]] == \
+        [_without_seconds(d) for d in base["decisions"]]
+    assert same["trades"] == base["trades"] and same["rejected"] == base["rejected"]
+    assert same["pnl"] == base["pnl"] and same["curve"] == base["curve"]
+    assert not any("risk_charges" in d.get("selection", {}) for d in same["decisions"])
+    assert not any("risk_charge" in b for b in same["trades"])
+
+
+def _capture_programs(monkeypatch):
+    """Record a deep copy of every program the study hands the solver."""
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    programs, run = [], TransportPortfolioSolve.run
+
+    def spy(self, ctx, inputs):
+        programs.append(copy.deepcopy(inputs))
+        return run(self, ctx, inputs)
+
+    monkeypatch.setattr(TransportPortfolioSolve, "run", spy)
+    return programs
+
+
+@pytest.mark.parametrize("kappa", [.05, .5])
+def test_weekly_portfolio_risk_charge_passes_to_groups_and_records_each_book(monkeypatch, kappa):
+    """Every group carries the declaration; each book records its exact charge beside expected."""
+    import copy
+    import numpy as np
+    from dskit.pipeline.libs.pyomo import MeanAbsoluteDeviation
+
+    params, inputs = _weekly_portfolio_fixture()
+    spec = {"measure": "mad", "price": kappa}
+    params["methods"][0]["risk_charge"] = copy.deepcopy(spec)
+    programs = _capture_programs(monkeypatch)
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    result = study._method(params["methods"][0], None)
+    solved = _solved(result)
+    assert solved and len(programs) == len(solved)
+    books = 0
+    for program, decision in zip(programs, solved):
+        assert all(g["risk_charge"] == spec for g in program["groups"])
+        selection = decision["selection"]
+        assert selection["value"] == pytest.approx(
+            sum(selection["group_values"])-sum(selection["risk_charges"]), abs=1e-9)
+        index = {g["id"]: i for i, g in enumerate(program["groups"])}
+        for book in decision["books"]:
+            i = index[book["id"]]
+            group = program["groups"][i]
+            loss = np.asarray(group["losses"]) @ selection["quantities"][i]
+            exact = MeanAbsoluteDeviation(group["masses"], kappa).charge(loss)
+            assert book["risk_charge"] == selection["risk_charges"][i] == pytest.approx(exact, abs=1e-9)
+            assert book["risk_charge"] > 0.
+            assert book["expected"] == selection["group_values"][i]
+            books += 1
+    assert books, "the charged method still selects at least one book"
+    assert all("risk_charge" in t for t in result["trades"])
+    monkeypatch.undo()
+    assert study._method(params["methods"][0], None, recorded=copy.deepcopy(result)) == result
+    k = next(n for n, d in enumerate(solved) if d["books"])
+    i = [g["id"] for g in programs[k]["groups"]].index(solved[k]["books"][0]["id"])
+    bad = copy.deepcopy(result)
+    bad["decisions"][result["decisions"].index(solved[k])]["selection"]["risk_charges"][i] += 1.
+    with pytest.raises(ValueError, match="recorded"):
+        study._method(params["methods"][0], None, recorded=bad)
+    bad = copy.deepcopy(result)
+    next(d for d in bad["decisions"] if d.get("books"))["books"][0]["risk_charge"] += 1.
+    with pytest.raises(ValueError, match="recorded"):
+        study._method(params["methods"][0], None, recorded=bad)
+    other = copy.deepcopy(params["methods"][0])
+    other["risk_charge"]["price"] = 2*kappa
+    with pytest.raises(ValueError, match="recorded method or decision calendar differs"):
+        study._method(other, None, recorded=copy.deepcopy(result))
+
+
+def test_weekly_portfolio_risk_charge_prohibitive_price_is_cash():
+    """The charge reaches the trading decision: a prohibitive price leaves the account in cash."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    contracts = []
+    for kappa in (None, .05, .5, 1e4):
+        method = copy.deepcopy(params)
+        if kappa is not None:
+            method["methods"][0]["risk_charge"] = {"measure": "mad", "price": kappa}
+        result = ledger_studies.WeeklyOptionPortfolioStudy(method, inputs).run()["methods"][0]
+        first = _solved(result)[0]
+        contracts.append(sum(b["contracts"] for b in first["books"]))
+        if kappa == 1e4:
+            assert first["status"] == "cash" and not result["trades"]
+    assert contracts[0] > 0 and contracts[-1] == 0
+
+
+@pytest.mark.parametrize("spec", [
+    {"measure": "mad", "price": -.5},
+    {"measure": "mad", "price": float("nan")},
+    {"measure": "mad", "price": "1"},
+    {"measure": "cvar", "price": .5},
+    {"measure": "mad"},
+    {"measure": "mad", "price": .5, "alpha": .9},
+    None, "mad", .5,
+])
+def test_weekly_portfolio_risk_charge_refuses_invalid(spec):
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    bad = copy.deepcopy(params)
+    bad["methods"][0]["risk_charge"] = spec
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy(bad, inputs)

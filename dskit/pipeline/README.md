@@ -290,6 +290,15 @@ legacy stage-list grammar (below).
 
 ## What ships
 
+`libs.pyomo.TransportActionScore` values integer actions with the same nominal,
+Wasserstein and optional MAD risk-charge terms used by `TransportPortfolioSolve`.
+It checks all shared constraints and enumerates a complete feasible catalogue,
+refusing a declared Cartesian-size limit before enumeration.
+`libs.sb3.FiniteDecisionEnv` supplies a reusable one-decision Gymnasium adapter:
+padded numeric observations, fixed reward scaling and explicit cash aliases.
+SB3 training/evaluation honors optional environment validation hooks; a hashed
+sidecar marker preserves legacy artifacts while enforcing marked compatibility.
+
 `option_pricing.OptionScenarioReprice` (by import path) fully reprices a
 JSON-declared European option book under named forward, IV, time and rate
 shocks. Each leg supplies its own strike, IV, days to expiry, signed quantity

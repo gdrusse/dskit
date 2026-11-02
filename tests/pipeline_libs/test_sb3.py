@@ -476,3 +476,514 @@ TestSb3Conformance = conformance_suite(
     expected_roles=EXPECTED_ROLES,
     name="TestSb3Conformance",
 )
+
+from dskit.pipeline.libs.sb3 import FiniteDecisionEnv
+
+class ToyFiniteEnv(FiniteDecisionEnv):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.closes = self.finishes = 0
+        self.candidates = ["cash", "risk"]
+    def _start_episode(self, rng):
+        return [float(rng.random())], self.candidates, {"start": 1}
+    def _finish_episode(self, action):
+        self.finishes += 1
+        return 4.0, {"done": 1}
+    def _close_episode(self):
+        self.closes += 1
+
+def test_finite_decision_env_one_step_and_cash_alias():
+    env = ToyFiniteEnv(max_actions=3, max_features=2, reward_scale=2)
+    obs, info = env.reset(seed=4)
+    assert obs.shape == (3,) and obs[0] == 2 and obs[2] == 0
+    assert info == {"start": 1}
+    _, reward, term, trunc, info = env.step(2)
+    assert (reward, term, trunc) == (2, True, False)
+    assert info == {"done": 1, "requested_action": 2, "effective_action": 0, "cash_alias": True}
+    assert env.finishes == 1
+    with pytest.raises(RuntimeError):
+        env.step(0)
+
+def test_finite_decision_env_rejects_invalid_action_and_resets_seed():
+    env = ToyFiniteEnv(max_actions=2, max_features=2, reward_scale=1)
+    a, _ = env.reset(seed=7)
+    b, _ = env.reset(seed=7)
+    assert np.array_equal(a, b) and env.closes == 1
+    with pytest.raises(ValueError):
+        env.step(0.5)
+    with pytest.raises(ValueError):
+        env.step(2)
+
+def test_finite_decision_env_validates_bounds():
+    with pytest.raises(ValueError):
+        ToyFiniteEnv(max_actions=True, max_features=2, reward_scale=1)
+    with pytest.raises(ValueError):
+        ToyFiniteEnv(max_actions=2, max_features=2, reward_scale=float("inf"))
+
+
+def test_finite_decision_env_failed_reset_and_close_release_episode():
+    class BadEnv(ToyFiniteEnv):
+        def _start_episode(self, rng):
+            return [float("inf")], ["cash"], {"x": 1}
+
+    env = BadEnv(max_actions=2, max_features=1, reward_scale=1)
+    with pytest.raises(ValueError, match="finite"):
+        env.reset(seed=3)
+    assert env.closes == 1
+    env.close()
+    env.close()
+    assert env.closes == 1
+
+
+def test_finite_decision_env_finish_failure_invalidates_and_closes():
+    class FailedFinish(ToyFiniteEnv):
+        def _finish_episode(self, action):
+            raise RuntimeError("finish failed")
+
+    env = FailedFinish(max_actions=2, max_features=1, reward_scale=1)
+    env.reset(seed=3)
+    with pytest.raises(RuntimeError, match="finish failed"):
+        env.step(1)
+    assert env.closes == 1
+    with pytest.raises(RuntimeError):
+        env.step(0)
+
+def test_finite_decision_env_snapshots_mutable_action_list():
+    env = ToyFiniteEnv(max_actions=2, max_features=1, reward_scale=1)
+    env.reset(seed=8)
+    env.candidates[1] = "changed"
+    assert env.actions == ("cash", "risk")
+
+
+def test_finite_decision_env_deep_copies_nested_actions():
+    class NestedActions(ToyFiniteEnv):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.candidate = {"legs": [1]}
+
+        def _start_episode(self, rng):
+            return [0.0], ["cash", self.candidate], {}
+
+        def _finish_episode(self, action):
+            action["legs"].append(2)
+            return 1.0, {}
+
+    env = NestedActions(max_actions=2, max_features=1, reward_scale=1)
+    env.reset(seed=9)
+    env.step(1)
+    assert env.candidate == {"legs": [1]}
+    assert env.actions[1] == {"legs": [1]}
+
+
+def test_finite_decision_env_rejects_unsupported_reset_options():
+    env = ToyFiniteEnv(max_actions=2, max_features=1, reward_scale=1)
+    with pytest.raises(ValueError, match="options"):
+        env.reset(seed=2, options={"cohort": "hidden"})
+
+
+def test_finite_decision_env_refuses_float32_overflow_without_warning():
+    import warnings
+
+    class OverflowContext(ToyFiniteEnv):
+        def _start_episode(self, rng):
+            return [1e100], ["cash"], {}
+
+    env = OverflowContext(max_actions=2, max_features=1, reward_scale=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(ValueError, match="float32"):
+            env.reset(seed=2)
+
+
+class CompatibleEvaluationEnv(gymnasium.Env):
+    @classmethod
+    def validate_evaluation_params(cls, training_params, evaluation_params):
+        problems = []
+        for key in ("method", "schema", "dataset_hash", "source_hash"):
+            if training_params.get(key) != evaluation_params.get(key):
+                problems.append(f"{key} differs")
+        return problems
+
+
+class AlternateEvaluationEnv(gymnasium.Env):
+    pass
+
+
+COMPAT_ENV_REF = "tests.pipeline_libs.test_sb3:CompatibleEvaluationEnv"
+ALTERNATE_ENV_REF = "tests.pipeline_libs.test_sb3:AlternateEvaluationEnv"
+
+
+def _evaluation_node(node_cls, *, env_ref, env_params, tmp_path):
+    params = {
+        "artifact": "fake.zip",
+        "env": env_ref,
+        "env_params": env_params,
+        "split": "val",
+        "n_episodes": 1,
+        "max_episode_steps": 1,
+    }
+    if node_cls is Sb3Eval:
+        params.pop("max_episode_steps")
+    return node_cls("eval", params), ctx(tmp_path)
+
+
+def _prepare_mock_evaluation(monkeypatch, node, sidecar, env_builds):
+    monkeypatch.setattr(node, "pinned_artifact", lambda *a, **k: "fake.zip")
+    monkeypatch.setattr(node, "_read_sidecar", lambda path: sidecar)
+    monkeypatch.setattr(node, "_load_model", lambda *a, **k: object())
+    fake_env = type("FakeEnv", (), {
+        "reset": lambda self, **kwargs: (OBS, {}),
+        "close": lambda self: None,
+    })()
+    monkeypatch.setattr(
+        node, "_build_env",
+        lambda ref, params: env_builds.append((ref, params)) or fake_env,
+    )
+    if isinstance(node, Sb3Eval):
+        from stable_baselines3.common import evaluation
+        monkeypatch.setattr(evaluation, "evaluate_policy", lambda *a, **k: (1.0, 0.0))
+    else:
+        def fake_episode(index, env_ref, env_params, model):
+            env = node._build_env(env_ref, env_params)
+            env.close()
+            return {"episode": 0}
+        monkeypatch.setattr(node, "_episode", fake_episode)
+        monkeypatch.setattr(node, "_summary", lambda episodes: {
+            "n_episodes": 1, "mean_return": 1.0, "total_steps": 1,
+        })
+
+
+@pytest.mark.parametrize("node_cls", [Sb3Eval, Sb3EvalEpisodes])
+def test_evaluation_cannot_substitute_an_unchecked_env_for_hooked_training(
+    node_cls, monkeypatch, tmp_path
+):
+    training = {"method": "m1", "schema": 2, "dataset_hash": "data-a",
+                "source_hash": "source-a", "split": "train"}
+    sidecar = {
+        "env": COMPAT_ENV_REF, "env_params": training, "algo": "PPO",
+        "environment_contract": "validation-hooks/v1",
+        "state_hash": "state", "policy": "MlpPolicy", "seed": 7,
+    }
+    node, run_ctx = _evaluation_node(
+        node_cls, env_ref=ALTERNATE_ENV_REF,
+        env_params={**training, "split": "val"}, tmp_path=tmp_path,
+    )
+    env_builds = []
+    _prepare_mock_evaluation(monkeypatch, node, sidecar, env_builds)
+    with pytest.raises(ValueError, match="same environment"):
+        node.run(run_ctx, {})
+    assert env_builds == []
+
+
+@pytest.mark.parametrize("node_cls", [Sb3Eval, Sb3EvalEpisodes])
+@pytest.mark.parametrize("changed", ["method", "schema", "dataset_hash", "source_hash"])
+def test_evaluation_refuses_changed_training_provenance(
+    node_cls, changed, monkeypatch, tmp_path
+):
+    training = {"method": "m1", "schema": 2, "dataset_hash": "data-a",
+                "source_hash": "source-a", "split": "train"}
+    evaluation_params = {**training, "split": "val"}
+    evaluation_params[changed] = "changed"
+    sidecar = {
+        "env": COMPAT_ENV_REF, "env_params": training, "algo": "PPO",
+        "environment_contract": "validation-hooks/v1",
+        "state_hash": "state", "policy": "MlpPolicy", "seed": 7,
+    }
+    node, run_ctx = _evaluation_node(
+        node_cls, env_ref=COMPAT_ENV_REF, env_params=evaluation_params,
+        tmp_path=tmp_path,
+    )
+    env_builds = []
+    _prepare_mock_evaluation(monkeypatch, node, sidecar, env_builds)
+    with pytest.raises(ValueError, match=changed):
+        node.run(run_ctx, {})
+    assert env_builds == []
+
+
+@pytest.mark.parametrize("node_cls", [Sb3Eval, Sb3EvalEpisodes])
+def test_evaluation_allows_hook_approved_split_and_legacy_env(
+    node_cls, monkeypatch, tmp_path
+):
+    training = {"method": "m1", "schema": 2, "dataset_hash": "data-a",
+                "source_hash": "source-a", "split": "train"}
+    allowed = {**training, "split": "val"}
+    sidecar = {
+        "env": COMPAT_ENV_REF, "env_params": training, "algo": "PPO",
+        "environment_contract": "validation-hooks/v1",
+        "state_hash": "state", "policy": "MlpPolicy", "seed": 7,
+    }
+    node, run_ctx = _evaluation_node(
+        node_cls, env_ref=COMPAT_ENV_REF, env_params=allowed, tmp_path=tmp_path,
+    )
+    env_builds = []
+    _prepare_mock_evaluation(monkeypatch, node, sidecar, env_builds)
+    node.run(run_ctx, {})
+    assert len(env_builds) == 1
+
+    legacy_sidecar = {
+        "env": ENV_REF, "env_params": {"episode_len": 4}, "algo": "PPO",
+        "state_hash": "state", "policy": "MlpPolicy", "seed": 7,
+    }
+    legacy, legacy_ctx = _evaluation_node(
+        node_cls, env_ref=ALTERNATE_ENV_REF, env_params={"scenario": "val"},
+        tmp_path=tmp_path,
+    )
+    legacy_builds = []
+    _prepare_mock_evaluation(monkeypatch, legacy, legacy_sidecar, legacy_builds)
+    legacy.run(legacy_ctx, {})
+    assert legacy_builds == [(ALTERNATE_ENV_REF, {"scenario": "val"})]
+
+
+@pytest.mark.parametrize("node_cls", [Sb3Eval, Sb3EvalEpisodes])
+def test_evaluation_env_split_must_match_declared_score_split(
+    node_cls, monkeypatch, tmp_path
+):
+    training = {"method": "m1", "schema": 2, "dataset_hash": "data-a",
+                "source_hash": "source-a", "split": "train"}
+    sidecar = {
+        "env": COMPAT_ENV_REF, "env_params": training, "algo": "PPO",
+        "environment_contract": "validation-hooks/v1",
+        "state_hash": "state", "policy": "MlpPolicy", "seed": 7,
+    }
+    node, run_ctx = _evaluation_node(
+        node_cls, env_ref=COMPAT_ENV_REF,
+        env_params={**training, "split": "test"}, tmp_path=tmp_path,
+    )
+    builds = []
+    _prepare_mock_evaluation(monkeypatch, node, sidecar, builds)
+    with pytest.raises(ValueError, match="does not match declared split"):
+        node.run(run_ctx, {})
+    assert builds == []
+
+
+class TrainingGateEnv(gymnasium.Env):
+    @classmethod
+    def validate_training_params(cls, env_params):
+        if env_params.get("split") != "train":
+            return ["split must be train"]
+        return []
+
+
+TRAINING_GATE_ENV_REF = "tests.pipeline_libs.test_sb3:TrainingGateEnv"
+
+
+class FakeTrainingAlgorithm:
+    constructed = 0
+    learned = 0
+
+    def __init__(self, *args, **kwargs):
+        type(self).constructed += 1
+
+    def learn(self, **kwargs):
+        type(self).learned += 1
+
+
+class FakeTrainingEnv:
+    closed = 0
+
+    def close(self):
+        type(self).closed += 1
+
+
+def _training_node(env_params, env_ref=TRAINING_GATE_ENV_REF):
+    params = {
+        "algo": "PPO",
+        "env": env_ref,
+        "env_params": env_params,
+        "total_timesteps": 2,
+        "seed": 1,
+    }
+    return Sb3Train("train", params)
+
+
+def _prepare_fake_training(monkeypatch, node, env_builds):
+    FakeTrainingAlgorithm.constructed = 0
+    FakeTrainingAlgorithm.learned = 0
+    FakeTrainingEnv.closed = 0
+    monkeypatch.setattr(node, "_resolve_algo", lambda key, name: FakeTrainingAlgorithm)
+    monkeypatch.setattr(
+        node, "_build_env",
+        lambda ref, params: env_builds.append((ref, params)) or FakeTrainingEnv(),
+    )
+    node.saved_specs = []
+    monkeypatch.setattr(
+        node, "_save_artifact",
+        lambda ctx, model, spec: node.saved_specs.append(dict(spec)) or "fake-model.zip",
+    )
+
+
+def test_training_refuses_nontraining_split_before_build_or_learn(
+    monkeypatch, tmp_path
+):
+    node = _training_node({"split": "val"})
+    env_builds = []
+    _prepare_fake_training(monkeypatch, node, env_builds)
+    with pytest.raises(ValueError, match="split must be train"):
+        node.run_train(ctx(tmp_path), {})
+    assert env_builds == []
+    assert FakeTrainingAlgorithm.constructed == 0
+    assert FakeTrainingAlgorithm.learned == 0
+
+
+def test_training_hook_approves_train_split_and_runs(
+    monkeypatch, tmp_path
+):
+    node = _training_node({"split": "train"})
+    env_builds = []
+    _prepare_fake_training(monkeypatch, node, env_builds)
+    result = node.run_train(ctx(tmp_path), {})
+    assert len(env_builds) == 1
+    assert FakeTrainingAlgorithm.constructed == 1
+    assert FakeTrainingAlgorithm.learned == 1
+    assert FakeTrainingEnv.closed == 1
+    assert result["artifact_path"] == "fake-model.zip"
+    assert node.saved_specs[0]["environment_contract"] == "validation-hooks/v1"
+
+
+def test_training_omits_hook_marker_for_legacy_env(
+    monkeypatch, tmp_path
+):
+    node = _training_node({"episode_len": 1}, env_ref=ENV_REF)
+    env_builds = []
+    _prepare_fake_training(monkeypatch, node, env_builds)
+    node.run_train(ctx(tmp_path), {})
+    assert "environment_contract" not in node.saved_specs[0]
+
+
+@pytest.mark.parametrize("node_cls", [Sb3Eval, Sb3EvalEpisodes])
+def test_marked_training_env_without_evaluation_hook_refuses(
+    node_cls, monkeypatch, tmp_path
+):
+    sidecar = {
+        "env": ENV_REF, "env_params": {"episode_len": 4}, "algo": "PPO",
+        "environment_contract": "validation-hooks/v1",
+        "state_hash": "state", "policy": "MlpPolicy", "seed": 7,
+    }
+    node, run_ctx = _evaluation_node(
+        node_cls, env_ref=ENV_REF, env_params={"episode_len": 4},
+        tmp_path=tmp_path,
+    )
+    builds = []
+    _prepare_mock_evaluation(monkeypatch, node, sidecar, builds)
+    with pytest.raises(ValueError, match="no validate_evaluation_params hook"):
+        node.run(run_ctx, {})
+    assert builds == []
+
+
+def test_environment_contract_marker_is_bound_by_sidecar_hash(tmp_path):
+    zip_path = tmp_path / "marker.zip"
+    zip_path.write_bytes(b"model")
+    sidecar = {
+        "format": ARTIFACT_FORMAT,
+        "algo": "PPO",
+        "env": ENV_REF,
+        "env_params": {},
+        "policy": "MlpPolicy",
+        "seed": 1,
+        "environment_contract": "validation-hooks/v1",
+    }
+    sidecar["state_hash"] = Sb3EvalEpisodes._state_hash(str(zip_path), sidecar)
+    pathlib.Path(sidecar_path(str(zip_path))).write_text(
+        json.dumps(sidecar), encoding="utf-8"
+    )
+    node = Sb3EvalEpisodes("eval", {"split": "val", "max_episode_steps": 1})
+    assert node._read_sidecar(str(zip_path))["environment_contract"] == "validation-hooks/v1"
+
+    del sidecar["environment_contract"]
+    pathlib.Path(sidecar_path(str(zip_path))).write_text(
+        json.dumps(sidecar), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="content hash mismatch"):
+        node._read_sidecar(str(zip_path))
+
+
+MINIMAL_FINITE_ENV_INSTANCES = []
+
+
+class MinimalFiniteEnv(FiniteDecisionEnv):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        MINIMAL_FINITE_ENV_INSTANCES.append(self)
+
+    def _start_episode(self, rng):
+        return [float(rng.random())], ["cash", "risk"], {}
+
+    def _finish_episode(self, selected_action):
+        return 1.0, {}
+
+    def _close_episode(self):
+        return None
+
+
+MINIMAL_FINITE_ENV_REF = "tests.pipeline_libs.test_sb3:MinimalFiniteEnv"
+
+
+def test_sb3_train_accepts_finite_decision_env_factory_child(
+    monkeypatch, tmp_path
+):
+    node = _training_node(
+        {"max_actions": 2, "max_features": 1, "reward_scale": 1},
+        env_ref=MINIMAL_FINITE_ENV_REF,
+    )
+    FakeTrainingAlgorithm.constructed = 0
+    FakeTrainingAlgorithm.learned = 0
+    monkeypatch.setattr(node, "_resolve_algo", lambda key, name: FakeTrainingAlgorithm)
+    monkeypatch.setattr(node, "_save_artifact", lambda *a, **k: "fake-model.zip")
+    result = node.run_train(ctx(tmp_path), {})
+    assert result["artifact_path"] == "fake-model.zip"
+    assert isinstance(MINIMAL_FINITE_ENV_INSTANCES[-1], gymnasium.Env)
+
+
+@pytest.mark.parametrize("node_cls", [Sb3Eval, Sb3EvalEpisodes])
+def test_sb3_evaluators_build_finite_decision_env_children(
+    node_cls, monkeypatch, tmp_path
+):
+    params = {
+        "env": MINIMAL_FINITE_ENV_REF,
+        "env_params": {
+            "max_actions": 2, "max_features": 1, "reward_scale": 1,
+        },
+    }
+    if node_cls is Sb3Eval:
+        params["n_episodes"] = 1
+    else:
+        params["max_episode_steps"] = 2
+        params["n_episodes"] = 1
+    node = node_cls("eval", {"artifact": "fake.zip", "split": "val", **params})
+    sidecar = {
+        "env": ENV_REF,
+        "env_params": {"episode_len": 4},
+        "algo": "PPO",
+        "policy": "MlpPolicy",
+        "seed": 1,
+        "state_hash": "state",
+    }
+    monkeypatch.setattr(node, "pinned_artifact", lambda *a, **k: "fake.zip")
+    monkeypatch.setattr(node, "_read_sidecar", lambda path: sidecar)
+    if node_cls is Sb3Eval:
+        monkeypatch.setattr(node, "_load_model", lambda *a, **k: object())
+        from stable_baselines3.common import evaluation
+        monkeypatch.setattr(evaluation, "evaluate_policy", lambda *a, **k: (1.0, 0.0))
+    else:
+        class Policy:
+            def predict(self, observation, deterministic=True):
+                return 0, None
+        monkeypatch.setattr(node, "_load_model", lambda *a, **k: Policy())
+    MINIMAL_FINITE_ENV_INSTANCES.clear()
+    node.run(ctx(tmp_path), {})
+    assert len(MINIMAL_FINITE_ENV_INSTANCES) == 1
+    assert isinstance(MINIMAL_FINITE_ENV_INSTANCES[0], gymnasium.Env)
+
+
+class NonGymFiniteEnv(MinimalFiniteEnv):
+    def __new__(cls, *args, **kwargs):
+        return object.__new__(cls)
+
+
+def test_build_env_refuses_finite_decision_class_returning_non_gym_object():
+    node = Sb3Eval("eval", {"split": "val"})
+    with pytest.raises(ValueError, match="not a gymnasium.Env instance"):
+        node._build_env(
+            "tests.pipeline_libs.test_sb3:NonGymFiniteEnv",
+            {"max_actions": 2, "max_features": 1, "reward_scale": 1},
+        )

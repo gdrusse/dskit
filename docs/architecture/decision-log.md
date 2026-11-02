@@ -35072,3 +35072,319 @@ Outcome-informed exclusions (dropping names or cells after seeing results) stay 
 **Decision.** `import_development` may append one development packet whose `start` and `end_before` equal those of an already DISPOSED non-development packet (its re-exposure packet). The schedule check keeps refusing every other overlap. The re-exposure packet is recorded in a sibling registry map `development_re_exposes[<re-exposure packet id>] = <original packet id>` (the `development_import_reasons` entry stays a plain reason string, so existing readers are unchanged; as built 2026-10-30, commit `863f6d15`, which also refuses a re-exposure packet at `initialize`), and the import still requires explicit prior exposure covering every read bound (the disposed claim's receipt is the evidence). Claims on a re-exposure packet classify as `development`; the frontier is untouched; the original confirmation claim, its disposition and its receipt are immutable. Nothing changes for fresh or chronological packets.
 
 **Tests.** A development packet equal to a disposed confirmation window imports and claims as development; one equal to an undisposed confirmation window refuses; a partially overlapping packet refuses as before; a re-exposure of a development window refuses (use the existing packet); v1 fixtures and every existing study_protocol test unchanged.
+
+#### ADR-0278 amendment (proposed): MIO-aligned RL reward, 2026-11-02
+
+**Status / scope.** Owner selected an entry-only RL comparison within DSKit and
+instructed: "for now, make the RL objective analagous to the mIO". Economic
+alignment is agreed; this records the reward proposal, not implementation or run
+approval. Base `5215ec07`. Only this existing decision log changes. Existing MIO
+runs and Path A0001-A0008 remain unchanged; A0003 protected windows stay sealed.
+
+**Shared objective.** For each symbol/expiry group, let `c.x` be entry premium
+net of the paired MIO's costs, `L(x)` terminal loss, `P` its frozen forecast,
+`U(P,rho)` its existing W1 uncertainty set and `D_P` its configured deviation.
+The decision score is `J(x) = sum_g[c_g.x_g - sup_Q_in_U E_Q[L_g(x_g)] -
+kappa_g D_P[L_g(x_g)]]`. An absent risk charge means zero; rho zero recovers
+the nominal expectation. Copy the paired method's exact settings, units and
+per-group aggregation, rather than adding a new RL risk preference.
+
+**Reward mapping.** Define the uncertainty deduction
+`H_g(x) = sup_Q_in_U E_Q[L_g(x)] - E_P[L_g(x)]`.
+The proposed cohort reward is realized net dollar P&L minus `sum_g H_g(x_g)`
+minus the same `sum_g kappa_g D_P[L_g(x_g)]`. Under the frozen nominal forecast,
+for a fixed feasible action with matching execution terms, its expectation is
+exactly `J(x)`. Historical realized averages need not equal forecast expectations.
+This deduction is the alternative to adversarial sampling, not an extra charge
+on top of worst-case sampling. A raw realized-P&L reward matches only the nominal,
+uncharged method. Log growth, wealth-relative returns and extra penalties are out.
+
+**Accounting / parity.** Count filled quantities only; compute deductions from
+decision-time information and charge once per filled cohort. Unfilled orders and
+cash incur zero new-book reward. Keep actual fill-versus-decision price differences
+separate, identically in both arms; never assert exact ex-ante parity across them.
+Reuse the ledger for costs and expiry settlement, exclude deposits, and account
+through every selected expiry without double-counting premiums or unrealized P&L.
+No early exits. Same candidates, integer quantities, information, capital, fills,
+costs and hard constraints; infeasible actions do not become valid for a penalty.
+No discount within the cohort, clipping, or state-dependent reward normalization;
+a fixed positive numerical scale may be declared and reversed in reports.
+
+**Reuse / remaining design.** Reuse the SB3 pack and option ledger; the audited
+`TransportPortfolioSolve` valuation, W1 distribution evaluator and
+`DeviationCharge` own the economics. Extract any missing generic action-scoring
+seam into tier 2; the options environment is tier 3. Do not duplicate formulas.
+The risk-charge runtime source is pinned by the inspected 2022Q1 rules run
+(`pyomo.py` SHA256 `e405c6910c777bb686e732ecbe9db756b6cfe03ea081a8a9d14780eacc2ff619`);
+that capability must be reconciled with the implementation base before coding.
+A matched decision/cohort horizon is required for strict objective parity;
+sequential RL may optimize future opportunities, which the current per-decision
+MIO does not. Horizon and algorithm remain open; reward alignment alone is not
+a claim of identical optimization problems or a completed comparison.
+
+**Acceptance before implementation.** On shared small feasible portfolios,
+verify the forecast-weighted reward equals the audited MIO score for rho zero,
+positive rho, each configured deviation and zero quantities. Check partial/no
+fills, costs, deposits and post-window expiry tails against the same ledger.
+Keep realized profit, uncertainty deductions and deviation charges separately
+visible. This entry creates no environment, config, training or backtest.
+
+**Design review evidence.** Independent agent `/root/reward_design_review`
+reviewed document SHA256
+`74a63d783867f06d0b247b15674bfff073fa33af4aed160688da537328a36a65`
+against the pinned runtime above: Critical 0, Major 0, Minor 0, Nit 0.
+Its retained task transcript contains the mathematical and accounting review.
+Worked check: credit 60, equally likely losses 0/100, worst expected loss 70,
+MAD 50 and price 0.2 give MIO score -20; adjusted outcome rewards 30/-70 average
+-20. Zero quantities give zero. Read-only source/math review, no tests or runs;
+this closes only the reward-design lens. The reviewed content was unchanged
+before appending this evidence. Implementation approval and reviews remain open.
+
+**Build direction and Luna review (owner request, 2026-11-02).** Add an
+implementation handoff for the reward-aligned tier-3 options agent, then review
+this direction with two fresh `gpt-6-luna` subagents. This turn changes this ADR
+only; it does not run training, change MIO, or claim a working RL environment.
+The earlier reward review applies only to its recorded blob, not this extension.
+
+1. **Reconcile and inventory before coding.** Work in an isolated WSL2 checkout;
+   fetch and pin the base, read Path A0001-A0008, the current lane note and
+   `dskit/pipeline/README.md` inventory. Sweep all branches/worktrees before adding
+   a symbol, file or config. Inspect the existing stock RL environment and SB3
+   wrappers for reusable mechanisms; do not import its stock allocation policy
+   or copy its simulator into the options child. Reconcile the pinned
+   risk-charge implementation above with the selected base and freeze dependency
+   hashes. Keep existing runs, records and other checkouts untouched.
+2. **Build the shared economics seam first.** Refactor the existing transport
+   action valuation and feasibility audit into an independently callable tier-2
+   seam. Both MIO's audited selections and RL's proposed quantities must use it.
+   Reuse the W1 evaluator and configured deviation owner. Return nominal expected
+   profit, uncertainty deduction, deviation charge, adjusted objective and
+   feasibility separately, with method/input identities. Do not require an MIO
+   solve to score or validate an RL action, fabricate solver certificates for
+   policy output, or replace RL's choices with MIO's optimized quantities.
+   Existing MIO selections, audits and certificates must remain compatible.
+3. **Build the tier-3 environment around shared owners.** Adapt
+   `WeeklyOptionPortfolioStudy` candidate preparation and `FundedOptionAccount`
+   lifecycle through public seams; graduate generic missing mechanisms into
+   DSKit. The child supplies options observations/actions, configuration and
+   domain rules. Observations use only information available at the decision:
+   frozen forecast, eligible quoted legs, own account funding/reserves and held
+   positions. RL chooses integer quantities of individual legs plus cash, then
+   the shared validator enforces the paired MIO's exact reserve, exclusivity,
+   capacity and shock scope. Use the same pending-order, configured `fill_sizing`,
+   corporate-action and expiry rules. Preserve both `all_or_none` and
+   `available_size` behavior: the latter scales the intact primitive leg ratio
+   to available side depth, rather than dropping individual legs. Revalue reward
+   deductions for the actually filled quantities using the frozen decision
+   forecast; never charge for the unfilled remainder. Existing positions cannot
+   be closed early.
+   Forecasts, candidates, starting account, costs and dates match across arms;
+   subsequent account states may differ because the policies choose differently.
+4. **Freeze remaining experiment choices before environment training.** Record
+   the paired MIO method/config hash, candidate universe, observation schema,
+   action encoding, algorithm and seed/budget settings. Prove on small exhaustive
+   fixtures that the action encoding reaches every feasible MIO allocation;
+   invalid actions cannot acquire a trade through a soft penalty or undocumented
+   repair. Freeze horizon explicitly: a single-decision/cohort episode is the
+   strict objective-parity control, but is a one-step policy problem. A sequential
+   environment is a distinct planning-horizon experiment and must be labeled as
+   such, not quietly passed off as the same optimization problem. The shared
+   economics seam can be built before these choices; no full agent or comparison
+   is considered ready while they remain unresolved. Record concrete file paths,
+   class ownership and JSON params in the ADR before creating implementation files.
+5. **Wire existing DSKit lifecycle.** Use `sb3-train`, `sb3-policy` and
+   `sb3-eval-episodes`, not a child-owned fit loop, checkpoint format or registry.
+   Bind method, forecast/data and code hashes, split bounds, reward version,
+   environment parameters and seeds to artifacts and traces. Enforce split and
+   label-maturity bounds inside the environment; a `split` label in JSON alone
+   is insufficient. A cohort crossing a protected/data-use boundary refuses;
+   do not truncate its losses or read sealed outcomes to finish an episode.
+   Complete allowed post-entry expiry tails before closing the reward. Sampled
+   nominal-model reward parity and historical replay performance are separately
+   named evidence; realized history is not proof of the forecast expectation.
+6. **Focused acceptance matrix.** Start with synthetic fixtures: nominal and
+   positive-rho valuations, absent/zero/positive deviation charges, hedged and
+   mixed-sign cashflows, zero/cash actions, and infeasible quantities/caps. Check
+   the reward expectation identity against both an independently calculated
+   small oracle and the MIO scorer. Verify once-only costs/deductions/premiums,
+   deposits excluded, rejected/unfilled orders, both supported fill-sizing modes
+   (including ratio/rounding/depth limits), unsupported partial-fill refusal,
+   corporate actions, held exposure, all expiries settled, terminal versus
+   truncated episodes, and no look-ahead or split/identity substitution. Test
+   reset and seeded replay determinism, action coverage, SB3 artifact round-trip,
+   and unchanged legacy MIO selection/audit behavior. Run only affected tests;
+   a tiny synthetic SB3 integration smoke is distinct from any real-data training.
+7. **Deliver in reviewable packets.** First deliver the shared scorer and its
+   parity tests; second the environment and ledger fixtures after step 4 is
+   frozen; third the declarative SB3 fixture pipeline and paired comparison
+   harness. Report raw net profit, deductions, adjusted reward, trading activity,
+   drawdown and refusals separately. Compare inference/solve costs as well as
+   learning costs, and label the horizon. Keep predictive forecasts frozen and
+   tier-3 policy evidence separate from A0002 predictive model selection.
+   Real-data training, tuning, replay and backtests need a separately scoped run
+   decision; no holdout access, broker or deployment follows from this handoff.
+
+**Luna review contract.** Freeze the proposed direction by Git blob identity
+and document SHA256 before dispatch. Two fresh independent `gpt-6-luna` reviewers
+run sequentially on that exact content: (1) reward/accounting and apples-to-apples
+scope, (2) reuse/tiering, provenance and test sufficiency. Each reads the source
+owners it relies on, attempts concrete counterexamples, reports all proven
+findings with severity/consequence, untested limits and unresolved counts, and
+makes no edits. Resolve Critical/Major findings, then have two fresh contexts
+review any changed contract. Retain their task identities, exact candidate,
+findings and dispositions here. A clean direction review authorizes no claim
+that unbuilt code or an unrun experiment has passed. Implementation follows the
+repository's immutable-commit, focused-test and two-lens closure requirements.
+
+**Direction review round 1 / correction.** Candidate SHA256
+`7b7b286021919e5b3de0adb81f27c17d2f6423a936a316432afeff161e29cf00`,
+Git blob `cef4e688949f7cbb2a5768193b43ca30ef74fa43`; sequential `gpt-6-luna`
+reviewers `/root/luna_reward_review` and `/root/luna_integration_review` both
+reported C0/M0/Minor0/Nit0 in retained task transcripts; source/docs only, no runs.
+The first noted the existing `available_size` mode as an implementation check.
+Parent verification found the inspected 2022Q1 rules config actually selects it.
+The hardcoded all-or-none wording could violate the promised paired lifecycle
+(Major, fill-policy parity family). Corrected above to reuse the paired setting,
+preserve primitive leg ratios, price only filled quantities and test both modes.
+This is a contract correction, so round 1 does not close the revised direction;
+two fresh Luna contexts must review the complete corrected candidate.
+
+**Direction review closure, 2026-11-02.** Corrected candidate SHA256
+`36599cadc2bb68cd4868730e44f219ec0ed5dc5e72ef1f38e973831f3e5952e9`,
+Git blob `146d06a8d9a072d086617f19fc7c435446b8b6a7`, base `5215ec07`:
+fresh sequential `gpt-6-luna` reviewers `/root/luna_reward_final` (economics and
+accounting) and `/root/luna_integration_final` (reuse, provenance and integration)
+each reported C0/M0/Minor0/Nit0; exact reports are retained in those task
+transcripts. The fill-policy parity finding is resolved. Both checked the full
+corrected direction and source owners; no code, tests or runs were executed.
+Reviewed content was verified unchanged before this evidence-only append;
+`git diff --check` passed and only this document changed. Direction review is
+complete, with no deferred findings. Runtime implementation, integration tests,
+training and empirical comparison remain future work, not validated results.
+
+**Implementation authorization and concrete first profile, 2026-11-02.**
+Owner: "great, now build and skeptic review loop with luna. let me know when done".
+Implement the strict single-decision/cohort control now: complete feasible
+integer-action catalogue with an explicit Cartesian-size refusal (no heuristic
+pruning), PPO via the existing SB3 pack, gamma 1 and fixed dollar reward scale.
+Cash is catalogue index zero; padded discrete indices are documented cash
+aliases, not invalid-action repair. This is a one-step policy-learning control;
+a sequential trading agent is a separate experiment. No real-data runs follow.
+
+Reuse risk-charge source/tests from `7475442b` (core scorer dependency SHA above),
+without copying historical run configs. Allowed manifest: existing
+`dskit/pipeline/libs/{pyomo,sb3}.py`, their focused test files,
+`children/index_options/index_options/ledger_studies.py` and its tests;
+new `children/index_options/index_options/rl_env.py`,
+`children/index_options/tests/test_rl_env.py`, and
+`children/index_options/configs/rl-entry-synthetic.json`; matching inventory/docs
+and instruction mirrors only. No new package, registry, real input source or loop.
+Public seams: `TransportActionScore`, `FiniteDecisionEnv`,
+`WeeklyOptionPortfolioStudy.policy_steps`, `OptionEntryEnv`.
+
+The policy stepper yields a privately copied current-decision request and accepts
+only integer quantities; it shares preparation, admission, fills and expiry with
+MIO. Existing MIO runs use the unchanged selector path and certificates. Policy
+records carry no solver certificates. The environment accepts a digest-pinned,
+inline JSON cohort dataset, declared nonoverlapping split windows and code hashes;
+it refuses file-backed quote indexes, unknown fields, a second entry date,
+out-of-split outcomes, protected windows, mismatched identities and oversized
+catalogues/observations. It copies inputs and initializes only the requested split.
+Observations encode the full numeric decision program, current account and leg
+metadata (no future rows or outcomes). The dataset identifies whether it is
+synthetic; this is provenance, never an authorization bypass. Labels and expiry
+must mature strictly inside their split. Core mechanisms remain tier 2; only
+options intake, feature semantics and cohort bookkeeping live in tier 3.
+
+The fixture JSON pins train/validation cohort data, method, source hashes, action
+and observation bounds, PPO knobs and seeds. It runs a tiny synthetic fit,
+pinned restoration, bounded episode evaluation and a same-cohort MIO comparison.
+Scorer oracle, execution parity, source/split substitution, seed/reset, full
+catalogue coverage and legacy MIO tests precede final fresh Luna two-lens reviews.
+
+The paired comparison is `OptionEntryCompare(Sb3EvalEpisodes)` in the approved
+`rl_env.py`: reuse pinned policy loading and bounded episode execution, then
+add option diagnostics and the same-seed MIO arm. No new loop or artifact
+format. Sweep on 2026-11-02 searched 56 refs and 123 worktrees for
+OptionEntryCompare/paired_option_entry with no matches; output retained at
+`/tmp/dskit-rl-compare-sweep.txt`. The public-class import test failed before
+implementation (Luna child integration transcript).
+
+**Implementation review contract/matrix v1 (2026-11-02).** Trusted actors are
+DSKit's operator and installed Python extensions. JSON declarations, cohort rows,
+actions and saved artifacts are validated inputs. In-process Python mutation is
+not an external authority, but callers' passed-in data must not alias the held
+program/actions. No broker, external reader, provider, live trade or real-data
+training is part of the acceptance result. Only synthetic integration runs.
+The allowed manifest additionally includes the already-listed matching child
+README/AGENTS/CLAUDE and pipeline README. No other files are authorized.
+
+The complete final-review matrix, applying to equivalent facades:
+- Economics: scorer value/evaluate/catalogue and MIO incumbent audit share W1,
+  nominal loss, optional MAD and reserve owners. Hand-calculated expected reward
+  equals the score; absent/zero/positive charges, mixed signed losses and caps
+  are covered. Feasible catalogue is complete within a hard Cartesian bound;
+  computational failure must propagate, never silently prune a legal action.
+- Admission: policy_steps validates copied programs against exclusivity, group
+  rows, shared reserve caps and joint rows. Returned requests cannot mutate the
+  held decision. MIO's existing selector and output schema remain compatible.
+- Lifecycle: shared preparation, next-session fill, both sizing modes, intact
+  primitive leg ratios, deposits, settlement, adjustments and closure. Rewards
+  charge the actually admitted quantities once; cash/unfilled books pay zero.
+  Decision score and actual fill price differences remain separate diagnostics.
+- Information/horizon: only current numerical program/account/leg metadata in
+  observations; future quote or outcome changes cannot alter the initial state.
+  One entry date, fully mature outcomes inside nonoverlapping declared splits;
+  A0003 sealed dates, external quote indexes, second decisions and schema/bound
+  overflow refuse. Repeated reset/step/close and failure cleanup are covered.
+- Learning/artifacts: FiniteDecisionEnv uses lazy optional imports, numeric
+  finite observations and fixed reward scaling; action padding explicitly means
+  cash. Sb3Train accepts its subclasses, requires the child's train split before
+  fitting; Sb3Policy restores existing artifacts. Sb3Eval and Sb3EvalEpisodes
+  enforce marked environment provenance without changing unmarked legacy loads.
+  Hash tampering, environment/dataset/source/space substitution and split-label
+  disagreement refuse before the measured rollout. No custom learner loop.
+- Paired evaluation: OptionEntryCompare reuses the bounded episode evaluator,
+  checks one-step deterministic declarations, and compares same-seed cohorts
+  under identical data/method/execution. Records expose profit, deductions,
+  risk, fees, fills and drawdown separately; raw dollar gap is RL minus MIO.
+  Same dataset and source pins survive the JSON train/restore/compare pipeline.
+- Compatibility/evidence: legacy MIO audit/timeout/risk tests, SB3 artifact and
+  episode suites, focused ledger tests, tiny synthetic JSON/journal integration,
+  import purity, Ruff, instruction mirror/budget checks and git diff checks.
+  No full repository suite and no empirical profitability claim.
+
+Build-time family ledger: (1) dynamic finite environments were rejected by the
+SB3 class guard: real trainer RED, then corrected factory plus instance check,
+all three train/eval facades tested; (2) catalogue swallowed valuation ValueError:
+feasible-action RED, then only private infeasibility exceptions are skipped;
+(3) environment-hook rollout initially affected legacy loaders: replaced with an
+optional hashed marker, restored legacy behavior, tamper and marked-path tests.
+All are corrected before the candidate round, not deferred findings. Original
+scorer RED was the missing public class; original policy-step RED was the missing
+method; comparator RED was import failure. Actual transcripts are retained under
+/root/luna_build_scorer, /root/luna_build_finite_env and /root/luna_child_integration.
+
+Focused evidence before final lock: scorer/transport/risk 147 passed; SB3 train,
+restore and both evaluators 246 passed/23 skipped; existing funded ledger 258
+passed; docs budget/mirror checks 4 passed. Purity 17 passed/1 failed, reproduced
+on pristine base 5215ec07 under the same interpreter in
+/tmp/dskit-rl-base-purity-8kvknxzt: unchanged parquet.py imports
+`dskit.onboarding.snapshot`, outside the allowed namespace. No new purity failure;
+this pre-existing unrelated defect is disclosed, not silently waived or patched.
+Source provenance includes the environment and direct economic owners; dependency
+versions remain the existing pipeline environment's responsibility.
+
+Synthetic acceptance evidence: child RL module 22 passed, including an actual
+32-step CPU PPO fit, pinned Sb3Policy restoration, two paired validation
+cohorts, artifact persistence and a positively asserted execute row in an
+isolated temporary journal. Positive rho/MAD deductions, zero-action reward,
+both fill modes, split-adjustment accounting, malformed actions and request
+mutation are tested. Config source pins verified by executing the JSON document.
+No real data was loaded. Combined affected functional evidence: 673 passed,
+23 skipped across the separately reported targeted runs (not a full suite).
+Ruff passes new/core RL files. The touched historical ledger files retain five
+pre-existing lint findings (three missing public run docstrings, one lambda and
+one test semicolon); the identical five reproduce from base 5215ec07 in the
+same baseline directory, with no new findings. Instruction mirrors/budgets and
+`git diff --check` pass. Pending: freeze candidate and both fresh Luna lenses.

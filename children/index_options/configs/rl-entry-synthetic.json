@@ -1,0 +1,1104 @@
+{
+  "name": "rl-entry-synthetic",
+  "notes": "Synthetic one-entry PPO integration control. It trains through the declared SB3 pack, restores the pinned artifact, then compares deterministic validation episodes with same-seed MIO. This smoke is lifecycle evidence only, not a trading result.",
+  "pipeline": {
+    "train": {
+      "uses": "dskit.pipeline.libs.sb3:Sb3Train",
+      "mode": "train",
+      "params": {
+        "algo": "PPO",
+        "policy": "MlpPolicy",
+        "env": "index_options.rl_env:OptionEntryEnv",
+        "env_params": {
+          "dataset": {
+            "schema": "option-entry-cohorts/v1",
+            "synthetic": true,
+            "splits": {
+              "train": {
+                "start": "2019-01-02",
+                "end_before": "2019-01-05"
+              },
+              "val": {
+                "start": "2019-01-09",
+                "end_before": "2019-01-12"
+              }
+            },
+            "cohorts": [
+              {
+                "id": "fixture-train",
+                "split": "train",
+                "params": {
+                  "symbols": [
+                    "X"
+                  ],
+                  "bridge": {
+                    "symbol": "X",
+                    "start": "2019-01-02",
+                    "end_before": "2019-01-05",
+                    "protected_end_before": "2020-01-01",
+                    "fold": 1,
+                    "require_fitted": false,
+                    "z_grid": [
+                      -3.0,
+                      -2.5,
+                      -2.0,
+                      -1.5,
+                      -1.0,
+                      -0.5,
+                      0.0,
+                      0.5,
+                      1.0,
+                      1.5,
+                      2.0,
+                      2.5,
+                      3.0
+                    ],
+                    "grid_labels": [
+                      "0",
+                      "1",
+                      "2",
+                      "3",
+                      "4",
+                      "5",
+                      "6",
+                      "7",
+                      "8",
+                      "9",
+                      "10",
+                      "11",
+                      "12"
+                    ],
+                    "target_dte": 2,
+                    "dte_tolerance": 0,
+                    "max_abs_z": 2.5,
+                    "max_relative_spread": 0.5,
+                    "min_quote_size": 1,
+                    "stress_spread_fraction": 0.25,
+                    "rho": 0.0,
+                    "projection": {
+                      "quadrature_tolerance": 1e-08,
+                      "payoff_tolerance": 1e-06,
+                      "cdf_tolerance": null,
+                      "w1_tolerance": null,
+                      "integration_limit": 100
+                    },
+                    "solver": {
+                      "multiplier": 100,
+                      "fee_per_contract_usd": 0.65,
+                      "tie_tolerance_usd": 1e-06,
+                      "max_absolute_gap_usd": 1e-07,
+                      "max_relative_gap": 1e-08,
+                      "objective_parity_usd": 1e-05,
+                      "max_total_contracts": 10
+                    }
+                  },
+                  "initial": 10000.0,
+                  "deposit": 25.0,
+                  "deposit_every_days": 1,
+                  "weekly_fraction": 0.25,
+                  "correlation_lookback": 60,
+                  "correlation_min_pairs": 20,
+                  "correlation_threshold": 0.6,
+                  "solver": {
+                    "absolute_gap": 1e-07,
+                    "relative_gap": 0.0,
+                    "parity_tolerance": 1e-05,
+                    "solver_options": {
+                      "mip_abs_gap": 1e-08,
+                      "mip_rel_gap": 0.0,
+                      "threads": 1
+                    }
+                  },
+                  "methods": [
+                    {
+                      "id": "nominal",
+                      "rho": 0.0,
+                      "portfolio_fraction": 1.0,
+                      "name_fraction": 1.0,
+                      "component_fraction": null
+                    }
+                  ],
+                  "fill_sizing": "available_size"
+                },
+                "inputs": {
+                  "X": {
+                    "forecasts": [
+                      {
+                        "symbol": "X",
+                        "quote_date": "2019-01-02",
+                        "expiry": "2019-01-04",
+                        "fold": 1,
+                        "band": "val",
+                        "fitted": false,
+                        "method_cdf_0": 0.0013498980316301035,
+                        "method_cdf_1": 0.006209665325776159,
+                        "method_cdf_2": 0.02275013194817921,
+                        "method_cdf_3": 0.06680720126885809,
+                        "method_cdf_4": 0.15865525393145707,
+                        "method_cdf_5": 0.3085375387259869,
+                        "method_cdf_6": 0.5,
+                        "method_cdf_7": 0.6914624612740131,
+                        "method_cdf_8": 0.8413447460685429,
+                        "method_cdf_9": 0.9331927987311419,
+                        "method_cdf_10": 0.9772498680518208,
+                        "method_cdf_11": 0.9937903346742238,
+                        "method_cdf_12": 0.9986501019683699
+                      }
+                    ],
+                    "contexts": [
+                      {
+                        "symbol": "X",
+                        "quote_date": "2019-01-02",
+                        "expiry": "2019-01-04",
+                        "fold": 1,
+                        "band": "val",
+                        "spot": 100.0,
+                        "reference_scale": 0.02,
+                        "settlement_date": "2019-01-04"
+                      }
+                    ],
+                    "chain": [
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-02",
+                        "expiration": "2019-01-04",
+                        "type": "put",
+                        "strike_raw": 90.0,
+                        "strike": 90.0,
+                        "bid": 0.1,
+                        "ask": 0.12,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-02",
+                        "expiration": "2019-01-04",
+                        "type": "put",
+                        "strike_raw": 100.0,
+                        "strike": 100.0,
+                        "bid": 4.0,
+                        "ask": 4.2,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-03",
+                        "expiration": "2019-01-04",
+                        "type": "put",
+                        "strike_raw": 90.0,
+                        "strike": 90.0,
+                        "bid": 0.1,
+                        "ask": 0.12,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-03",
+                        "expiration": "2019-01-04",
+                        "type": "put",
+                        "strike_raw": 100.0,
+                        "strike": 100.0,
+                        "bid": 4.0,
+                        "ask": 4.2,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-04",
+                        "expiration": "2019-01-04",
+                        "type": "put",
+                        "strike_raw": 90.0,
+                        "strike": 90.0,
+                        "bid": 0.1,
+                        "ask": 0.12,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-04",
+                        "expiration": "2019-01-04",
+                        "type": "put",
+                        "strike_raw": 100.0,
+                        "strike": 100.0,
+                        "bid": 4.0,
+                        "ask": 4.2,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      }
+                    ],
+                    "bars": [
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-02",
+                        "close": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-03",
+                        "close": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-04",
+                        "close": 100.0
+                      }
+                    ]
+                  }
+                },
+                "adjustments": []
+              },
+              {
+                "id": "fixture-val",
+                "split": "val",
+                "params": {
+                  "symbols": [
+                    "X"
+                  ],
+                  "bridge": {
+                    "symbol": "X",
+                    "start": "2019-01-09",
+                    "end_before": "2019-01-12",
+                    "protected_end_before": "2020-01-01",
+                    "fold": 1,
+                    "require_fitted": false,
+                    "z_grid": [
+                      -3.0,
+                      -2.5,
+                      -2.0,
+                      -1.5,
+                      -1.0,
+                      -0.5,
+                      0.0,
+                      0.5,
+                      1.0,
+                      1.5,
+                      2.0,
+                      2.5,
+                      3.0
+                    ],
+                    "grid_labels": [
+                      "0",
+                      "1",
+                      "2",
+                      "3",
+                      "4",
+                      "5",
+                      "6",
+                      "7",
+                      "8",
+                      "9",
+                      "10",
+                      "11",
+                      "12"
+                    ],
+                    "target_dte": 2,
+                    "dte_tolerance": 0,
+                    "max_abs_z": 2.5,
+                    "max_relative_spread": 0.5,
+                    "min_quote_size": 1,
+                    "stress_spread_fraction": 0.25,
+                    "rho": 0.0,
+                    "projection": {
+                      "quadrature_tolerance": 1e-08,
+                      "payoff_tolerance": 1e-06,
+                      "cdf_tolerance": null,
+                      "w1_tolerance": null,
+                      "integration_limit": 100
+                    },
+                    "solver": {
+                      "multiplier": 100,
+                      "fee_per_contract_usd": 0.65,
+                      "tie_tolerance_usd": 1e-06,
+                      "max_absolute_gap_usd": 1e-07,
+                      "max_relative_gap": 1e-08,
+                      "objective_parity_usd": 1e-05,
+                      "max_total_contracts": 10
+                    }
+                  },
+                  "initial": 10000.0,
+                  "deposit": 25.0,
+                  "deposit_every_days": 1,
+                  "weekly_fraction": 0.25,
+                  "correlation_lookback": 60,
+                  "correlation_min_pairs": 20,
+                  "correlation_threshold": 0.6,
+                  "solver": {
+                    "absolute_gap": 1e-07,
+                    "relative_gap": 0.0,
+                    "parity_tolerance": 1e-05,
+                    "solver_options": {
+                      "mip_abs_gap": 1e-08,
+                      "mip_rel_gap": 0.0,
+                      "threads": 1
+                    }
+                  },
+                  "methods": [
+                    {
+                      "id": "nominal",
+                      "rho": 0.0,
+                      "portfolio_fraction": 1.0,
+                      "name_fraction": 1.0,
+                      "component_fraction": null
+                    }
+                  ],
+                  "fill_sizing": "available_size"
+                },
+                "inputs": {
+                  "X": {
+                    "forecasts": [
+                      {
+                        "symbol": "X",
+                        "quote_date": "2019-01-09",
+                        "expiry": "2019-01-11",
+                        "fold": 1,
+                        "band": "val",
+                        "fitted": false,
+                        "method_cdf_0": 0.0013498980316301035,
+                        "method_cdf_1": 0.006209665325776159,
+                        "method_cdf_2": 0.02275013194817921,
+                        "method_cdf_3": 0.06680720126885809,
+                        "method_cdf_4": 0.15865525393145707,
+                        "method_cdf_5": 0.3085375387259869,
+                        "method_cdf_6": 0.5,
+                        "method_cdf_7": 0.6914624612740131,
+                        "method_cdf_8": 0.8413447460685429,
+                        "method_cdf_9": 0.9331927987311419,
+                        "method_cdf_10": 0.9772498680518208,
+                        "method_cdf_11": 0.9937903346742238,
+                        "method_cdf_12": 0.9986501019683699
+                      }
+                    ],
+                    "contexts": [
+                      {
+                        "symbol": "X",
+                        "quote_date": "2019-01-09",
+                        "expiry": "2019-01-11",
+                        "fold": 1,
+                        "band": "val",
+                        "spot": 100.0,
+                        "reference_scale": 0.02,
+                        "settlement_date": "2019-01-11"
+                      }
+                    ],
+                    "chain": [
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-09",
+                        "expiration": "2019-01-11",
+                        "type": "put",
+                        "strike_raw": 90.0,
+                        "strike": 90.0,
+                        "bid": 0.1,
+                        "ask": 0.12,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-09",
+                        "expiration": "2019-01-11",
+                        "type": "put",
+                        "strike_raw": 100.0,
+                        "strike": 100.0,
+                        "bid": 4.0,
+                        "ask": 4.2,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-10",
+                        "expiration": "2019-01-11",
+                        "type": "put",
+                        "strike_raw": 90.0,
+                        "strike": 90.0,
+                        "bid": 0.1,
+                        "ask": 0.12,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-10",
+                        "expiration": "2019-01-11",
+                        "type": "put",
+                        "strike_raw": 100.0,
+                        "strike": 100.0,
+                        "bid": 4.0,
+                        "ask": 4.2,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-11",
+                        "expiration": "2019-01-11",
+                        "type": "put",
+                        "strike_raw": 90.0,
+                        "strike": 90.0,
+                        "bid": 0.1,
+                        "ask": 0.12,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-11",
+                        "expiration": "2019-01-11",
+                        "type": "put",
+                        "strike_raw": 100.0,
+                        "strike": 100.0,
+                        "bid": 4.0,
+                        "ask": 4.2,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      }
+                    ],
+                    "bars": [
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-09",
+                        "close": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-10",
+                        "close": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-11",
+                        "close": 100.0
+                      }
+                    ]
+                  }
+                },
+                "adjustments": []
+              }
+            ]
+          },
+          "dataset_sha256": "ab2a29604ac6db4c57821641d56ab71e3b872a10cfe4c62c88547489a78c6304",
+          "source_hashes": {
+            "index_options.rl_env": "a126d96652818bc194e7e271acefb45c6da261e1a5f531d0e3572bd5584e92a9",
+            "index_options.ledger_studies": "ab0fcc5a5ff73efeb66bad92e269ea99e6dcfb140514b6d740125f8b6bd1bab7",
+            "dskit.pipeline.libs.pyomo": "bdeb18a348fdbc548eed691d288d1180457f88e94abcbbb90041d390247dfadb",
+            "dskit.pipeline.libs.sb3": "396d65162cf294ca0d989662e633937e45bd26339bdc087a94b682095a96a3e2",
+            "dskit.pipeline.libs.option_ledger": "b6b53ca2a1ba6c4fc6e93ff18be755aee9d5a05cd1f4f8b2948bfbf02fb70c03",
+            "dskit.pipeline.option_structures": "0ebffbe128c7b1840717ce502f8342abb3111233f8015dbc7114acfce8dae96a",
+            "index_options.nodes": "b824383fc580c20cd4eb69d0e727f59daea322a0b22384763c8af702ecfad219",
+            "index_options.contracts": "a929e1708de7c982acbdc394c2344cff6f7fde9e52f3cc34f2e0371eaf270d41",
+            "index_options.distribution": "244224f3767428f7ee0b4d2a55978c74e9b2b06f60921fa507e82576d9bbf01a",
+            "dskit.pipeline.libs.predictive_cdf": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
+            "dskit.pipeline.option_pricing": "e5c4066505bab989848dd8f6433c7fa59370b441f06579541784082aad8d9c7e",
+            "dskit.pipeline.stats": "6d8ea675d15a8c7c3f3cf0bfffd9a8f14aff72da86c2c787a5ef57c900d51518",
+            "dskit.pipeline.records": "a61cd326c1bda2eb6c275a4e2311116cc08a58adb759f7de88a1cba2d7b54718"
+          },
+          "split": "train",
+          "max_combinations": 100,
+          "max_actions": 100,
+          "max_features": 4096,
+          "reward_scale": 100.0
+        },
+        "total_timesteps": 32,
+        "seed": 11,
+        "algo_params": {
+          "n_steps": 16,
+          "batch_size": 16,
+          "n_epochs": 1,
+          "gamma": 1.0,
+          "policy_kwargs": {
+            "net_arch": [
+              4
+            ]
+          },
+          "device": "cpu"
+        }
+      },
+      "notes": "Tiny bounded fit exercises the existing trainer and pinned model artifact; the task horizon remains one entry."
+    },
+    "restore": {
+      "uses": "dskit.pipeline.libs.sb3:Sb3Policy",
+      "inputs": {
+        "artifact_path": "$train.artifact_path"
+      },
+      "params": {
+        "algo": "PPO",
+        "env": "index_options.rl_env:OptionEntryEnv"
+      },
+      "notes": "Restores the exact training output through the generic SB3 loader."
+    },
+    "compare": {
+      "uses": "index_options.rl_env:OptionEntryCompare",
+      "inputs": {
+        "artifact_path": "$train.artifact_path"
+      },
+      "params": {
+        "algo": "PPO",
+        "split": "val",
+        "env": "index_options.rl_env:OptionEntryEnv",
+        "env_params": {
+          "dataset": {
+            "schema": "option-entry-cohorts/v1",
+            "synthetic": true,
+            "splits": {
+              "train": {
+                "start": "2019-01-02",
+                "end_before": "2019-01-05"
+              },
+              "val": {
+                "start": "2019-01-09",
+                "end_before": "2019-01-12"
+              }
+            },
+            "cohorts": [
+              {
+                "id": "fixture-train",
+                "split": "train",
+                "params": {
+                  "symbols": [
+                    "X"
+                  ],
+                  "bridge": {
+                    "symbol": "X",
+                    "start": "2019-01-02",
+                    "end_before": "2019-01-05",
+                    "protected_end_before": "2020-01-01",
+                    "fold": 1,
+                    "require_fitted": false,
+                    "z_grid": [
+                      -3.0,
+                      -2.5,
+                      -2.0,
+                      -1.5,
+                      -1.0,
+                      -0.5,
+                      0.0,
+                      0.5,
+                      1.0,
+                      1.5,
+                      2.0,
+                      2.5,
+                      3.0
+                    ],
+                    "grid_labels": [
+                      "0",
+                      "1",
+                      "2",
+                      "3",
+                      "4",
+                      "5",
+                      "6",
+                      "7",
+                      "8",
+                      "9",
+                      "10",
+                      "11",
+                      "12"
+                    ],
+                    "target_dte": 2,
+                    "dte_tolerance": 0,
+                    "max_abs_z": 2.5,
+                    "max_relative_spread": 0.5,
+                    "min_quote_size": 1,
+                    "stress_spread_fraction": 0.25,
+                    "rho": 0.0,
+                    "projection": {
+                      "quadrature_tolerance": 1e-08,
+                      "payoff_tolerance": 1e-06,
+                      "cdf_tolerance": null,
+                      "w1_tolerance": null,
+                      "integration_limit": 100
+                    },
+                    "solver": {
+                      "multiplier": 100,
+                      "fee_per_contract_usd": 0.65,
+                      "tie_tolerance_usd": 1e-06,
+                      "max_absolute_gap_usd": 1e-07,
+                      "max_relative_gap": 1e-08,
+                      "objective_parity_usd": 1e-05,
+                      "max_total_contracts": 10
+                    }
+                  },
+                  "initial": 10000.0,
+                  "deposit": 25.0,
+                  "deposit_every_days": 1,
+                  "weekly_fraction": 0.25,
+                  "correlation_lookback": 60,
+                  "correlation_min_pairs": 20,
+                  "correlation_threshold": 0.6,
+                  "solver": {
+                    "absolute_gap": 1e-07,
+                    "relative_gap": 0.0,
+                    "parity_tolerance": 1e-05,
+                    "solver_options": {
+                      "mip_abs_gap": 1e-08,
+                      "mip_rel_gap": 0.0,
+                      "threads": 1
+                    }
+                  },
+                  "methods": [
+                    {
+                      "id": "nominal",
+                      "rho": 0.0,
+                      "portfolio_fraction": 1.0,
+                      "name_fraction": 1.0,
+                      "component_fraction": null
+                    }
+                  ],
+                  "fill_sizing": "available_size"
+                },
+                "inputs": {
+                  "X": {
+                    "forecasts": [
+                      {
+                        "symbol": "X",
+                        "quote_date": "2019-01-02",
+                        "expiry": "2019-01-04",
+                        "fold": 1,
+                        "band": "val",
+                        "fitted": false,
+                        "method_cdf_0": 0.0013498980316301035,
+                        "method_cdf_1": 0.006209665325776159,
+                        "method_cdf_2": 0.02275013194817921,
+                        "method_cdf_3": 0.06680720126885809,
+                        "method_cdf_4": 0.15865525393145707,
+                        "method_cdf_5": 0.3085375387259869,
+                        "method_cdf_6": 0.5,
+                        "method_cdf_7": 0.6914624612740131,
+                        "method_cdf_8": 0.8413447460685429,
+                        "method_cdf_9": 0.9331927987311419,
+                        "method_cdf_10": 0.9772498680518208,
+                        "method_cdf_11": 0.9937903346742238,
+                        "method_cdf_12": 0.9986501019683699
+                      }
+                    ],
+                    "contexts": [
+                      {
+                        "symbol": "X",
+                        "quote_date": "2019-01-02",
+                        "expiry": "2019-01-04",
+                        "fold": 1,
+                        "band": "val",
+                        "spot": 100.0,
+                        "reference_scale": 0.02,
+                        "settlement_date": "2019-01-04"
+                      }
+                    ],
+                    "chain": [
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-02",
+                        "expiration": "2019-01-04",
+                        "type": "put",
+                        "strike_raw": 90.0,
+                        "strike": 90.0,
+                        "bid": 0.1,
+                        "ask": 0.12,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-02",
+                        "expiration": "2019-01-04",
+                        "type": "put",
+                        "strike_raw": 100.0,
+                        "strike": 100.0,
+                        "bid": 4.0,
+                        "ask": 4.2,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-03",
+                        "expiration": "2019-01-04",
+                        "type": "put",
+                        "strike_raw": 90.0,
+                        "strike": 90.0,
+                        "bid": 0.1,
+                        "ask": 0.12,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-03",
+                        "expiration": "2019-01-04",
+                        "type": "put",
+                        "strike_raw": 100.0,
+                        "strike": 100.0,
+                        "bid": 4.0,
+                        "ask": 4.2,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-04",
+                        "expiration": "2019-01-04",
+                        "type": "put",
+                        "strike_raw": 90.0,
+                        "strike": 90.0,
+                        "bid": 0.1,
+                        "ask": 0.12,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-04",
+                        "expiration": "2019-01-04",
+                        "type": "put",
+                        "strike_raw": 100.0,
+                        "strike": 100.0,
+                        "bid": 4.0,
+                        "ask": 4.2,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      }
+                    ],
+                    "bars": [
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-02",
+                        "close": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-03",
+                        "close": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-04",
+                        "close": 100.0
+                      }
+                    ]
+                  }
+                },
+                "adjustments": []
+              },
+              {
+                "id": "fixture-val",
+                "split": "val",
+                "params": {
+                  "symbols": [
+                    "X"
+                  ],
+                  "bridge": {
+                    "symbol": "X",
+                    "start": "2019-01-09",
+                    "end_before": "2019-01-12",
+                    "protected_end_before": "2020-01-01",
+                    "fold": 1,
+                    "require_fitted": false,
+                    "z_grid": [
+                      -3.0,
+                      -2.5,
+                      -2.0,
+                      -1.5,
+                      -1.0,
+                      -0.5,
+                      0.0,
+                      0.5,
+                      1.0,
+                      1.5,
+                      2.0,
+                      2.5,
+                      3.0
+                    ],
+                    "grid_labels": [
+                      "0",
+                      "1",
+                      "2",
+                      "3",
+                      "4",
+                      "5",
+                      "6",
+                      "7",
+                      "8",
+                      "9",
+                      "10",
+                      "11",
+                      "12"
+                    ],
+                    "target_dte": 2,
+                    "dte_tolerance": 0,
+                    "max_abs_z": 2.5,
+                    "max_relative_spread": 0.5,
+                    "min_quote_size": 1,
+                    "stress_spread_fraction": 0.25,
+                    "rho": 0.0,
+                    "projection": {
+                      "quadrature_tolerance": 1e-08,
+                      "payoff_tolerance": 1e-06,
+                      "cdf_tolerance": null,
+                      "w1_tolerance": null,
+                      "integration_limit": 100
+                    },
+                    "solver": {
+                      "multiplier": 100,
+                      "fee_per_contract_usd": 0.65,
+                      "tie_tolerance_usd": 1e-06,
+                      "max_absolute_gap_usd": 1e-07,
+                      "max_relative_gap": 1e-08,
+                      "objective_parity_usd": 1e-05,
+                      "max_total_contracts": 10
+                    }
+                  },
+                  "initial": 10000.0,
+                  "deposit": 25.0,
+                  "deposit_every_days": 1,
+                  "weekly_fraction": 0.25,
+                  "correlation_lookback": 60,
+                  "correlation_min_pairs": 20,
+                  "correlation_threshold": 0.6,
+                  "solver": {
+                    "absolute_gap": 1e-07,
+                    "relative_gap": 0.0,
+                    "parity_tolerance": 1e-05,
+                    "solver_options": {
+                      "mip_abs_gap": 1e-08,
+                      "mip_rel_gap": 0.0,
+                      "threads": 1
+                    }
+                  },
+                  "methods": [
+                    {
+                      "id": "nominal",
+                      "rho": 0.0,
+                      "portfolio_fraction": 1.0,
+                      "name_fraction": 1.0,
+                      "component_fraction": null
+                    }
+                  ],
+                  "fill_sizing": "available_size"
+                },
+                "inputs": {
+                  "X": {
+                    "forecasts": [
+                      {
+                        "symbol": "X",
+                        "quote_date": "2019-01-09",
+                        "expiry": "2019-01-11",
+                        "fold": 1,
+                        "band": "val",
+                        "fitted": false,
+                        "method_cdf_0": 0.0013498980316301035,
+                        "method_cdf_1": 0.006209665325776159,
+                        "method_cdf_2": 0.02275013194817921,
+                        "method_cdf_3": 0.06680720126885809,
+                        "method_cdf_4": 0.15865525393145707,
+                        "method_cdf_5": 0.3085375387259869,
+                        "method_cdf_6": 0.5,
+                        "method_cdf_7": 0.6914624612740131,
+                        "method_cdf_8": 0.8413447460685429,
+                        "method_cdf_9": 0.9331927987311419,
+                        "method_cdf_10": 0.9772498680518208,
+                        "method_cdf_11": 0.9937903346742238,
+                        "method_cdf_12": 0.9986501019683699
+                      }
+                    ],
+                    "contexts": [
+                      {
+                        "symbol": "X",
+                        "quote_date": "2019-01-09",
+                        "expiry": "2019-01-11",
+                        "fold": 1,
+                        "band": "val",
+                        "spot": 100.0,
+                        "reference_scale": 0.02,
+                        "settlement_date": "2019-01-11"
+                      }
+                    ],
+                    "chain": [
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-09",
+                        "expiration": "2019-01-11",
+                        "type": "put",
+                        "strike_raw": 90.0,
+                        "strike": 90.0,
+                        "bid": 0.1,
+                        "ask": 0.12,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-09",
+                        "expiration": "2019-01-11",
+                        "type": "put",
+                        "strike_raw": 100.0,
+                        "strike": 100.0,
+                        "bid": 4.0,
+                        "ask": 4.2,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-10",
+                        "expiration": "2019-01-11",
+                        "type": "put",
+                        "strike_raw": 90.0,
+                        "strike": 90.0,
+                        "bid": 0.1,
+                        "ask": 0.12,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-10",
+                        "expiration": "2019-01-11",
+                        "type": "put",
+                        "strike_raw": 100.0,
+                        "strike": 100.0,
+                        "bid": 4.0,
+                        "ask": 4.2,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-11",
+                        "expiration": "2019-01-11",
+                        "type": "put",
+                        "strike_raw": 90.0,
+                        "strike": 90.0,
+                        "bid": 0.1,
+                        "ask": 0.12,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-11",
+                        "expiration": "2019-01-11",
+                        "type": "put",
+                        "strike_raw": 100.0,
+                        "strike": 100.0,
+                        "bid": 4.0,
+                        "ask": 4.2,
+                        "bid_size": 2,
+                        "ask_size": 2,
+                        "basis_factor": 1.0,
+                        "underlying_price": 100.0
+                      }
+                    ],
+                    "bars": [
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-09",
+                        "close": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-10",
+                        "close": 100.0
+                      },
+                      {
+                        "symbol": "X",
+                        "date": "2019-01-11",
+                        "close": 100.0
+                      }
+                    ]
+                  }
+                },
+                "adjustments": []
+              }
+            ]
+          },
+          "dataset_sha256": "ab2a29604ac6db4c57821641d56ab71e3b872a10cfe4c62c88547489a78c6304",
+          "source_hashes": {
+            "index_options.rl_env": "a126d96652818bc194e7e271acefb45c6da261e1a5f531d0e3572bd5584e92a9",
+            "index_options.ledger_studies": "ab0fcc5a5ff73efeb66bad92e269ea99e6dcfb140514b6d740125f8b6bd1bab7",
+            "dskit.pipeline.libs.pyomo": "bdeb18a348fdbc548eed691d288d1180457f88e94abcbbb90041d390247dfadb",
+            "dskit.pipeline.libs.sb3": "396d65162cf294ca0d989662e633937e45bd26339bdc087a94b682095a96a3e2",
+            "dskit.pipeline.libs.option_ledger": "b6b53ca2a1ba6c4fc6e93ff18be755aee9d5a05cd1f4f8b2948bfbf02fb70c03",
+            "dskit.pipeline.option_structures": "0ebffbe128c7b1840717ce502f8342abb3111233f8015dbc7114acfce8dae96a",
+            "index_options.nodes": "b824383fc580c20cd4eb69d0e727f59daea322a0b22384763c8af702ecfad219",
+            "index_options.contracts": "a929e1708de7c982acbdc394c2344cff6f7fde9e52f3cc34f2e0371eaf270d41",
+            "index_options.distribution": "244224f3767428f7ee0b4d2a55978c74e9b2b06f60921fa507e82576d9bbf01a",
+            "dskit.pipeline.libs.predictive_cdf": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
+            "dskit.pipeline.option_pricing": "e5c4066505bab989848dd8f6433c7fa59370b441f06579541784082aad8d9c7e",
+            "dskit.pipeline.stats": "6d8ea675d15a8c7c3f3cf0bfffd9a8f14aff72da86c2c787a5ef57c900d51518",
+            "dskit.pipeline.records": "a61cd326c1bda2eb6c275a4e2311116cc08a58adb759f7de88a1cba2d7b54718"
+          },
+          "split": "val",
+          "max_combinations": 100,
+          "max_actions": 100,
+          "max_features": 4096,
+          "reward_scale": 100.0
+        },
+        "n_episodes": 2,
+        "max_episode_steps": 1,
+        "seed": 101,
+        "deterministic": true
+      },
+      "notes": "Persists each deterministic one-step rollout with matched MIO accounting in the inherited episode artifact."
+    }
+  },
+  "splits": {
+    "kind": "time",
+    "train_end_ms": 1546646400000,
+    "val_end_ms": 1547251200000,
+    "test_end_ms": 1547337600000
+  },
+  "outputs": {
+    "run_root": ""
+  }
+}

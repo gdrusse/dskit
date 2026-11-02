@@ -1322,6 +1322,13 @@ class WeeklyOptionPortfolioStudy:
         when absent) or "available_size": every leg then executes k times
         its primitive share of the selection, k the largest whole multiple
         the next session's side depth shows, at most the selection's gcd.
+        Optional method key risk_charge {"measure": "mad", "price": kappa}
+        (ADR-0278 amendment, estimation risk) passes to every solver group:
+        each book's objective value loses kappa times the mean absolute
+        deviation of its loss under the model masses. A positive price
+        records each selected book's risk_charge beside its unchanged
+        expected; an absent key or kappa 0 leaves the program and record
+        unchanged.
     inputs : dict
         Per-symbol forecasts, contexts, chain and bars, already bounded before
         materialization. No outcomes are passed to the optimizer.
@@ -1338,7 +1345,7 @@ class WeeklyOptionPortfolioStudy:
                "weekly_fraction", "correlation_lookback", "correlation_min_pairs",
                "correlation_threshold", "solver", "methods")
     _METHOD_KEYS = {"id", "rho", "portfolio_fraction", "name_fraction", "component_fraction"}
-    _OPTIONAL_METHOD_KEYS = {"reserve_per_contract", "short_notional_fraction", "shock"}
+    _OPTIONAL_METHOD_KEYS = {"reserve_per_contract", "short_notional_fraction", "shock", "risk_charge"}
     _CHARGE_KEYS = ("reserve_per_contract", "short_notional_fraction")
     _SHOCK_KEYS = {"moves", "loss_fraction", "beta_lookback"}
     _FILLED_ACCOUNT = "filled_account"
@@ -1504,6 +1511,7 @@ class WeeklyOptionPortfolioStudy:
                     or set(method)-cls._OPTIONAL_METHOD_KEYS != cls._METHOD_KEYS
                     or any(not number_ok(v) or v < 0 for v in cls._charge(method).values())
                     or ("shock" in method and not cls._shock_valid(method["shock"]))
+                    or ("risk_charge" in method and not cls._risk_charge_valid(method["risk_charge"]))
                     or not isinstance(method["id"], str) or not method["id"] or method["id"] in ids
                     or not number_ok(method["rho"]) or method["rho"] < 0
                     or any(not number_ok(method[k]) or not 0 < method[k] <= 1
@@ -1590,6 +1598,23 @@ class WeeklyOptionPortfolioStudy:
     def _shock(method):
         """Return the method's validated shock policy, None when undeclared."""
         return method.get("shock")
+
+    @staticmethod
+    def _risk_charge_valid(spec):
+        """Return whether a risk_charge declaration is one the solver accepts."""
+        from dskit.pipeline.libs.pyomo import DeviationCharge
+
+        try:
+            DeviationCharge.check_spec(spec)
+        except ValueError:
+            return False
+        return True
+
+    @staticmethod
+    def _risk_charge(method):
+        """Return the method's priced risk_charge, None when undeclared or kappa is 0."""
+        spec = method.get("risk_charge")
+        return spec if spec is not None and spec["price"] > 0 else None
 
     @staticmethod
     def _loss_row(items, spot, mult):
@@ -1923,6 +1948,9 @@ class WeeklyOptionPortfolioStudy:
                             contracts=count, expected=selection["group_values"][i],
                             strategy=classify_option_strategy(signed, strikes),
                             status="selected")
+            if "risk_charges" in selection:
+                # expected stays the uncharged robust value; the charge is its own field.
+                books[-1]["risk_charge"] = selection["risk_charges"][i]
         return books
 
     @staticmethod
@@ -2138,8 +2166,48 @@ class WeeklyOptionPortfolioStudy:
         self._verify_quote_indexes()
         return result
 
+    def policy_steps(self, method_id):
+        """Yield decision-time requests and accept integer policy quantities.
+
+        Parameters
+        ----------
+        method_id : str
+            Identity of an explicitly configured method.
+
+        Returns
+        -------
+        generator
+            Private program/metadata/account requests. Send nested integer
+            quantities; completion returns the ordinary settled study result.
+
+        Raises
+        ------
+        ValueError
+            Method unknown or a submitted action is infeasible.
+        """
+        import copy
+
+        matches = [m for m in self.params["methods"] if m["id"] == method_id]
+        if len(matches) != 1:
+            raise ValueError("unknown policy method")
+        try:
+            return (yield from self._method_steps(copy.deepcopy(matches[0]), None, policy=True))
+        finally:
+            self.close_quote_indexes(verify=True)
+
     def _method_impl(self, method, progress, *, recorded=None, events=None):
-        """Advance one account without exposing future rows to portfolio selection."""
+        """Consume the same lifecycle with its existing MIO decision provider."""
+        steps = self._method_steps(method, progress, recorded=recorded, events=events)
+        try:
+            next(steps)
+        except StopIteration as done:
+            return done.value
+        finally:
+            steps.close()
+        raise RuntimeError("MIO lifecycle unexpectedly requested policy input")
+
+    def _method_steps(self, method, progress, *, recorded=None, events=None, policy=False):
+        """Advance one account, suspending only for an external policy decision."""
         import copy
         from dskit.pipeline.libs.option_ledger import FundedOptionAccount
         from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
@@ -2224,9 +2292,11 @@ class WeeklyOptionPortfolioStudy:
                     record["status"] = "no_eligible_candidates"
                 else:
                     mult = p["bridge"]["solver"]["multiplier"]
+                    risk = self._risk_charge(method)
                     configured = [{**g, "radius": method["rho"],
                                    "reserve_rows": g["reserve_rows"]
-                                   + self._charge_coefficients(charge, meta["items"], mult)}
+                                   + self._charge_coefficients(charge, meta["items"], mult),
+                                   **({} if risk is None else {"risk_charge": dict(risk)})}
                                   for g, meta in zip(groups, metadata)]
                     solver = TransportPortfolioSolve("portfolio", p["solver"])
                     program = {"groups": configured, "caps": self._caps(limits, metadata)}
@@ -2235,7 +2305,20 @@ class WeeklyOptionPortfolioStudy:
                         rows = self._shock_rows(shock, estimate["betas"], metadata, configured,
                                                 mult, account.funding, held)
                         program["joint_rows"] = rows
-                    if recorded_decisions is None:
+                    if policy:
+                        from dskit.pipeline.libs.pyomo import TransportActionScore
+
+                        scorer = TransportActionScore(program, {
+                            "parity_tolerance": p["solver"]["parity_tolerance"]})
+                        request = {"date": day, "program": program, "metadata": metadata,
+                                   "account": {"funding": account.funding, "cash": account.cash,
+                                               "contributions": account.contributions,
+                                               "realized": account.realized,
+                                               "open": account.open}}
+                        quantities = yield copy.deepcopy(request)
+                        selection = scorer.evaluate(quantities)
+                        record["decision_source"] = "policy"
+                    elif recorded_decisions is None:
                         selection = solver.run(None, program)["selection"]
                     else:
                         claimed = recorded_decisions[day]
@@ -2248,7 +2331,7 @@ class WeeklyOptionPortfolioStudy:
                                   selection={k: copy.deepcopy(v) for k, v in selection.items()
                                              if k != "certificates"},
                                   certificates=[{k: v for k, v in c.items() if k != "binding"}
-                                                for c in selection["certificates"]],
+                                                for c in selection.get("certificates", [])],
                                   books=copy.deepcopy(books))
                     if shock is not None:
                         losses = ({row["id"].split(":", 1)[1]: None for row in rows} if timed_out

@@ -4007,3 +4007,643 @@ def test_transport_portfolio_group_screen_with_joint_rows_restricts_hedges():
     screened = TransportPortfolioSolve("lp", _joint_params("lp")).run(None, inputs)["selection"]
     assert exact["quantities"] == [[4], [1]] and exact["value"] == pytest.approx(11.)
     assert screened["value"] == 0. and screened["quantities"] == [[0], [0]]
+
+
+# ---------------------------------------------------------------------------
+# risk_charge: a per-book estimation-risk charge (ADR-0278 amendment)
+# ---------------------------------------------------------------------------
+
+_RISK_MASSES = [.5, .3, .2]
+
+
+def _lottery_spread(price=None, capacity=1, radius=0.):
+    """A far call (lottery) and a call spread with the same mean profit, 0.5 each.
+
+    Outcomes 0, 1, 2 have masses .5, .3, .2. The lottery costs 1.5 and pays
+    10 in outcome 2; the spread costs .75 and pays 2.5 in outcomes 1 and 2.
+    A row allows ``capacity`` contracts in total.
+    """
+    group = {"id": "g", "grid": [0., 1., 2.], "masses": list(_RISK_MASSES), "radius": radius,
+             "scale": 1., "credit": [-1.5, -.75],
+             "losses": [[0., 0.], [0., -2.5], [-10., -2.5]],
+             "capacity": [capacity, capacity], "exclusive": [],
+             "reserve_rows": [[1.5, .75]],
+             "linear_rows": [{"coefficients": [1., 1.], "upper": float(capacity)}]}
+    if price is not None:
+        group["risk_charge"] = {"measure": "mad", "price": price}
+    return {"groups": [group], "caps": [{"groups": ["g"], "upper": 100.}]}
+
+
+def _binary_mad(size, probability):
+    """Closed form: the mean absolute deviation of a payoff ``size`` with ``probability``."""
+    return 2.*size*probability*(1.-probability)
+
+
+def _timeless(selection):
+    """The selection with each certificate's wall-clock seconds removed."""
+    return {**selection, "certificates": [{k: v for k, v in c.items() if k != "seconds"}
+                                          for c in selection["certificates"]]}
+
+
+def _with_risk(inputs, price):
+    """A copy of a program with the same risk_charge declared on every group."""
+    import copy
+    changed = copy.deepcopy(inputs)
+    for group in changed["groups"]:
+        group["risk_charge"] = {"measure": "mad", "price": price}
+    return changed
+
+
+def _identity_programs():
+    groups, caps = _screen_groups(.03)
+    joint, joint_caps = _joint_groups()
+    yield "screen", _screen_params("lp"), {"groups": groups, "caps": caps}
+    yield "plain", _screen_params("none"), {"groups": _screen_groups(0.)[0], "caps": caps}
+    yield "roundtrip", _screen_params("none"), _roundtrip_portfolio(.08)
+    yield "joint", _joint_params("lp"), {
+        "groups": joint, "caps": joint_caps,
+        "joint_rows": [{"id": "sum", "terms": {"a": [2.], "b": [1.]}, "upper": 5.}]}
+    yield "lottery", _screen_params("none"), _lottery_spread()
+
+
+@pytest.mark.parametrize("case", [name for name, _, _ in _identity_programs()])
+def test_transport_risk_charge_absent_or_zero_is_byte_identical(tmp_path, case):
+    """kappa 0 writes the same LP file and returns the same selection as no key."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    _, params, inputs = next(p for p in _identity_programs() if p[0] == case)
+    free = _with_risk(inputs, 0.)
+    files = []
+    for label, program in (("absent", inputs), ("zero", free)):
+        node = TransportPortfolioSolve(label, params)
+        model = node.build_model(program, params)
+        path = tmp_path/f"{label}.lp"
+        model.write(str(path), io_options={"symbolic_solver_labels": True})
+        files.append(path.read_bytes())
+        assert node._charged is False
+    assert files[0] == files[1]
+    base = TransportPortfolioSolve("absent", params).run(None, inputs)["selection"]
+    same = TransportPortfolioSolve("zero", params).run(None, free)["selection"]
+    assert "risk_charges" not in base and "risk_charges" not in same
+    assert _timeless(same) == _timeless(base)
+    for group, zero in zip(inputs["groups"], free["groups"]):
+        assert TransportPortfolioSolve._group_lp_bound(zero) == TransportPortfolioSolve._group_lp_bound(group)
+    claimed = {k: v for k, v in base.items() if k != "certificates"}
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in base["certificates"]]
+    replay = TransportPortfolioSolve("replay", params)._recorded(free, claimed, certificates)
+    assert replay["value"] == base["value"]
+
+
+def test_transport_risk_charge_prefers_the_spread_to_an_equal_mean_lottery():
+    """Equal means tie at kappa 0; any kappa > 0 buys the spread, charged in closed form."""
+    from dskit.pipeline.libs.pyomo import MeanAbsoluteDeviation, TransportPortfolioSolve
+
+    mad = MeanAbsoluteDeviation(_RISK_MASSES, 1.)
+    lottery, spread = _binary_mad(10., .2), _binary_mad(2.5, .5)
+    assert (lottery, spread) == (pytest.approx(3.2), pytest.approx(1.25))
+    assert mad.deviation([0., 0., -10.]) == pytest.approx(lottery, abs=1e-12)
+    assert mad.deviation([0., -2.5, -2.5]) == pytest.approx(spread, abs=1e-12)
+    params = _screen_params("none")
+    tie = TransportPortfolioSolve("tie", params).run(None, _lottery_spread())["selection"]
+    assert tie["value"] == pytest.approx(.5) and sum(tie["quantities"][0]) == 1
+    for kappa in (.01, .1, .3):
+        chosen = TransportPortfolioSolve("charged", params).run(
+            None, _lottery_spread(kappa))["selection"]
+        assert chosen["quantities"] == [[0, 1]]
+        assert chosen["risk_charges"] == [pytest.approx(kappa*spread, abs=1e-12)]
+        assert chosen["group_values"] == [pytest.approx(.5, abs=1e-12)]
+        assert chosen["value"] == pytest.approx(.5-kappa*spread, abs=1e-9)
+        assert chosen["value"] == pytest.approx(sum(chosen["group_values"])-sum(chosen["risk_charges"]))
+    # Above 0.4 even the spread's charge exceeds its mean, so cash wins.
+    cash = TransportPortfolioSolve("cash", params).run(None, _lottery_spread(.5))["selection"]
+    assert cash["quantities"] == [[0, 0]] and cash["value"] == 0. and cash["risk_charges"] == [0.]
+
+
+def _epigraph_minimum(charge, losses):
+    """Minimize the epigraph cost over its auxiliaries with the loss fixed (scipy)."""
+    import numpy as np
+    from scipy.optimize import linprog
+
+    parts = charge.relaxation(np.asarray(losses, dtype=float)[:, None])
+    ub = np.hstack(parts["ub"])
+    eq = np.hstack(parts["eq"])
+    result = linprog(np.r_[0., parts["cost"]], A_ub=ub, b_ub=np.zeros(len(ub)),
+                     A_eq=eq, b_eq=np.zeros(len(eq)), bounds=[(1., 1.)]+parts["bounds"],
+                     method="highs")
+    assert result.success
+    return result.fun
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_mean_absolute_deviation_is_homogeneous_and_its_epigraph_is_exact(seed):
+    """D(2L) = 2 D(L), D(L + c) = D(L), and both epigraphs reach D exactly."""
+    import numpy as np
+    from pyomo.environ import ConcreteModel, Objective, SolverFactory, Var, minimize, value
+    from dskit.pipeline.libs.pyomo import DeviationCharge, MeanAbsoluteDeviation
+
+    rng = np.random.default_rng(seed)
+    masses = rng.dirichlet(np.ones(7))
+    masses[seed % 7] = 0.  # a zero-mass outcome adds no row and nothing to D
+    masses /= masses.sum()
+    losses = rng.normal(0., 50., 7)
+    charge = DeviationCharge.from_spec({"measure": "mad", "price": 1.7}, masses)
+    assert isinstance(charge, MeanAbsoluteDeviation) and charge.active
+    d = charge.deviation(losses)
+    assert d > 0.
+    assert charge.deviation(2.*losses) == pytest.approx(2.*d, rel=1e-12)
+    assert charge.deviation(losses+123.) == pytest.approx(d, rel=1e-9)
+    assert charge.deviation(np.full(7, 9.)) == pytest.approx(0., abs=1e-12)
+    assert charge.charge(losses) == pytest.approx(1.7*d, rel=1e-12)
+    assert _epigraph_minimum(charge, losses) == pytest.approx(1.7*d, rel=1e-9)
+    lower, cost, rows = charge.epigraph()
+    assert len(lower) == 1+int((masses > 0).sum()) and len(rows) == 1+2*int((masses > 0).sum())
+    model = ConcreteModel()
+    model.y = Var(bounds=(1., 1.))
+    block = charge.attach(model, [float(v)*model.y for v in losses], "risk")
+    model.objective = Objective(expr=block.cost, sense=minimize)
+    solver = SolverFactory("appsi_highs")
+    # One thread, as every transport test: HiGHS fixes its global scheduler at the first solve.
+    solver.options["threads"] = 1
+    solver.solve(model)
+    assert value(block.cost) == pytest.approx(1.7*d, rel=1e-7)
+
+
+def _call_ladder(price=None):
+    """Four long calls with different edges and deviations on a five-point grid."""
+    import numpy as np
+    grid = np.arange(5.)
+    masses = [.1, .2, .4, .2, .1]
+    strikes, edges = [.5, 1.5, 2.5, 3.5], [.12, .1, .08, .03]
+    payoff = np.maximum(grid[:, None]-np.asarray(strikes)[None, :], 0.)
+    premium = np.asarray(masses) @ payoff - np.asarray(edges)
+    group = {"id": "ladder", "grid": grid.tolist(), "masses": masses, "radius": 0.,
+             "scale": 1., "credit": (-premium).tolist(), "losses": (-payoff).tolist(),
+             "capacity": [3]*4, "exclusive": [], "reserve_rows": [premium.tolist()],
+             "linear_rows": [{"coefficients": [1.]*4, "upper": 4.}]}
+    if price is not None:
+        group["risk_charge"] = {"measure": "mad", "price": price}
+    return {"groups": [group], "caps": [{"groups": ["ladder"], "upper": 100.}]}
+
+
+def test_transport_risk_charge_is_homogeneous_and_selected_deviation_falls_with_kappa():
+    """Doubling capacity doubles the charged book; a larger kappa never selects more deviation."""
+    import numpy as np
+    from dskit.pipeline.libs.pyomo import MeanAbsoluteDeviation, TransportPortfolioSolve
+
+    params = _screen_params("none")
+    one = TransportPortfolioSolve("one", params).run(None, _lottery_spread(.1))["selection"]
+    two = TransportPortfolioSolve("two", params).run(None, _lottery_spread(.1, capacity=2))["selection"]
+    assert two["quantities"] == [[2*q for q in one["quantities"][0]]]
+    assert two["risk_charges"] == [pytest.approx(2.*one["risk_charges"][0], rel=1e-12)]
+    program = _call_ladder()
+    group = program["groups"][0]
+    mad = MeanAbsoluteDeviation(group["masses"], 1.)
+    path = []
+    for kappa in (0., .02, .05, .1, .2, .4, 1.):
+        chosen = TransportPortfolioSolve("ladder", params).run(None, _call_ladder(kappa))["selection"]
+        loss = np.asarray(group["losses"]) @ chosen["quantities"][0]
+        path.append(mad.deviation(loss))
+        if kappa:
+            assert chosen["risk_charges"][0] == pytest.approx(kappa*path[-1], abs=1e-9)
+    assert all(b <= a+1e-7 for a, b in zip(path, path[1:])), path
+    assert len({round(d, 9) for d in path}) >= 3, path
+
+
+@pytest.mark.parametrize("radius", [0., .05])
+@pytest.mark.parametrize("kappa", [.05, .1, .5, 2.])
+def test_transport_risk_charge_lp_screen_still_bounds_every_integer_book(radius, kappa):
+    """The charged relaxation bounds the exact charged integer optimum and never exceeds the uncharged one."""
+    import numpy as np
+    from dskit.pipeline.libs.pyomo import MeanAbsoluteDeviation, TransportPortfolioSolve
+    from dskit.pipeline.libs.predictive_cdf import DiscreteCDFGrid
+
+    for program in (_lottery_spread(kappa, capacity=3, radius=radius), _call_ladder(kappa)):
+        group = {**program["groups"][0], "radius": radius}
+        plain = {k: v for k, v in group.items() if k != "risk_charge"}
+        distribution = DiscreteCDFGrid.from_masses(group["grid"], group["masses"])
+        mad = MeanAbsoluteDeviation(group["masses"], kappa)
+        best = 0.
+        ranges = [range(c+1) for c in group["capacity"]]
+        for x in np.array(np.meshgrid(*ranges)).reshape(len(ranges), -1).T:
+            if any(np.dot(r["coefficients"], x) > r["upper"] for r in group["linear_rows"]):
+                continue
+            loss = np.asarray(group["losses"]) @ x
+            worst = distribution.worst_expected_loss(loss, radius, group["scale"])
+            best = max(best, float(np.dot(group["credit"], x)-worst-mad.charge(loss)))
+        charged = TransportPortfolioSolve._group_lp_bound(group)
+        assert charged >= best-1e-7
+        assert charged <= TransportPortfolioSolve._group_lp_bound(plain)+1e-9
+
+
+def test_transport_risk_charge_screen_drops_a_group_the_charge_kills():
+    """A group live without the charge is screened out with it; the optimum is unchanged."""
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    live = _screen_groups(0.)[0][0]
+    lottery = copy.deepcopy(_lottery_spread(2.)["groups"][0])
+    groups = [lottery, live]
+    caps = [{"groups": ["g", "live"], "upper": 12.}]
+    plain = {k: v for k, v in lottery.items() if k != "risk_charge"}
+    assert TransportPortfolioSolve._group_lp_bound(plain) > 1e-5
+    assert TransportPortfolioSolve._group_lp_bound(lottery) <= 1e-9
+    node = TransportPortfolioSolve("screen", _screen_params("lp"))
+    screened = node.run(None, {"groups": groups, "caps": caps})["selection"]
+    exact = TransportPortfolioSolve("exact", _screen_params("none")).run(
+        None, {"groups": groups, "caps": caps})["selection"]
+    assert node._active == [1]
+    assert screened["quantities"] == exact["quantities"]
+    assert screened["value"] == pytest.approx(exact["value"], abs=1e-6)
+    assert screened["risk_charges"] == [0., 0.] == exact["risk_charges"]
+
+
+def test_transport_risk_charge_replay_reverifies_and_refuses_tampering():
+    """Replay rebuilds the charged program; a changed charge, kappa or missing field refuses."""
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params = _screen_params("none")
+    inputs = _lottery_spread(.1)
+    result = TransportPortfolioSolve("charged", params).run(None, inputs)["selection"]
+    claimed = {k: v for k, v in result.items() if k != "certificates"}
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in result["certificates"]]
+    replay = TransportPortfolioSolve("replay", params)._recorded(inputs, claimed, certificates)
+    assert replay["risk_charges"] == result["risk_charges"] and replay["value"] == result["value"]
+
+    def refused(selection, program=inputs, match="recorded"):
+        with pytest.raises(ValueError, match=match):
+            TransportPortfolioSolve("replay", params)._recorded(program, selection, certificates)
+
+    bad = copy.deepcopy(claimed)
+    bad["risk_charges"][0] += .01
+    refused(bad, match="differs: risk_charges")
+    bad = copy.deepcopy(claimed)
+    bad["value"] += .01
+    refused(bad, match="differs: value")
+    refused({k: v for k, v in claimed.items() if k != "risk_charges"}, match="risk charges differ")
+    refused(claimed, _lottery_spread(.2), match="invalid recorded primary valuation")
+    refused(claimed, _lottery_spread(), match="risk charges differ")
+    plain = TransportPortfolioSolve("plain", params).run(None, _lottery_spread())["selection"]
+    forged = {**{k: v for k, v in plain.items() if k != "certificates"}, "risk_charges": [0.]}
+    with pytest.raises(ValueError, match="risk charges differ"):
+        TransportPortfolioSolve("replay", params)._recorded(
+            _lottery_spread(), forged,
+            [{k: v for k, v in c.items() if k != "binding"} for c in plain["certificates"]])
+
+
+@pytest.mark.parametrize("spec", [
+    {"measure": "mad", "price": -.1},
+    {"measure": "mad", "price": float("nan")},
+    {"measure": "mad", "price": float("inf")},
+    {"measure": "mad", "price": "1"},
+    {"measure": "mad", "price": True},
+    {"measure": "mad", "price": None},
+    {"measure": "cvar", "price": 1.},
+    {"measure": "MAD", "price": 1.},
+    {"measure": None, "price": 1.},
+    {"measure": "mad"},
+    {"price": 1.},
+    {"measure": "mad", "price": 1., "alpha": .9},
+    "mad", None, [],
+])
+def test_transport_risk_charge_refuses_negative_price_and_unknown_measure(spec):
+    from dskit.pipeline.libs.pyomo import DeviationCharge, TransportPortfolioSolve
+
+    with pytest.raises(ValueError, match="risk_charge"):
+        DeviationCharge.check_spec(spec)
+    inputs = _lottery_spread()
+    inputs["groups"][0]["risk_charge"] = spec
+    with pytest.raises(ValueError):
+        TransportPortfolioSolve("bad", _screen_params("none")).run(None, inputs)
+    with pytest.raises(ValueError):
+        TransportPortfolioSolve._group_lp_bound(inputs["groups"][0])
+
+
+def _charged_incumbent(node, inputs, quantities, *, bound_gap=0., timeout=False):
+    """Load fixed actions into a radius-0 charged model with exact epigraph auxiliaries."""
+    import numpy as np
+    from dskit.pipeline.libs.pyomo import SolveRecord
+    from pyomo.environ import Constraint, Var, value
+
+    model = node.build_model(inputs, node.params)
+    for i, (group, q) in enumerate(zip(node._groups, quantities)):
+        for j, v in enumerate(q):
+            model.x[i, j].set_value(v)
+        charge = node._charges[i]
+        if charge is None:
+            continue
+        loss = np.asarray(group["losses"]) @ q
+        mean = float(np.dot(charge.masses, loss))
+        block = getattr(model, f"risk_{i}")
+        block.aux[0].set_value(mean)
+        support = [k for k, p in enumerate(charge.masses) if p > 0]
+        for t, k in enumerate(support, start=1):
+            block.aux[t].set_value(abs(float(loss[k])-mean))
+    objective = value(model.profit)
+    bound = objective+bound_gap
+    count = {key: sum(1 for _ in model.component_data_objects(c, active=True))
+             for key, c in (("variables", Var), ("constraints", Constraint))}
+    node.solve_record = SolveRecord(
+        "appsi_highs", "aborted" if timeout else "ok", "maxTimeLimit" if timeout else "optimal",
+        objective, bound, SolveRecord._gap(objective, bound), .01,
+        count["variables"], count["constraints"], ())
+    return model
+
+
+def _split(selection):
+    """Separate a returned selection from its replayable certificates."""
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in selection["certificates"]]
+    return {k: v for k, v in selection.items() if k != "certificates"}, certificates
+
+
+def test_transport_risk_charge_cash_zero_out_records_and_replays_zero_charges():
+    """A parity-sized negative charged book becomes cash with zero charges, and replays so."""
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params = {**_screen_params("none"), "parity_tolerance": .001}
+    inputs = _lottery_spread(.4004)  # the spread is worth .5-.4004*1.25 = -.0005
+    node = TransportPortfolioSolve("cash", params)
+    model = _charged_incumbent(node, inputs, [[0, 1]])
+    got = node.extract(model, None)["selection"]
+    assert got["primary_quantities"] == [[0, 1]] and got["quantities"] == [[0, 0]]
+    assert got["value"] == 0. and got["risk_charges"] == [0.] and got["group_values"] == [0.]
+    claimed, certificates = _split(got)
+    replay = TransportPortfolioSolve("replay", params)._recorded(inputs, claimed, certificates)
+    assert replay["risk_charges"] == [0.] and replay["value"] == 0.
+    forged = copy.deepcopy(claimed)
+    forged["risk_charges"] = [.5]
+    with pytest.raises(ValueError, match="differs: risk_charges"):
+        TransportPortfolioSolve("replay", params)._recorded(inputs, forged, certificates)
+
+
+def test_transport_risk_charge_timeout_candidate_carries_and_replays_its_charges():
+    """An uncertified charged incumbent is a non-executable diagnostic whose charges replay."""
+    import copy
+    import json
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params = {**_screen_params("none"), "timeout_policy": "return"}
+    inputs = _lottery_spread(.1)
+    node = TransportPortfolioSolve("timeout", params)
+    model = _charged_incumbent(node, inputs, [[0, 1]], bound_gap=2., timeout=True)
+    got = node.extract(model, None)["selection"]
+    assert got["timeout"] == "gap" and "quantities" not in got
+    assert got["candidate"]["risk_charges"] == [pytest.approx(.125, abs=1e-12)]
+    selection = {k: v for k, v in got.items() if k != "certificates"}
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in got["certificates"]]
+    replay = TransportPortfolioSolve("replay", params)._recorded(
+        inputs, *json.loads(json.dumps([selection, certificates])))
+    assert replay == {**selection, "certificates": certificates}
+    bad = copy.deepcopy(selection)
+    bad["candidate"]["risk_charges"][0] += .01
+    with pytest.raises(ValueError, match="differs: risk_charges"):
+        TransportPortfolioSolve("replay", params)._recorded(inputs, bad, certificates)
+
+
+def _charged_joint():
+    """Two groups under a joint row; only the risky one pays a charge, which moves the optimum.
+
+    Uncharged, 2.5a + 2b under 2a + b <= 5 buys (1, 3) for 8.5; at kappa .3 the
+    risky group nets 1.9 a unit, so (0, 4) for 8.0 wins.
+    """
+    groups, caps = _joint_groups()
+    groups[0].update(credit=[4.5], losses=[[0.], [4.]], risk_charge={"measure": "mad", "price": .3})
+    groups[1]["risk_charge"] = {"measure": "mad", "price": .3}
+    return {"groups": groups, "caps": caps,
+            "joint_rows": [{"id": "sum", "terms": {"a": [2.], "b": [1.]}, "upper": 5.}]}
+
+
+def _charged_oracle(inputs):
+    """Exhaustive charged optimum over every integer action vector of a small program."""
+    import itertools
+    import numpy as np
+    from dskit.pipeline.libs.predictive_cdf import DiscreteCDFGrid
+    from dskit.pipeline.libs.pyomo import MeanAbsoluteDeviation
+
+    groups = inputs["groups"]
+    sizes = [len(g["capacity"]) for g in groups]
+    best = 0.
+    for flat in itertools.product(*[range(c+1) for g in groups for c in g["capacity"]]):
+        xs, start = [], 0
+        for n in sizes:
+            xs.append(np.asarray(flat[start:start+n], dtype=float))
+            start += n
+        if any(x[a] and x[b] for g, x in zip(groups, xs) for a, b in g["exclusive"]):
+            continue
+        if any(np.dot(r["coefficients"], x) > r["upper"]+1e-9
+               for g, x in zip(groups, xs) for r in g["linear_rows"]):
+            continue
+        reserves = {g["id"]: max(0., *(np.asarray(g["reserve_rows"]) @ x)) for g, x in zip(groups, xs)}
+        if any(sum(reserves[k] for k in cap["groups"]) > cap["upper"]+1e-9 for cap in inputs["caps"]):
+            continue
+        index = {g["id"]: x for g, x in zip(groups, xs)}
+        if any(sum(np.dot(c, index[k]) for k, c in row["terms"].items()) > row["upper"]+1e-9
+               for row in inputs.get("joint_rows", [])):
+            continue
+        value = 0.
+        for g, x in zip(groups, xs):
+            loss = np.asarray(g["losses"]) @ x
+            worst = DiscreteCDFGrid.from_masses(g["grid"], g["masses"]).worst_expected_loss(
+                loss, g["radius"], g["scale"])
+            price = g.get("risk_charge", {}).get("price", 0.)
+            value += float(np.dot(g["credit"], x)-worst-MeanAbsoluteDeviation(g["masses"], price).charge(loss))
+        best = max(best, value)
+    return best
+
+
+@pytest.mark.parametrize("case", ["roundtrip", "joint", "lottery_w1"])
+@pytest.mark.parametrize("screen", ["none", "lp"])
+def test_transport_risk_charge_matches_an_exhaustive_oracle(case, screen):
+    """Charged W1, round-trip cleanup and joint rows reach the exhaustive charged optimum and replay."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    inputs = {"roundtrip": lambda: _with_risk(_roundtrip_portfolio(.08), .3),
+              "joint": _charged_joint,
+              "lottery_w1": lambda: _lottery_spread(.1, capacity=2, radius=.05)}[case]()
+    params = _joint_params(screen)
+    node = TransportPortfolioSolve(case, params)
+    got = node.run(None, inputs)["selection"]
+    assert got["value"] == pytest.approx(_charged_oracle(inputs), abs=1e-6)
+    assert got["value"] == pytest.approx(sum(got["group_values"])-sum(got["risk_charges"]), abs=1e-9)
+    claimed, certificates = _split(got)
+    replay = TransportPortfolioSolve("replay", params)._recorded(inputs, claimed, certificates)
+    assert replay["risk_charges"] == got["risk_charges"]
+    if case == "joint":
+        assert got["quantities"] == [[0], [4]] and got["value"] == pytest.approx(8.)
+        free = TransportPortfolioSolve("free", params).run(None, _with_risk(inputs, 0.))["selection"]
+        assert free["quantities"] == [[1], [3]] and free["value"] == pytest.approx(8.5)
+
+
+def _transport_action_score_program(radius=0.2, risk_charge=None):
+    group = {"id": "g", "grid": [0., 1.], "masses": [.5, .5],
+             "radius": radius, "scale": 1., "credit": [60.],
+             "losses": [[0.], [100.]], "capacity": [2], "exclusive": [],
+             "reserve_rows": [[5.]], "linear_rows": []}
+    if risk_charge is not None:
+        group["risk_charge"] = risk_charge
+    return {"groups": [group], "caps": [{"groups": ["g"], "upper": 5.}]}
+
+
+def test_transport_action_score_public_economic_oracle_red():
+    """Nominal, W1 and MAD values agree with a hand calculation."""
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+
+    score = TransportActionScore(
+        _transport_action_score_program(risk_charge={"measure": "mad", "price": .2}),
+        {"parity_tolerance": 1e-8},
+    ).value([[1]])
+    assert score["nominal_values"] == pytest.approx([10.])
+    assert score["uncertainty_deductions"] == pytest.approx([20.])
+    assert score["risk_charges"] == pytest.approx([10.])
+    assert score["group_values"] == pytest.approx([-10.])
+    assert score["value"] == pytest.approx(-20.)
+
+def test_transport_action_score_cash_shape_and_value_validation():
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+
+    program = _transport_action_score_program(radius=0.)
+    score = TransportActionScore(program, {}).value([[0]])
+    assert score["value"] == pytest.approx(0.)
+    assert score["nominal_values"] == pytest.approx([0.])
+    assert score["uncertainty_deductions"] == pytest.approx([0.])
+    assert score["risk_charges"] == pytest.approx([0.])
+    assert score["reserves"] == pytest.approx([0.])
+    for bad in ([], [[1.]], [[True]], [[-1]], [[3]], [[1, 0]]):
+        with pytest.raises(ValueError):
+            TransportActionScore(program, {}).value(bad)
+    with pytest.raises(ValueError):
+        TransportActionScore(program, {"solver": "appsi_highs"})
+
+
+@pytest.mark.parametrize("bad", [
+    {"radius": float("nan")},
+    {"radius": 0., "risk_charge": {"measure": "unknown", "price": 1.}},
+])
+def test_transport_action_score_rejects_malformed_program(bad):
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+
+    program = _transport_action_score_program()
+    program["groups"][0].update(bad)
+    with pytest.raises(ValueError):
+        TransportActionScore(program, {})
+
+
+def test_transport_action_score_evaluate_checks_every_constraint_family():
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+
+    program = _transport_action_score_program(radius=0.)
+    group = program["groups"][0]
+    group["linear_rows"] = [{"coefficients": [1.], "upper": 1.}]
+    scorer = TransportActionScore(program, {"parity_tolerance": 1e-9})
+    assert scorer.evaluate([[1]])["feasible"] is True
+
+    group_row = _transport_action_score_program(radius=0.)
+    group_row["groups"][0]["linear_rows"] = [{"coefficients": [1.], "upper": .5}]
+    with pytest.raises(ValueError, match="group linear"):
+        TransportActionScore(group_row, {}).evaluate([[1]])
+
+    reserve = _transport_action_score_program(radius=0.)
+    reserve["caps"][0]["upper"] = 4.
+    with pytest.raises(ValueError, match="shared reserve"):
+        TransportActionScore(reserve, {}).evaluate([[1]])
+
+    joint = _transport_action_score_program(radius=0.)
+    joint["joint_rows"] = [{"id": "net", "terms": {"g": [1.]}, "upper": 0.}]
+    with pytest.raises(ValueError, match="joint row"):
+        TransportActionScore(joint, {}).evaluate([[1]])
+    joint["joint_rows"][0]["terms"]["g"] = [-1.]
+    assert TransportActionScore(joint, {}).evaluate([[1]])["feasible"] is True
+
+
+def test_transport_action_score_catalogue_matches_full_cartesian_oracle():
+    import itertools
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+
+    program = _transport_action_score_program(radius=0.)
+    group = program["groups"][0]
+    group["capacity"] = [1, 1]
+    group["credit"] = [2., 1.]
+    group["losses"] = [[0., 0.], [0., 0.]]
+    group["exclusive"] = [[0, 1]]
+    group["reserve_rows"] = [[1., 1.]]
+    program["caps"][0]["upper"] = 1.
+    program["joint_rows"] = [{"id": "negative-hedge", "terms": {"g": [-1., 1.]},
+                              "upper": 1.}]
+    scorer = TransportActionScore(program, {})
+    catalogue = scorer.catalogue(4)
+    oracle = []
+    for flat in itertools.product(range(2), repeat=2):
+        action = [list(flat)]
+        try:
+            scorer.evaluate(action)
+        except ValueError:
+            continue
+        oracle.append(action)
+    assert catalogue == sorted(
+        oracle, key=lambda action: (sum(map(sum, action)),
+                                   tuple(q for row in action for q in row)))
+    assert catalogue[0] == [[0, 0]]
+    with pytest.raises(ValueError, match="complete action space"):
+        scorer.catalogue(3)
+    for invalid in (0, -1, 2., True):
+        with pytest.raises(ValueError):
+            scorer.catalogue(invalid)
+
+
+def test_transport_action_score_matches_mio_primal_audit_schema():
+    from dskit.pipeline.libs.pyomo import TransportActionScore, TransportPortfolioSolve
+
+    program = _transport_action_score_program(
+        risk_charge={"measure": "mad", "price": .2})
+    program["groups"][0]["credit"] = [200.]
+    params = {"absolute_gap": 1e-7, "relative_gap": 0.,
+              "parity_tolerance": 1e-7,
+              "solver_options": {"mip_abs_gap": 1e-8, "mip_rel_gap": 0., "threads": 1}}
+    result = TransportPortfolioSolve("score_parity", params).run(
+        None, program)["selection"]
+    assert sum(map(sum, result["quantities"])) > 0
+    scored = TransportActionScore(program, {"parity_tolerance": 1e-7}).evaluate(
+        result["quantities"])
+    assert result["quantities"] == scored["quantities"]
+    for key in ("reserves", "group_values", "value", "risk_charges"):
+        assert result[key] == pytest.approx(scored[key])
+    assert set(result) == {
+        "quantities", "reserves", "group_values", "value", "risk_charges",
+        "bound", "gap", "model_value", "primary_quantities", "canonicalization",
+        "certificates",
+    }
+
+def test_transport_action_score_mixed_losses_and_multiple_reserve_members():
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+
+    group = _transport_action_score_program(radius=0.)["groups"][0]
+    group["credit"] = [0., 0.]
+    group["losses"] = [[-2., 3.], [4., -1.]]
+    group["capacity"] = [1, 1]
+    group["reserve_rows"] = [[1., 1.]]
+    group["exclusive"] = []
+    first = dict(group, id="a")
+    second = dict(group, id="b")
+    program = {"groups": [first, second],
+               "caps": [{"groups": ["a", "b"], "upper": 1.}]}
+    scorer = TransportActionScore(program, {})
+    scored = scorer.value([[1, 1], [0, 0]])
+    assert scored["nominal_values"] == pytest.approx([-2., 0.])
+    assert scored["uncertainty_deductions"] == pytest.approx([0., 0.])
+    assert len(scored["program_identity"]) == 64
+    with pytest.raises(ValueError, match="shared reserve"):
+        scorer.evaluate([[1, 1], [1, 0]])
+
+def test_transport_action_score_catalogue_propagates_valuation_errors(monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+
+    scorer = TransportActionScore(_transport_action_score_program(radius=0.), {})
+    assert scorer.evaluate([[0]])["feasible"] is True
+
+    def fail_valuation(_quantities):
+        raise ValueError("valuation failed")
+
+    monkeypatch.setattr(scorer, "value", fail_valuation)
+    with pytest.raises(ValueError, match="valuation failed"):
+        scorer.catalogue(3)
