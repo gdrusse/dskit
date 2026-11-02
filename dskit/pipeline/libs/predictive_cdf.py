@@ -3298,16 +3298,21 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         """Return the training objective averaged over the calibration rows."""
         import torch
         xx, yy, hh, context = monitor
-        model.eval()
-        total = 0.
-        with torch.no_grad():
-            for start in range(0, len(xx), self.batch_size):
-                ix = torch.arange(start, min(start+self.batch_size, len(xx)), device=self.device)
-                logw, mu, sigma = self._forward(model, xx[ix], hh[ix])
-                total += self._objective_loss(
-                    yy[ix], logw, mu, sigma, ix, context).item()*len(ix)
-        model.train()
-        return total/len(xx)
+        modes = [(module, module.training) for module in model.modules()]
+        try:
+            model.eval()
+            total = 0.
+            with torch.no_grad():
+                for start in range(0, len(xx), self.batch_size):
+                    ix = torch.arange(start, min(start+self.batch_size, len(xx)), device=self.device)
+                    logw, mu, sigma = self._forward(model, xx[ix], hh[ix])
+                    total += self._objective_loss(
+                        yy[ix], logw, mu, sigma, ix, context).item()*len(ix)
+            return total/len(xx)
+        finally:
+            # Restore each flag without recursively overwriting mixed child modes.
+            for module, training in modes:
+                module.training = training
 
     def _extra_training_loss(self, y, logw, mu, sigma, indices, context):
         """Return an optional proper-score addend for one mini-batch."""

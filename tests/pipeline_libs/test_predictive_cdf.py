@@ -6539,3 +6539,64 @@ def test_a_strike_quoted_exactly_at_the_forward_belongs_to_both_wings():
     for side in ("put", "call"):
         alone = reference.estimate(rows[~((rows.strike == 100.) & (rows.type == side))], 100.)
         assert not alone["eligible"] or not np.array_equal(alone["quantiles"], got["quantiles"])
+
+
+@pytest.mark.parametrize("kind", ["base", "composite"])
+@pytest.mark.parametrize("mode", ["train", "eval", "mixed"])
+@pytest.mark.parametrize("failure", [None, "forward", "objective"])
+def test_monitor_restores_modes_and_preserves_inference(monkeypatch, kind, mode, failure):
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(1)
+    x = np.random.default_rng(35).normal(size=(12, 4))
+    y = np.linspace(-1, 1, len(x))
+    context = _zoo_context(len(x))
+    if kind == "composite":
+        model = _zoo_torch("mlp", epochs=1, dropout=.3)
+        model.fit_decision_context(context, context).fit(x, y, x, y)
+        model.fit_decision_context(context, context)
+    else:
+        model = _patience_model(epochs=1, patience=None, dropout=.3).fit(x, y, x, y)
+    module = model.models[0]
+    module.train(mode != "eval")
+    if mode == "mixed":
+        next(m for m in module.modules() if isinstance(m, torch.nn.Dropout)).eval()
+    modes = [m.training for m in module.modules()]
+    weights = {k: v.clone() for k, v in module.state_dict().items()}
+    for param in module.parameters():
+        param.grad = torch.ones_like(param)
+    gradients = [p.grad.clone() for p in module.parameters()]
+    before = model.curve(x).cdf([-.5, 0., .5]) if mode == "eval" else None
+    forward, objective = model._forward, model._objective_loss
+    calls = []
+
+    def observe_forward(network, xx, hh):
+        calls.append((any(m.training for m in network.modules()), torch.is_grad_enabled()))
+        if failure == "forward":
+            raise RuntimeError("monitor forward failure")
+        return forward(network, xx, hh)
+
+    def observe_objective(*args):
+        if failure == "objective":
+            raise RuntimeError("monitor objective failure")
+        return objective(*args)
+
+    monitor = model._monitor_set(x, y)
+    with monkeypatch.context() as patch:
+        patch.setattr(model, "_forward", observe_forward)
+        patch.setattr(model, "_objective_loss", observe_objective)
+        with torch.enable_grad():
+            if failure:
+                with pytest.raises(RuntimeError, match="monitor .* failure"):
+                    model._monitor_loss(module, monitor)
+            else:
+                assert np.isfinite(model._monitor_loss(module, monitor))
+            assert torch.is_grad_enabled()
+    assert calls and all(call == (False, False) for call in calls)
+    assert [m.training for m in module.modules()] == modes
+    for key, value in module.state_dict().items():
+        assert torch.equal(value, weights[key])
+    for param, gradient in zip(module.parameters(), gradients):
+        assert torch.equal(param.grad, gradient)
+    if mode == "eval":
+        np.testing.assert_array_equal(model.curve(x).cdf([-.5, 0., .5]), before)
+        np.testing.assert_array_equal(model.curve(x).cdf([-.5, 0., .5]), before)
