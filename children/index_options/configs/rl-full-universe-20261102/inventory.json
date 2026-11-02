@@ -678,5 +678,59 @@
     "dskit.pipeline.option_pricing": "e5c4066505bab989848dd8f6433c7fa59370b441f06579541784082aad8d9c7e",
     "dskit.pipeline.stats": "6d8ea675d15a8c7c3f3cf0bfffd9a8f14aff72da86c2c787a5ef57c900d51518",
     "dskit.pipeline.records": "a61cd326c1bda2eb6c275a4e2311116cc08a58adb759f7de88a1cba2d7b54718"
+  },
+  "dimensions_final_review_lock": {
+    "candidate_commit": "fb84644836f6f3c37ee1dad17a92838cd8317ee8",
+    "reviews": [
+      {
+        "id": "/root/luna_dimensions_final_authority",
+        "result": "pass",
+        "findings": {
+          "critical": 0,
+          "major": 0,
+          "minor": 0,
+          "nit": 0
+        },
+        "focused_tests": "RL + packet: 122 passed in 39.80s",
+        "working_tree": "clean at start/end; diff check clean"
+      },
+      {
+        "id": "/root/luna_dimensions_final_integration",
+        "result": "pass",
+        "findings": {
+          "critical": 0,
+          "major": 0,
+          "minor": 0,
+          "nit": 0
+        },
+        "focused_tests": "RL + packet + ledger + SB3 + Pyomo: 1003 passed, 19 skipped, 43 upstream SB3 warnings in 70.88s",
+        "working_tree": "clean at start/end; diff check clean"
+      }
+    ],
+    "review_reports": "Retained canonical final messages from both reviewers.",
+    "implementation_and_test_blobs": {
+      "children/index_options/index_options/ledger_studies.py": "412d02dbec04d1b808ceacfbf29bf463aea64d9a",
+      "children/index_options/index_options/mio_contract.py": "8d318b44920d454f9d6401fe96fc2a94097f9a44",
+      "children/index_options/index_options/rl_env.py": "5ff98a71120469f24ca10dee878dbacfe0e6c425",
+      "children/index_options/tests/test_mio_packets.py": "b6fffccd2b6c80a0beb4c3b448d89410ba8143e5",
+      "children/index_options/tests/test_rl_env.py": "f287269cdcf25aa578fbce20435c4e6a5fca22e5"
+    },
+    "scope": "Exact dimensions design and coverage clarifications in the latest ADR; authenticated cash-only sizing, exact ordered request/no-request coverage, shared preparation/scoring, no integer optimizer/model, existing registry-bound closure.",
+    "validated_configs": [
+      "/home/russell/data/index_options/rl-full-universe-20261102/configs/dimensions-train-nominal_lp.json",
+      "/home/russell/data/index_options/rl-full-universe-20261102/configs/dimensions-train-w1_003_lp.json",
+      "/home/russell/data/index_options/rl-full-universe-20261102/configs/dimensions-train-w1_003_shock10_lp.json",
+      "/home/russell/data/index_options/rl-full-universe-20261102/configs/dimensions-q2.json",
+      "/home/russell/data/index_options/rl-full-universe-20261102/configs/dimensions-q3.json",
+      "/home/russell/data/index_options/rl-full-universe-20261102/configs/dimensions-q4.json"
+    ],
+    "config_validation": "All six packet domains were metadata/CLI validated; each quarter config preserves exact baseline source, economics, eligibility, and predictive-selection declaration. The retained metadata log is /home/russell/data/index_options/rl-full-universe-20261102/logs/dimensions-plan.json.",
+    "dependency_pins": "Current declared and verified dependencies recorded in the candidate inventory; unchanged from reviewed implementation.",
+    "empirical_status": {
+      "dimensions_scans": "pending; not launched at this evidence lock",
+      "policy_fit": "not run",
+      "saved_quarter_policy_comparison": "not run",
+      "market_outcome_reads": "none"
+    }
   }
 }
