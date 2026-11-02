@@ -175,7 +175,7 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   data intake route. Real runs require the established onboarding and study
   approvals; Path A0003's sealed windows remain inaccessible.
   Run from this child in WSL with the parent environment and optional SB3/Pyomo
-  dependencies: `python -m dskit.pipeline run configs/rl-entry-synthetic.json --asof 2026-11-02`. This smoke run demonstrates integration, not learning
+  dependencies: `PYTHONPATH=../.. python -m dskit.pipeline run configs/rl-entry-synthetic.json --asof 2026-11-02`. This smoke run demonstrates integration, not learning
   quality or trading profitability.
 
 - LocalFilesConnector supplies acquisition. source-fixture.json names the path

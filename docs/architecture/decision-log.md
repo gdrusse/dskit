@@ -35388,3 +35388,60 @@ pre-existing lint findings (three missing public run docstrings, one lambda and
 one test semicolon); the identical five reproduce from base 5215ec07 in the
 same baseline directory, with no new findings. Instruction mirrors/budgets and
 `git diff --check` pass. Pending: freeze candidate and both fresh Luna lenses.
+
+**Implementation review closure, 2026-11-02.** Immutable candidate
+`4d64f3f663446b08934f5fd05facbed5ed4f194d`, base `5215ec07`, contract/matrix v1
+above and dependency `7475442b`: two fresh sequential `gpt-6-luna` skeptics
+completed their assigned lenses. Actual reports remain retrievable in their
+agent transcripts, not an author-only reconstruction:
+- `/root/luna_skeptic_accounting_r1`: accounting/authority, C0/M0/Minor0/Nit0;
+  inspected scorer, admission, reward, source/split/horizon and both fill modes;
+  child RL suite 24 passed, diff check clean.
+- `/root/luna_skeptic_integration_r1`: integration/test quality, C0/M0/Minor2/Nit0
+  initially; child RL 24 passed, SB3 101 passed/12 skipped, Pyomo 468 passed/7
+  skipped. The RL test executes actual 32-step PPO fit, pinned restoration,
+  paired comparison and isolated journal recording; a separate CLI run was not
+  repeated. Final disposition: docs Minor resolved, MAD Minor deferred.
+
+The docs finding reproduced a shared editable environment resolving another
+checkout. The README now prefixes the existing command with `PYTHONPATH=../..`.
+The integration skeptic independently confirmed the one-line correction and a
+successful CLI plan from the child with the parent venv (train/signal/score,
+no warnings; document hash
+`4f597e4a59f18eaf7eea9dafa76fee2717c79ca7e3f25f576590717e99321829`).
+This editorial invocation correction changes no behavior/test/config/contract or
+dependency. All reviewed code/test/config blobs below were reverified unchanged;
+both behavioral approvals stand.
+
+**Minor backlog (explicitly deferred).** Direct public `MeanAbsoluteDeviation`
+construction accepts nonsimplex masses: masses [1,1] and constant losses [5,5]
+return deviation 10. Valid probability masses give zero; TransportPortfolioSolve
+and TransportActionScore validate the simplex before reaching this helper, so
+this does not affect the matched RL/MIO paths. Family: public helper invalid-input
+validation. A future small correction should add simplex validation and its own
+focused review; no current Critical/Major is concealed by the deferral.
+
+The final partial-fill regression added two cases after the earlier 22-test
+record: one all-or-none refusal and one half-size intact fill; unfilled reward
+is zero, partial P&L/fees/H/MAD exactly half. Final child count 24. Independent
+full affected Pyomo evidence supersedes the earlier 147-test subset; distinct
+functional evidence is 996 passed/30 skipped across Pyomo, both SB3 files,
+ledger and RL tests, plus four docs checks. Baseline purity and lint limitations
+remain as documented above; no full repository suite ran.
+
+**Gate:** bounded implementation and synthetic acceptance complete; zero
+unresolved Critical/Major, one disclosed Minor. No real-data fit/comparison,
+performance conclusion, protected-window access, merge/push or deployment.
+Next empirical work requires the frozen predictive inputs and paired study
+packet under existing approvals, not another RL implementation.
+
+Reviewed runtime/test/config Git blobs:
+- `children/index_options/configs/rl-entry-synthetic.json`: `01a3ba0c17375931b64b40ebcf4fe7a0119866ec`
+- `children/index_options/index_options/ledger_studies.py`: `54723df4e58ae1b88888416bfd8e3c1067667415`
+- `children/index_options/index_options/rl_env.py`: `3cecbc8c624f66d89330aa29a82cd1cc0b4792fb`
+- `children/index_options/tests/test_ledger_studies.py`: `7a47324c235b7be4d80d0b9d961879faf2989ccc`
+- `children/index_options/tests/test_rl_env.py`: `80f24de1866b575e32fa2ced33e179a461a4d222`
+- `dskit/pipeline/libs/pyomo.py`: `44353362a89dbd1bc6af2ab2e7c03c35c769828c`
+- `dskit/pipeline/libs/sb3.py`: `a2e9318975dcee9182ac5d218825e215d39a68a9`
+- `tests/pipeline_libs/test_pyomo.py`: `79abdc0b611b3d7f4233499fca48aeadd0cd21a5`
+- `tests/pipeline_libs/test_sb3.py`: `156aed400f3ffaaf60b52444b8d889ef306521cf`
