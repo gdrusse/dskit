@@ -1,33 +1,34 @@
 # RE-ENTRY - index_options
 
-Updated: 2026-11-02 by GPT-6 Luna. ADR-0278 amendment synthetic RL implementation is reviewed and wrapped.
+Updated: 2026-11-02 by GPT-6 Luna. Full-universe sizing is active; comparison remains incomplete.
 
 ## Now
 
-- Reviewed candidate `4d64f3f663446b08934f5fd05facbed5ed4f194d`; evidence checkpoint `188b71409fa9d951346a140a6fefb41935ebd9aa`. Two fresh Luna lenses: C0/M0, one disclosed deferred Minor (public MAD helper accepts nonsimplex inputs).
-- Synthetic only: one-entry-to-expiry PPO smoke, 32 CPU steps, pinned SB3 restore, deterministic paired MIO validation and saved episode artifact. No real-data training, replay, or profitability conclusion.
-- Checks: 996 affected functional passes / 30 skips and four docs checks; focused RL module 24 passed. Baseline purity failure and five lint findings reproduce unchanged on base; no full suite ran.
-- Prior Q2-Q4 reports and memo remain unchanged and are archived below.
+- Implementation candidate `fb84644836f6f3c37ee1dad17a92838cd8317ee8` has two fresh final passes: authority and integration, both C0/M0/Minor0/Nit0. Evidence-only lock: `f699f451fb7bdd170fbb9377ed7b39ed4ed963ed`; reviewed source/test blobs remain unchanged.
+- At the 22:24 UTC check, sizing service `rl-full212-dims-train-shock-20261102-220921.service` remained active (PID 161771), claim `ff49f407-d723-4528-b849-049ca6e95c35`, registry revision 25. The owner pause is saved in `dimensions-plan.json`; its heartbeat is PAUSED. 12 screen-log messages are not 12 completed cohorts. Peak RSS was 4,585,426,944 bytes under the 5 GiB cap.
+- No RL fit or evaluation has completed. The old `max_features=1` discovery reset was infeasible and cannot authorize fitting.
 
 ## Next
 
-- Before empirical work, pin frozen predictive inputs, the method/config and dates, and an approved paired-study packet. Obtain separate owner approval before any real-data fit or comparison.
+- On resume, inspect this service, its logs, and the live claim before dispatch. Do not kill the active process. Verify its attested completion, then review/close the claim and run the remaining five of six sizing configs serially.
+- Queue: `/home/russell/data/index_options/rl-full-universe-20261102/logs/dimensions-plan.json` and the first assignment. The 2019 training import is already done; do not reimport it.
+- After all-date bounds, freeze a meaningful PPO budget, run exact-recipe feasible reset probes, then the nine fits and 27 frozen-policy quarter evaluations.
 
 ## Blocked / owner decisions
 
-- No unresolved Critical or Major findings. The direct `MeanAbsoluteDeviation` nonsimplex-input Minor is deferred for a separately reviewed generic validation fix.
-- No real-data or protected-window use is authorized by this synthetic integration.
+- The saved MIO quarterly comparison is incomplete. Do not merge or push the branch; root will back it up after inspection.
+- Full-universe action exploration and storage remain practical risks. The 128-step smoke is infrastructure evidence only; no learning or profit conclusion is supported.
+- Preserve all 212 names, three methods, seeds 11/29/47, saved forecasts without rescoring, completed-MIO reuse, Q2-Q4 baseline matches and Q4 eligibility-v2.
 
 ## Read first
 
-- [ADR-0278 amendment and review evidence](../../../docs/architecture/decision-log.md).
-- [Synthetic RL pipeline](../configs/rl-entry-synthetic.json).
-- [Prior Q2-Q4 reports](reports/mio-2021q2-q4-walkforward-20261101/README.md).
-- [Prior Q2-Q4 execution memo](memos/2026-11-01-mio-q2-q4-walkforward.md).
-- [Archived previous lane note and delivery context](../../../docs/archive/re-entry/index_options.md).
+- [Dimensions ADR and review lock](../../../docs/architecture/decision-log.md).
+- [Reviewed candidate and packet inventory](../configs/rl-full-universe-20261102/inventory.json).
+- [Saved Q2-Q4 MIO packets](../configs/mio-2021h2-walkforward-20261101/README.md).
+- [Decisioning path](decisioning/path.csv).
 
 ## Do not
 
-- Read sealed or protected market outcomes, run real-data fits/replays, or make a profitability claim.
-- Change locked Path A0001-A0008, other sessions' worktrees, prior reports, source evidence, or live recorders.
-- Fix the deferred MAD Minor inside this reviewed candidate.
+- Stop the active sizing service, launch another job before checking resources and registry, or treat screen messages as completed cohorts.
+- Reimport 2019 data, rescore forecasts, reopen completed MIO results, read protected windows, fit/evaluate before the stated gates, or claim profitability.
+- Change reviewed source/test blobs, the locked path, or another session's worktree.
