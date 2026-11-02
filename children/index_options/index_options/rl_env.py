@@ -8,6 +8,8 @@ source identities are pinned; no broker, provider reader or fit loop lives here.
 import copy
 import hashlib
 import importlib
+import os
+import threading
 from datetime import date
 from pathlib import Path
 
@@ -17,6 +19,9 @@ from dskit.pipeline.libs.sb3 import FiniteDecisionEnv, Sb3EvalEpisodes, Structur
 from index_options.ledger_studies import WeeklyOptionPortfolioStudy
 
 __all__ = ["OptionEntryEnv", "OptionStructuredEntryEnv", "OptionEntryCompare", "OptionQuarterEval"]
+
+
+_AUTHENTICATED_OPTION_DATASETS = threading.local()
 
 
 def _open_option_lifecycle(cohort, method_id):
@@ -398,6 +403,268 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
     PAYLOAD_SCHEMA = "option-structured-cohorts/v2"
     _SOURCES = OptionEntryEnv._SOURCES
 
+    @staticmethod
+    def _authorized_dataset_hashes():
+        hashes = getattr(_AUTHENTICATED_OPTION_DATASETS, "hashes", None)
+        if hashes is None:
+            hashes = set()
+            _AUTHENTICATED_OPTION_DATASETS.hashes = hashes
+        return hashes
+
+    @classmethod
+    def canonical_payload_identity(cls, study, plan, bounded_inputs, phase):
+        """Hash authenticated logical inputs, excluding only an index's physical path."""
+        if phase not in {"training", "evaluation"}:
+            raise ValueError("canonical payload phase must be training or evaluation")
+        logical = dict(bounded_inputs)
+        source_inputs = bounded_inputs.get("inputs", {})
+        logical_inputs = {}
+        for symbol, data in source_inputs.items():
+            logical_data = dict(data)
+            descriptor = data.get("chain_index") if isinstance(data, dict) else None
+            if isinstance(descriptor, dict) and isinstance(descriptor.get("index"), dict):
+                descriptor_copy = dict(descriptor)
+                index_copy = dict(descriptor["index"])
+                index_copy.pop("path", None)
+                descriptor_copy["index"] = index_copy
+                logical_data["chain_index"] = descriptor_copy
+            logical_inputs[symbol] = logical_data
+        logical["inputs"] = logical_inputs
+        domain = copy.deepcopy(study.get("domain", {}))
+        policy = domain.get("policy", {})
+        if isinstance(policy, dict):
+            policy.pop("mode", None)
+            policy.pop("probe_receipt", None)
+        material = {"builder": "OptionStructuredEntryEnv.packet_dataset/v2",
+                    "source_identity": cls.source_identity(), "phase": phase,
+                    "study_domain": domain, "study_code": study.get("code"),
+                    "dependencies": study.get("dependencies"),
+                    "plan_contract": plan.get("contract"),
+                    "plan_study_contract": plan.get("study", {}).get("contract"),
+                    "source_pins": plan.get("source_pins"),
+                    "read_bounds": plan.get("read_bounds"), "bounded_inputs": logical}
+        return value_hash(material)
+
+    @classmethod
+    def packet_dataset(cls, study, plan, permit, provenance, bounded_inputs,
+                       artifact_root, *, phase):
+        """Build a single-payload cohort dataset from one authenticated packet."""
+        from index_options.ledger_studies import MIOPacketStudy
+        from index_options.mio_contract import OptionPolicyStudyContract
+
+        if phase not in {"training", "evaluation"}:
+            raise ValueError("packet dataset phase must be training or evaluation")
+        OptionPolicyStudyContract()._validate_policy(study)
+        policy = study["domain"]["policy"]
+        expected_mode = "evaluation" if phase == "evaluation" else {"probe", "training"}
+        if ((isinstance(expected_mode, str) and policy["mode"] != expected_mode)
+                or (isinstance(expected_mode, set) and policy["mode"] not in expected_mode)):
+            raise ValueError("policy mode does not match packet dataset phase")
+        _, params = MIOPacketStudy.validate_authenticated_intake(
+            study, plan, permit, provenance, bounded_inputs, artifact_root)
+        clocks = copy.deepcopy(bounded_inputs["clocks"])
+        cohorts = []
+        if phase == "training":
+            spec = policy["training"]
+            window, maturity = spec["window"], spec["maturity_end_before"]
+            sessions = [day for day in clocks["sessions"] if day < maturity]
+            entry_dates, seen = [], set()
+            for day in sessions:
+                if window["start"] <= day < window["end_before"]:
+                    key = date.fromisoformat(day).isocalendar()[:2]
+                    if key not in seen:
+                        entry_dates.append(day)
+                        seen.add(key)
+            for index, start in enumerate(entry_dates):
+                end = min(entry_dates[index + 1] if index + 1 < len(entry_dates)
+                          else window["end_before"], window["end_before"])
+                cohort_params = copy.deepcopy(params)
+                cohort_params["bridge"].update(
+                    start=start, end_before=end, protected_end_before=maturity)
+                cohort_clocks = copy.deepcopy(clocks)
+                cohort_clocks.update(entry_start=start, entry_end_before=end,
+                                     tail_end_before=maturity, sessions=sessions)
+                cohort_params["clocks"] = cohort_clocks
+                cohorts.append({"id": "train-" + start, "split": "train",
+                                "params": cohort_params, "payload": "packet",
+                                "entry_window": {"start": start, "end_before": end}})
+            split = {"start": clocks["history_start"], "end_before": maturity}
+            split_name = "train"
+        else:
+            window = policy["evaluation"]["window"]
+            cohort_params = copy.deepcopy(params)
+            cohort_params["bridge"].update(
+                start=window["start"], end_before=window["end_before"],
+                protected_end_before=cohort_params["bridge"]["protected_end_before"])
+            cohort_clocks = copy.deepcopy(clocks)
+            cohort_clocks.update(entry_start=window["start"], entry_end_before=window["end_before"])
+            cohort_params["clocks"] = cohort_clocks
+            cohorts.append({"id": "evaluation-" + window["start"],
+                            "split": policy["evaluation"]["split"],
+                            "params": cohort_params, "payload": "packet",
+                            "entry_window": copy.deepcopy(window)})
+            split = {"start": clocks["history_start"], "end_before": clocks["tail_end_before"]}
+            split_name = policy["evaluation"]["split"]
+        if not cohorts:
+            raise ValueError("no saved decision dates in the declared policy window")
+        canonical = cls.canonical_payload_identity(study, plan, bounded_inputs, phase)
+        context = {"study": copy.deepcopy(study), "plan": copy.deepcopy(plan),
+                   "permit": copy.deepcopy(permit), "provenance": copy.deepcopy(provenance),
+                   "artifact_root": str(artifact_root)}
+        dataset = {
+            "schema": cls.PAYLOAD_SCHEMA, "synthetic": bool(study["domain"]["synthetic"]),
+            "splits": {split_name: split},
+            "payloads": {"packet": {"bounded": bounded_inputs,
+                                     "index_context": context}},
+            "cohorts": cohorts, "canonical_payload_sha256": canonical,
+        }
+        cls._authorized_dataset_hashes().add(value_hash(dataset))
+        return dataset, canonical
+
+    @classmethod
+    def _verify_training_probe(cls, study, plan, training, dataset, canonical):
+        """Bind the reviewed first-request feasibility probe to this exact fit recipe."""
+        from index_options.mio_contract import OptionPolicyStudyContract
+
+        contract = OptionPolicyStudyContract()
+        artifact, evidence = contract._verify_probe_receipt(
+            study, study["domain"]["policy"]["probe_receipt"], training)
+        source_hashes = cls.source_identity()
+        policy = study["domain"]["policy"]
+        spec = policy["training"]
+        plan_identity = value_hash({
+            "contract": plan["study"]["contract"], "code": plan["study"]["code"],
+            "dependencies": plan["study"]["dependencies"],
+            "source_pins": plan["source_pins"], "read_bounds": plan["read_bounds"],
+        })
+        canonical_env = {
+            "env": spec["env"], "env_schema": spec["env_schema"],
+            "env_bounds": spec["env_bounds"], "feature_transform": spec["feature_transform"],
+            "source_hashes": source_hashes, "canonical_payload_sha256": canonical,
+            "algo": spec["algo"], "algo_params": spec["algo_params"],
+            "policy": spec["policy"], "seed": spec["seed"],
+            "total_timesteps": spec["total_timesteps"],
+        }
+        expected = {
+            "probe_schema": "option-policy-feasibility-probe/v1",
+            "scope": "first_training_cohort_reset",
+            "feasible": True,
+            "canonical_payload_sha256": canonical,
+            "effective_env_sha256": value_hash(canonical_env),
+            "source_hashes": source_hashes,
+            "plan_identity_sha256": plan_identity,
+            "source_pins_sha256": value_hash(plan["source_pins"]),
+            "cohort_id": dataset["cohorts"][0]["id"],
+            "entry_window": dataset["cohorts"][0]["entry_window"],
+            "decision_date": dataset["cohorts"][0]["entry_window"]["start"],
+            "reset_completed": True,
+            "step_calls": 0, "learn_calls": 0,
+            "completed_episodes": 0, "total_edits": 0,
+        }
+        if not isinstance(evidence, dict) or any(evidence.get(key) != value
+                                                  for key, value in expected.items()):
+            raise ValueError("reviewed probe evidence differs from the authenticated fit contract")
+        for key in ("candidate_count", "active_candidate_count", "active_coordinate_count",
+                    "max_capacity", "raw_feature_count", "observation_width",
+                    "peak_rss_bytes", "rss_before_bytes", "rss_after_bytes"):
+            if type(evidence.get(key)) is not int or evidence[key] < 0:
+                raise ValueError("reviewed probe dimensions or resource evidence are invalid")
+        bounds = spec["env_bounds"]
+        if (evidence["candidate_count"] < evidence["active_candidate_count"]
+                or evidence["active_coordinate_count"] > bounds["max_coordinates"]
+                or evidence["max_capacity"] > bounds["max_quantity"]
+                or evidence["raw_feature_count"] > bounds["max_features"]
+                or evidence["observation_width"] !=
+                    bounds["max_features"] + 2 * bounds["max_coordinates"] + 3
+                or evidence["peak_rss_bytes"] < max(
+                    evidence["rss_before_bytes"], evidence["rss_after_bytes"])):
+            raise ValueError("reviewed first-cohort probe exceeds the frozen environment bounds")
+        for key in ("screen_digest", "row_counts_sha256"):
+            value = evidence.get(key)
+            if not isinstance(value, str) or len(value) != 64:
+                raise ValueError("reviewed probe source/screen digest is invalid")
+        if (not isinstance(evidence.get("row_counts"), dict)
+                or value_hash(evidence["row_counts"]) != evidence.get("row_counts_sha256")):
+            raise ValueError("reviewed probe row counts are missing or unbound")
+        elapsed = evidence.get("elapsed_seconds")
+        import math
+        if (isinstance(elapsed, bool) or not isinstance(elapsed, (int, float))
+                or not math.isfinite(float(elapsed)) or elapsed < 0
+                or evidence["peak_rss_bytes"] <= 0):
+            raise ValueError("reviewed probe timing evidence is invalid")
+        if not isinstance(artifact, dict) or artifact.get("complete") is not True:
+            raise ValueError("reviewed feasibility probe is incomplete")
+
+    @classmethod
+    def validate_execution_context(cls, ctx, node_params, phase):
+        """Refuse real packet bypasses and SB3 settings outside the study contract."""
+        problems = []
+        if phase not in {"train", "probe", "eval_episodes"}:
+            return ["unsupported option execution phase"]
+        try:
+            env_params = node_params.get("env_params")
+            dataset = env_params.get("dataset") if isinstance(env_params, dict) else None
+            if not isinstance(dataset, dict) or dataset.get("synthetic") is True:
+                return problems
+            if dataset.get("schema") != cls.PAYLOAD_SCHEMA:
+                return ["real option policy requires authenticated v2 packet dataset"]
+            payload = dataset.get("payloads", {}).get("packet")
+            if not isinstance(payload, dict) or set(payload) != {"bounded", "index_context"}:
+                return ["real option policy requires one canonical bounded packet payload"]
+            context = payload.get("index_context")
+            if not isinstance(context, dict) or set(context) != {
+                    "study", "plan", "permit", "provenance", "artifact_root"}:
+                return ["authenticated packet context is incomplete"]
+            from index_options.mio_contract import OptionPolicyStudyContract
+            OptionPolicyStudyContract()._validate_policy(context["study"])
+            expected_root = os.path.realpath(os.path.join(
+                str(ctx.run_dir), "artifacts", "mio-quotes"))
+            if os.path.realpath(context["artifact_root"]) != expected_root:
+                return ["indexed quote root differs from the current execution context"]
+            policy = context["study"]["domain"]["policy"]
+            selected_phase = "evaluation" if phase == "eval_episodes" else "training"
+            expected_mode = {"train": "training", "probe": "probe",
+                             "eval_episodes": "evaluation"}[phase]
+            if policy["mode"] != expected_mode:
+                return ["policy mode does not authorize this execution phase"]
+            expected_dataset, canonical = cls.packet_dataset(
+                context["study"], context["plan"], context["permit"],
+                context["provenance"], payload["bounded"], context["artifact_root"],
+                phase=selected_phase)
+            if dataset != expected_dataset or dataset.get("canonical_payload_sha256") != canonical:
+                problems.append("dataset differs from authenticated canonical packet builder")
+            spec = policy["training"]
+            expected_env = {**spec["env_bounds"],
+                            "feature_transform": spec["feature_transform"],
+                            "dataset": expected_dataset,
+                            "dataset_sha256": value_hash(expected_dataset),
+                            "source_hashes": cls.source_identity(),
+                            "split": "train" if selected_phase == "training"
+                            else policy["evaluation"]["split"]}
+            if selected_phase == "training" and policy["mode"] == "training":
+                cls._verify_training_probe(
+                    context["study"], context["plan"], spec, expected_dataset, canonical)
+            if env_params != expected_env:
+                problems.append("environment settings differ from frozen policy declaration")
+            if phase == "probe":
+                expected_node = None
+            elif selected_phase == "training":
+                expected_node = {"algo": spec["algo"], "algo_params": spec["algo_params"],
+                    "env": spec["env"], "env_params": expected_env, "policy": spec["policy"],
+                    "seed": spec["seed"], "total_timesteps": spec["total_timesteps"]}
+            else:
+                evaluation = policy["evaluation"]
+                expected_node = {"artifact": policy["artifact"]["path"], "algo": spec["algo"],
+                    "policy": spec["policy"], "env": evaluation["env"], "env_params": expected_env,
+                    "split": evaluation["split"], "max_episode_steps": evaluation["max_episode_steps"],
+                    "n_episodes": evaluation["n_episodes"], "seed": evaluation["seed"],
+                    "deterministic": evaluation["deterministic"]}
+            if expected_node is not None and node_params != expected_node:
+                problems.append("SB3 node settings differ from frozen policy declaration")
+        except Exception as exc:
+            problems.append("authenticated option execution context failed: " + str(exc))
+        return problems
+
     @classmethod
     def source_identity(cls):
         """Hash source owners used by the structured adapter."""
@@ -424,7 +691,7 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
                      if key not in {"bridge", "clocks", "selected_pairs"}}
             fixed["bridge_policy"] = {
                 key: copy.deepcopy(value) for key, value in params["bridge"].items()
-                if key not in {"start", "end_before", "protected_end_before"}}
+                if key not in {"start", "end_before", "protected_end_before", "fold"}}
             signatures.append(value_hash(fixed))
         return signatures
 
@@ -464,7 +731,8 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
             raise ValueError("explicit closed structured options parameters required")
         if params["source_hashes"] != self.source_identity():
             raise ValueError("environment source identity mismatch")
-        self.params = copy.deepcopy(params)
+        self.params = {**params, "dataset": params["dataset"],
+                       "source_hashes": copy.deepcopy(params["source_hashes"])}
         self._study = self._steps = self._request = self._completed = None
         self._bound_request = None
         self._bound_mode = False
@@ -473,6 +741,7 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
         self.last_proposal = None
         self.last_proposal_feasible = None
         self.last_proposal_reason = None
+        self._last_request_diagnostics = None
         self._diagnostic_domain_invalid_episodes = 0
         self._diagnostic_executed_cash_episodes = 0
         super().__init__(**{key: params[key] for key in StructuredDecisionEnv._PARAMS})
@@ -482,13 +751,27 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
         if not isinstance(dataset, dict) or type(dataset.get("synthetic")) is not bool:
             raise ValueError("unsupported cohort dataset schema")
         schema = dataset.get("schema")
+        if not dataset["synthetic"] and schema != self.PAYLOAD_SCHEMA:
+            raise ValueError("real option policy cannot use the legacy inline dataset")
         if schema == self.SCHEMA:
             if set(dataset) != {"schema", "synthetic", "splits", "cohorts"}:
                 raise ValueError("invalid v1 cohort dataset fields")
             payloads = None
         elif schema == self.PAYLOAD_SCHEMA:
-            if set(dataset) != {"schema", "synthetic", "splits", "payloads", "cohorts"}:
-                raise ValueError("invalid v2 cohort dataset fields")
+            if "canonical_payload_sha256" in dataset:
+                if set(dataset) != {"schema", "synthetic", "splits", "payloads", "cohorts",
+                                    "canonical_payload_sha256"}:
+                    raise ValueError("invalid canonical v2 cohort dataset fields")
+                if (not isinstance(dataset["canonical_payload_sha256"], str)
+                        or len(dataset["canonical_payload_sha256"]) != 64):
+                    raise ValueError("canonical payload identity required")
+                if not dataset["synthetic"] and value_hash(dataset) not in self._authorized_dataset_hashes():
+                    raise ValueError("real option packet was not authenticated by the packet builder")
+            else:
+                if set(dataset) != {"schema", "synthetic", "splits", "payloads", "cohorts"}:
+                    raise ValueError("invalid v2 cohort dataset fields")
+                if not dataset["synthetic"]:
+                    raise ValueError("real option policy requires canonical authenticated packet data")
             payloads = self._validate_payloads(dataset["payloads"])
         else:
             raise ValueError("unsupported cohort dataset schema")
@@ -503,7 +786,10 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
             if not isinstance(cohort, dict):
                 raise ValueError("invalid cohort identity or fields")
             expected = ({"id", "split", "params", "inputs", "adjustments"}
-                        if payloads is None else {"id", "split", "params", "payload"})
+                        if payloads is None else
+                        ({"id", "split", "params", "payload", "entry_window"}
+                         if "canonical_payload_sha256" in dataset else
+                         {"id", "split", "params", "payload"}))
             if (set(cohort) != expected or not isinstance(cohort.get("id"), str)
                     or not cohort["id"] or cohort["id"] in ids
                     or not isinstance(cohort.get("split"), str)
@@ -511,7 +797,8 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
                     or not isinstance(cohort.get("params"), dict)):
                 raise ValueError("invalid cohort identity or fields")
             ids.add(cohort["id"])
-            resolved = cohort if payloads is None else self._resolve_payload_cohort(cohort, payloads)
+            resolved = cohort if payloads is None else self._resolve_payload_cohort(
+                cohort, payloads, canonical="canonical_payload_sha256" in dataset)
             if cohort["split"] == split:
                 indexed = (payloads is not None
                            and payloads[cohort["payload"]]["index_context"] is not None)
@@ -532,22 +819,41 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
         from index_options.ledger_studies import MIOPacketStudy
 
         for payload_id, payload in payloads.items():
-            if (not isinstance(payload_id, str) or not payload_id or not isinstance(payload, dict)
-                    or set(payload) != {"inputs", "adjustments", "index_context"}
-                    or not isinstance(payload["inputs"], dict)
-                    or not isinstance(payload["adjustments"], list)):
+            if not isinstance(payload_id, str) or not payload_id or not isinstance(payload, dict):
                 raise ValueError("invalid shared payload fields")
+            canonical = set(payload) == {"bounded", "index_context"}
+            if canonical:
+                bounded = payload["bounded"]
+                if (not isinstance(bounded, dict) or set(bounded) - {"inputs", "clocks", "adjustments"}
+                        or "inputs" not in bounded or "clocks" not in bounded):
+                    raise ValueError("invalid canonical bounded packet")
+                inputs = bounded["inputs"]
+                adjustments = bounded.get("adjustments", [])
+            else:
+                if (set(payload) != {"inputs", "adjustments", "index_context"}
+                        or not isinstance(payload["inputs"], dict)
+                        or not isinstance(payload["adjustments"], list)):
+                    raise ValueError("invalid shared payload fields")
+                inputs, adjustments = payload["inputs"], payload["adjustments"]
+            if not isinstance(inputs, dict) or not isinstance(adjustments, list):
+                raise ValueError("invalid shared payload rows")
             context = payload["index_context"]
             indexed = context is not None
             if indexed:
-                if (not isinstance(context, dict)
-                        or set(context) != {"study", "plan", "artifact_root"}
+                expected_context = ({"study", "plan", "permit", "provenance", "artifact_root"}
+                                    if canonical else {"study", "plan", "artifact_root"})
+                if (not isinstance(context, dict) or set(context) != expected_context
                         or not isinstance(context["artifact_root"], str)):
                     raise ValueError("invalid indexed payload context")
-                MIOPacketStudy.validate_indexed_inputs(
-                    context["study"], {"inputs": payload["inputs"]},
-                    context["plan"], context["artifact_root"])
-            for symbol, data in payload["inputs"].items():
+                if canonical:
+                    MIOPacketStudy.validate_authenticated_intake(
+                        context["study"], context["plan"], context["permit"],
+                        context["provenance"], bounded, context["artifact_root"])
+                else:
+                    MIOPacketStudy.validate_indexed_inputs(
+                        context["study"], {"inputs": inputs},
+                        context["plan"], context["artifact_root"])
+            for symbol, data in inputs.items():
                 expected = ({"forecasts", "contexts", "bars", "chain_index"}
                             if indexed else {"forecasts", "contexts", "bars", "chain"})
                 if not isinstance(symbol, str) or not isinstance(data, dict) or set(data) != expected:
@@ -562,16 +868,39 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
         return payloads
 
     @staticmethod
-    def _resolve_payload_cohort(cohort, payloads):
+    def _entry_window_inputs(inputs, window):
+        """Create the weekly view expected by the ledger without altering the pinned payload."""
+        narrowed = {}
+        for symbol, data in inputs.items():
+            view = dict(data)
+            view["forecasts"] = [row for row in data["forecasts"]
+                                 if window["start"] <= row["quote_date"] < window["end_before"]]
+            view["contexts"] = [row for row in data["contexts"]
+                                if window["start"] <= row["quote_date"] < window["end_before"]]
+            descriptor = data.get("chain_index")
+            if descriptor is not None:
+                descriptor = copy.deepcopy(descriptor)
+                expiries = sorted({row["expiry"] for row in view["forecasts"]})
+                descriptor["forecast_expiries"] = expiries
+                descriptor["expiry_inventory_sha256"] = value_hash(expiries)
+                view["chain_index"] = descriptor
+            narrowed[symbol] = view
+        return narrowed
+
+    @staticmethod
+    def _resolve_payload_cohort(cohort, payloads, *, canonical=False):
         """Resolve a cohort without duplicating the full symbol payload."""
         payload_id = cohort["payload"]
         if not isinstance(payload_id, str) or payload_id not in payloads:
             raise ValueError("cohort references unknown shared payload")
         payload = payloads[payload_id]
+        bounded = payload["bounded"] if canonical else None
         return {"id": cohort["id"], "split": cohort["split"],
                 "params": copy.deepcopy(cohort["params"]),
-                "inputs": payload["inputs"], "adjustments": payload["adjustments"],
-                "payload_id": payload_id, "index_context": payload["index_context"]}
+                "inputs": bounded["inputs"] if canonical else payload["inputs"],
+                "adjustments": bounded.get("adjustments", []) if canonical else payload["adjustments"],
+                "payload_id": payload_id, "index_context": payload["index_context"],
+                **({"entry_window": copy.deepcopy(cohort["entry_window"])} if canonical else {})}
 
     @staticmethod
     def _validate_structured_bounds(cohort, window, *, indexed=False):
@@ -585,6 +914,14 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
             raise ValueError("one paired method and supported candidate screen required")
         lo, hi = window["start"], window["end_before"]
         bridge = params["bridge"]
+        entry_window = cohort.get("entry_window")
+        if entry_window is not None and (
+                not isinstance(entry_window, dict)
+                or set(entry_window) != {"start", "end_before"}
+                or not lo <= entry_window["start"] < entry_window["end_before"] <= hi
+                or bridge["start"] != entry_window["start"]
+                or bridge["end_before"] != entry_window["end_before"]):
+            raise ValueError("cohort entry window outside requested split")
         if not lo <= bridge["start"] < bridge["end_before"] <= hi:
             raise ValueError("cohort outside requested split")
         if not bridge["end_before"] <= bridge["protected_end_before"] <= OptionEntryEnv.SEALED_START:
@@ -673,6 +1010,9 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
         self._cohort_override = None
         spec = self._cohorts[index]
         self._cohort = {**spec, "params": copy.deepcopy(spec["params"])}
+        if spec.get("entry_window") is not None:
+            self._cohort["inputs"] = self._entry_window_inputs(
+                spec["inputs"], spec["entry_window"])
         self.last_result = self.last_info = None
         self._study, self._steps = _open_option_lifecycle(
             self._cohort, self._cohort["params"]["methods"][0]["id"])
@@ -698,6 +1038,56 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
         self._request_capacities = [0]
         self._request_features = [0.]
 
+    def last_request_diagnostics(self):
+        """Return a quantity-free snapshot of the most recently prepared request."""
+        return copy.deepcopy(self._last_request_diagnostics)
+
+    @staticmethod
+    def _raw_feature_count(request):
+        """Count the legacy numeric encoding without allocating its dense feature list."""
+        def shape_count(value):
+            if not isinstance(value, (list, tuple)):
+                return (), 1
+            if not value:
+                return (0,), 0
+            child_shape, child_size = shape_count(value[0])
+            for child in value[1:]:
+                if shape_count(child)[0] != child_shape:
+                    raise ValueError("ragged structured feature array")
+            return (len(value),) + child_shape, len(value) * child_size
+
+        def array_cost(value):
+            shape, size = shape_count(value)
+            return 1 + len(shape) + size
+
+        program, metadata, account = request["program"], request["metadata"], request["account"]
+        count = 6 + 1
+        for group, meta in zip(program["groups"], metadata):
+            count += 3
+            for key in ("grid", "masses", "credit", "losses", "capacity", "exclusive",
+                        "reserve_rows"):
+                count += array_cost(group[key])
+            count += 1
+            for row in group["linear_rows"]:
+                count += array_cost(row["coefficients"]) + 1
+            count += array_cost([ord(c) for c in meta["symbol"]])
+            count += 3
+            count += array_cost([[leg["right"] == "call", leg["sign"], leg["strike"],
+                                  leg["price"], leg["capacity"]] for leg in meta["items"]])
+        count += 1
+        index = {group["id"]: i for i, group in enumerate(program["groups"])}
+        for cap in program["caps"]:
+            count += array_cost([index[key] for key in cap["groups"]]) + 1
+        rows = program.get("joint_rows", [])
+        count += 1
+        for row in rows:
+            count += 2
+            for key, coefficients in row["terms"].items():
+                count += 1 + array_cost(coefficients)
+        # _features receives an empty action catalogue; only its count marker is encoded.
+        count += 1
+        return count
+
     def _configure_request(self, request):
         program = request["program"]
         solver = TransportPortfolioSolve("reference", self._cohort["params"]["solver"])
@@ -712,9 +1102,27 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
                     coordinate_map.append((group_index, leg_index))
             ranges.append((start, len(capacities)))
         self._coordinate_count = len(capacities)
+        self._last_request_diagnostics = {
+            "cohort_id": self._cohort.get("id"),
+            "decision_date": request.get("date"),
+            "candidate_count": len(program["groups"]),
+            "active_candidate_count": len(active),
+            "active_coordinate_count": len(capacities),
+            "max_capacity": max(capacities, default=0),
+            "raw_feature_count": None,
+            "screen_digest": value_hash(self._screen),
+            "screen": copy.deepcopy(self._screen),
+        }
+        active_request = self._active_feature_request(request, active)
+        raw_feature_count = (self._raw_feature_count(active_request)
+                             + 2 * len(self._screen["groups"]))
+        self._last_request_diagnostics["raw_feature_count"] = raw_feature_count
         if not capacities:
             self._configure_empty_request()
+            self._last_request_diagnostics["raw_feature_count"] = len(self._request_features)
             return
+        if raw_feature_count > self.max_features:
+            raise ValueError("request exceeds max_features")
         if len(capacities) > self.max_coordinates:
             raise ValueError("request exceeds max_coordinates")
         if any(value > self.max_quantity for value in capacities):
@@ -724,11 +1132,12 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
         self._request_capacities = capacities
         self._scorer = TransportActionScore(program, {
             "parity_tolerance": self._cohort["params"]["solver"]["parity_tolerance"]})
-        active_request = self._active_feature_request(request, active)
         features = OptionEntryEnv._features(active_request, [])
         for row in self._screen["groups"]:
             features.extend([float(row["active"]),
                              0. if row["lp_bound"] is None else float(row["lp_bound"])])
+        if len(features) != raw_feature_count:
+            raise ValueError("structured feature count differs from its prepared encoding")
         self._request_features = features
 
     @staticmethod

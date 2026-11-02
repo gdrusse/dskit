@@ -117,6 +117,9 @@ def test_mio_packet_intake_helper_authenticates_and_builds_study_params(tmp_path
     from dskit.pipeline.base import value_hash
 
     study, plan, bounded, _ = _indexed_packet_inputs(tmp_path)
+    study["registry"] = {"path": str(tmp_path / "registry.sqlite"),
+                         "id": "00000000-0000-4000-8000-000000000001",
+                         "domain": "synthetic:test"}
     study["domain"]["params"] = {"symbols": ["X"], "methods": []}
     study["domain"]["pairs"] = [{"id": "pair"}]
     provenance = {"inputs_sha256": value_hash(bounded), "plan_sha256": plan["sha256"],
@@ -128,8 +131,11 @@ def test_mio_packet_intake_helper_authenticates_and_builds_study_params(tmp_path
             assert observed_plan == plan and observed_permit == permit
             return {"inputs": value_hash(provenance)}
     registry = Registry()
+    from dskit.pipeline.study_protocol import StudyContract
+    import dskit.pipeline.study_protocol as protocol
     monkeypatch.setattr(MIOPacketStudy, "plan", lambda self: plan)
-    monkeypatch.setattr(MIOPacketStudy, "registry", lambda self: registry)
+    monkeypatch.setattr(StudyContract, "verify_plan", staticmethod(lambda study, supplied: plan))
+    monkeypatch.setattr(protocol, "ExposureRegistry", lambda config: registry)
     node = MIOPacketStudy("study", {"study": study})
     validated = node.validate_intake(
         SimpleNamespace(run_dir=str(tmp_path)), {
@@ -139,6 +145,83 @@ def test_mio_packet_intake_helper_authenticates_and_builds_study_params(tmp_path
         {"symbols": ["X"], "methods": [], "selected_pairs": [{"id": "pair"}],
          "clocks": bounded["clocks"]})
 
+
+
+
+def _authenticated_intake_fixture(tmp_path, monkeypatch):
+    from dskit.pipeline.base import value_hash
+    from dskit.pipeline.study_protocol import StudyContract
+    import dskit.pipeline.study_protocol as protocol
+
+    study, plan, bounded, _ = _indexed_packet_inputs(tmp_path)
+    study["registry"] = {"path": str(tmp_path / "registry.sqlite"),
+                         "id": "00000000-0000-4000-8000-000000000001",
+                         "domain": "synthetic:test"}
+    study["domain"]["params"].update(methods=[{"id": "m1"}])
+    study["domain"]["pairs"] = [{"id": "pair"}]
+    provenance = {"inputs_sha256": value_hash(bounded), "plan_sha256": plan["sha256"],
+                  "source_pins_sha256": value_hash(plan["source_pins"]),
+                  "read_bounds": plan["read_bounds"]}
+    permit = {"id": "active-permit"}
+
+    class Registry:
+        def verify(self, observed_plan, observed_permit):
+            assert observed_plan == plan
+            assert observed_permit == permit
+            return {"inputs": value_hash(provenance)}
+
+    registry = Registry()
+    monkeypatch.setattr(StudyContract, "verify_plan", staticmethod(lambda observed, supplied: plan))
+    monkeypatch.setattr(protocol, "ExposureRegistry", lambda config: registry)
+    return study, plan, permit, provenance, bounded, registry
+
+
+def test_authenticated_intake_rebuilds_plan_verifies_active_claim_and_returns_canonical_values(
+    tmp_path, monkeypatch
+):
+    study, plan, permit, provenance, bounded, registry = _authenticated_intake_fixture(
+        tmp_path, monkeypatch)
+
+    verified_registry, params = MIOPacketStudy.validate_authenticated_intake(
+        study, plan, permit, provenance, bounded,
+        tmp_path / "artifacts" / "mio-quotes")
+
+    assert verified_registry is registry
+    assert params == {"symbols": ["X"], "methods": [{"id": "m1"}],
+                      "selected_pairs": [{"id": "pair"}],
+                      "clocks": bounded["clocks"]}
+
+
+@pytest.mark.parametrize("mutation", ["bounded_hash", "provenance_claim", "stale_permit", "plan_drift"])
+def test_authenticated_intake_rejects_forged_or_stale_evidence(tmp_path, monkeypatch, mutation):
+    from dskit.pipeline.base import value_hash
+    from dskit.pipeline.study_protocol import StudyContract
+
+    study, plan, permit, provenance, bounded, _registry = _authenticated_intake_fixture(
+        tmp_path, monkeypatch)
+    if mutation == "bounded_hash":
+        bounded["clocks"]["sessions"].append("2024-03-04")
+    elif mutation in {"provenance_claim", "stale_permit"}:
+        from dskit.pipeline import study_protocol as protocol
+        class WrongClaimRegistry:
+            def verify(self, observed_plan, observed_permit):
+                if mutation == "stale_permit":
+                    raise ValueError("inactive permit")
+                return {"inputs": value_hash({"different": True})}
+        wrong = WrongClaimRegistry()
+        monkeypatch.setattr(protocol, "ExposureRegistry", lambda config: wrong)
+        if mutation == "provenance_claim":
+            provenance["inputs_sha256"] = "f" * 64
+    else:
+        monkeypatch.setattr(
+            StudyContract, "verify_plan",
+            staticmethod(lambda observed, supplied: (_ for _ in ()).throw(ValueError("stale plan"))),
+        )
+
+    with pytest.raises(ValueError):
+        MIOPacketStudy.validate_authenticated_intake(
+            study, plan, permit, provenance, bounded,
+            tmp_path / "artifacts" / "mio-quotes")
 
 
 

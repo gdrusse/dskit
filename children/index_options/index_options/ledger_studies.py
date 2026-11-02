@@ -2460,6 +2460,43 @@ class MIOPacketStudy(StudyNode):
             raise ValueError("invalid indexed quote descriptor") from exc
 
     @staticmethod
+    def validate_authenticated_intake(study, plan, permit, provenance, bounded_inputs,
+                                      artifact_root):
+        """Authenticate exact packet inputs before a policy adapter consumes them.
+
+        Rebuild the current study contract (including source, code and dependency
+        pins), verify the permit against the active registry claim, bind provenance
+        to that claim, then apply the same split/index checks as the MIO runner.
+        This is metadata validation only; quote-index owners still verify bytes
+        when opened for reads.
+        """
+        from dskit.pipeline.base import value_hash
+        from dskit.pipeline.study_protocol import ExposureRegistry, StudyContract
+
+        plan = StudyContract.verify_plan(study, plan)
+        registry = ExposureRegistry(study["registry"])
+        claim = registry.verify(plan, permit)
+        if (claim["inputs"] != value_hash(provenance)
+                or provenance["inputs_sha256"] != value_hash(bounded_inputs)
+                or provenance["plan_sha256"] != plan["sha256"]
+                or provenance["source_pins_sha256"] != value_hash(plan["source_pins"])
+                or provenance["read_bounds"] != plan["read_bounds"]):
+            raise ValueError("unverified bounded intake")
+        domain = study["domain"]
+        if "corporate_actions" in domain["sources"] and (
+                provenance.get("adjustments_sha256") != value_hash(bounded_inputs.get("adjustments"))
+                or not bounded_inputs.get("adjustments")):
+            raise ValueError("unverified split event intake")
+        if "corporate_actions" not in domain["sources"] and (
+                "adjustments" in bounded_inputs or "adjustments_sha256" in provenance):
+            raise ValueError("unbound split event intake")
+        MIOPacketStudy.validate_indexed_inputs(
+            study, bounded_inputs, plan, artifact_root)
+        params = {**domain["params"], "selected_pairs": domain["pairs"],
+                  "clocks": bounded_inputs["clocks"]}
+        return registry, params
+
+    @staticmethod
     def _validate_indexed_inputs(study, bounded, plan, artifact_root):
         from dskit.pipeline.base import value_hash
         import os
@@ -2504,30 +2541,14 @@ class MIOPacketStudy(StudyNode):
 
     def validate_intake(self, ctx, inputs):
         """Authenticate a packet's bounded intake and return canonical run inputs."""
-        from dskit.pipeline.base import value_hash
         import os
 
-        plan, registry = self.plan(), self.registry()
+        plan = self.plan()
         permit, bounded, provenance = inputs["permit"], inputs["bounded_inputs"], inputs["provenance"]
-        claim = registry.verify(plan, permit)
-        if (claim["inputs"] != value_hash(provenance)
-                or provenance["inputs_sha256"] != value_hash(bounded)
-                or provenance["plan_sha256"] != plan["sha256"]
-                or provenance["source_pins_sha256"] != value_hash(plan["source_pins"])
-                or provenance["read_bounds"] != plan["read_bounds"]):
-            raise ValueError("unverified bounded intake")
-        d = self.params["study"]["domain"]
-        if "corporate_actions" in d["sources"] and (
-                provenance.get("adjustments_sha256") != value_hash(bounded.get("adjustments"))
-                or not bounded.get("adjustments")):
-            raise ValueError("unverified split event intake")
-        if "corporate_actions" not in d["sources"] and (
-                "adjustments" in bounded or "adjustments_sha256" in provenance):
-            raise ValueError("unbound split event intake")
         artifact_root = (os.path.realpath(os.path.join(ctx.run_dir, "artifacts", "mio-quotes"))
                          if ctx is not None and getattr(ctx, "run_dir", None) else None)
-        self.validate_indexed_inputs(self.params["study"], bounded, plan, artifact_root)
-        params = {**d["params"], "selected_pairs": d["pairs"], "clocks": bounded["clocks"]}
+        registry, params = self.validate_authenticated_intake(
+            self.params["study"], plan, permit, provenance, bounded, artifact_root)
         return plan, registry, permit, bounded, provenance, params
 
     def run(self, ctx, inputs):

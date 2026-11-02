@@ -537,6 +537,21 @@ def _owner_selected_study(tmp_path, monkeypatch, *, invalid=None):
     return study
 
 
+def test_policy_training_accepts_only_subset_of_authenticated_full2019_receipt(tmp_path, monkeypatch):
+    from index_options.mio_contract import OptionPolicyStudyContract
+
+    study = _owner_selected_study(tmp_path, monkeypatch)
+    study["domain"]["policy"] = {"mode": "training"}
+    study["packets"][0].update(start="2019-01-02", end_before="2019-10-01")
+    receipt = OptionPolicyStudyContract.selection(study)
+    assert receipt["development_window"] == {
+        "start": "2019-01-02", "end_before": "2020-01-01"}
+
+    study["packets"][0].update(start="2018-12-31", end_before="2019-10-01")
+    with pytest.raises(ValueError, match="bounded subset"):
+        OptionPolicyStudyContract.selection(study)
+
+
 def test_owner_selected_saved_halves_receipt_binds_producers_and_preparation(tmp_path, monkeypatch):
     from index_options.mio_contract import MIOStudyContract
     study = _owner_selected_study(tmp_path, monkeypatch)
@@ -1365,7 +1380,7 @@ def test_split_packet_runs_and_replays_with_pinned_source(study, tmp_path, caplo
     assert any('"type":"replay_verified"' in record.getMessage() for record in caplog.records)
 
 
-def test_policy_contract_closes_training_without_mio_solver_claim(study):
+def test_policy_contract_requires_reviewed_probe_before_training(study):
     from index_options.mio_contract import OptionPolicyStudyContract
     from index_options.rl_env import OptionStructuredEntryEnv
 
@@ -1373,7 +1388,7 @@ def test_policy_contract_closes_training_without_mio_solver_claim(study):
     method_id = study["domain"]["params"]["methods"][0]["id"]
     study["domain"]["policy"] = {
         "mode": "training", "method_id": method_id, "evaluation": None,
-        "artifact": None, "baselines": [],
+        "artifact": None, "baselines": [], "probe_receipt": None,
         "training": {
             "window": {"start": packet["start"], "end_before": packet["end_before"]},
             "maturity_end_before": packet["end_before"],
@@ -1384,28 +1399,13 @@ def test_policy_contract_closes_training_without_mio_solver_claim(study):
             "policy": "MlpPolicy", "seed": 7, "total_timesteps": 12,
         },
     }
-    contract = OptionPolicyStudyContract()
-    contract._validate_policy(study)
-    resolved = contract.resolve(study)
-    assert resolved["read_bounds"]["forecasts"] == {
-        "start": packet["start"], "end_before": packet["end_before"]}
-    provenance = {"inputs_sha256": "intake-digest", "source_pins_sha256": "pinned-sources"}
-    result = [{"id": method_id, "status": "completed",
-               "artifact": {"path": "/pinned/model.zip", "state_hash": "a" * 64},
-               "training": {"seed": 7, "total_timesteps": 12, "data_sha256": "b" * 64}}]
-    audit = {"mode": "training", "method_ids": [method_id], "inputs_sha256": "intake-digest",
-             "source_pins_sha256": "pinned-sources", "artifact_state_hash": "a" * 64,
-             "data_sha256": "b" * 64,
-             "runtime_checks": {"completed_episode": True, "finite_rewards": True,
-                                "finite_diagnostics": True}}
-    assert contract.validate_result(study, result, audit, provenance)
+    with pytest.raises(ValueError, match="attested feasibility probe receipt"):
+        OptionPolicyStudyContract()._validate_policy(study)
+    study["domain"]["policy"]["mode"] = "probe"
+    study["domain"]["policy"]["training"]["maturity_end_before"] = "2019-12-31"
+    with pytest.raises(ValueError, match="exceed selected packet read tail"):
+        OptionPolicyStudyContract()._validate_policy(study)
 
-    bad_audit = dict(audit, method_ids=[method_id, "extra"])
-    with pytest.raises(ValueError, match="method cohort"):
-        contract.validate_result(study, result, bad_audit, provenance)
-    bad_sources = dict(audit, source_pins_sha256="different")
-    with pytest.raises(ValueError, match="input identity"):
-        contract.validate_result(study, result, bad_sources, provenance)
 
 
 def test_policy_contract_requires_settled_evaluation_result_shape(study):
@@ -1438,7 +1438,8 @@ def test_policy_packet_train_attested_eval_replay_and_close(study, tmp_path, mon
     method_id = study["domain"]["params"]["methods"][0]["id"]
     packet_for = {p["id"]: p for p in study["packets"]}
 
-    def configured(selected, registry_path, *, mode, artifact=None, baselines=None):
+    def configured(selected, registry_path, *, mode, artifact=None, baselines=None,
+                   probe_receipt=None):
         doc = copy.deepcopy(study)
         doc["contract"] = "index_options.mio_contract:OptionPolicyStudyContract" if mode != "baseline" else "index_options.mio_contract:MIOStudyContract"
         doc["selected_packet"] = selected
@@ -1460,9 +1461,14 @@ def test_policy_packet_train_attested_eval_replay_and_close(study, tmp_path, mon
         if mode == "baseline":
             doc["domain"].pop("policy", None)
             return doc
-        if mode == "training":
+        if mode == "probe":
+            policy = {"mode": "probe", "method_id": method_id, "training": training,
+                      "evaluation": None, "artifact": None, "baselines": [],
+                      "probe_receipt": None}
+        elif mode == "training":
             policy = {"mode": "training", "method_id": method_id, "training": training,
-                      "evaluation": None, "artifact": None, "baselines": []}
+                      "evaluation": None, "artifact": None, "baselines": [],
+                      "probe_receipt": probe_receipt}
         else:
             policy = {"mode": "evaluation", "method_id": method_id, "training": training,
                 "evaluation": {"window": {"start": packet["start"],
@@ -1471,15 +1477,22 @@ def test_policy_packet_train_attested_eval_replay_and_close(study, tmp_path, mon
                     "max_episode_steps": 4, "n_episodes": 1, "seed": 17,
                     "feature_transform": training["feature_transform"],
                     "env_bounds": training["env_bounds"]},
-                "artifact": artifact, "baselines": baselines}
+                "artifact": artifact, "baselines": baselines,
+                "probe_receipt": probe_receipt}
         doc["domain"]["policy"] = policy
         return doc
 
-    def run_close(doc, dirname, node_name):
+    def run_close(doc, dirname, node_name, *, review=False):
         registry = ExposureRegistry(doc["registry"])
-        registry.initialize(doc["packets"],
-            [{"start": "2018-01-01", "end_before": "2020-01-01",
-              "evidence": "synthetic integration fixture"}], "2021-01-01")
+        try:
+            registry.snapshot()
+            initialized = True
+        except (OSError, ValueError):
+            initialized = False
+        if not initialized:
+            registry.initialize(doc["packets"],
+                [{"start": "2018-01-01", "end_before": "2020-01-01",
+                  "evidence": "synthetic integration fixture"}], "2021-01-01")
         plan = StudyContract.build(doc)
         assert plan["runnable"], plan
         claim = registry.freeze(plan)
@@ -1502,11 +1515,27 @@ def test_policy_packet_train_attested_eval_replay_and_close(study, tmp_path, mon
         manifest = RunAttestation(ran.run_dir).attested_output("close", "receipt", pipeline.hash)
         assert manifest is not None
         receipt_data = resolve_json_artifact(ran.run_dir, manifest)
-        assert receipt_data["complete"] is True
-        return pipeline, ran, receipt_data
+        assert receipt_data["complete"] is True, {
+            "results": receipt_data.get("results"), "audit": receipt_data.get("audit")}
+        receipt_ref = {"run_dir": str(ran.run_dir), "document_hash": pipeline.hash,
+                       "node": "close", "port": "receipt"}
+        if review:
+            registry.dispose(doc["selected_packet"], "review",
+                             "synthetic first-request feasibility evidence reviewed",
+                             receipt_ref)
+        return pipeline, ran, receipt_data, receipt_ref
 
-    train_doc = configured("dev", tmp_path/"train-registry.sqlite", mode="training")
-    train_pipeline, train_run, train_close = run_close(
+    registry_path = tmp_path/"train-registry.sqlite"
+    probe_doc = configured("dev", registry_path, mode="probe")
+    probe_pipeline, probe_run, probe_close, probe_receipt = run_close(
+        probe_doc, "policy-probe", "OptionPolicyFeasibilityProbePacket", review=True)
+    assert probe_close["results"][0]["probe"]["feasible"] is True
+    assert probe_close["results"][0]["probe"]["step_calls"] == 0
+    assert probe_close["results"][0]["probe"]["learn_calls"] == 0
+
+    train_doc = configured("dev", registry_path, mode="training",
+                           probe_receipt=probe_receipt)
+    train_pipeline, train_run, train_close, _ = run_close(
         train_doc, "policy-train", "OptionPolicyTrainPacket")
     assert train_close["results"][0]["training"]["completed_episodes"] > 0
     policy_artifact = train_close["results"][0]["artifact"]
@@ -1521,7 +1550,7 @@ def test_policy_packet_train_attested_eval_replay_and_close(study, tmp_path, mon
         {**copy.deepcopy(baseline_method), "id": "alternative_a"},
         {**copy.deepcopy(baseline_method), "id": "alternative_b"},
     ]
-    baseline_pipeline, baseline_run, baseline_close = run_close(
+    baseline_pipeline, baseline_run, baseline_close, _ = run_close(
         baseline_doc, "policy-baseline", "MIOPacketStudy")
     baseline_receipt = {"run_dir": str(baseline_run.run_dir),
         "document_hash": baseline_pipeline.hash, "node": "close", "port": "receipt",
@@ -1529,8 +1558,9 @@ def test_policy_packet_train_attested_eval_replay_and_close(study, tmp_path, mon
     artifact_ref = {**policy_artifact, "training_receipt": training_receipt}
 
     eval_doc = configured("policy-eval", tmp_path/"eval-registry.sqlite", mode="evaluation",
-                          artifact=artifact_ref, baselines=[baseline_receipt])
-    eval_pipeline, eval_run, eval_close = run_close(
+                          artifact=artifact_ref, baselines=[baseline_receipt],
+                          probe_receipt=probe_receipt)
+    eval_pipeline, eval_run, eval_close, _ = run_close(
         eval_doc, "policy-eval", "OptionPolicyEvalPacket")
     result = eval_close["results"][0]
     assert result["replay_parity"] is True

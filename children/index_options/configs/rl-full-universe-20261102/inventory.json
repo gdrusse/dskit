@@ -369,7 +369,7 @@
     ],
     "registry_notes": "Verified read-only SQLite snapshot: revision 16, active claim null, frontier 3. This is the active registry for new extension packets. Existing Q2/Q3/Q4 development packets remain in schedule; the eligible Q4 baseline receipt is sourced from a separate registry but matches the Q4 window exactly. The previously closed MIO 2019 full-year receipt is provenance/prior-exposure evidence only, not a new training packet or active registry.",
     "planned_lifecycle": "Append exactly one 2019-01-02..2019-10-01 policy-training development packet after the current Q4 packet using StudyProtocolControl import_development with the old attested 2019 close receipt as prior-exposure evidence and finalized read_bounds. Then serialize fresh claims per method/seed against that training packet; for each claim bind inputs and execution, train, close, publish and dispose/review before starting the next. After all training packets close, serialize fresh claims for each method/seed against each existing Q2/Q3/Q4 development packet, each with its exact attested quarter baseline receipt and matching window. Preserve all old closed claims and the full Q4 eligibility receipt identity; never substitute or rewrite the old Q4 complete claim.",
-    "workflow": "Inventory only; no registry action has run. Re-read and verify revision/frontier before any authorized packet action, then follow the serialized plan above. Do not append an overlapping 2019 packet to the historical primary MIO registry."
+    "workflow": "Inventory only; no registry action has run. Re-read and verify revision/frontier before any authorized packet action, then follow the serialized plan above. Append the bounded 2019 policy packet only to the existing coverage-v2 registry; do not add an overlapping packet to the historical primary MIO registry."
   },
   "requested_universe": {
     "policy": "Preserve all 212 requested names; disclose source availability and approved quarter eligibility exclusions.",
@@ -448,5 +448,120 @@
       }
     },
     "training_mio_receipt": "Already-exposed development packet dev_2019_full_year_weekly in the historical MIO registry; prior exposure evidence only. New 2019 Jan-Oct policy packet must be imported into the active coverage-v2 registry using its attested close receipt and finalized read_bounds."
+  },
+  "source_metadata_preflight": {
+    "status": "metadata-only StudyContract.build succeeded; no registry mutation, saved config, or market-payload read",
+    "window": {
+      "start": "2019-01-02",
+      "end_before": "2019-10-01"
+    },
+    "maturity_end_before": "2019-12-07",
+    "requested_symbols": 212,
+    "runnable": true,
+    "read_bounds": {
+      "forecasts_contexts": [
+        "2019-01-02",
+        "2019-10-01"
+      ],
+      "chain": [
+        "2019-01-02",
+        "2019-12-07"
+      ],
+      "bars_sessions": [
+        "2018-10-03",
+        "2019-12-07"
+      ]
+    },
+    "code_pins": 271,
+    "dependencies": "current declared dependency pins",
+    "meaning": "Source declaration and read-bound compatibility only; this is not data preparation, shape, feasibility, or runtime evidence."
+  },
+  "probe_gate": {
+    "status": "required before each fit; no empirical-data probe has run",
+    "claim_lifecycle": "Fresh authenticated development claim, one reset-only first-training-cohort probe, attested close, publication and review; a fit uses its own fresh claim. Permit/claim UUIDs, provenance and run-local artifact roots remain claim-local and are authenticated independently.",
+    "stable_content_identity": "canonical_payload_sha256 normalizes only the chain-index physical path and policy mode/probe_receipt; it binds logical bounded inputs, builder source identity, study code/dependencies, plan contract, source pins and read bounds. effective_env_sha256 binds the declared training environment, schema, bounds, transform, algorithm/parameters, policy, seed, timestep budget and canonical payload hash.",
+    "claim_local_identity": "dataset_sha256 is verified against the same probe close audit; it is not compared across fresh claims because the v2 dataset carries claim-local permit/provenance/artifact-root context.",
+    "evidence_schema": "option-policy-feasibility-probe/v1",
+    "evidence_fields": [
+      "probe_schema",
+      "feasible",
+      "scope",
+      "canonical_payload_sha256",
+      "dataset_sha256",
+      "effective_env_sha256",
+      "source_hashes",
+      "source_pins_sha256",
+      "plan_identity_sha256",
+      "cohort_id",
+      "entry_window",
+      "decision_date",
+      "candidate_count",
+      "active_candidate_count",
+      "active_coordinate_count",
+      "max_capacity",
+      "raw_feature_count",
+      "observation_width",
+      "screen_digest",
+      "row_counts",
+      "row_counts_sha256",
+      "reset_completed",
+      "step_calls",
+      "learn_calls",
+      "completed_episodes",
+      "total_edits",
+      "elapsed_seconds",
+      "rss_before_bytes",
+      "rss_after_bytes",
+      "peak_rss_bytes",
+      "diagnostics"
+    ],
+    "acceptance": "Exactly one completed feasible first-cohort reset; zero step/learn calls, completed episodes and edits; dimensions checked against declared bounds and exact observation width; true process high-water RSS and row-count digest recorded. The receipt covers only that first cohort, not every training week or full-scale runtime.",
+    "fit_binding": "Training reauthenticates its fresh intake, rebuilds the canonical dataset, and compares stable payload/source/code/environment identity to the reviewed probe before SB3 allocation; the probe close receipt and reviewed registry claim are independently verified."
+  },
+  "synthetic_shape_readiness": {
+    "status": "synthetic-only PPO/GPU shape check passed; no empirical packet data or policy-study fit used",
+    "host": "WSL2 CUDA, RTX 5060 Ti 16 GiB",
+    "shape": {
+      "observation_width": 20300003,
+      "max_coordinates": 150000,
+      "network": [
+        8
+      ]
+    },
+    "ppo": {
+      "timesteps": 4,
+      "n_steps": 2,
+      "batch_size": 2,
+      "n_epochs": 1,
+      "gamma": 1.0
+    },
+    "elapsed_seconds": 7.79,
+    "process_rss_gib": 3.402,
+    "gpu_allocated_gib": 6.793,
+    "gpu_reserved_gib": 6.858,
+    "receipt": "~/.local/share/mac-compute-worker/outputs/rl-ppo-shape-wsl-cuda-20261102/receipt.json",
+    "memory_supervisor": "systemd-run user MemoryMax=128M and MemorySwapMax=0 readiness passed; independent 64 MiB enforcement test OOM-killed the synthetic child as configured.",
+    "limit": "This verifies synthetic tensor/model setup and worker containment only; full-universe preparation dimensions, reset memory, and runtime remain unmeasured."
+  },
+  "legacy_cli_smoke": {
+    "config": "children/index_options/configs/rl-entry-synthetic.json",
+    "config_document_hash": "661df0cf3e2334c314e9e013fa7faf3d13e973ff0e77bdb9792a4072f99183e7",
+    "file_sha256": "85c85dfc95fcc0d93f038ba4d03d6e44b063fae892d1c961096c402c3fd01a1a",
+    "invocation": "python -m dskit.pipeline run /tmp/rl-entry-synthetic-cli-20261102.json --asof 2026-11-02; temporary copy changed only outputs.run_root to /tmp/rl-entry-synthetic-cli-run-20261102",
+    "run_id": "rl-entry-synthetic-2026-11-02-5f04bc5a",
+    "run_document_hash": "661df0cf3e2334c314e9e013fa7faf3d13e973ff0e77bdb9792a4072f99183e7",
+    "result": "all 3 nodes completed; PPO trained 32 timesteps, artifact restored, two deterministic validation episodes completed",
+    "scope": "synthetic lifecycle smoke only; no empirical packet data or study fit"
+  },
+  "indexed_storage_preflight": {
+    "status": "metadata-only disk-footprint inventory; no payload staged or processed",
+    "source_indices_gib": {
+      "2019_full": 8.079,
+      "2021_q2": 3.839,
+      "2021_q3": 3.526,
+      "2021_q4": 3.512
+    },
+    "coverage": "all 212 requested names; repeated index artifacts are hard-linked and the existing cache deduplicates identical seeds",
+    "gate": "Recheck total destination disk reserve for each dispatch; per-index sizes do not establish sufficient space for all artifacts, rollouts or logs."
   }
 }

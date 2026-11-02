@@ -12,8 +12,8 @@ from dskit.onboarding.artifacts import PinnedPayloadSource
 from dskit.pipeline.node import JsonArtifact, Node, reject_unknown_params
 from dskit.pipeline.study_protocol import StudyContract, StudyNode
 
-__all__ = ["MIOStudyContract", "OptionPolicyStudyContract", "OptionPolicyTrainPacket",
-           "OptionPolicyEvalPacket", "MIOModelZooSelection"]
+__all__ = ["MIOStudyContract", "OptionPolicyStudyContract", "OptionPolicyFeasibilityProbePacket",
+           "OptionPolicyTrainPacket", "OptionPolicyEvalPacket", "MIOModelZooSelection"]
 
 
 class MIOModelZooSelection(Node):
@@ -698,11 +698,51 @@ class OptionPolicyStudyContract(MIOStudyContract):
     """MIO packet plus a bounded SB3 training or paired evaluation receipt."""
 
     _KEYS = MIOStudyContract._KEYS | {"policy"}
-    _POLICY_KEYS = {"mode", "training", "evaluation", "artifact", "baselines", "method_id"}
+    _POLICY_KEYS = {"mode", "training", "evaluation", "artifact", "baselines",
+                    "method_id", "probe_receipt"}
     _TRAIN_KEYS = {"window", "maturity_end_before", "env", "env_schema", "feature_transform",
                    "env_bounds", "algo", "algo_params", "policy", "seed", "total_timesteps"}
     _EVAL_KEYS = {"window", "env", "split", "deterministic", "max_episode_steps",
                   "n_episodes", "seed", "feature_transform", "env_bounds"}
+    _PROBE_KEYS = {"probe_schema", "feasible", "scope", "canonical_payload_sha256",
+                   "dataset_sha256", "effective_env_sha256", "source_hashes",
+                   "source_pins_sha256", "plan_identity_sha256", "cohort_id", "entry_window",
+                   "decision_date", "candidate_count", "active_candidate_count",
+                   "active_coordinate_count", "max_capacity", "raw_feature_count",
+                   "observation_width", "screen_digest", "row_counts", "row_counts_sha256",
+                   "reset_completed", "step_calls", "learn_calls", "completed_episodes",
+                   "total_edits", "elapsed_seconds", "rss_before_bytes", "rss_after_bytes",
+                   "peak_rss_bytes", "diagnostics"}
+
+    @staticmethod
+    def selection(study):
+        """Allow policy training to consume a bounded subset of the saved full-year receipt."""
+        domain = study.get("domain", {})
+        policy = domain.get("policy", {})
+        selection = domain.get("predictive")
+        packet = MIOStudyContract.packet(study)
+        if (domain.get("synthetic") is True
+                or not isinstance(policy, dict)
+                or policy.get("mode") not in {"probe", "training"}
+                or not isinstance(selection, dict)
+                or selection.get("policy") != "owner_selected_saved_zoo_outputs"):
+            return MIOStudyContract.selection(study)
+        # Re-run the unchanged full-year receipt validator against an exact
+        # full-year development view. Then separately constrain this policy's
+        # actual packet to a subset of the authenticated source interval.
+        original = copy.deepcopy(study)
+        full_packet = next(p for p in original["packets"]
+                           if p["id"] == original["selected_packet"])
+        full_packet.update(start="2019-01-02", end_before="2020-01-01",
+                           purpose="development")
+        receipt = MIOStudyContract._owner_selected_selection(original, selection)
+        window = receipt["development_window"]
+        if (packet["purpose"] != "development"
+                or packet["start"] < window["start"]
+                or packet["end_before"] > window["end_before"]
+                or domain["params"]["bridge"]["fold"] != receipt["bridge_fold"]):
+            raise ValueError("policy packet must be a bounded subset of the authenticated development receipt")
+        return receipt
 
     @staticmethod
     def _window(window, name):
@@ -738,13 +778,89 @@ class OptionPolicyStudyContract(MIOStudyContract):
             raise ValueError("unattested policy receipt")
         return resolve_json_artifact(ref["run_dir"], manifest)
 
+    def _verify_probe_receipt(self, study, ref, training, *, verify_registry=False):
+        """Verify probe identity; query registry publication only outside its transaction."""
+        from dskit.pipeline.study_protocol import ExposureRegistry, StudyContract
+
+        if not isinstance(ref, dict) or set(ref) != {"run_dir", "document_hash", "node", "port"}:
+            raise ValueError("attested feasibility probe receipt reference required")
+        artifact = self._receipt(ref)
+        plan = artifact.get("plan")
+        probe_study = plan.get("study", {}) if isinstance(plan, dict) else {}
+        StudyContract.verify_plan(probe_study, plan)
+        probe_policy = probe_study.get("domain", {}).get("policy", {})
+        packet = self.packet(study)
+        probe_packet = self.packet(probe_study) if probe_study else {}
+        resolved = MIOStudyContract.resolve(self, study)
+        if (artifact.get("complete") is not True
+                or probe_policy.get("mode") != "probe"
+                or probe_policy.get("probe_receipt") is not None
+                or probe_policy.get("training") != training
+                or probe_policy.get("method_id") != study["domain"]["policy"]["method_id"]
+                or probe_packet != packet
+                or probe_study.get("registry") != study.get("registry")
+                or plan.get("source_pins") != resolved.get("source_pins")
+                or plan.get("read_bounds") != resolved.get("read_bounds")
+                or plan.get("contract") != resolved.get("contract")):
+            raise ValueError("feasibility probe receipt differs from the training packet or sources")
+        results = artifact.get("results")
+        if (not isinstance(results, list) or len(results) != 1
+                or results[0].get("id") != study["domain"]["policy"]["method_id"]
+                or results[0].get("status") != "completed"):
+            raise ValueError("feasibility probe did not complete")
+        evidence = results[0].get("probe")
+        if (not isinstance(evidence, dict) or set(evidence) != self._PROBE_KEYS
+                or evidence.get("feasible") is not True
+                or evidence.get("scope") != "first_training_cohort_reset"
+                or not self._sha256(evidence.get("canonical_payload_sha256"))
+                or not self._sha256(evidence.get("dataset_sha256"))
+                or not self._sha256(evidence.get("effective_env_sha256"))
+                or evidence.get("probe_schema") != "option-policy-feasibility-probe/v1"
+                or not isinstance(evidence.get("source_hashes"), dict)
+                or evidence.get("source_hashes") != __import__(
+                    "index_options.rl_env", fromlist=["OptionStructuredEntryEnv"]
+                    ).OptionStructuredEntryEnv.source_identity()
+                or evidence.get("source_pins_sha256") != value_hash(resolved["source_pins"])
+                or evidence.get("plan_identity_sha256") != _OptionPolicyPacketStudy._plan_identity(plan)
+                or evidence.get("effective_env_sha256") != value_hash(
+                    _OptionPolicyPacketStudy._effective_env_identity(
+                        study["domain"]["policy"], evidence.get("canonical_payload_sha256")))
+                or not isinstance(evidence.get("entry_window"), dict)
+                or evidence["entry_window"].get("start") < training["window"]["start"]
+                or evidence["entry_window"].get("end_before") > training["window"]["end_before"]
+                or evidence.get("decision_date") != evidence["entry_window"].get("start")
+                or evidence.get("active_coordinate_count", 10**18)
+                    > training["env_bounds"]["max_coordinates"]
+                or evidence.get("max_capacity", 10**18)
+                    > training["env_bounds"]["max_quantity"]
+                or evidence.get("raw_feature_count", 10**18)
+                    > training["env_bounds"]["max_features"]
+                or evidence.get("observation_width") != (
+                    training["env_bounds"]["max_features"]
+                    + 2*training["env_bounds"]["max_coordinates"] + 3)
+                or evidence.get("reset_completed") is not True
+                or evidence.get("step_calls") != 0 or evidence.get("learn_calls") != 0
+                or evidence.get("completed_episodes") != 0 or evidence.get("total_edits") != 0
+                or not isinstance(evidence.get("diagnostics"), dict)
+                or evidence["diagnostics"].get("completed_episodes") != 0
+                or evidence["diagnostics"].get("total_edits") != 0):
+            raise ValueError("training requires a completed feasible first-request probe")
+        if verify_registry:
+            registry = ExposureRegistry(probe_study["registry"])
+            claim = registry.verify(plan, artifact["permit"], active=False)
+            publication = claim.get("publication")
+            if (claim.get("status") != "reviewed_closed" or not isinstance(publication, dict)
+                    or publication.get("receipt") != ref):
+                raise ValueError("feasibility probe must be published and reviewed before training")
+        return artifact, evidence
+
     def _validate_policy(self, study):
         from .rl_env import OptionStructuredEntryEnv, OptionEntryEnv
         policy = study["domain"].get("policy")
         if not isinstance(policy, dict) or set(policy) != self._POLICY_KEYS:
             raise ValueError("closed option-policy declaration required")
-        if policy["mode"] not in {"training", "evaluation"}:
-            raise ValueError("policy mode must be training or evaluation")
+        if policy["mode"] not in {"probe", "training", "evaluation"}:
+            raise ValueError("policy mode must be probe, training or evaluation")
         training = policy["training"]
         if not isinstance(training, dict) or set(training) != self._TRAIN_KEYS:
             raise ValueError("closed policy training declaration required")
@@ -776,15 +892,20 @@ class OptionPolicyStudyContract(MIOStudyContract):
         if len(methods) != 1 or policy["method_id"] != methods[0]["id"]:
             raise ValueError("policy study must name its exact sole configured MIO method")
         packet = self.packet(study)
-        if policy["mode"] == "training":
+        if policy["mode"] in {"probe", "training"}:
             if (policy["evaluation"] is not None or policy["artifact"] is not None
                     or policy["baselines"] != []):
-                raise ValueError("training mode cannot consume a policy artifact or baseline")
+                raise ValueError("probe or training mode cannot consume an evaluation artifact or baseline")
             max_dte = max(pair["dte_max"] for pair in study["domain"]["pairs"])
             tail_before = (date.fromisoformat(packet["end_before"])
                            + timedelta(days=max_dte + study["domain"]["tail_padding_days"])).isoformat()
             if train_window["end_before"] > packet["end_before"] or maturity > tail_before:
                 raise ValueError("training decisions or matured labels exceed selected packet read tail")
+            if policy["mode"] == "probe":
+                if policy["probe_receipt"] is not None:
+                    raise ValueError("a probe cannot depend on another probe receipt")
+            else:
+                self._verify_probe_receipt(study, policy["probe_receipt"], training)
             return
         evaluation = policy["evaluation"]
         if not isinstance(evaluation, dict) or set(evaluation) != self._EVAL_KEYS:
@@ -803,6 +924,8 @@ class OptionPolicyStudyContract(MIOStudyContract):
         artifact = policy["artifact"]
         if not isinstance(artifact, dict) or set(artifact) != {"path", "state_hash", "training_receipt"}:
             raise ValueError("pinned SB3 artifact and training receipt required")
+        if not isinstance(policy["probe_receipt"], dict):
+            raise ValueError("reviewed feasible probe receipt required for evaluation")
         training_ref = artifact["training_receipt"]
         if not isinstance(training_ref, dict) or set(training_ref) != {"run_dir", "document_hash", "node", "port"}:
             raise ValueError("attested training receipt reference required")
@@ -812,8 +935,10 @@ class OptionPolicyStudyContract(MIOStudyContract):
         StudyContract.verify_plan(training_study, training_plan)
         trained_policy = training_study.get("domain", {}).get("policy", {})
         if (trained.get("complete") is not True or trained_policy.get("mode") != "training"
-                or trained_policy.get("training") != training):
+                or trained_policy.get("training") != training
+                or trained_policy.get("probe_receipt") != policy["probe_receipt"]):
             raise ValueError("SB3 artifact training receipt differs from frozen training declaration")
+        self._verify_probe_receipt(training_study, trained_policy["probe_receipt"], training)
         train_results = trained.get("results", [])
         if (len(train_results) != 1 or train_results[0].get("status") != "completed"
                 or train_results[0].get("artifact") != {"path": artifact["path"], "state_hash": artifact["state_hash"]}):
@@ -888,6 +1013,59 @@ class OptionPolicyStudyContract(MIOStudyContract):
             return False
         if result.get("status") != "completed":
             raise ValueError("unknown policy result disposition")
+        if policy["mode"] == "probe":
+            evidence = result.get("probe")
+            integer_fields = ("candidate_count", "active_candidate_count", "active_coordinate_count",
+                              "max_capacity", "raw_feature_count", "observation_width",
+                              "step_calls", "learn_calls", "completed_episodes", "total_edits",
+                              "rss_before_bytes", "rss_after_bytes", "peak_rss_bytes")
+            if (set(result) != {"id", "status", "probe"}
+                    or not isinstance(evidence, dict) or set(evidence) != self._PROBE_KEYS
+                    or evidence.get("probe_schema") != "option-policy-feasibility-probe/v1"
+                    or type(evidence.get("feasible")) is not bool
+                    or evidence.get("scope") != "first_training_cohort_reset"
+                    or not all(self._sha256(evidence.get(key)) for key in (
+                        "canonical_payload_sha256", "dataset_sha256", "effective_env_sha256",
+                        "source_pins_sha256", "plan_identity_sha256", "screen_digest",
+                        "row_counts_sha256"))
+                    or evidence.get("source_hashes") != __import__(
+                        "index_options.rl_env", fromlist=["OptionStructuredEntryEnv"]
+                        ).OptionStructuredEntryEnv.source_identity()
+                    or not isinstance(evidence.get("entry_window"), dict)
+                    or set(evidence["entry_window"]) != {"start", "end_before"}
+                    or not isinstance(evidence.get("cohort_id"), str) or not evidence["cohort_id"]
+                    or evidence.get("decision_date") != evidence["entry_window"].get("start")
+                    or any(type(evidence.get(key)) is not int or evidence[key] < 0
+                           for key in integer_fields)
+                    or evidence.get("reset_completed") is not evidence.get("feasible")
+                    or evidence.get("step_calls") != 0 or evidence.get("learn_calls") != 0
+                    or evidence.get("completed_episodes") != 0 or evidence.get("total_edits") != 0
+                    or isinstance(evidence.get("elapsed_seconds"), bool)
+                    or not isinstance(evidence.get("elapsed_seconds"), (int, float))
+                    or not math.isfinite(float(evidence["elapsed_seconds"]))
+                    or evidence["elapsed_seconds"] < 0
+                    or evidence.get("observation_width") != (
+                        policy["training"]["env_bounds"]["max_features"]
+                        + 2*policy["training"]["env_bounds"]["max_coordinates"] + 3)
+                    or evidence.get("peak_rss_bytes", -1) < max(
+                        evidence.get("rss_before_bytes", -1), evidence.get("rss_after_bytes", -1))
+                    or value_hash(evidence.get("row_counts")) != evidence.get("row_counts_sha256")
+                    or not isinstance(evidence.get("diagnostics"), dict)
+                    or evidence["diagnostics"].get("completed_episodes") != 0
+                    or evidence["diagnostics"].get("total_edits") != 0
+                    or audit.get("mode") != "probe"
+                    or audit.get("canonical_payload_sha256") != evidence["canonical_payload_sha256"]
+                    or audit.get("effective_env_sha256") != evidence["effective_env_sha256"]
+                    or audit.get("dataset_sha256") != evidence["dataset_sha256"]
+                    or (evidence["feasible"] and (
+                        evidence["active_coordinate_count"] > policy["training"]["env_bounds"]["max_coordinates"]
+                        or evidence["max_capacity"] > policy["training"]["env_bounds"]["max_quantity"]
+                        or evidence["raw_feature_count"] > policy["training"]["env_bounds"]["max_features"]))
+                    or audit.get("runtime_checks") != {
+                        "authenticated_intake": True, "reset_once": True,
+                        "no_step": True, "no_learning": True, "zero_episode_effects": True}):
+                raise ValueError("feasibility probe evidence is incomplete or inconsistent")
+            return True
         if policy["mode"] == "training":
             artifact, receipt = result.get("artifact"), result.get("training")
             if (not isinstance(artifact, dict) or set(artifact) != {"path", "state_hash"}
@@ -900,6 +1078,12 @@ class OptionPolicyStudyContract(MIOStudyContract):
                     or audit.get("mode") != "training"
                     or audit.get("artifact_state_hash") != artifact["state_hash"]
                     or audit.get("data_sha256") != receipt.get("data_sha256")
+                    or not self._sha256(receipt.get("canonical_payload_sha256"))
+                    or not self._sha256(receipt.get("effective_env_sha256"))
+                    or not self._sha256(receipt.get("probe_receipt_sha256"))
+                    or audit.get("canonical_payload_sha256") != receipt.get("canonical_payload_sha256")
+                    or audit.get("effective_env_sha256") != receipt.get("effective_env_sha256")
+                    or audit.get("probe_receipt_sha256") != receipt.get("probe_receipt_sha256")
                     or not isinstance(audit.get("runtime_checks"), dict)
                     or set(audit["runtime_checks"]) != {
                         "completed_episode", "finite_rewards", "finite_diagnostics"}
@@ -936,37 +1120,34 @@ class _OptionPolicyPacketStudy(StudyNode):
 
     def _intake(self, ctx, inputs):
         from .ledger_studies import MIOPacketStudy
-        return MIOPacketStudy("intake", {"study": self.params["study"]}).validate_intake(ctx, inputs)
+        authenticated = MIOPacketStudy("intake", {"study": self.params["study"]}).validate_intake(ctx, inputs)
+        plan, registry, permit, bounded, provenance, params = authenticated
+        policy = self.params["study"]["domain"].get("policy", {})
+        if policy.get("mode") in {"training", "evaluation"}:
+            probe_study = self.params["study"]
+            if policy.get("mode") == "evaluation":
+                # The feasibility probe is bound to the training packet and its
+                # reviewed registry claim. Evaluation uses a fresh packet claim
+                # (and may use a distinct registry), so verify the probe against
+                # the attested training study rather than this evaluation study.
+                training_ref = policy.get("artifact", {}).get("training_receipt", {})
+                trained = OptionPolicyStudyContract()._receipt(training_ref)
+                training_plan = trained.get("plan")
+                probe_study = (training_plan.get("study", {})
+                               if isinstance(training_plan, dict) else {})
+            OptionPolicyStudyContract()._verify_probe_receipt(
+                probe_study, policy["probe_receipt"], policy["training"],
+                verify_registry=True)
+        return authenticated
 
     @staticmethod
-    def _dataset(start, end, split, bounded, study, plan, artifact_root, cohorts,
-                 payload_inputs=None):
+    def _dataset(ctx, study, plan, permit, provenance, bounded, phase):
+        from pathlib import Path
         from .rl_env import OptionStructuredEntryEnv
-        inputs_by_id = payload_inputs or {"packet": bounded["inputs"]}
-        context = {"study": study, "plan": plan, "artifact_root": artifact_root}
-        payloads = {key: {"inputs": inputs, "adjustments": bounded.get("adjustments", []),
-                          "index_context": context}
-                    for key, inputs in inputs_by_id.items()}
-        return {"schema": OptionStructuredEntryEnv.PAYLOAD_SCHEMA,
-                "synthetic": bool(study["domain"]["synthetic"]),
-                "splits": {split: {"start": start, "end_before": end}},
-                "payloads": payloads, "cohorts": cohorts}
 
-    @staticmethod
-    def _window_inputs(inputs, start, end):
-        """Narrow only saved forecast/context rows; leave quotes, bars and history pinned."""
-        narrowed = copy.deepcopy(inputs)
-        for data in narrowed.values():
-            data["forecasts"] = [r for r in data["forecasts"]
-                                 if start <= r["quote_date"] < end]
-            data["contexts"] = [r for r in data["contexts"]
-                                if start <= r["quote_date"] < end]
-            indexed = data.get("chain_index")
-            if indexed is not None:
-                expiries = sorted({r["expiry"] for r in data["forecasts"]})
-                indexed["forecast_expiries"] = expiries
-                indexed["expiry_inventory_sha256"] = value_hash(expiries)
-        return narrowed
+        artifact_root = str(Path(ctx.run_dir) / "artifacts" / "mio-quotes")
+        return OptionStructuredEntryEnv.packet_dataset(
+            study, plan, permit, provenance, bounded, artifact_root, phase=phase)
 
     @staticmethod
     def _environment_params(policy, dataset, split):
@@ -976,6 +1157,67 @@ class _OptionPolicyPacketStudy(StudyNode):
                 "dataset": dataset, "dataset_sha256": value_hash(dataset),
                 "source_hashes": OptionStructuredEntryEnv.source_identity(),
                 "split": split}
+
+    @staticmethod
+    def _effective_env_identity(policy, canonical_payload_sha256):
+        from .rl_env import OptionStructuredEntryEnv
+        training = policy["training"]
+        return {
+            "env": training["env"], "env_schema": training["env_schema"],
+            "env_bounds": copy.deepcopy(training["env_bounds"]),
+            "feature_transform": training["feature_transform"],
+            "source_hashes": OptionStructuredEntryEnv.source_identity(),
+            "canonical_payload_sha256": canonical_payload_sha256,
+            "algo": training["algo"], "algo_params": copy.deepcopy(training["algo_params"]),
+            "policy": training["policy"], "seed": training["seed"],
+            "total_timesteps": training["total_timesteps"],
+        }
+
+    @staticmethod
+    def _plan_identity(plan):
+        study = plan.get("study", {})
+        return value_hash({
+            "contract": study.get("contract"), "code": study.get("code"),
+            "dependencies": study.get("dependencies"),
+            "source_pins": plan.get("source_pins"),
+            "read_bounds": plan.get("read_bounds")})
+
+    @staticmethod
+    def _row_counts(study, bounded):
+        rows = {}
+        for symbol in study["domain"]["params"]["symbols"]:
+            data = bounded["inputs"][symbol]
+            index = data.get("chain_index")
+            rows[symbol] = {
+                "forecasts": len(data.get("forecasts", [])),
+                "contexts": len(data.get("contexts", [])),
+                "bars": len(data.get("bars", [])),
+                "chain_rows": (len(data.get("chain", [])) if "chain" in data else
+                               (index.get("selected_rows") if isinstance(index, dict) else 0)),
+            }
+        return rows
+
+    @staticmethod
+    def _rss_bytes():
+        try:
+            with open("/proc/self/status", encoding="utf-8") as stream:
+                for line in stream:
+                    if line.startswith("VmRSS:"):
+                        return int(line.split()[1]) * 1024
+        except (OSError, ValueError, IndexError):
+            return None
+        return None
+
+    @staticmethod
+    def _peak_rss_bytes():
+        try:
+            with open("/proc/self/status", encoding="utf-8") as stream:
+                for line in stream:
+                    if line.startswith("VmHWM:"):
+                        return int(line.split()[1]) * 1024
+        except (OSError, ValueError, IndexError):
+            return None
+        return None
 
     @staticmethod
     def _close(registry, plan, permit, results, audit, provenance):
@@ -989,48 +1231,155 @@ class _OptionPolicyPacketStudy(StudyNode):
         return {"results": results, "audit": audit, "artifact_path": artifact_path}
 
 
+class OptionPolicyFeasibilityProbePacket(_OptionPolicyPacketStudy):
+    """Reset only the first authenticated training cohort; never step or learn."""
+
+    role = "transform"
+
+    def run(self, ctx, inputs):
+        import time
+        from .rl_env import OptionStructuredEntryEnv
+
+        plan, registry, permit, bounded, provenance, params = self._intake(ctx, inputs)
+        study_decl = self.params["study"]
+        policy = study_decl["domain"]["policy"]
+        if policy["mode"] != "probe":
+            raise ValueError("feasibility probe packet requires policy mode=probe")
+        spec = policy["training"]
+        started = time.monotonic()
+        rss_before = self._rss_bytes()
+        env = None
+        result = audit = None
+        reset_completed = False
+        reset_error = None
+        observation = None
+        try:
+            dataset, canonical_hash = self._dataset(
+                ctx, study_decl, plan, permit, provenance, bounded, "training")
+            env_params = self._environment_params(policy, dataset, "train")
+            effective_env_hash = value_hash(
+                self._effective_env_identity(policy, canonical_hash))
+            dataset_hash = value_hash(dataset)
+            env = OptionStructuredEntryEnv(**env_params)
+            if not dataset["cohorts"]:
+                raise ValueError("training dataset has no first cohort")
+            env.select_cohort(0)
+            try:
+                observation, info = env.reset(seed=spec["seed"])
+                reset_completed = True
+            except ValueError as exc:
+                # Bounds refusal is a completed feasibility result, not an
+                # infrastructure failure. No action or reward is produced.
+                message = str(exc)
+                if not any(token in message for token in (
+                        "request exceeds max_coordinates", "request exceeds max_quantity",
+                        "observation exceeds max_features", "features exceed max_features", "request exceeds max_features")):
+                    raise
+                reset_error = message
+            diagnostics = env.last_request_diagnostics()
+            train_diagnostics = env.training_diagnostics()
+            row_counts = self._row_counts(study_decl, bounded)
+            screen_digest = diagnostics.get("screen_digest")
+            if not OptionPolicyStudyContract._sha256(screen_digest):
+                screen_digest = value_hash(diagnostics.get("screen"))
+            entry_window = next((c.get("entry_window") for c in dataset["cohorts"]), None)
+            observation_width = (len(observation) if reset_completed else
+                                 int(env.observation_space.shape[0]))
+            rss_after = self._rss_bytes()
+            evidence = {
+                "probe_schema": "option-policy-feasibility-probe/v1",
+                "feasible": reset_completed,
+                "scope": "first_training_cohort_reset",
+                "canonical_payload_sha256": canonical_hash,
+                "dataset_sha256": dataset_hash,
+                "effective_env_sha256": effective_env_hash,
+                "source_hashes": env_params["source_hashes"],
+                "source_pins_sha256": value_hash(plan["source_pins"]),
+                "plan_identity_sha256": self._plan_identity(plan),
+                "cohort_id": diagnostics.get("cohort_id"),
+                "entry_window": entry_window,
+                "decision_date": diagnostics.get("decision_date"),
+                "candidate_count": diagnostics.get("candidate_count"),
+                "active_candidate_count": diagnostics.get("active_candidate_count"),
+                "active_coordinate_count": diagnostics.get("active_coordinate_count"),
+                "max_capacity": diagnostics.get("max_capacity"),
+                "raw_feature_count": diagnostics.get("raw_feature_count"),
+                "observation_width": observation_width,
+                "screen_digest": diagnostics.get("screen_digest"),
+                "row_counts": row_counts,
+                "row_counts_sha256": value_hash(row_counts),
+                "reset_completed": reset_completed,
+                "step_calls": 0,
+                "learn_calls": 0,
+                "completed_episodes": train_diagnostics.get("completed_episodes"),
+                "total_edits": train_diagnostics.get("total_edits"),
+                "elapsed_seconds": time.monotonic()-started,
+                "rss_before_bytes": rss_before,
+                "rss_after_bytes": rss_after,
+                "peak_rss_bytes": self._peak_rss_bytes(),
+                "diagnostics": train_diagnostics,
+            }
+            # If reset was rejected by declared hard bounds, still publish the
+            # measured first-request evidence and mark it infeasible.
+            evidence["feasible"] = bool(
+                reset_completed
+                and evidence["active_coordinate_count"] <= spec["env_bounds"]["max_coordinates"]
+                and evidence["max_capacity"] <= spec["env_bounds"]["max_quantity"]
+                and evidence["raw_feature_count"] <= spec["env_bounds"]["max_features"])
+            result = {"id": policy["method_id"], "status": "completed", "probe": evidence}
+            audit = {"mode": "probe", "method_ids": [policy["method_id"]],
+                "inputs_sha256": provenance["inputs_sha256"],
+                "source_pins_sha256": provenance["source_pins_sha256"],
+                "canonical_payload_sha256": canonical_hash,
+                "effective_env_sha256": effective_env_hash,
+                "dataset_sha256": dataset_hash,
+                "reset_error": reset_error,
+                "runtime_checks": {"authenticated_intake": True,
+                    "reset_once": True, "no_step": True, "no_learning": True,
+                    "zero_episode_effects": (
+                        train_diagnostics.get("completed_episodes") == 0
+                        and train_diagnostics.get("total_edits") == 0)},
+            }
+        except Exception as exc:
+            result = {"id": policy["method_id"], "status": "failed",
+                      "error": f"{type(exc).__name__}: {exc}"}
+            audit = {"mode": "probe", "method_ids": [policy["method_id"]],
+                "inputs_sha256": provenance["inputs_sha256"],
+                "source_pins_sha256": provenance["source_pins_sha256"],
+                "runtime_checks": {"authenticated_intake": True,
+                    "reset_once": reset_completed, "no_step": True,
+                    "no_learning": True, "zero_episode_effects": False}}
+        finally:
+            if env is not None:
+                env.close()
+        return self._close(registry, plan, permit, [result], audit, provenance)
+
+
 class OptionPolicyTrainPacket(_OptionPolicyPacketStudy):
     """Train a policy only from the authenticated packet's saved development forecasts."""
     role = "transform"
 
     def run(self, ctx, inputs):
-        from pathlib import Path
         from dskit.pipeline.libs.sb3 import Sb3Train
-        from .ledger_studies import WeeklyOptionPortfolioStudy
 
         plan, registry, permit, bounded, provenance, params = self._intake(ctx, inputs)
         study_decl = self.params["study"]
         policy = study_decl["domain"]["policy"]
         if policy["mode"] != "training":
             raise ValueError("training packet requires policy mode=training")
-        spec, window = policy["training"], policy["training"]["window"]
-        maturity, method_id = spec["maturity_end_before"], policy["method_id"]
-        source = WeeklyOptionPortfolioStudy(params, bounded["inputs"],
-                                            adjustments=bounded.get("adjustments"))
-        sessions = [d for d in source.clocks["sessions"] if d < maturity]
-        weekly = [d for d in source.weeks if window["start"] <= d < window["end_before"]]
-        if not weekly:
-            raise ValueError("no saved decision dates in the declared training window")
-        cohorts, payload_inputs = [], {}
-        for i, start in enumerate(weekly):
-            end = min(weekly[i+1] if i+1 < len(weekly) else window["end_before"],
-                      window["end_before"])
-            cohort_params = copy.deepcopy(params)
-            cohort_params["bridge"].update(start=start, end_before=end,
-                                           protected_end_before=maturity)
-            clocks = copy.deepcopy(source.clocks)
-            clocks.update(entry_start=start, entry_end_before=end, tail_end_before=maturity)
-            clocks["sessions"] = sessions
-            cohort_params["clocks"] = clocks
-            payload_id = "packet-"+start
-            payload_inputs[payload_id] = self._window_inputs(bounded["inputs"], start, end)
-            cohorts.append({"id": "train-"+start, "split": "train",
-                            "params": cohort_params, "payload": payload_id})
-        source.close_quote_indexes(verify=True)
-        dataset = self._dataset(source.clocks["history_start"], maturity, "train",
-            bounded, study_decl, plan,
-            str(Path(ctx.run_dir)/"artifacts"/"mio-quotes"), cohorts, payload_inputs)
+        spec, method_id = policy["training"], policy["method_id"]
+        dataset, canonical_hash = self._dataset(
+            ctx, study_decl, plan, permit, provenance, bounded, "training")
         env_params = self._environment_params(policy, dataset, "train")
+        probe_artifact, probe = OptionPolicyStudyContract()._verify_probe_receipt(
+            study_decl, policy["probe_receipt"], spec)
+        effective_env_hash = value_hash(
+            self._effective_env_identity(policy, canonical_hash))
+        if (probe.get("canonical_payload_sha256") != canonical_hash
+                or probe.get("effective_env_sha256") != effective_env_hash
+                or probe.get("source_hashes") != env_params["source_hashes"]):
+            raise ValueError("reviewed feasibility probe does not bind the exact training inputs and environment")
+        probe_receipt_hash = value_hash(policy["probe_receipt"])
         train_params = {"algo": spec["algo"], "algo_params": spec["algo_params"],
             "env": spec["env"], "env_params": env_params, "policy": spec["policy"],
             "seed": spec["seed"], "total_timesteps": spec["total_timesteps"]}
@@ -1059,14 +1408,20 @@ class OptionPolicyTrainPacket(_OptionPolicyPacketStudy):
         result = {"id": method_id, "status": "completed",
             "artifact": {"path": artifact_path, "state_hash": sidecar["state_hash"]},
             "training": {"seed": spec["seed"], "total_timesteps": spec["total_timesteps"],
-                "data_sha256": data_hash, "completed_episodes": diagnostics["completed_episodes"],
+                "data_sha256": data_hash, "canonical_payload_sha256": canonical_hash,
+                "effective_env_sha256": effective_env_hash,
+                "probe_receipt_sha256": probe_receipt_hash,
+                "completed_episodes": diagnostics["completed_episodes"],
                 "monitor_episodes": len(episodes),
                 "mean_monitor_reward": math.fsum(float(e["r"]) for e in episodes)/len(episodes),
                 "diagnostics": diagnostics}}
         audit = {"mode": "training", "method_ids": [method_id],
             "inputs_sha256": provenance["inputs_sha256"],
             "source_pins_sha256": provenance["source_pins_sha256"],
-            "data_sha256": data_hash, "artifact_state_hash": sidecar["state_hash"],
+            "data_sha256": data_hash, "canonical_payload_sha256": canonical_hash,
+            "effective_env_sha256": effective_env_hash,
+            "probe_receipt_sha256": probe_receipt_hash,
+            "artifact_state_hash": sidecar["state_hash"],
             "runtime_checks": {"completed_episode": True, "finite_rewards": True,
                                "finite_diagnostics": True}}
         return self._close(registry, plan, permit, [result], audit, provenance)
@@ -1077,7 +1432,6 @@ class OptionPolicyEvalPacket(_OptionPolicyPacketStudy):
     role = "transform"
 
     def run(self, ctx, inputs):
-        from pathlib import Path
         from .ledger_studies import WeeklyOptionPortfolioStudy
         from .rl_env import OptionQuarterEval
 
@@ -1087,22 +1441,14 @@ class OptionPolicyEvalPacket(_OptionPolicyPacketStudy):
         if policy["mode"] != "evaluation":
             raise ValueError("evaluation packet requires policy mode=evaluation")
         spec, evaluation = policy["training"], policy["evaluation"]
-        source = WeeklyOptionPortfolioStudy(params, bounded["inputs"],
-                                            adjustments=bounded.get("adjustments"))
-        source.close_quote_indexes(verify=True)
-        packet = OptionPolicyStudyContract.packet(study_decl)
-        cohort = {"id": packet["id"], "split": evaluation["split"],
-                  "params": copy.deepcopy(params), "payload": "packet"}
-        split_end = max(source.clocks["tail_end_before"], params["bridge"]["protected_end_before"])
-        dataset = self._dataset(source.clocks["history_start"], split_end,
-            evaluation["split"], bounded, study_decl, plan,
-            str(Path(ctx.run_dir)/"artifacts"/"mio-quotes"), [cohort])
+        dataset, canonical_hash = self._dataset(
+            ctx, study_decl, plan, permit, provenance, bounded, "evaluation")
         env_params = self._environment_params(policy, dataset, evaluation["split"])
         artifact = policy["artifact"]
         eval_params = {"artifact": artifact["path"], "algo": spec["algo"],
             "policy": spec["policy"], "env": evaluation["env"], "env_params": env_params,
             "split": evaluation["split"], "max_episode_steps": evaluation["max_episode_steps"],
-            "n_episodes": 1, "seed": evaluation["seed"],
+            "n_episodes": evaluation["n_episodes"], "seed": evaluation["seed"],
             "deterministic": evaluation["deterministic"]}
         evaluator = OptionQuarterEval("policy_eval", eval_params)
         evaluated = evaluator.run(ctx, {})
@@ -1156,7 +1502,8 @@ class OptionPolicyEvalPacket(_OptionPolicyPacketStudy):
             "source_pins_sha256": provenance["source_pins_sha256"],
             "adjustments_sha256": provenance.get("adjustments_sha256"),
             "artifact_state_hash": sidecar["state_hash"],
-            "data_sha256": value_hash(dataset), "open_books": final_open_books,
+            "data_sha256": value_hash(dataset), "canonical_payload_sha256": canonical_hash,
+            "open_books": final_open_books,
             "unbounded_books": result_value["unbounded_books"],
             "runtime_checks": {"artifact_state": True, "decision_replay": True,
                                "settled_account": True}}

@@ -102,6 +102,7 @@ ARTIFACT_FORMAT = "dskit-sb3-v1"
 #: Keys every sidecar must carry — an artifact without them is refused.
 _SIDECAR_KEYS = ("algo", "env", "env_params", "format", "policy", "seed", "state_hash")
 _ENVIRONMENT_CONTRACT = "validation-hooks/v1"
+_EXECUTION_CONTEXT_CONTRACT = "validate-execution-context/v1"
 
 DEFAULT_POLICY = "MlpPolicy"
 DEFAULT_EPISODES = 5
@@ -408,6 +409,31 @@ class _Sb3Base(Node):
             )
         return problems
 
+    def _validate_execution_context(self, env_ref, ctx, node_params, phase, *, required=False):
+        """Run an optional child authority hook before SB3 environment/model work."""
+        hook_name = "validate_execution_context"
+        hook = self._environment_hook(env_ref, hook_name)
+        if hook is None:
+            if required:
+                raise ValueError(
+                    f"{self.key}: env {env_ref!r} must provide {hook_name} "
+                    "required by the pinned artifact"
+                )
+            return False
+        try:
+            problems = self._call_environment_hook(
+                env_ref, hook_name, hook, ctx, node_params, phase
+            )
+        except Exception as exc:
+            raise ValueError(
+                f"{self.key}: env {env_ref!r} {hook_name} failed closed: {exc}"
+            ) from exc
+        if problems:
+            raise ValueError(
+                f"{self.key}: env {env_ref!r} execution context is incompatible: {problems}"
+            )
+        return True
+
     def _evaluation_environment(self, sidecar):
         """Resolve an evaluation environment and check its training compatibility."""
         env_ref = self.params.get("env") or sidecar["env"]
@@ -505,6 +531,12 @@ class _Sb3Base(Node):
                 "artifact sidecar has unsupported environment_contract "
                 f"{sidecar['environment_contract']!r}"
             )
+        if ("execution_context_contract" in sidecar
+                and sidecar["execution_context_contract"] != _EXECUTION_CONTEXT_CONTRACT):
+            self._refuse(
+                "artifact sidecar has unsupported execution_context_contract "
+                f"{sidecar['execution_context_contract']!r}"
+            )
         got = self._state_hash(zip_path, sidecar)
         if got != sidecar["state_hash"]:
             self._refuse(
@@ -593,6 +625,9 @@ class Sb3Train(_Sb3Base, TrainableNode):
         policy = self.params.get("policy", DEFAULT_POLICY)
         seed = self.params.get("seed", 0)
         total = self.params["total_timesteps"]
+        execution_context_hook = self._validate_execution_context(
+            env_ref, ctx, self.params, "train"
+        )
         hook_name = "validate_training_params"
         hook = self._environment_hook(env_ref, hook_name)
         evaluation_hook = self._environment_hook(
@@ -635,6 +670,8 @@ class Sb3Train(_Sb3Base, TrainableNode):
             }
             if hook is not None or evaluation_hook is not None:
                 artifact_spec["environment_contract"] = _ENVIRONMENT_CONTRACT
+            if execution_context_hook:
+                artifact_spec["execution_context_contract"] = _EXECUTION_CONTEXT_CONTRACT
             artifact_path = self._save_artifact(ctx, model, artifact_spec)
         finally:
             env.close()
@@ -1105,6 +1142,15 @@ class Sb3EvalEpisodes(_Sb3Base):
         )
         sidecar = self._read_sidecar(reference)
         env_ref, env_params = self._resolved_environment(sidecar)
+        require_execution_hook = sidecar.get("execution_context_contract") == _EXECUTION_CONTEXT_CONTRACT
+        if require_execution_hook and env_ref != sidecar["env"]:
+            raise ValueError(
+                f"{self.key}: evaluation env {env_ref!r} must match the pinned "
+                f"execution-context env {sidecar['env']!r}"
+            )
+        self._validate_execution_context(
+            env_ref, ctx, self.params, "eval_episodes", required=require_execution_hook
+        )
         model = self._load_model(reference, sidecar)
         episodes = [
             self._episode(index, env_ref, env_params, model)

@@ -35667,3 +35667,80 @@ quarter was evaluated with the policy.
 - Diagnostics and failures: generic cumulative diagnostics remain readable
 across reset/close; packet contract tests cover attested close and fail-closed
 checks. No real-data partial-failure behavior has been observed.
+
+
+**Correction manifest / accepted review finding (2026-11-02).** Fresh review
+`/root/luna_final_correctness_r1` of candidate
+`5be701196b1a5168f7ac4ae5569986848538380b` rejected the candidate (0 Critical,
+1 Major, 0 Minor, 0 Nit) and returned it to Phase 0. The accepted Major is
+`directSB3trainingandevaluationacceptedcorrect-hashcomplete synthetic=false
+inlineJSON withoutauthenticatedpacketintake/trainingreceipt/baseline; real8stepPPO+evalrepro`
+(family: real-data facade authority bypass). Direct SB3 training and evaluation
+could pair a correctly hashed, synthetic=false inline dataset with altered
+node-level settings, without an authenticated packet intake or the required
+training receipt/baseline. The finding invalidates the prior implementation
+acceptance claims for real-data facade authority; prior synthetic coverage is
+not withdrawn. The same reviewer approved a strengthened repair conditionally:
+use a shared active-registry intake authenticator; bind the full SB3 node
+settings before environment/model work; authenticate original bounded inputs
+before deriving canonical cohort views; and gate any real-data feasibility
+probe through a fresh, reviewed exposure claim. Synthetic fixtures remain
+separately permitted. No code changes were made before recording this correction.
+
+**Phase 0 repair implementation status (2026-11-02).** The generic pack now
+exposes the optional child class hook
+`validate_execution_context(ctx, node_params, phase)` at `Sb3Train` and
+`Sb3EvalEpisodes`. A present hook must return `list[str]`; malformed returns and
+raised exceptions fail closed. Training invokes it before algorithm resolution
+or environment construction; evaluation invokes it before model restoration or
+environment construction. A hooked training artifact binds the requirement in
+its sidecar so episode evaluation refuses if the hook is absent or the env class
+is substituted. Environments without this hook retain the existing path.
+
+`MIOPacketStudy.validate_authenticated_intake(study, plan, permit, provenance,
+bounded_inputs, artifact_root)` is now the shared static seam. It rebuilds and
+verifies the current `StudyContract` plan, including current code/dependency and
+source pins, verifies the active registry claim, checks provenance and exact
+bounded-input hashes plus split-adjustment rules, and reuses indexed descriptor
+validation. `validate_intake` delegates to it. The adapter/probe caller still
+must provide the canonical original bounded intake; cohort projections are not
+accepted as original data merely because they are hash-consistent themselves.
+
+Focused RED/GREEN evidence for the seam and facade ordering: new tests failed
+before the APIs existed; after implementation, `tests/pipeline_libs/test_sb3.py`
+and `children/index_options/tests/test_ledger_studies.py` pass together at 409
+passed / 12 skipped. This verifies generic fail-before-effects and legacy
+environment behavior, plus synthetic authenticated-intake delegation and
+forged/stale hash/permit refusal. Child v2 packet rebuilding, the feasibility
+probe receipt, and real-data execution-context authorization remain in progress;
+this is not a repaired-candidate acceptance verdict. The original finding stays
+open until the shared child builder and full-node-setting checks are reviewed
+and the candidate is re-probed under the fresh-claim lifecycle.
+
+**Additional Phase 0 correction manifest (2026-11-02; before source edits).** A
+production metadata check found that `MIOStudyContract._owner_selected_selection`
+requires the complete 2019 packet, so the approved bounded January–October 2019
+policy training/probe packet would be refused. The repair must preserve that
+full-packet MIO rule and its receipt validation. Only the approved
+`OptionPolicyStudyContract` probe/training path may derive its declared bounded
+window from the authenticated saved 2019 receipt; it must not widen the declared
+window, alter original intake validation, or weaken MIO packet selection. This
+is a narrow extension of the previously approved January–October comparison,
+not new study authorization. No implementation or empirical run is claimed here.
+
+**Phase 0 repair implementation and evidence ledger (2026-11-02; candidate review pending).**
+The shared SB3 pack now calls a child `validate_execution_context(ctx, node_params, phase)` hook before environment construction or model work; its full-node comparison failures and exceptions refuse the operation. Hooked training records the hook requirement in the artifact sidecar, and evaluation checks it before model restoration. Legacy environments without the hook keep their prior path. The ledger intake helper now authenticates the current plan, active claim, provenance, bounded-input hash, source pins and indexed descriptors through one shared seam. The option packet builder derives canonical v2 cohort views from that authenticated original bounded input; real-data direct inline datasets do not satisfy the hook. Canonical content identity excludes only the chain index's physical path and operational policy mode/probe receipt; it binds logical bounded content, source identity, study code/dependencies, current plan contract, source pins and read bounds. Permit, claim and run-local context remain separately authenticated for each fresh claim.
+
+The newly recorded selection exception is narrow: the option-policy probe/training path reuses the unchanged full-year owner-selected receipt validator, then limits the policy packet to its declared Jan–Oct 2019 subset and matching forecast fold. Generic MIO selection still requires its complete source packet. The metadata-only plan build confirms the requested 212-symbol subset is runnable with maturity before 2020; it read no market payload rows and proves no data-preparation feasibility. The separate feasibility probe resets only the first training cohort and performs no action, episode, or learning. Its attested evidence binds the normalized payload and full effective environment/optimizer declaration, source and plan identities, cohort/window, row counts, measured dimensions, zero-step counters, elapsed time and process high-water RSS. The receipt and reviewed claim are independently authenticated; a successful probe is evidence only for that first-cohort reset.
+
+Evidence matrix for this repair (implementation tests only; no repaired-candidate acceptance verdict):
+- Generic train/evaluation authority: focused SB3 and ledger tests pass; hook refusal is checked before env/model side effects, and the legacy no-hook path is retained.
+- Source/read bounds: metadata-only `StudyContract.build` succeeded for Jan 2–Oct 1, 2019, maturity Dec 7, 2019, 212 requested symbols, 271 code pins and current dependency pins. No market payload was read.
+- MIO matching and economics: saved baseline identities and exact quarter source selectors remain inventoried; a three-method baseline close and the pinned Q4 eligibility-v2 case are covered in synthetic packet tests. No saved real baseline was rerun.
+- Probe and training receipt: synthetic end-to-end probe review, PPO training, artifact restore and attested close are covered; `test_mio_packets.py` reports 75 passed. No real-data probe or fit exists.
+- Reward, feasibility and invalid cash: synthetic tests exercise completed-vector reward, full-vector shared feasibility, LP screening, invalid-bound cash and diagnostic counters. Real option coverage, fills and invalid rates remain unmeasured.
+- Quarter carry and replay: the synthetic quarter fixture checks chronological account carry, request identity, submitted quantities and settlement; no saved 2021 quarter was evaluated by policy.
+- Runtime containment and shipped smoke: synthetic CUDA shape check and memory-limit enforcement are recorded in `configs/rl-full-universe-20261102/inventory.json`; the legacy three-node synthetic CLI smoke completed all nodes. These results do not measure full-data preparation or runtime.
+- Focused test totals: `test_sb3.py` plus `test_ledger_studies.py`: 409 passed / 12 skipped; `test_rl_env.py`: 38 passed; `test_mio_packets.py`: 75 passed; docs budget checks: 4 passed; AGENTS/CLAUDE mirror check aligned. No full test suite was run.
+
+The remaining gates are fresh independent review of the repaired candidate, persisted full-universe read-bound/action/feature preflight, representative empirical reset memory/time measurement, disk reserve checks at each dispatch, and exact run budgets. No registry mutation, real-data probe, policy fit, quarter evaluation, or full-scale empirical feasibility claim has occurred.

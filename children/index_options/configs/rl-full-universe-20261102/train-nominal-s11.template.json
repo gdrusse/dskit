@@ -43,9 +43,10 @@
         "end_before": "2019-10-01",
         "start": "2019-01-02"
       }
-    }
+    },
+    "probe_receipt": null
   },
-  "policy_receipt_binding": "Eval templates must be assembled only after this training packet closes and its exact artifact path/state_hash and attested training close receipt run_dir/document_hash/node/port are available.",
+  "policy_receipt_binding": "UNLAUNCHABLE until each method/seed has its own attested and reviewed feasible first-cohort probe close receipt; the train packet binds that exact receipt, then closes the training artifact before any evaluation templates are assembled.",
   "protocol_template": [
     "StudyProtocolPlan",
     "StudyProtocolControl(action=import_development, prior_exposure=attested 2019 MIO source receipt and full planned read_bounds)",

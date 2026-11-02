@@ -965,6 +965,24 @@ def test_evaluation_env_split_must_match_declared_score_split(
     assert builds == []
 
 
+class ExecutionContextEnv(gymnasium.Env):
+    """Facade hook fixture that records the complete preflight invocation."""
+
+    calls = []
+    response = ["refused by execution hook"]
+    error = None
+
+    @classmethod
+    def validate_execution_context(cls, run_context, node_params, phase):
+        cls.calls.append((run_context, node_params, phase))
+        if cls.error is not None:
+            raise cls.error
+        return cls.response
+
+
+EXECUTION_CONTEXT_ENV_REF = "tests.pipeline_libs.test_sb3:ExecutionContextEnv"
+
+
 class TrainingGateEnv(gymnasium.Env):
     @classmethod
     def validate_training_params(cls, env_params):
@@ -1049,6 +1067,105 @@ def test_training_hook_approves_train_split_and_runs(
     assert node.saved_specs[0]["environment_contract"] == "validation-hooks/v1"
 
 
+def test_execution_context_hook_refuses_before_algo_or_env_work(monkeypatch, tmp_path):
+    ExecutionContextEnv.calls = []
+    ExecutionContextEnv.response = ["study settings differ"]
+    ExecutionContextEnv.error = None
+    node = _training_node({"dataset": {"synthetic": False}}, env_ref=EXECUTION_CONTEXT_ENV_REF)
+    algo_resolutions, env_builds = [], []
+    monkeypatch.setattr(node, "_resolve_algo", lambda *args: algo_resolutions.append(args))
+    monkeypatch.setattr(node, "_build_env", lambda *args: env_builds.append(args))
+    run_context = ctx(tmp_path)
+
+    with pytest.raises(ValueError, match="execution context.*study settings differ"):
+        node.run_train(run_context, {})
+
+    assert len(ExecutionContextEnv.calls) == 1
+    observed_ctx, observed_params, observed_phase = ExecutionContextEnv.calls[0]
+    assert observed_ctx is run_context
+    assert observed_params == node.params  # includes algorithm, policy, seed and budget
+    assert observed_phase == "train"
+    assert algo_resolutions == []
+    assert env_builds == []
+
+
+def test_execution_context_hook_errors_fail_closed_before_algo_or_env_work(monkeypatch, tmp_path):
+    ExecutionContextEnv.calls = []
+    ExecutionContextEnv.response = None  # malformed hook output is a refusal
+    ExecutionContextEnv.error = None
+    node = _training_node({"dataset": {"synthetic": False}}, env_ref=EXECUTION_CONTEXT_ENV_REF)
+    algo_resolutions, env_builds = [], []
+    monkeypatch.setattr(node, "_resolve_algo", lambda *args: algo_resolutions.append(args))
+    monkeypatch.setattr(node, "_build_env", lambda *args: env_builds.append(args))
+
+    with pytest.raises(ValueError, match=r"validate_execution_context.*list\[str\]"):
+        node.run_train(ctx(tmp_path), {})
+    assert algo_resolutions == []
+    assert env_builds == []
+
+
+def test_execution_context_hook_exception_fails_closed_before_algo_or_env_work(monkeypatch, tmp_path):
+    ExecutionContextEnv.calls = []
+    ExecutionContextEnv.response = []
+    ExecutionContextEnv.error = RuntimeError("broken authenticator")
+    node = _training_node({"dataset": {"synthetic": False}}, env_ref=EXECUTION_CONTEXT_ENV_REF)
+    algo_resolutions, env_builds = [], []
+    monkeypatch.setattr(node, "_resolve_algo", lambda *args: algo_resolutions.append(args))
+    monkeypatch.setattr(node, "_build_env", lambda *args: env_builds.append(args))
+
+    with pytest.raises(ValueError, match="validate_execution_context.*broken authenticator"):
+        node.run_train(ctx(tmp_path), {})
+    assert algo_resolutions == []
+    assert env_builds == []
+    ExecutionContextEnv.error = None
+
+
+def test_eval_episodes_execution_hook_refuses_before_model_or_env_work(monkeypatch, tmp_path):
+    ExecutionContextEnv.calls = []
+    ExecutionContextEnv.response = ["unauthenticated study"]
+    ExecutionContextEnv.error = None
+    node, run_context = _evaluation_node(
+        Sb3EvalEpisodes, env_ref=EXECUTION_CONTEXT_ENV_REF,
+        env_params={"dataset": {"synthetic": False}}, tmp_path=tmp_path,
+    )
+    sidecar = {
+        "env": EXECUTION_CONTEXT_ENV_REF,
+        "env_params": {"dataset": {"synthetic": False}},
+        "algo": "PPO", "policy": "MlpPolicy", "seed": 7,
+        "state_hash": "state",
+    }
+    builds, model_loads = [], []
+    _prepare_mock_evaluation(monkeypatch, node, sidecar, builds)
+    monkeypatch.setattr(node, "_load_model", lambda *args: model_loads.append(args))
+
+    with pytest.raises(ValueError, match="execution context.*unauthenticated study"):
+        node.run(run_context, {})
+
+    assert len(ExecutionContextEnv.calls) == 1
+    observed_ctx, observed_params, observed_phase = ExecutionContextEnv.calls[0]
+    assert observed_ctx is run_context
+    assert observed_params == node.params
+    assert observed_phase == "eval_episodes"
+    assert model_loads == []
+    assert builds == []
+
+
+def test_training_pins_execution_context_requirement_in_artifact(monkeypatch, tmp_path):
+    ExecutionContextEnv.calls = []
+    ExecutionContextEnv.response = []
+    ExecutionContextEnv.error = None
+    node = _training_node({"dataset": {"synthetic": False}}, env_ref=EXECUTION_CONTEXT_ENV_REF)
+    env_builds = []
+    _prepare_fake_training(monkeypatch, node, env_builds)
+
+    result = node.run_train(ctx(tmp_path), {})
+
+    assert result["artifact_path"] == "fake-model.zip"
+    assert len(ExecutionContextEnv.calls) == 1
+    assert ExecutionContextEnv.calls[0][2] == "train"
+    assert node.saved_specs[0]["execution_context_contract"] == "validate-execution-context/v1"
+
+
 def test_training_omits_hook_marker_for_legacy_env(
     monkeypatch, tmp_path
 ):
@@ -1076,6 +1193,27 @@ def test_marked_training_env_without_evaluation_hook_refuses(
     _prepare_mock_evaluation(monkeypatch, node, sidecar, builds)
     with pytest.raises(ValueError, match="no validate_evaluation_params hook"):
         node.run(run_ctx, {})
+    assert builds == []
+
+
+def test_eval_episodes_requires_hook_pinned_by_artifact_before_model_load(monkeypatch, tmp_path):
+    node, run_context = _evaluation_node(
+        Sb3EvalEpisodes, env_ref=ENV_REF,
+        env_params={"episode_len": 4}, tmp_path=tmp_path,
+    )
+    sidecar = {
+        "env": ENV_REF, "env_params": {"episode_len": 4}, "algo": "PPO",
+        "policy": "MlpPolicy", "seed": 7, "state_hash": "state",
+        "execution_context_contract": "validate-execution-context/v1",
+    }
+    builds, model_loads = [], []
+    _prepare_mock_evaluation(monkeypatch, node, sidecar, builds)
+    monkeypatch.setattr(node, "_load_model", lambda *args: model_loads.append(args))
+
+    with pytest.raises(ValueError, match="must provide validate_execution_context"):
+        node.run(run_context, {})
+
+    assert model_loads == []
     assert builds == []
 
 

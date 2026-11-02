@@ -677,3 +677,118 @@ def test_structured_artifact_allows_separate_nonoverlapping_eval_dataset():
     evaluation["dataset"]["splits"]["val"]["start"] = "2019-01-04"
     assert "overlap" in OptionStructuredEntryEnv.validate_evaluation_params(
         training, evaluation)[0]
+
+
+def test_real_structured_env_rejects_legacy_and_unbuilt_v2_payloads():
+    from dskit.pipeline.base import value_hash
+    from index_options.rl_env import OptionStructuredEntryEnv
+
+    params = _structured_env_params()
+    params["dataset"]["synthetic"] = False
+    params["dataset_sha256"] = value_hash(params["dataset"])
+    problems = OptionStructuredEntryEnv.validate_execution_context(
+        None, {"env_params": params}, "train")
+    assert problems and "authenticated v2" in problems[0]
+    with pytest.raises(ValueError, match="real option policy cannot use the legacy inline dataset"):
+        OptionStructuredEntryEnv(**params)
+
+    legacy = _structured_env_params()
+    source = legacy["dataset"]["cohorts"][0]
+    legacy["dataset"] = {
+        "schema": OptionStructuredEntryEnv.PAYLOAD_SCHEMA, "synthetic": False,
+        "splits": legacy["dataset"]["splits"],
+        "payloads": {"packet": {"inputs": source["inputs"],
+                                "adjustments": source["adjustments"],
+                                "index_context": None}},
+        "cohorts": [{"id": "real", "split": "train", "params": source["params"],
+                     "payload": "packet"}],
+    }
+    legacy["dataset_sha256"] = value_hash(legacy["dataset"])
+    with pytest.raises(ValueError, match="requires canonical authenticated packet data"):
+        OptionStructuredEntryEnv(**legacy)
+
+
+def test_canonical_packet_identity_normalizes_only_claim_local_paths_and_probe_fields():
+    import copy
+    from index_options.rl_env import OptionStructuredEntryEnv
+
+    study = {"code": {"owner": "code-hash"}, "dependencies": {"dskit": "pin"},
+             "domain": {"policy": {"mode": "probe", "probe_receipt": None,
+                                   "training": {"seed": 9}}, "params": {"rho": 1.0}}}
+    plan = {"source_pins": {"chain": {"sha256": "abc"}},
+            "read_bounds": {"chain": {"start": "2019-01-01", "end_before": "2020-01-01"}}}
+    bounded = {"clocks": {"history_start": "2018-12-01"},
+               "inputs": {"A": {"chain_index": {"index": {"path": "/run/a.sqlite",
+                    "sha256": "index-hash"}, "forecast_expiries": ["2019-02-01"]}}}}
+    baseline = OptionStructuredEntryEnv.canonical_payload_identity(
+        study, plan, bounded, "training")
+    train_study = copy.deepcopy(study)
+    train_study["domain"]["policy"].update(mode="training",
+                                              probe_receipt={"run_dir": "/claim-a"})
+    train_inputs = copy.deepcopy(bounded)
+    train_inputs["inputs"]["A"]["chain_index"]["index"]["path"] = "/run/b.sqlite"
+    assert OptionStructuredEntryEnv.canonical_payload_identity(
+        train_study, plan, train_inputs, "training") == baseline
+
+    changed = copy.deepcopy(train_inputs)
+    changed["clocks"]["history_start"] = "2018-11-30"
+    assert OptionStructuredEntryEnv.canonical_payload_identity(
+        train_study, plan, changed, "training") != baseline
+    changed = copy.deepcopy(train_inputs)
+    changed["inputs"]["A"]["chain_index"]["forecast_expiries"].append("2019-03-01")
+    assert OptionStructuredEntryEnv.canonical_payload_identity(
+        train_study, plan, changed, "training") != baseline
+
+
+def test_structured_reset_refusal_preserves_full_request_diagnostics():
+    from index_options.rl_env import OptionStructuredEntryEnv
+
+    params = _structured_env_params()
+    params["max_coordinates"] = 1
+    params["max_edits"] = 1
+    env = OptionStructuredEntryEnv(**params)
+    with pytest.raises(ValueError, match="request exceeds max_coordinates"):
+        env.reset(seed=0)
+    diagnostic = env.last_request_diagnostics()
+    assert diagnostic["active_coordinate_count"] > 1
+    assert diagnostic["candidate_count"] >= diagnostic["active_candidate_count"] > 0
+    assert isinstance(diagnostic["raw_feature_count"], int)
+    assert diagnostic["raw_feature_count"] > 0
+    assert len(diagnostic["screen_digest"]) == 64
+    assert "quantities" not in diagnostic
+    env.close()
+    assert env.last_request_diagnostics() == diagnostic
+
+
+def test_structured_eval_allows_attested_fold_selector_to_change():
+    import copy
+    from dskit.pipeline.base import value_hash
+    from index_options.rl_env import OptionStructuredEntryEnv
+
+    training = _structured_env_params()
+    evaluation = copy.deepcopy(training)
+    training["split"] = "train"
+    evaluation["split"] = "val"
+    training["dataset"]["cohorts"][0]["params"]["bridge"]["fold"] = 2
+    evaluation["dataset"]["cohorts"][1]["params"]["bridge"]["fold"] = 3
+    training["dataset_sha256"] = value_hash(training["dataset"])
+    evaluation["dataset_sha256"] = value_hash(evaluation["dataset"])
+    assert OptionStructuredEntryEnv.validate_evaluation_params(training, evaluation) == []
+
+
+def test_real_probe_mode_cannot_enter_direct_sb3_train_hook(monkeypatch):
+    from index_options.mio_contract import OptionPolicyStudyContract
+    from index_options.rl_env import OptionStructuredEntryEnv
+
+    monkeypatch.setattr(OptionPolicyStudyContract, "_validate_policy",
+                        lambda self, study: None)
+    run_dir = "/tmp/option-policy-training-run"
+    context = {"study": {"domain": {"policy": {"mode": "probe"}}},
+               "plan": {}, "permit": {}, "provenance": {},
+               "artifact_root": run_dir + "/artifacts/mio-quotes"}
+    dataset = {"schema": OptionStructuredEntryEnv.PAYLOAD_SCHEMA, "synthetic": False,
+               "payloads": {"packet": {"bounded": {}, "index_context": context}}}
+    params = {"env_params": {"dataset": dataset}}
+    ctx = type("Context", (), {"run_dir": run_dir})()
+    problems = OptionStructuredEntryEnv.validate_execution_context(ctx, params, "train")
+    assert problems == ["policy mode does not authorize this execution phase"]
