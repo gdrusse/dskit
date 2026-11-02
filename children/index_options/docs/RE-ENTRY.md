@@ -5,7 +5,7 @@ Updated: 2026-11-02 by GPT-6 Luna. Full-universe sizing is active; comparison re
 ## Now
 
 - Implementation candidate `fb84644836f6f3c37ee1dad17a92838cd8317ee8` has two fresh final passes: authority and integration, both C0/M0/Minor0/Nit0. Evidence-only lock: `f699f451fb7bdd170fbb9377ed7b39ed4ed963ed`; reviewed source/test blobs remain unchanged.
-- At the 22:24 UTC check, sizing service `rl-full212-dims-train-shock-20261102-220921.service` remained active (PID 161771), claim `ff49f407-d723-4528-b849-049ca6e95c35`, registry revision 25. The owner pause is saved in `dimensions-plan.json`; its heartbeat is PAUSED. 12 screen-log messages are not 12 completed cohorts. Peak RSS was 4,585,426,944 bytes under the 5 GiB cap.
+- At the 22:24 UTC check, sizing service `rl-full212-dims-train-shock-20261102-220921.service` was active (PID 161771), claim `ff49f407-d723-4528-b849-049ca6e95c35`, registry revision 25, with 8–9 screen-log messages. At the later wrap check it had 12 screen-log messages; these are not completed cohorts. The 4,585,426,944-byte reading is systemd cgroup `MemoryPeak`, not process RSS, and remains under the 5 GiB cap. The owner pause is saved in `dimensions-plan.json`; its heartbeat is PAUSED.
 - No RL fit or evaluation has completed. The old `max_features=1` discovery reset was infeasible and cannot authorize fitting.
 
 ## Next
@@ -16,7 +16,7 @@ Updated: 2026-11-02 by GPT-6 Luna. Full-universe sizing is active; comparison re
 
 ## Blocked / owner decisions
 
-- The saved MIO quarterly comparison is incomplete. Do not merge or push the branch; root will back it up after inspection.
+- The saved MIO quarterly comparison is incomplete; preserve unmerged task branch `codex/rl-full-universe-pilot-20261102` and the active worktree. Resume at the recorded scan.
 - Full-universe action exploration and storage remain practical risks. The 128-step smoke is infrastructure evidence only; no learning or profit conclusion is supported.
 - Preserve all 212 names, three methods, seeds 11/29/47, saved forecasts without rescoring, completed-MIO reuse, Q2-Q4 baseline matches and Q4 eligibility-v2.
 
@@ -24,7 +24,7 @@ Updated: 2026-11-02 by GPT-6 Luna. Full-universe sizing is active; comparison re
 
 - [Dimensions ADR and review lock](../../../docs/architecture/decision-log.md).
 - [Reviewed candidate and packet inventory](../configs/rl-full-universe-20261102/inventory.json).
-- [Saved Q2-Q4 MIO packets](../configs/mio-2021h2-walkforward-20261101/README.md).
+- [Saved Q2-Q4 MIO report](reports/mio-2021q2-q4-walkforward-20261101/README.md).
 - [Decisioning path](decisioning/path.csv).
 
 ## Do not
