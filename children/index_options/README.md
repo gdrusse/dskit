@@ -172,11 +172,88 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   paired validation through the normal pipeline. Inputs, source owners, action
   bounds, splits and settings are pinned in JSON. Source changes require an
   intentional reviewed re-pin. Inline synthetic data is a fixture, not a market
-  data intake route. Real runs require the established onboarding and study
-  approvals; Path A0003's sealed windows remain inaccessible.
+  data intake route. Real-data use is limited to the separately approved extension below; Path A0003's
+  sealed windows remain inaccessible.
   Run from this child in WSL with the parent environment and optional SB3/Pyomo
-  dependencies: `PYTHONPATH=../.. python -m dskit.pipeline run configs/rl-entry-synthetic.json --asof 2026-11-02`. This smoke run demonstrates integration, not learning
-  quality or trading profitability.
+  dependencies: `PYTHONPATH=../.. python -m dskit.pipeline run configs/rl-entry-synthetic.json --asof 2026-11-02`.
+  The shipped config completed all three nodes in the 2026-11-02 CLI smoke
+  (32 PPO training steps and two validation episodes); this is synthetic
+  lifecycle evidence, not policy quality or trading profitability.
+
+
+### Full-universe structured-policy extension (ADR-0278 amendment, 2026-11-02)
+
+The original `OptionEntryEnv` approval and `configs/rl-entry-synthetic.json` remain
+the synthetic-only smoke control. A separate owner approval covers one bounded
+real-data extension: train policies on earlier, already-saved M53 forecasts with
+labels mature before 2020-01-01, then compare the frozen policies on 2021 Q2, Q3
+and Q4 using the saved inference rows and attested quarter outcomes. It does not
+authorize predictor retraining or rescoring, new provider pulls, reopening a
+completed MIO claim, or any sealed window.
+
+- `dskit.pipeline.libs.sb3.StructuredDecisionEnv` represents integer portfolios
+  as bounded coordinates instead of enumerating their Cartesian product. The
+  fixed `MultiDiscrete` action is `[finish, coordinate, quantity]`; each edit
+  replaces one coordinate, a finish action submits the complete vector, and
+  `max_edits >= max_coordinates` keeps every bounded vector reachable. An
+  out-of-padding or over-capacity edit submits cash immediately. Complete-vector
+  constraints and economics remain child-owned.
+- `index_options.rl_env:OptionStructuredEntryEnv` is the option adapter. It uses
+  `TransportPortfolioSolve.candidate_screen` so the policy sees the same groups
+  as MIO: retain LP group bounds strictly above `parity_tolerance`; if none pass,
+  retain the highest-bound group as the existing fallback. This is a documented
+  screening limitation: a group that only helps in combination may be screened.
+  `TransportActionScore.check_feasible` checks the completed proposal against
+  the full portfolio constraints. No prefix feasibility mask or repair solver
+  narrows or rewrites the policy action.
+- Training episodes end at one policy request. The settled new-book net profit
+  is reduced by the existing uncertainty and configured risk deductions, scaled
+  by a fixed reward scale, with `gamma=1`; deposits earn no reward. A frozen
+  policy's `index_options.rl_env:OptionQuarterEval` rolls through each quarter's
+  chronological requests while one funded account carries positions, deposits
+  and expiry settlements. It never retrains during evaluation. Report entry
+  decision scores separately from quarter account P&L, drawdown and measured
+  runtime.
+- The closed `index_options.mio_contract:OptionPolicyStudyContract` binds the
+  training/evaluation declaration and pinned policy receipt. Its
+  `OptionPolicyTrainPacket` and `OptionPolicyEvalPacket` wrappers use the
+  existing `MIOPacketInputs`, shared `MIOPacketStudy.validate_intake`, and
+  `StudyPacketOpen` / `StudyPacketClose` protocol. `option-structured-cohorts/v2`
+  shares one bounded payload across decision cohorts; indexed payloads carry a
+  canonical plan and run-local artifact root. The index helper validates
+  descriptors only; the quote-index owner checks artifact bytes when reading.
+- Keep the requested universe at all 212 names and reuse the same three MIO
+  methods (`w1_003_shock10_lp`, `nominal_lp`, `w1_003_lp`) and economic settings
+  for each policy/quarter pair. Missing forecasts are availability exclusions,
+  not an outcome-selected smaller universe. The saved 2019 H2 training source
+  omits SMCI; 2021 Q4 has its separate approved eligibility-v2 exclusions for
+  the reviewed IBM/O cases (92/30 source counts).
+  Each quarter starts an independent account and evaluates entry selection only;
+  it does not add discretionary exits. The existing three methods are applied
+  independently. The MIO input source is pinned as
+  `mio-broad-2019-inputs-full-20261027`; H1/H2 producer fit cutoffs precede
+  their 2019 forecast origins. H2 has no SMCI forecast, an availability gap
+  within the all-212-name declaration. Q4's separate approved eligibility-v2
+  source excludes the reviewed IBM/O cases (92/30 source counts). The
+  original producer did not attest output bytes at run time; current onboarded
+  bytes are pinned and preparation checks pass.
+- `StructuredDecisionEnv.training_diagnostics()` retains completed episodes,
+  actual cash submissions, invalid bounds, accepted coordinate edits and the
+  finite sum of scaled terminal rewards across reset/close. The option adapter
+  adds domain-infeasible and executed-cash counts; generic diagnostics do not
+  interpret child domain flags.
+- Build and run evidence is limited to focused synthetic fixtures. The generic
+  structured environment's warm construction/reset microbenchmark measured
+  0.344 ms at 212 coordinates and 0.688 ms at 2,120, with 1.8 KiB and 16.6 KiB
+  observations respectively; this measures adapter shape only. No representative
+  real-data build, exhaustive-catalogue timing comparison, policy fit, or
+  quarter evaluation has run, so there is no empirical runtime or ETA. The
+  implementation tests were partly RED-first: the generic diagnostics and
+  shared MIO intake helper tests failed before their APIs existed; the option
+  packet/quarter tests were added alongside implementation, not all in a
+  pre-implementation red pass. Focused counts and any later reviews are recorded
+  in the decision log.
+
 
 - LocalFilesConnector supplies acquisition. source-fixture.json names the path
   and effective-time field; no child connector exists.

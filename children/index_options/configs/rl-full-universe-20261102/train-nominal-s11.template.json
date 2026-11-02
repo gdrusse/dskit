@@ -1,0 +1,68 @@
+{
+  "base_study_config": "children/index_options/configs/mio-2019-broad212.json",
+  "do_not_launch_until": [
+    "preflight proves feature and action bounds across every weekly 2019 training request and all three 2021 quarters",
+    "current primary registry revision and predecessor chain are read back; no packet overlap or use of sealed windows",
+    "final code and dependency hashes are pinned",
+    "provisional PPO budgets have been approved from measured shape/memory/runtime",
+    "the candidate 2019-12-07 maturity is confirmed by the finalized packet plan/read_bounds; it remains strictly before the 2020-01-01 boundary"
+  ],
+  "policy_declaration": {
+    "artifact": null,
+    "baselines": [],
+    "evaluation": null,
+    "method_id": "nominal_lp",
+    "mode": "training",
+    "training": {
+      "algo": "PPO",
+      "algo_params": {
+        "batch_size": null,
+        "device": "cpu",
+        "gamma": 1.0,
+        "n_epochs": null,
+        "n_steps": null,
+        "policy_kwargs": {
+          "net_arch": null
+        }
+      },
+      "env": "index_options.rl_env:OptionStructuredEntryEnv",
+      "env_bounds": {
+        "max_coordinates": 150000,
+        "max_edits": 150000,
+        "max_features": null,
+        "max_quantity": 10,
+        "reward_scale": null
+      },
+      "env_schema": "option-structured-cohorts/v2",
+      "feature_transform": "signed_log1p",
+      "maturity_end_before": "2019-12-07",
+      "policy": "MlpPolicy",
+      "seed": 11,
+      "total_timesteps": null,
+      "window": {
+        "end_before": "2019-10-01",
+        "start": "2019-01-02"
+      }
+    }
+  },
+  "policy_receipt_binding": "Eval templates must be assembled only after this training packet closes and its exact artifact path/state_hash and attested training close receipt run_dir/document_hash/node/port are available.",
+  "protocol_template": [
+    "StudyProtocolPlan",
+    "StudyProtocolControl(action=import_development, prior_exposure=attested 2019 MIO source receipt and full planned read_bounds)",
+    "StudyProtocolControl(action=freeze)",
+    "StudyPacketOpen",
+    "MIOPacketInputs",
+    "OptionPolicyTrainPacket",
+    "StudyPacketClose"
+  ],
+  "provisional_shape_hint": {
+    "max_coordinates": 150000,
+    "max_edits": 150000,
+    "max_quantity": 10,
+    "status": "tentative only; derive and test exact active action/feature count over every 2019 training and 2021 evaluation request before freezing. The 2019 Jan 2 nominal solver receipt reports 123752 solver variables; later full 2019 scan reports max 136308 solver variables and 68499 candidate contracts. Solver variables are not action coordinates."
+  },
+  "source_and_economics": "Use the 212-name saved M53 source pinned in inventory.json. Copy the exact 2021 method definition and common 2021 portfolio/deposit/fill/solver settings from the matching Q2-Q4 baseline study; retain 2019 bridge dates/fold/source metadata needed by the training forecast packet. Remove w1_003_component25_lp from training. Do not infer missing action dimensions from solver-variable count. Candidate exact label-tail bound is 2019-12-07 (2019-10-01 train packet end + 60-day maximum DTE + 7-day padding); verify against the final packet read_bounds before freezing, and do not substitute the 2020-01-01 policy cap for the derived tail.",
+  "study_node": "index_options.mio_contract:OptionPolicyTrainPacket",
+  "target": "one of 9 serialized train runs; first template is nominal_lp / seed 11",
+  "template_status": "UNLAUNCHABLE: declaration only; not a pipeline config. Final code/dependency pins, shared bound preflight, registry packet chain and SB3 training budget are pending."
+}

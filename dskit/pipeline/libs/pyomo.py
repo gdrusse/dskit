@@ -3888,19 +3888,66 @@ class TransportPortfolioSolve(PyomoSolve):
             raise ValueError(f"group LP relaxation failed: {result.message}")
         return float(-result.fun)
 
+    def _screen_metadata(self, groups):
+        """Return the shared screen decision and its bound metadata."""
+        screen = self.params.get("group_screen", "none")
+        if screen == "lp":
+            bounds = [self._group_lp_bound(group) for group in groups]
+            # A tolerance, not a strict zero: LP noise of 1e-8 must not change
+            # which groups a replay keeps across solver builds.
+            active = [i for i, bound in enumerate(bounds)
+                      if bound > self.params["parity_tolerance"]]
+            fallback = None
+            if not active:
+                # Keep the best group so that a solver certificate still exists.
+                fallback = max(range(len(groups)), key=lambda i: bounds[i])
+                active = [fallback]
+            self.log.info("group screen kept %d of %d groups", len(active), len(groups))
+        else:
+            bounds = [None]*len(groups)
+            active = list(range(len(groups)))
+            fallback = None
+        active_set = set(active)
+        return {
+            "screen": screen,
+            "parity_tolerance": self.params["parity_tolerance"],
+            "groups": [
+                {"index": index, "id": group["id"], "lp_bound": bounds[index],
+                 "active": index in active_set}
+                for index, group in enumerate(groups)
+            ],
+            "active_indices": active,
+            "active_ids": [groups[index]["id"] for index in active],
+            "fallback_index": fallback,
+        }
+
+    def candidate_screen(self, inputs):
+        """Describe the exact candidate-group screen used by model construction.
+
+        Parameters
+        ----------
+        inputs : dict
+            A checked transport portfolio program with groups, caps and optional
+            joint rows.
+
+        Returns
+        -------
+        dict
+            Screen name, tolerance, each group's identity/index/LP bound and
+            active status, the active identities/indices, and any fallback index.
+            The result is independent of integer portfolio solving.
+
+        Raises
+        ------
+        ValueError
+            Program or screen parameters are invalid, or a group LP fails.
+        """
+        groups, _caps, _duals, _joint, _charges = self._checked(inputs)
+        return self._screen_metadata(groups)
+
     def _screened(self, groups):
         """Return the indices of the groups the joint model keeps."""
-        if self.params.get("group_screen", "none") != "lp":
-            return list(range(len(groups)))
-        bounds = [self._group_lp_bound(g) for g in groups]
-        # A tolerance, not a strict zero: LP noise of 1e-8 must not change
-        # which groups a replay keeps across solver builds.
-        active = [i for i, b in enumerate(bounds) if b > self.params["parity_tolerance"]]
-        if not active:
-            # Keep the best group so that a solver certificate still exists.
-            active = [max(range(len(groups)), key=lambda i: bounds[i])]
-        self.log.info("group screen kept %d of %d groups", len(active), len(groups))
-        return active
+        return self._screen_metadata(groups)["active_indices"]
 
     @staticmethod
     def _costly_roundtrip(group, a, b, joint=()):
@@ -4414,6 +4461,87 @@ class TransportActionScore:
             result.append(list(action))
         return result
 
+    def _reserves(self, quantities):
+        """Calculate each group's reserve using the shared reserve-row rule."""
+        import numpy as np
+
+        return [float(max(0., *(np.asarray(group["reserve_rows"]) @ action)))
+                for group, action in zip(self.groups, quantities)]
+
+    def _feasible_quantities(self, quantities):
+        """Validate shape and constraints; return normalized quantities and reserves."""
+        import numpy as np
+
+        quantities = self._quantities(quantities)
+        tolerance = float(self.params.get("parity_tolerance", 0.))
+        for group, action in zip(self.groups, quantities):
+            for row in group["linear_rows"]:
+                if float(np.dot(row["coefficients"], action)) > row["upper"]+tolerance:
+                    raise _TransportActionInfeasible("quantities violate group linear bound")
+        reserves = self._reserves(quantities)
+        reserve_by_id = {group["id"]: reserves[index]
+                         for index, group in enumerate(self.groups)}
+        for cap in self.caps:
+            if sum(reserve_by_id[key] for key in cap["groups"]) > cap["upper"]+tolerance:
+                raise _TransportActionInfeasible("quantities violate shared reserve cap")
+        index = {group["id"]: i for i, group in enumerate(self.groups)}
+        for row in self.joint:
+            total = sum(float(np.dot(coefficients, quantities[index[key]]))
+                        for key, coefficients in row["terms"].items())
+            if total > row["upper"]+tolerance:
+                raise _TransportActionInfeasible("quantities violate joint row "+row["id"])
+        return quantities, reserves
+
+    def check_feasible(self, quantities):
+        """Check feasibility without evaluating the action's economic objective.
+
+        Parameters
+        ----------
+        quantities : sequence of sequence of int
+            One nonnegative contract quantity per configured action.
+
+        Returns
+        -------
+        dict
+            Feasible flag and reason. A false flag names an exclusivity, linear,
+            reserve-cap or joint-row violation.
+
+        Raises
+        ------
+        ValueError
+            Quantity shape, type or capacity is malformed.
+        """
+        try:
+            self._feasible_quantities(quantities)
+        except _TransportActionInfeasible as exc:
+            return {"feasible": False, "reason": str(exc)}
+        return {"feasible": True, "reason": None}
+
+    def _value_components(self, quantities, reserves):
+        """Calculate economic components for normalized integer quantities."""
+        import numpy as np
+
+        group_values, nominal_values, deductions, risk_charges = [], [], [], []
+        for group, dual, charge, action in zip(
+            self.groups, self.duals, self.charges, quantities
+        ):
+            q = np.asarray(action, dtype=float)
+            loss = np.asarray(group["losses"], dtype=float) @ q
+            nominal_loss = float(np.dot(group["masses"], loss))
+            worst_loss = float(dual.distribution.worst_expected_loss(
+                loss, group["radius"], group["scale"]))
+            nominal_values.append(float(np.dot(group["credit"], q)-nominal_loss))
+            group_values.append(float(np.dot(group["credit"], q)-worst_loss))
+            deductions.append(float(worst_loss-nominal_loss))
+            risk_charges.append(0. if charge is None else float(charge.charge(loss)))
+        return {
+            "quantities": quantities, "reserves": reserves,
+            "group_values": group_values, "nominal_values": nominal_values,
+            "uncertainty_deductions": deductions, "risk_charges": risk_charges,
+            "value": float(sum(group_values)-sum(risk_charges)),
+            "program_identity": self.program_identity,
+        }
+
     def value(self, quantities):
         """Return economic components for one integer action.
 
@@ -4429,29 +4557,8 @@ class TransportActionScore:
             uncertainty deductions, risk charges, objective value and
             program identity. This is economic valuation, not admission.
         """
-        import numpy as np
-
-        quantities = self._quantities(quantities)
-        reserves, group_values, nominal_values, deductions, risk_charges = [], [], [], [], []
-        for group, dual, charge, action in zip(
-                self.groups, self.duals, self.charges, quantities):
-            q = np.asarray(action, dtype=float)
-            loss = np.asarray(group["losses"], dtype=float) @ q
-            nominal_loss = float(np.dot(group["masses"], loss))
-            worst_loss = float(dual.distribution.worst_expected_loss(
-                loss, group["radius"], group["scale"]))
-            reserves.append(float(max(0., *(np.asarray(group["reserve_rows"]) @ q))))
-            nominal_values.append(float(np.dot(group["credit"], q)-nominal_loss))
-            group_values.append(float(np.dot(group["credit"], q)-worst_loss))
-            deductions.append(float(worst_loss-nominal_loss))
-            risk_charges.append(0. if charge is None else float(charge.charge(loss)))
-        return {
-            "quantities": quantities, "reserves": reserves,
-            "group_values": group_values, "nominal_values": nominal_values,
-            "uncertainty_deductions": deductions, "risk_charges": risk_charges,
-            "value": float(sum(group_values)-sum(risk_charges)),
-            "program_identity": self.program_identity,
-        }
+        normalized = self._quantities(quantities)
+        return self._value_components(normalized, self._reserves(normalized))
 
     def evaluate(self, quantities):
         """Value an action and refuse it unless every shared constraint holds.
@@ -4471,26 +4578,8 @@ class TransportActionScore:
         ValueError
             An action violates a group linear row, shared reserve cap or joint row.
         """
-        import numpy as np
-
-        result = self.value(quantities)
-        tol = float(self.params.get("parity_tolerance", 0.))
-        for group, action in zip(self.groups, result["quantities"]):
-            for row in group["linear_rows"]:
-                if float(np.dot(row["coefficients"], action)) > row["upper"]+tol:
-                    raise _TransportActionInfeasible("quantities violate group linear bound")
-        reserve_by_id = {g["id"]: result["reserves"][i]
-                         for i, g in enumerate(self.groups)}
-        for cap in self.caps:
-            if sum(reserve_by_id[key] for key in cap["groups"]) > cap["upper"]+tol:
-                raise _TransportActionInfeasible("quantities violate shared reserve cap")
-        index = {g["id"]: i for i, g in enumerate(self.groups)}
-        for row in self.joint:
-            total = sum(float(np.dot(coefficients, result["quantities"][index[key]]))
-                        for key, coefficients in row["terms"].items())
-            if total > row["upper"]+tol:
-                raise _TransportActionInfeasible("quantities violate joint row "+row["id"])
-        return {**result, "feasible": True}
+        normalized, _reserves = self._feasible_quantities(quantities)
+        return {**self.value(normalized), "feasible": True}
 
     def catalogue(self, max_combinations):
         """Enumerate every feasible integer action under a full-space bound.

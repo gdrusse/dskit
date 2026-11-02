@@ -22,6 +22,7 @@ from dskit.pipeline.driver import run_walk_forward
 from dskit.pipeline.node import JsonArtifact, Node
 
 from index_options import ledger_studies
+from index_options.ledger_studies import MIOPacketStudy
 
 
 class Reporter(Node):
@@ -43,6 +44,103 @@ SYMMETRIC_CONDOR = [90.0, 95.0, 105.0, 110.0]         # wings 5 and 5
 LOPSIDED_CONDOR = [90.0, 95.0, 105.0, 115.0]          # wings 5 and 10: the widest vertical is 10
 PUT_SPREAD_STRIKES = [92.0, 95.0]                     # width 3
 CALL_SPREAD_STRIKES = [106.0, 109.0]                  # width 3
+
+def _indexed_packet_inputs(tmp_path):
+    from dskit.pipeline.base import value_hash
+
+    expiry = "2024-03-08"
+    pin = {"source": "chain", "sha256": "a" * 64}
+    bounds = {"date": {"start": "2024-03-01", "end_before": "2024-03-29"},
+              "expiration": {"end_before": "2024-03-29"}}
+    index_path = tmp_path / "artifacts" / "mio-quotes" / "X.sqlite"
+    index = {"path": str(index_path), "rows": 3}
+    entry = {"index": index, "symbol": "X", "relative": "X.parquet", "source_pin": pin,
+             "bounds": bounds, "expiry_inventory_sha256": value_hash([expiry]),
+             "forecast_expiries": [expiry], "selected_rows": 3, "basis_factors": {}}
+    study = {"domain": {"sources": {"chain": {"files": {"X": "X.parquet"}, "pin": pin}},
+                        "params": {"symbols": ["X"]}}}
+    plan = {"read_bounds": {"chain": bounds["date"]}, "source_pins": {"chain": pin},
+            "sha256": "b" * 64}
+    bounded = {"inputs": {"X": {"forecasts": [{"expiry": expiry}], "chain_index": entry}},
+               "clocks": {"sessions": ["2024-03-01"]}}
+    return study, plan, bounded, index_path
+
+def test_mio_indexed_input_validator_accepts_pinned_descriptor(tmp_path):
+    study, plan, bounded, index_path = _indexed_packet_inputs(tmp_path)
+    assert MIOPacketStudy.validate_indexed_inputs(study, bounded, plan, tmp_path / "artifacts" / "mio-quotes") is None
+    assert not index_path.exists()  # validation is metadata-only; the later quote owner opens it
+
+
+@pytest.mark.parametrize("mutation", [
+    "metadata_keys", "symbol", "relative", "source_pin", "bounds",
+    "expiry_inventory", "forecast_expiries", "selected_rows", "index_rows",
+    "root_escape", "inline_mixed", "missing_symbol", "invalid_index_path",
+])
+def test_mio_indexed_input_validator_rejects_descriptor_drift_and_mixed_mode(tmp_path, mutation):
+    import copy
+
+    study, plan, bounded, _ = _indexed_packet_inputs(tmp_path)
+    bounded = copy.deepcopy(bounded)
+    entry = bounded["inputs"]["X"]["chain_index"]
+    if mutation == "metadata_keys":
+        entry["unexpected"] = True
+    elif mutation == "symbol":
+        entry["symbol"] = "Y"
+    elif mutation == "relative":
+        entry["relative"] = "other.parquet"
+    elif mutation == "source_pin":
+        entry["source_pin"] = {"source": "chain", "sha256": "c" * 64}
+    elif mutation == "bounds":
+        entry["bounds"]["date"]["start"] = "2024-02-01"
+    elif mutation == "expiry_inventory":
+        entry["expiry_inventory_sha256"] = "0" * 64
+    elif mutation == "forecast_expiries":
+        entry["forecast_expiries"] = ["2024-03-15"]
+    elif mutation == "selected_rows":
+        entry["selected_rows"] = 2
+    elif mutation == "index_rows":
+        entry["index"]["rows"] = 4
+    elif mutation == "root_escape":
+        entry["index"]["path"] = str(tmp_path / "outside.sqlite")
+    elif mutation == "inline_mixed":
+        bounded["inputs"]["X"]["chain"] = []
+    elif mutation == "missing_symbol":
+        del bounded["inputs"]["X"]
+    else:
+        entry["index"]["path"] = None
+    with pytest.raises(ValueError):
+        MIOPacketStudy.validate_indexed_inputs(
+            study, bounded, plan, tmp_path / "artifacts" / "mio-quotes")
+
+
+def test_mio_packet_intake_helper_authenticates_and_builds_study_params(tmp_path, monkeypatch):
+    from dskit.pipeline.base import value_hash
+
+    study, plan, bounded, _ = _indexed_packet_inputs(tmp_path)
+    study["domain"]["params"] = {"symbols": ["X"], "methods": []}
+    study["domain"]["pairs"] = [{"id": "pair"}]
+    provenance = {"inputs_sha256": value_hash(bounded), "plan_sha256": plan["sha256"],
+                  "source_pins_sha256": value_hash(plan["source_pins"]),
+                  "read_bounds": plan["read_bounds"]}
+    permit = {"id": "permit"}
+    class Registry:
+        def verify(self, observed_plan, observed_permit):
+            assert observed_plan == plan and observed_permit == permit
+            return {"inputs": value_hash(provenance)}
+    registry = Registry()
+    monkeypatch.setattr(MIOPacketStudy, "plan", lambda self: plan)
+    monkeypatch.setattr(MIOPacketStudy, "registry", lambda self: registry)
+    node = MIOPacketStudy("study", {"study": study})
+    validated = node.validate_intake(
+        SimpleNamespace(run_dir=str(tmp_path)), {
+            "permit": permit, "bounded_inputs": bounded, "provenance": provenance})
+    assert validated == (
+        plan, registry, permit, bounded, provenance,
+        {"symbols": ["X"], "methods": [], "selected_pairs": [{"id": "pair"}],
+         "clocks": bounded["clocks"]})
+
+
+
 
 
 def _cell(strikes, credit, pnl, structure=None, reason=None):

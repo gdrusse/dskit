@@ -3816,6 +3816,55 @@ def test_transport_portfolio_group_screen_matches_unscreened_optimum(radius):
     assert TransportPortfolioSolve._group_lp_bound(groups[2]) == pytest.approx(0.)
 
 
+def test_transport_portfolio_candidate_screen_matches_model_without_solving(monkeypatch):
+    """The public screen reports the exact active identities used by model construction."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, caps = _screen_groups()
+    inputs = {"groups": groups, "caps": caps}
+    node = TransportPortfolioSolve("screen", _screen_params("lp"))
+
+    def forbidden_solve(*args, **kwargs):
+        raise AssertionError("candidate_screen must not build or solve the portfolio model")
+
+    monkeypatch.setattr(node, "run", forbidden_solve)
+    monkeypatch.setattr(node, "build_model", forbidden_solve)
+    screen = node.candidate_screen(inputs)
+    assert screen["screen"] == "lp"
+    assert screen["parity_tolerance"] == node.params["parity_tolerance"]
+    assert screen["active_indices"] == [0]
+    assert screen["active_ids"] == ["live"]
+    assert [(entry["index"], entry["id"], entry["active"])
+            for entry in screen["groups"]] == [
+                (0, "live", True), (1, "dead", False), (2, "zero", False)]
+    assert [entry["lp_bound"] for entry in screen["groups"]] == pytest.approx(
+        [TransportPortfolioSolve._group_lp_bound(group) for group in groups])
+    model_owner = TransportPortfolioSolve("model", _screen_params("lp"))
+    model_owner.build_model(inputs, model_owner.params)
+    assert model_owner._active == screen["active_indices"]
+
+
+def test_transport_portfolio_candidate_screen_preserves_none_and_fallback():
+    """Screen metadata retains the unscreened path and all-dead fallback exactly."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, _ = _screen_groups()
+    inputs = {"groups": groups, "caps": [
+        {"groups": [group["id"] for group in groups], "upper": 12.}]}
+    plain = TransportPortfolioSolve("plain", _screen_params("none")).candidate_screen(inputs)
+    assert plain["active_indices"] == [0, 1, 2]
+    assert plain["active_ids"] == ["live", "dead", "zero"]
+    assert plain["fallback_index"] is None
+    assert all(entry["lp_bound"] is None for entry in plain["groups"])
+
+    dead_inputs = {"groups": groups[1:], "caps": [{"groups": ["dead", "zero"], "upper": 12.}]}
+    screened = TransportPortfolioSolve("dead", _screen_params("lp")).candidate_screen(dead_inputs)
+    bounds = [entry["lp_bound"] for entry in screened["groups"]]
+    assert screened["active_indices"] == [max(range(2), key=lambda i: bounds[i])]
+    assert screened["fallback_index"] == screened["active_indices"][0]
+    assert screened["active_ids"] == [screened["groups"][screened["fallback_index"]]["id"]]
+
+
 def test_transport_portfolio_group_screen_keeps_one_group_when_none_is_live():
     """An all-dead program still solves to a certified cash selection."""
     from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
@@ -4007,6 +4056,9 @@ def test_transport_portfolio_group_screen_with_joint_rows_restricts_hedges():
     screened = TransportPortfolioSolve("lp", _joint_params("lp")).run(None, inputs)["selection"]
     assert exact["quantities"] == [[4], [1]] and exact["value"] == pytest.approx(11.)
     assert screened["value"] == 0. and screened["quantities"] == [[0], [0]]
+    candidate_screen = TransportPortfolioSolve("screen_metadata", _joint_params("lp")).candidate_screen(inputs)
+    assert candidate_screen["active_ids"] == ["a"]
+    assert candidate_screen["groups"][1]["active"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -4554,6 +4606,65 @@ def test_transport_action_score_evaluate_checks_every_constraint_family():
         TransportActionScore(joint, {}).evaluate([[1]])
     joint["joint_rows"][0]["terms"]["g"] = [-1.]
     assert TransportActionScore(joint, {}).evaluate([[1]])["feasible"] is True
+
+
+def test_transport_action_score_check_feasible_is_lightweight_and_narrow():
+    """The feasibility query avoids valuation and reports only actual infeasibility."""
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+
+    program = _transport_action_score_program(radius=0.)
+    scorer = TransportActionScore(program, {})
+
+    def forbidden_valuation(_quantities):
+        raise AssertionError("feasibility checks must not price the action")
+
+    scorer._value_components = forbidden_valuation
+    assert scorer.check_feasible([[0]]) == {"feasible": True, "reason": None}
+
+    program["groups"][0]["linear_rows"] = [{"coefficients": [1.], "upper": 0.}]
+    constrained = TransportActionScore(program, {})
+    result = constrained.check_feasible([[1]])
+    assert result["feasible"] is False
+    assert "group linear" in result["reason"]
+    for malformed in ([], [[True]], [[-1]], [[3]], [[1, 0]]):
+        with pytest.raises(ValueError):
+            constrained.check_feasible(malformed)
+
+    exclusive_program = _transport_action_score_program(radius=0.)
+    exclusive_group = exclusive_program["groups"][0]
+    exclusive_group.update(
+        credit=[0., 0.], losses=[[0., 0.], [0., 0.]], capacity=[1, 1],
+        exclusive=[[0, 1]], reserve_rows=[[1., 1.]])
+    assert TransportActionScore(exclusive_program, {}).check_feasible(
+        [[1, 1]])["feasible"] is False
+
+    reserve_program = _transport_action_score_program(radius=0.)
+    reserve_program["caps"][0]["upper"] = 0.
+    reserve_result = TransportActionScore(reserve_program, {}).check_feasible([[1]])
+    assert reserve_result["feasible"] is False
+    assert "shared reserve" in reserve_result["reason"]
+
+    joint_program = _transport_action_score_program(radius=0.)
+    joint_program["joint_rows"] = [{"id": "net", "terms": {"g": [1.]}, "upper": 0.}]
+    joint_result = TransportActionScore(joint_program, {}).check_feasible([[1]])
+    assert joint_result["feasible"] is False
+    assert "joint row" in joint_result["reason"]
+
+
+def test_transport_action_score_evaluate_checks_feasibility_before_valuation(monkeypatch):
+    """An infeasible proposal is rejected before its expensive objective is evaluated."""
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+
+    program = _transport_action_score_program(radius=0.)
+    program["groups"][0]["linear_rows"] = [{"coefficients": [1.], "upper": 0.}]
+    scorer = TransportActionScore(program, {})
+
+    def forbidden_valuation(_quantities):
+        raise AssertionError("infeasible action was valued before validation")
+
+    monkeypatch.setattr(scorer, "_value_components", forbidden_valuation)
+    with pytest.raises(ValueError, match="group linear"):
+        scorer.evaluate([[1]])
 
 
 def test_transport_action_score_catalogue_matches_full_cartesian_oracle():

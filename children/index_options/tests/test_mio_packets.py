@@ -15,7 +15,7 @@ from dskit.pipeline.node import NodeContext
 from dskit.pipeline.study_protocol import ExposureRegistry, StudyContract
 from dskit.pipeline.workflow import path_hash
 from index_options.observations import MIOPacketInputs
-from index_options.mio_contract import MIOModelZooSelection
+from index_options.mio_contract import MIOModelZooSelection, OptionPolicyStudyContract
 from index_options.ledger_studies import MIOPacketStudy, WeeklyOptionPortfolioStudy
 from test_ledger_studies import _packet_clock_fixture
 
@@ -56,6 +56,56 @@ def study(tmp_path, request):
         data["X"]["contexts"] = data["X"]["contexts"][:1]
         data["X"]["chain"] = [r for r in data["X"]["chain"]
                               if not (r["date"] == "2019-02-01" and r["expiration"] == "2019-02-01")]
+    policy_integration = getattr(request, "param", None) == "policy_integration"
+    if policy_integration:
+        from datetime import date, timedelta
+        offset = timedelta(days=40)
+        shifted_sessions = sorted({(date.fromisoformat(d)+offset).isoformat()
+                                   for d in sessions["sessions"] if d >= "2019-01-02"})
+        sessions["sessions"] = sorted(set(sessions["sessions"]) | set(shifted_sessions))
+        for name in ("forecasts", "contexts"):
+            moved = copy.deepcopy(data["X"][name])
+            for row in moved:
+                row["quote_date"] = (date.fromisoformat(row["quote_date"])+offset).isoformat()
+                row["expiry"] = (date.fromisoformat(row["expiry"])+offset).isoformat()
+                if "settlement_date" in row:
+                    row["settlement_date"] = (date.fromisoformat(row["settlement_date"])+offset).isoformat()
+            data["X"][name].extend(moved)
+        for name in ("chain", "bars"):
+            moved = copy.deepcopy([row for row in data["X"][name]
+                                   if row["date"] >= "2019-01-02"])
+            for row in moved:
+                row["date"] = (date.fromisoformat(row["date"])+offset).isoformat()
+                for key in ("expiration", "expiry", "settlement_date"):
+                    if key in row:
+                        row[key] = (date.fromisoformat(row[key])+offset).isoformat()
+            data["X"][name].extend(moved)
+        # Add a later held-out quarter while retaining the +40-day rows as lookback history.
+        offset = timedelta(days=30)
+        sessions["sessions"] = sorted(set(sessions["sessions"]) | {
+            (date.fromisoformat(d)+offset).isoformat()
+            for d in sessions["sessions"] if d >= "2019-02-11"})
+        for name in ("forecasts", "contexts"):
+            moved = copy.deepcopy([row for row in data["X"][name]
+                                   if row["quote_date"] >= "2019-02-11"])
+            for row in moved:
+                row["quote_date"] = (date.fromisoformat(row["quote_date"])+offset).isoformat()
+                row["expiry"] = (date.fromisoformat(row["expiry"])+offset).isoformat()
+                if "settlement_date" in row:
+                    row["settlement_date"] = (date.fromisoformat(row["settlement_date"])+offset).isoformat()
+            data["X"][name].extend(moved)
+        for name in ("chain", "bars"):
+            moved = copy.deepcopy([row for row in data["X"][name]
+                                   if row["date"] >= "2019-02-11"])
+            for row in moved:
+                row["date"] = (date.fromisoformat(row["date"])+offset).isoformat()
+                for key in ("expiration", "expiry", "settlement_date"):
+                    if key in row:
+                        row[key] = (date.fromisoformat(row[key])+offset).isoformat()
+            if name == "bars":
+                existing_dates = {row["date"] for row in data["X"][name]}
+                moved = [row for row in moved if row["date"] not in existing_dates]
+            data["X"][name].extend(moved)
     if getattr(request, "param", None) == "shallow_long_leg":
         _shallow_long_leg(data["X"])
     if getattr(request, "param", None) == "split":
@@ -88,11 +138,19 @@ def study(tmp_path, request):
     sources = {role: {"pin": copy.deepcopy(pin),
                      "files": {("X" if role in {"bars", "chain"} else "shared"): role+".parquet"}}
                for role in ("forecasts", "contexts", "chain", "bars", "sessions")}
+    packets = [{"id": "dev", "start": "2019-01-02", "end_before": "2019-01-08",
+                "purpose": "development", "predecessor": None}]
+    if policy_integration:
+        packets.extend([
+            {"id": "eval", "start": "2019-03-13", "end_before": "2019-03-20",
+             "purpose": "development", "predecessor": "dev"},
+            {"id": "policy-eval", "start": "2019-03-13", "end_before": "2019-03-20",
+             "purpose": "development", "predecessor": "eval"},
+        ])
     return {"contract": "index_options.mio_contract:MIOStudyContract",
             "registry": {"path": str(tmp_path/"exposure.sqlite"),
                          "id": "27e530ba-7ed9-4fd0-93bd-4b91ffdc1cf0", "domain": "synthetic:packet"},
-            "packets": [{"id": "dev", "start": "2019-01-02", "end_before": "2019-01-08",
-                         "purpose": "development", "predecessor": None}],
+            "packets": packets,
             "selected_packet": "dev", "code": _implementation_pins(StudyContract, "index_options.mio_contract"),
             "dependencies": {"pytest": pytest.__version__},
             "domain": {"params": params, "pairs": pairs, "history_start": sessions["history_start"],
@@ -159,6 +217,8 @@ def test_real_json_spine_and_attested_comparison(study, tmp_path, caplog, monkey
                     "inputs": {"results": "$results.results", "identities": "$results.identities"}}})
     result_artifact = resolve_json_artifact(receipt["run_dir"],
         RunAttestation(receipt["run_dir"]).attested_output("close", "receipt", close.hash))
+    from index_options.mio_contract import OptionPolicyStudyContract
+    assert OptionPolicyStudyContract._receipt(receipt) == result_artifact
     permit = result_artifact["permit"]
     assert registry.snapshot()["claims"][permit["id"]]["status"] == "claimed_exposed"
     with pytest.raises(ValueError, match="attested close result receipt"):
@@ -1303,3 +1363,179 @@ def test_split_packet_runs_and_replays_with_pinned_source(study, tmp_path, caplo
     assert method["status"] == "completed"
     assert any(book.get("applied_adjustments") for book in method["result"]["trades"])
     assert any('"type":"replay_verified"' in record.getMessage() for record in caplog.records)
+
+
+def test_policy_contract_closes_training_without_mio_solver_claim(study):
+    from index_options.mio_contract import OptionPolicyStudyContract
+    from index_options.rl_env import OptionStructuredEntryEnv
+
+    packet = study["packets"][0]
+    method_id = study["domain"]["params"]["methods"][0]["id"]
+    study["domain"]["policy"] = {
+        "mode": "training", "method_id": method_id, "evaluation": None,
+        "artifact": None, "baselines": [],
+        "training": {
+            "window": {"start": packet["start"], "end_before": packet["end_before"]},
+            "maturity_end_before": packet["end_before"],
+            "env": "index_options.rl_env:OptionStructuredEntryEnv",
+            "env_schema": OptionStructuredEntryEnv.PAYLOAD_SCHEMA, "feature_transform": "identity",
+            "env_bounds": {"max_coordinates": 1, "max_quantity": 1, "max_features": 1,
+                           "reward_scale": 1.0, "max_edits": 1}, "algo": "PPO", "algo_params": {"gamma": 1},
+            "policy": "MlpPolicy", "seed": 7, "total_timesteps": 12,
+        },
+    }
+    contract = OptionPolicyStudyContract()
+    contract._validate_policy(study)
+    resolved = contract.resolve(study)
+    assert resolved["read_bounds"]["forecasts"] == {
+        "start": packet["start"], "end_before": packet["end_before"]}
+    provenance = {"inputs_sha256": "intake-digest", "source_pins_sha256": "pinned-sources"}
+    result = [{"id": method_id, "status": "completed",
+               "artifact": {"path": "/pinned/model.zip", "state_hash": "a" * 64},
+               "training": {"seed": 7, "total_timesteps": 12, "data_sha256": "b" * 64}}]
+    audit = {"mode": "training", "method_ids": [method_id], "inputs_sha256": "intake-digest",
+             "source_pins_sha256": "pinned-sources", "artifact_state_hash": "a" * 64,
+             "data_sha256": "b" * 64,
+             "runtime_checks": {"completed_episode": True, "finite_rewards": True,
+                                "finite_diagnostics": True}}
+    assert contract.validate_result(study, result, audit, provenance)
+
+    bad_audit = dict(audit, method_ids=[method_id, "extra"])
+    with pytest.raises(ValueError, match="method cohort"):
+        contract.validate_result(study, result, bad_audit, provenance)
+    bad_sources = dict(audit, source_pins_sha256="different")
+    with pytest.raises(ValueError, match="input identity"):
+        contract.validate_result(study, result, bad_sources, provenance)
+
+
+def test_policy_contract_requires_settled_evaluation_result_shape(study):
+    from index_options.mio_contract import OptionPolicyStudyContract
+
+    method_id = study["domain"]["params"]["methods"][0]["id"]
+    study["domain"]["policy"] = {"mode": "evaluation", "method_id": method_id}
+    with pytest.raises(ValueError, match="closed option-policy"):
+        OptionPolicyStudyContract()._validate_policy(study)
+
+
+@pytest.mark.parametrize("study", ["policy_integration"], indirect=True)
+def test_policy_packet_train_attested_eval_replay_and_close(study, tmp_path, monkeypatch):
+    """Exercise real SB3 learning, model restoration, accounting replay and packet closure."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "policy-cache"))
+    from index_options.rl_env import OptionStructuredEntryEnv
+
+    training = {
+        "window": {"start": "2019-01-02", "end_before": "2019-01-08"},
+        "maturity_end_before": "2019-02-09",
+        "env": "index_options.rl_env:OptionStructuredEntryEnv",
+        "env_schema": OptionStructuredEntryEnv.PAYLOAD_SCHEMA,
+        "feature_transform": "signed_log1p",
+        "env_bounds": {"max_coordinates": 64, "max_quantity": 16,
+            "max_features": 4096, "reward_scale": 100., "max_edits": 64},
+        "algo": "PPO", "algo_params": {"gamma": 1., "n_steps": 8, "batch_size": 8},
+        "policy": "MlpPolicy", "seed": 13, "total_timesteps": 128,
+    }
+    study["domain"]["params"]["solver"]["group_screen"] = "lp"
+    method_id = study["domain"]["params"]["methods"][0]["id"]
+    packet_for = {p["id"]: p for p in study["packets"]}
+
+    def configured(selected, registry_path, *, mode, artifact=None, baselines=None):
+        doc = copy.deepcopy(study)
+        doc["contract"] = "index_options.mio_contract:OptionPolicyStudyContract" if mode != "baseline" else "index_options.mio_contract:MIOStudyContract"
+        doc["selected_packet"] = selected
+        doc["registry"]["path"] = str(registry_path)
+        import uuid
+        doc["registry"]["id"] = str(uuid.uuid5(uuid.NAMESPACE_URL, str(registry_path)))
+        packet = copy.deepcopy(packet_for[selected])
+        # Each synthetic run has an isolated registry; test receipt matching by
+        # exact window/economics while allowing a distinct packet identity.
+        packet["predecessor"] = None
+        doc["packets"] = [packet]
+        if selected in {"eval", "policy-eval"}:
+            # Keep evaluation reads strictly after training-label maturity while retaining
+            # the intervening +40-day bars as causal lookback history.
+            doc["domain"]["history_start"] = "2019-02-10"
+        doc["domain"]["params"]["bridge"].update(
+            start=packet["start"], end_before=packet["end_before"],
+            protected_end_before="2020-01-01")
+        if mode == "baseline":
+            doc["domain"].pop("policy", None)
+            return doc
+        if mode == "training":
+            policy = {"mode": "training", "method_id": method_id, "training": training,
+                      "evaluation": None, "artifact": None, "baselines": []}
+        else:
+            policy = {"mode": "evaluation", "method_id": method_id, "training": training,
+                "evaluation": {"window": {"start": packet["start"],
+                                            "end_before": packet["end_before"]},
+                    "env": training["env"], "split": "test", "deterministic": True,
+                    "max_episode_steps": 4, "n_episodes": 1, "seed": 17,
+                    "feature_transform": training["feature_transform"],
+                    "env_bounds": training["env_bounds"]},
+                "artifact": artifact, "baselines": baselines}
+        doc["domain"]["policy"] = policy
+        return doc
+
+    def run_close(doc, dirname, node_name):
+        registry = ExposureRegistry(doc["registry"])
+        registry.initialize(doc["packets"],
+            [{"start": "2018-01-01", "end_before": "2020-01-01",
+              "evidence": "synthetic integration fixture"}], "2021-01-01")
+        plan = StudyContract.build(doc)
+        assert plan["runnable"], plan
+        claim = registry.freeze(plan)
+        module = "index_options.ledger_studies" if node_name == "MIOPacketStudy" else "index_options.mio_contract"
+        pipeline = _document(tmp_path, dirname, {
+            "open_packet": {"uses": "dskit.pipeline.study_protocol:StudyPacketOpen",
+                "params": {"study": doc, "frozen_plan": plan, "claim_request": claim}},
+            "intake": {"uses": "index_options.observations:MIOPacketInputs",
+                "params": {"study": doc}, "inputs": {"permit": "$open_packet.permit"}},
+            "study": {"uses": f"{module}:{node_name}", "params": {"study": doc},
+                "inputs": {"permit": "$open_packet.permit",
+                    "bounded_inputs": "$intake.bounded_inputs",
+                    "provenance": "$intake.provenance"}},
+            "close": {"uses": "dskit.pipeline.study_protocol:StudyPacketClose",
+                "params": {"study": doc}, "inputs": {"permit": "$open_packet.permit",
+                    "results": "$study.results", "audit": "$study.audit",
+                    "provenance": "$intake.provenance"}}})
+        ran = run_document(pipeline, asof="2019-04-01", journal=False)
+        assert ran.state == "ran", ran.error
+        manifest = RunAttestation(ran.run_dir).attested_output("close", "receipt", pipeline.hash)
+        assert manifest is not None
+        receipt_data = resolve_json_artifact(ran.run_dir, manifest)
+        assert receipt_data["complete"] is True
+        return pipeline, ran, receipt_data
+
+    train_doc = configured("dev", tmp_path/"train-registry.sqlite", mode="training")
+    train_pipeline, train_run, train_close = run_close(
+        train_doc, "policy-train", "OptionPolicyTrainPacket")
+    assert train_close["results"][0]["training"]["completed_episodes"] > 0
+    policy_artifact = train_close["results"][0]["artifact"]
+    training_receipt = {"run_dir": str(train_run.run_dir),
+        "document_hash": train_pipeline.hash, "node": "close", "port": "receipt"}
+    assert OptionPolicyStudyContract._receipt(training_receipt)["complete"] is True
+
+    baseline_doc = configured("eval", tmp_path/"baseline-registry.sqlite", mode="baseline")
+    baseline_method = copy.deepcopy(baseline_doc["domain"]["params"]["methods"][0])
+    baseline_doc["domain"]["params"]["methods"] = [
+        baseline_method,
+        {**copy.deepcopy(baseline_method), "id": "alternative_a"},
+        {**copy.deepcopy(baseline_method), "id": "alternative_b"},
+    ]
+    baseline_pipeline, baseline_run, baseline_close = run_close(
+        baseline_doc, "policy-baseline", "MIOPacketStudy")
+    baseline_receipt = {"run_dir": str(baseline_run.run_dir),
+        "document_hash": baseline_pipeline.hash, "node": "close", "port": "receipt",
+        "result_sha256": value_hash(baseline_close["results"])}
+    artifact_ref = {**policy_artifact, "training_receipt": training_receipt}
+
+    eval_doc = configured("policy-eval", tmp_path/"eval-registry.sqlite", mode="evaluation",
+                          artifact=artifact_ref, baselines=[baseline_receipt])
+    eval_pipeline, eval_run, eval_close = run_close(
+        eval_doc, "policy-eval", "OptionPolicyEvalPacket")
+    result = eval_close["results"][0]
+    assert result["replay_parity"] is True
+    assert result["result"]["curve"][-1]["open_ids"] == []
+    assert eval_close["audit"]["open_books"] == 0
+    assert result["result"]["unbounded_books"] == 0
+    assert eval_close["audit"]["runtime_checks"] == {
+        "artifact_state": True, "decision_replay": True, "settled_account": True}

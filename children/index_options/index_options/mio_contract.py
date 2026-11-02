@@ -3,15 +3,17 @@
 import copy
 import csv
 import json
+import math
 from datetime import date, timedelta
 
 from dskit.pipeline.base import value_hash
 from dskit.pipeline.driver import RunAttestation, resolve_json_artifact
 from dskit.onboarding.artifacts import PinnedPayloadSource
 from dskit.pipeline.node import JsonArtifact, Node, reject_unknown_params
-from dskit.pipeline.study_protocol import StudyContract
+from dskit.pipeline.study_protocol import StudyContract, StudyNode
 
-__all__ = ["MIOStudyContract", "MIOModelZooSelection"]
+__all__ = ["MIOStudyContract", "OptionPolicyStudyContract", "OptionPolicyTrainPacket",
+           "OptionPolicyEvalPacket", "MIOModelZooSelection"]
 
 
 class MIOModelZooSelection(Node):
@@ -690,3 +692,472 @@ class MIOStudyContract(StudyContract):
             elif not result.get("error"):
                 raise ValueError("failed method reason missing")
         return all(r["status"] == "completed" for r in results)
+
+
+class OptionPolicyStudyContract(MIOStudyContract):
+    """MIO packet plus a bounded SB3 training or paired evaluation receipt."""
+
+    _KEYS = MIOStudyContract._KEYS | {"policy"}
+    _POLICY_KEYS = {"mode", "training", "evaluation", "artifact", "baselines", "method_id"}
+    _TRAIN_KEYS = {"window", "maturity_end_before", "env", "env_schema", "feature_transform",
+                   "env_bounds", "algo", "algo_params", "policy", "seed", "total_timesteps"}
+    _EVAL_KEYS = {"window", "env", "split", "deterministic", "max_episode_steps",
+                  "n_episodes", "seed", "feature_transform", "env_bounds"}
+
+    @staticmethod
+    def _window(window, name):
+        if (not isinstance(window, dict) or set(window) != {"start", "end_before"}
+                or any(not isinstance(window[k], str) or date.fromisoformat(window[k]).isoformat() != window[k]
+                       for k in ("start", "end_before")) or window["start"] >= window["end_before"]):
+            raise ValueError("invalid " + name + " policy window")
+        return window
+
+    @staticmethod
+    def _sha256(value):
+        return (isinstance(value, str) and len(value) == 64
+                and all(ch in "0123456789abcdef" for ch in value))
+
+    @staticmethod
+    def _final_open_books(result):
+        """Read the account's final positions from the normal full-result curve."""
+        if not isinstance(result, dict):
+            return None
+        if type(result.get("open_books")) is int:
+            return result["open_books"]
+        curve = result.get("curve")
+        if not isinstance(curve, list) or not curve or not isinstance(curve[-1], dict):
+            return None
+        open_ids = curve[-1].get("open_ids")
+        return len(open_ids) if isinstance(open_ids, list) else None
+
+    @staticmethod
+    def _receipt(ref):
+        run = RunAttestation(ref["run_dir"])
+        manifest = run.attested_output(ref["node"], ref["port"], ref["document_hash"])
+        if manifest is None:
+            raise ValueError("unattested policy receipt")
+        return resolve_json_artifact(ref["run_dir"], manifest)
+
+    def _validate_policy(self, study):
+        from .rl_env import OptionStructuredEntryEnv, OptionEntryEnv
+        policy = study["domain"].get("policy")
+        if not isinstance(policy, dict) or set(policy) != self._POLICY_KEYS:
+            raise ValueError("closed option-policy declaration required")
+        if policy["mode"] not in {"training", "evaluation"}:
+            raise ValueError("policy mode must be training or evaluation")
+        training = policy["training"]
+        if not isinstance(training, dict) or set(training) != self._TRAIN_KEYS:
+            raise ValueError("closed policy training declaration required")
+        train_window = self._window(training["window"], "training")
+        maturity = training["maturity_end_before"]
+        if (not isinstance(maturity, str) or date.fromisoformat(maturity).isoformat() != maturity
+                or maturity < train_window["end_before"] or maturity > "2020-01-01"
+                or train_window["start"] < "2017-01-03" or train_window["end_before"] > "2020-01-01"):
+            raise ValueError("training labels must mature after decisions and before the sealed bound")
+        if (training["env"] != "index_options.rl_env:OptionStructuredEntryEnv"
+                or training["env_schema"] != OptionStructuredEntryEnv.PAYLOAD_SCHEMA
+                or training["feature_transform"] not in {"identity", "signed_log1p"}
+                or not isinstance(training["env_bounds"], dict) or set(training["env_bounds"]) != {
+                    "max_coordinates", "max_quantity", "max_features", "reward_scale", "max_edits"}
+                or any(type(training["env_bounds"][k]) is not int or training["env_bounds"][k] <= 0
+                       for k in ("max_coordinates", "max_quantity", "max_features", "max_edits"))
+                or isinstance(training["env_bounds"]["reward_scale"], bool)
+                or not isinstance(training["env_bounds"]["reward_scale"], (int, float))
+                or not 0 < training["env_bounds"]["reward_scale"] < float("inf")
+                or training["env_bounds"]["max_edits"] < training["env_bounds"]["max_coordinates"]
+                or not isinstance(training["algo"], str) or not training["algo"]
+                or not isinstance(training["algo_params"], dict)
+                or training["algo_params"].get("gamma") != 1
+                or not isinstance(training["policy"], str) or not training["policy"]
+                or type(training["seed"]) is not int or training["seed"] < 0
+                or type(training["total_timesteps"]) is not int or training["total_timesteps"] < 1):
+            raise ValueError("invalid frozen SB3 training declaration")
+        methods = study["domain"]["params"]["methods"]
+        if len(methods) != 1 or policy["method_id"] != methods[0]["id"]:
+            raise ValueError("policy study must name its exact sole configured MIO method")
+        packet = self.packet(study)
+        if policy["mode"] == "training":
+            if (policy["evaluation"] is not None or policy["artifact"] is not None
+                    or policy["baselines"] != []):
+                raise ValueError("training mode cannot consume a policy artifact or baseline")
+            max_dte = max(pair["dte_max"] for pair in study["domain"]["pairs"])
+            tail_before = (date.fromisoformat(packet["end_before"])
+                           + timedelta(days=max_dte + study["domain"]["tail_padding_days"])).isoformat()
+            if train_window["end_before"] > packet["end_before"] or maturity > tail_before:
+                raise ValueError("training decisions or matured labels exceed selected packet read tail")
+            return
+        evaluation = policy["evaluation"]
+        if not isinstance(evaluation, dict) or set(evaluation) != self._EVAL_KEYS:
+            raise ValueError("closed policy evaluation declaration required")
+        window = self._window(evaluation["window"], "evaluation")
+        if (window != {"start": packet["start"], "end_before": packet["end_before"]}
+                or window["start"] < maturity or window["end_before"] > OptionEntryEnv.SEALED_START
+                or evaluation["env"] != training["env"] or evaluation["split"] not in {"val", "test"}
+                or evaluation["deterministic"] is not True
+                or type(evaluation["max_episode_steps"]) is not int or evaluation["max_episode_steps"] < 1
+                or type(evaluation["n_episodes"]) is not int or evaluation["n_episodes"] < 1
+                or type(evaluation["seed"]) is not int or evaluation["seed"] < 0
+                or evaluation["feature_transform"] != training["feature_transform"]
+                or evaluation["env_bounds"] != training["env_bounds"]):
+            raise ValueError("evaluation packet differs from frozen policy declaration")
+        artifact = policy["artifact"]
+        if not isinstance(artifact, dict) or set(artifact) != {"path", "state_hash", "training_receipt"}:
+            raise ValueError("pinned SB3 artifact and training receipt required")
+        training_ref = artifact["training_receipt"]
+        if not isinstance(training_ref, dict) or set(training_ref) != {"run_dir", "document_hash", "node", "port"}:
+            raise ValueError("attested training receipt reference required")
+        trained = self._receipt(training_ref)
+        training_plan = trained.get("plan")
+        training_study = training_plan.get("study", {}) if isinstance(training_plan, dict) else {}
+        StudyContract.verify_plan(training_study, training_plan)
+        trained_policy = training_study.get("domain", {}).get("policy", {})
+        if (trained.get("complete") is not True or trained_policy.get("mode") != "training"
+                or trained_policy.get("training") != training):
+            raise ValueError("SB3 artifact training receipt differs from frozen training declaration")
+        train_results = trained.get("results", [])
+        if (len(train_results) != 1 or train_results[0].get("status") != "completed"
+                or train_results[0].get("artifact") != {"path": artifact["path"], "state_hash": artifact["state_hash"]}):
+            raise ValueError("SB3 artifact identity differs from attested training result")
+        baselines = policy["baselines"]
+        if not isinstance(baselines, list) or len(baselines) != 1:
+            raise ValueError("one attested matched MIO baseline required")
+        baseline_ref = baselines[0]
+        if not isinstance(baseline_ref, dict) or set(baseline_ref) != {
+                "run_dir", "document_hash", "node", "port", "result_sha256"}:
+            raise ValueError("baseline must bind an attested MIO close receipt")
+        baseline = self._receipt(baseline_ref)
+        expected_plan = MIOStudyContract.resolve(self, study)
+        resolved_source_pins = expected_plan["source_pins"]
+        expected_read_bounds = expected_plan["read_bounds"]
+        base_study = baseline.get("plan", {}).get("study", {})
+        base_domain = base_study.get("domain", {})
+        base_methods = base_domain.get("params", {}).get("methods", [])
+        baseline_results = baseline.get("results")
+        baseline_ids = [m.get("id") for m in base_methods if isinstance(m, dict)]
+        result_ids = ([r.get("id") for r in baseline_results]
+                      if isinstance(baseline_results, list) else [])
+        selected_method = methods[0]
+        selected_baselines = [m for m in base_methods
+                              if isinstance(m, dict) and m.get("id") == selected_method["id"]]
+        projected_params = copy.deepcopy(base_domain.get("params"))
+        if isinstance(projected_params, dict):
+            projected_params["methods"] = methods
+        if (baseline.get("complete") is not True
+                or value_hash(baseline_results) != baseline_ref["result_sha256"]
+                or base_domain.get("sources") != study["domain"].get("sources")
+                or not isinstance(baseline.get("plan", {}).get("packet"), dict)
+                or any(baseline["plan"]["packet"].get(key) != packet.get(key)
+                       for key in ("start", "end_before", "purpose"))
+                or baseline.get("plan", {}).get("source_pins") != resolved_source_pins
+                or baseline.get("plan", {}).get("read_bounds") != expected_read_bounds
+                or baseline.get("provenance", {}).get("read_bounds") != expected_read_bounds
+                or projected_params != study["domain"].get("params")
+                or len(selected_baselines) != 1 or selected_baselines[0] != selected_method
+                or len(baseline_ids) != len(base_methods) or result_ids != baseline_ids
+                or any(r.get("status") != "completed" for r in baseline_results)
+                or base_domain.get("pairs") != study["domain"].get("pairs")
+                or base_domain.get("history_start") != study["domain"].get("history_start")
+                or base_domain.get("tail_padding_days") != study["domain"].get("tail_padding_days")
+                or base_domain.get("admission") != study["domain"].get("admission")):
+            raise ValueError("baseline result or matched economic/input pins differ from evaluation")
+
+    def resolve(self, study):
+        """Reuse bounded MIO resolution and add policy receipt attestations."""
+        self._validate_policy(study)
+        resolved = super().resolve(study)
+        policy = study["domain"]["policy"]
+        if policy["mode"] == "evaluation":
+            resolved["source_pins"]["policy_training_receipt"] = policy["artifact"]["training_receipt"]
+            resolved["source_pins"]["policy_baseline_receipt"] = policy["baselines"][0]
+        return resolved
+
+    def validate_result(self, study, results, audit, provenance):
+        """Close RL receipts without applying MIO solver-certificate checks."""
+        policy = study["domain"]["policy"]
+        method_id = policy["method_id"]
+        if (not isinstance(audit, dict) or audit.get("inputs_sha256") != provenance.get("inputs_sha256")
+                or audit.get("source_pins_sha256") != provenance.get("source_pins_sha256")
+                or audit.get("method_ids") != [method_id]):
+            raise ValueError("policy audit, method cohort or input identity differs")
+        if not isinstance(results, list) or len(results) != 1 or results[0].get("id") != method_id:
+            raise ValueError("policy result must retain the exact configured method id")
+        result = results[0]
+        if result.get("status") == "failed":
+            if not result.get("error"):
+                raise ValueError("failed policy result needs a reason")
+            return False
+        if result.get("status") != "completed":
+            raise ValueError("unknown policy result disposition")
+        if policy["mode"] == "training":
+            artifact, receipt = result.get("artifact"), result.get("training")
+            if (not isinstance(artifact, dict) or set(artifact) != {"path", "state_hash"}
+                    or not isinstance(receipt, dict)
+                    or receipt.get("seed") != policy["training"]["seed"]
+                    or receipt.get("total_timesteps") != policy["training"]["total_timesteps"]
+                    or not self._sha256(receipt.get("data_sha256"))
+                    or not self._sha256(artifact.get("state_hash"))
+                    or not isinstance(artifact.get("path"), str) or not artifact["path"]
+                    or audit.get("mode") != "training"
+                    or audit.get("artifact_state_hash") != artifact["state_hash"]
+                    or audit.get("data_sha256") != receipt.get("data_sha256")
+                    or not isinstance(audit.get("runtime_checks"), dict)
+                    or set(audit["runtime_checks"]) != {
+                        "completed_episode", "finite_rewards", "finite_diagnostics"}
+                    or any(v is not True for v in audit["runtime_checks"].values())):
+                raise ValueError("training result differs from frozen SB3 declaration")
+            return True
+        artifact = result.get("policy")
+        if (not isinstance(artifact, dict) or set(artifact) != {"artifact_path", "state_hash", "seed"}
+                or artifact["artifact_path"] != policy["artifact"]["path"]
+                or artifact["state_hash"] != policy["artifact"]["state_hash"]
+                or not self._sha256(artifact["state_hash"])
+                or artifact["seed"] != policy["evaluation"]["seed"]
+                or result.get("replay_parity") is not True
+                or not isinstance(result.get("result"), dict)
+                or not isinstance(result.get("entry_evidence"), list)
+                or audit.get("mode") != "evaluation"
+                or audit.get("artifact_state_hash") != policy["artifact"]["state_hash"]
+                or not isinstance(audit.get("runtime_checks"), dict)
+                or not audit["runtime_checks"]
+                or any(value is not True for value in audit["runtime_checks"].values())
+                or ("adjustments_sha256" in provenance and audit.get("adjustments_sha256")
+                    != provenance["adjustments_sha256"])
+                or self._final_open_books(result["result"]) != 0
+                or result["result"].get("unbounded_books") != 0
+                or audit.get("open_books") != self._final_open_books(result["result"])
+                or audit.get("open_books") != 0 or audit.get("unbounded_books") != 0):
+            raise ValueError("policy evaluation is not fully pinned, replayed and settled")
+        return True
+
+
+class _OptionPolicyPacketStudy(StudyNode):
+    """Authenticated policy packet intake and registry execution binding."""
+    outputs = ("results", "audit", "artifact_path")
+
+    def _intake(self, ctx, inputs):
+        from .ledger_studies import MIOPacketStudy
+        return MIOPacketStudy("intake", {"study": self.params["study"]}).validate_intake(ctx, inputs)
+
+    @staticmethod
+    def _dataset(start, end, split, bounded, study, plan, artifact_root, cohorts,
+                 payload_inputs=None):
+        from .rl_env import OptionStructuredEntryEnv
+        inputs_by_id = payload_inputs or {"packet": bounded["inputs"]}
+        context = {"study": study, "plan": plan, "artifact_root": artifact_root}
+        payloads = {key: {"inputs": inputs, "adjustments": bounded.get("adjustments", []),
+                          "index_context": context}
+                    for key, inputs in inputs_by_id.items()}
+        return {"schema": OptionStructuredEntryEnv.PAYLOAD_SCHEMA,
+                "synthetic": bool(study["domain"]["synthetic"]),
+                "splits": {split: {"start": start, "end_before": end}},
+                "payloads": payloads, "cohorts": cohorts}
+
+    @staticmethod
+    def _window_inputs(inputs, start, end):
+        """Narrow only saved forecast/context rows; leave quotes, bars and history pinned."""
+        narrowed = copy.deepcopy(inputs)
+        for data in narrowed.values():
+            data["forecasts"] = [r for r in data["forecasts"]
+                                 if start <= r["quote_date"] < end]
+            data["contexts"] = [r for r in data["contexts"]
+                                if start <= r["quote_date"] < end]
+            indexed = data.get("chain_index")
+            if indexed is not None:
+                expiries = sorted({r["expiry"] for r in data["forecasts"]})
+                indexed["forecast_expiries"] = expiries
+                indexed["expiry_inventory_sha256"] = value_hash(expiries)
+        return narrowed
+
+    @staticmethod
+    def _environment_params(policy, dataset, split):
+        from .rl_env import OptionStructuredEntryEnv
+        return {**policy["training"]["env_bounds"],
+                "feature_transform": policy["training"]["feature_transform"],
+                "dataset": dataset, "dataset_sha256": value_hash(dataset),
+                "source_hashes": OptionStructuredEntryEnv.source_identity(),
+                "split": split}
+
+    @staticmethod
+    def _close(registry, plan, permit, results, audit, provenance):
+        registry.verify(plan, permit)
+        registry.bind(plan, permit, "execution", {
+            "results": results, "audit": audit, "provenance": provenance})
+        artifact_path = None
+        if results and isinstance(results[0], dict):
+            artifact_path = results[0].get("artifact", {}).get("path")
+            artifact_path = artifact_path or results[0].get("policy", {}).get("artifact_path")
+        return {"results": results, "audit": audit, "artifact_path": artifact_path}
+
+
+class OptionPolicyTrainPacket(_OptionPolicyPacketStudy):
+    """Train a policy only from the authenticated packet's saved development forecasts."""
+    role = "transform"
+
+    def run(self, ctx, inputs):
+        from pathlib import Path
+        from dskit.pipeline.libs.sb3 import Sb3Train
+        from .ledger_studies import WeeklyOptionPortfolioStudy
+
+        plan, registry, permit, bounded, provenance, params = self._intake(ctx, inputs)
+        study_decl = self.params["study"]
+        policy = study_decl["domain"]["policy"]
+        if policy["mode"] != "training":
+            raise ValueError("training packet requires policy mode=training")
+        spec, window = policy["training"], policy["training"]["window"]
+        maturity, method_id = spec["maturity_end_before"], policy["method_id"]
+        source = WeeklyOptionPortfolioStudy(params, bounded["inputs"],
+                                            adjustments=bounded.get("adjustments"))
+        sessions = [d for d in source.clocks["sessions"] if d < maturity]
+        weekly = [d for d in source.weeks if window["start"] <= d < window["end_before"]]
+        if not weekly:
+            raise ValueError("no saved decision dates in the declared training window")
+        cohorts, payload_inputs = [], {}
+        for i, start in enumerate(weekly):
+            end = min(weekly[i+1] if i+1 < len(weekly) else window["end_before"],
+                      window["end_before"])
+            cohort_params = copy.deepcopy(params)
+            cohort_params["bridge"].update(start=start, end_before=end,
+                                           protected_end_before=maturity)
+            clocks = copy.deepcopy(source.clocks)
+            clocks.update(entry_start=start, entry_end_before=end, tail_end_before=maturity)
+            clocks["sessions"] = sessions
+            cohort_params["clocks"] = clocks
+            payload_id = "packet-"+start
+            payload_inputs[payload_id] = self._window_inputs(bounded["inputs"], start, end)
+            cohorts.append({"id": "train-"+start, "split": "train",
+                            "params": cohort_params, "payload": payload_id})
+        source.close_quote_indexes(verify=True)
+        dataset = self._dataset(source.clocks["history_start"], maturity, "train",
+            bounded, study_decl, plan,
+            str(Path(ctx.run_dir)/"artifacts"/"mio-quotes"), cohorts, payload_inputs)
+        env_params = self._environment_params(policy, dataset, "train")
+        train_params = {"algo": spec["algo"], "algo_params": spec["algo_params"],
+            "env": spec["env"], "env_params": env_params, "policy": spec["policy"],
+            "seed": spec["seed"], "total_timesteps": spec["total_timesteps"]}
+        trained = Sb3Train("policy_train", train_params).run(ctx, {})
+        model = trained["policy"].model
+        monitored = model.get_env().envs[0]
+        unwrapped = getattr(monitored, "unwrapped", monitored)
+        episodes = list(getattr(model, "ep_info_buffer", ()))
+        diagnostics = unwrapped.training_diagnostics()
+        required_diagnostics = {"completed_episodes", "proposed_cash_episodes",
+                                "invalid_bounds_episodes", "domain_invalid_episodes",
+                                "executed_cash_episodes", "total_edits", "terminal_reward_sum"}
+        if (not isinstance(diagnostics, dict) or not required_diagnostics <= set(diagnostics)
+                or type(diagnostics.get("completed_episodes")) is not int
+                or diagnostics["completed_episodes"] < 1
+                or any(type(diagnostics.get(key)) is not int or diagnostics[key] < 0
+                       for key in required_diagnostics-{"terminal_reward_sum"})
+                or isinstance(diagnostics.get("terminal_reward_sum"), bool)
+                or not isinstance(diagnostics.get("terminal_reward_sum"), (int, float))
+                or not math.isfinite(float(diagnostics["terminal_reward_sum"]))
+                or not episodes or any(not math.isfinite(float(e["r"])) for e in episodes)):
+            raise ValueError("training produced no finite completed policy episode")
+        artifact_path = trained["artifact_path"]
+        sidecar = Sb3Train("policy_pin", train_params)._read_sidecar(artifact_path)
+        data_hash = value_hash(dataset)
+        result = {"id": method_id, "status": "completed",
+            "artifact": {"path": artifact_path, "state_hash": sidecar["state_hash"]},
+            "training": {"seed": spec["seed"], "total_timesteps": spec["total_timesteps"],
+                "data_sha256": data_hash, "completed_episodes": diagnostics["completed_episodes"],
+                "monitor_episodes": len(episodes),
+                "mean_monitor_reward": math.fsum(float(e["r"]) for e in episodes)/len(episodes),
+                "diagnostics": diagnostics}}
+        audit = {"mode": "training", "method_ids": [method_id],
+            "inputs_sha256": provenance["inputs_sha256"],
+            "source_pins_sha256": provenance["source_pins_sha256"],
+            "data_sha256": data_hash, "artifact_state_hash": sidecar["state_hash"],
+            "runtime_checks": {"completed_episode": True, "finite_rewards": True,
+                               "finite_diagnostics": True}}
+        return self._close(registry, plan, permit, [result], audit, provenance)
+
+
+class OptionPolicyEvalPacket(_OptionPolicyPacketStudy):
+    """Evaluate one complete packet and independently replay submitted quantities."""
+    role = "transform"
+
+    def run(self, ctx, inputs):
+        from pathlib import Path
+        from .ledger_studies import WeeklyOptionPortfolioStudy
+        from .rl_env import OptionQuarterEval
+
+        plan, registry, permit, bounded, provenance, params = self._intake(ctx, inputs)
+        study_decl = self.params["study"]
+        policy = study_decl["domain"]["policy"]
+        if policy["mode"] != "evaluation":
+            raise ValueError("evaluation packet requires policy mode=evaluation")
+        spec, evaluation = policy["training"], policy["evaluation"]
+        source = WeeklyOptionPortfolioStudy(params, bounded["inputs"],
+                                            adjustments=bounded.get("adjustments"))
+        source.close_quote_indexes(verify=True)
+        packet = OptionPolicyStudyContract.packet(study_decl)
+        cohort = {"id": packet["id"], "split": evaluation["split"],
+                  "params": copy.deepcopy(params), "payload": "packet"}
+        split_end = max(source.clocks["tail_end_before"], params["bridge"]["protected_end_before"])
+        dataset = self._dataset(source.clocks["history_start"], split_end,
+            evaluation["split"], bounded, study_decl, plan,
+            str(Path(ctx.run_dir)/"artifacts"/"mio-quotes"), [cohort])
+        env_params = self._environment_params(policy, dataset, evaluation["split"])
+        artifact = policy["artifact"]
+        eval_params = {"artifact": artifact["path"], "algo": spec["algo"],
+            "policy": spec["policy"], "env": evaluation["env"], "env_params": env_params,
+            "split": evaluation["split"], "max_episode_steps": evaluation["max_episode_steps"],
+            "n_episodes": 1, "seed": evaluation["seed"],
+            "deterministic": evaluation["deterministic"]}
+        evaluator = OptionQuarterEval("policy_eval", eval_params)
+        evaluated = evaluator.run(ctx, {})
+        sidecar = evaluator._read_sidecar(artifact["path"])
+        if sidecar["state_hash"] != artifact["state_hash"]:
+            raise ValueError("restored policy artifact state differs from its declared pin")
+        episodes = evaluated["episodes"].value["episodes"]
+        if len(episodes) != 1:
+            raise ValueError("evaluation must cover one complete packet")
+        episode = episodes[0]
+        replay = WeeklyOptionPortfolioStudy(params, bounded["inputs"],
+                                            adjustments=bounded.get("adjustments"))
+        steps = replay.policy_steps(policy["method_id"])
+        try:
+            try:
+                request = next(steps)
+            except StopIteration as done:
+                replay_result, request = done.value, None
+            evidence, index = episode["per_entry"], 0
+            while request is not None:
+                if index >= len(evidence):
+                    raise ValueError("evaluation omitted a replayed decision")
+                item = evidence[index]
+                if (item.get("request_hash") != value_hash(request)
+                        or item.get("date") != request["date"]
+                        or item.get("sequence_index") != index
+                        or not isinstance(item.get("executed_quantities"), list)):
+                    raise ValueError("executed quantities do not bind to the exact saved request")
+                try:
+                    request = steps.send(item["executed_quantities"])
+                except StopIteration as done:
+                    replay_result, request = done.value, None
+                index += 1
+            if (index != len(evidence)
+                    or value_hash(replay_result) != value_hash(episode["full_result"])):
+                raise ValueError("independent quantity replay differs from policy account result")
+        finally:
+            steps.close()
+            replay.close_quote_indexes(verify=True)
+        result_value = episode["full_result"]
+        final_open_books = OptionPolicyStudyContract._final_open_books(result_value)
+        if final_open_books != 0 or result_value.get("unbounded_books") != 0:
+            raise ValueError("policy account did not settle within packet")
+        result = {"id": policy["method_id"], "status": "completed",
+            "result": result_value, "replay_parity": True,
+            "policy": {"artifact_path": artifact["path"],
+                       "state_hash": sidecar["state_hash"], "seed": evaluation["seed"]},
+            "entry_evidence": episode["per_entry"]}
+        audit = {"mode": "evaluation", "method_ids": [policy["method_id"],],
+            "inputs_sha256": provenance["inputs_sha256"],
+            "source_pins_sha256": provenance["source_pins_sha256"],
+            "adjustments_sha256": provenance.get("adjustments_sha256"),
+            "artifact_state_hash": sidecar["state_hash"],
+            "data_sha256": value_hash(dataset), "open_books": final_open_books,
+            "unbounded_books": result_value["unbounded_books"],
+            "runtime_checks": {"artifact_state": True, "decision_replay": True,
+                               "settled_account": True}}
+        return self._close(registry, plan, permit, [result], audit, provenance)

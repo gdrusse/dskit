@@ -35458,3 +35458,212 @@ remain unchanged. The new re-entry note records the 24-test synthetic RL module,
 Luna C0/M0 reviews and the one deferred MAD nonsimplex-input Minor. No empirical
 work is authorized; next requires frozen predictive inputs and an approved paired
 study packet.
+
+
+#### ADR-0278 amendment (proposed): full-universe RL quarterly control, 2026-11-02
+
+**Owner direction and status.** The owner rejected the small AAPL pilot: use RL
+on the full universe and select a few already-completed MIO quarters. Proposed
+comparison: all 212 names in 2021 Q2, Q3 and Q4, reusing the existing three MIO
+methods' attested results. Base `65c70d7108d2f4f175e8d9431295fe51ce7828d6`.
+This is a proposed extension, not an implementation or an executed RL run.
+The earlier synthetic control remains intact. Path A0001-A0008 are unchanged;
+A0003 label maturity and sealed windows remain binding. This separate economic
+comparison does not amend A0002's predictive-evaluation metrics or scope.
+
+**Why an extension.** The shipped environment enumerates the Cartesian product
+of leg quantities, requires one decision date, and disallows the LP screen used
+by the saved baseline. Increasing its bounds cannot make the full universe
+tractable. Reuse the economic scorer, SB3 artifact lifecycle, and existing
+`WeeklyOptionPortfolioStudy.policy_steps`; do not rebuild those owners.
+
+**Comparison contract.** Preserve each quarter's exact frozen M53 forecasts,
+212-name list, dated eligibility (including Q4's approved exclusions), quote
+sources, calendar, initial capital/deposits, limits, fills, fees and expiry tails.
+Each policy has its own evolving account; each quarter starts fresh, exactly as
+its saved MIO baseline. No quarter compounding. Keep all three method settings
+separate, with no method or quarter selection based on the observed outcome.
+Recompute the baseline's existing LP group screen through one shared parent
+owner, with identical tolerance and all-screened fallback. It only determines
+eligible groups; the mixed-integer portfolio solver never chooses RL quantities.
+This preserves the baseline's screening limitation, not unscreened optimality.
+
+**Action and horizon change.** Replace exhaustive portfolio enumeration with a
+structured bounded integer proposal over the retained group/leg slots, retaining
+cash and every feasible allocation within the baseline-screened groups. The first implementation must demonstrate
+coverage on exhaustive small fixtures and usable memory/runtime at full size
+before training. No top-K pruning or prefix mask that removes a later hedge.
+Validate complete proposals using the existing scorer. Invalid proposals execute
+cash for that rejected new entry and are recorded separately, with zero new-entry
+reward; prior open books still settle into quarterly account P&L. No repair
+optimizer or invented penalty. Freeze the precise schema and policy architecture after
+this feasibility gate, before any empirical fitting.
+Keep training's one-entry-to-expiry reward: filled net P&L minus the existing
+uncertainty and deviation deductions, deposits excluded. Frozen-policy quarterly
+evaluation carries open books through the existing account generator; it does
+not train RL on later opportunities or change to log growth. Report per-entry
+decision scores separately from realized quarterly profit/drawdown and runtime.
+
+**Implementation boundary.** Extend existing `dskit/pipeline/libs/sb3.py` for the
+generic structured-action mechanism, `dskit/pipeline/libs/pyomo.py` for the shared
+screen API, and `children/index_options/index_options/rl_env.py` for the thin
+entry adapter and quarterly evaluator. Extend existing focused tests and docs.
+A new real-data JSON configuration is deferred until exact training inputs,
+architecture/budget, seeds 11/29/47 and study packet are frozen. Use the existing
+study-protocol and onboarding owners; no second registry, fit loop or source
+reader. Any additional public entry point or file needs a completed sweep and
+recorded manifest. The sweep command attempted on this base timed out in its
+cross-ref search; its output is not proof that a new capability is absent.
+
+**Data and reuse gates.** Identify permitted earlier training forecasts with
+as-of provenance and mature labels before fitting. Never backcast a later fitted
+predictor or train on these evaluation-quarter rewards. Verify economic/runtime
+compatibility, prepared candidate identities and screening against the saved
+baseline before reuse; a failed parity check blocks the comparison, not silently
+reruns or changes MIO. Existing quarter reports remain retrospective development
+results. Q4 eligibility differs from Q2/Q3 and remains disclosed.
+
+**Evidence and compute.** On 2026-11-02, read-only `RunAttestation` checks confirmed
+all three runs completed with attested close receipts. Each result SHA256 matched
+its committed quarter artifact index. Independent GPT-6 Luna design audit
+`/root/luna_full_universe_design` confirmed the catalogue/horizon gaps and the
+reusable screen/account seams, and identified feasibility/sample-efficiency as
+unproven. This is not an implementation acceptance verdict. Resource probe at
+19:13 UTC found the Mac online; desktop physical free RAM was about 1.2 GiB.
+Use the mac-compute-worker policy for eligible independent policy fits after a
+representative compatibility/timing check; all research writes stay in WSL and
+registry operations remain serial there. No worker dispatch or RL fit occurred.
+Owner approval of this changed action/evaluation contract precedes code; focused
+TDD and two fresh Luna final lenses precede implementation completion.
+
+
+**Owner approval / implementation manifest, 2026-11-02.** Owner selected
+"Build the extension, then run the matched comparison". The approved extension
+uses parent `StructuredDecisionEnv` in existing `libs/sb3.py` (bounded coordinate
+replacement, explicit finish, complete-vector submission, fixed feature
+transform and reward scale), `TransportPortfolioSolve.candidate_screen` and
+`TransportActionScore.check_feasible` in existing `libs/pyomo.py`, and child
+`OptionStructuredEntryEnv` / `OptionQuarterEval` in existing `rl_env.py`.
+`OptionPolicyStudyContract` in existing `mio_contract.py` binds policy training
+or evaluation under the existing study protocol and bounded `MIOPacketInputs`
+reader; additional result wiring stays within existing child files. Update the
+matching existing focused tests/docs only. No completed MIO claim is reopened.
+Earlier 2019 forecasts have the same 212-name declaration; H2's missing SMCI
+forecasts are availability exclusions, not a reduced requested universe. Their
+producer fits are earlier than their forecast origins; the imported-byte and
+retrospective recipe-selection limitations remain disclosed. Exact source,
+training packet and run-budget pins must be frozen before empirical fitting.
+
+
+**Implementation status and focused evidence (2026-11-02).** The owner approved
+this bounded extension after the proposal above. This approval is separate from
+the earlier synthetic-only `OptionEntryEnv` control. The real-data scope is an
+earlier policy fit on pinned M53 inference inputs with labels mature before
+2020-01-01, then frozen-policy comparisons for 2021 Q2, Q3 and Q4 using saved
+inference rows and the already-attested MIO quarter evidence. Preserve the full
+212-name declaration, all three methods (`w1_003_shock10_lp`, `nominal_lp`,
+`w1_003_lp`) and their economic settings. The saved 2019 H2 training source
+omits SMCI; 2021 Q4 follows its separate approved eligibility-v2 source, which
+excludes the reviewed IBM/O cases (92/30 source counts). No predictor retraining/rescoring, provider pull, MIO
+claim reopening, or sealed-window access is authorized.
+
+The reusable screen is `TransportPortfolioSolve.candidate_screen(inputs)`,
+which returns the same metadata as model construction: an LP bound per group,
+retaining groups whose bounds are strictly greater than `parity_tolerance`; if
+none pass, the highest-bound group is retained as fallback. This screen can
+remove a group that is valuable only in combination, a limitation preserved from
+MIO. `TransportActionScore.check_feasible(quantities)` validates a completed
+vector against full portfolio constraints; RL does not call the mixed-integer
+solver to select quantities. `StructuredDecisionEnv` uses the fixed
+`MultiDiscrete([finish, coordinate, quantity])` action and a linear-size padded
+observation. Coordinate edits have zero reward; complete vectors are submitted
+to the child scorer. `training_diagnostics()` persists cumulative completed
+episodes, actual submitted cash, bound-invalid episodes, accepted edits and
+scaled terminal-reward sum across reset and close. The option subclass adds
+separate domain-invalid and executed-cash counts without changing SB3 outputs.
+
+The child adapter is `index_options.rl_env:OptionStructuredEntryEnv` with shared
+payload schema `option-structured-cohorts/v2`. Training episodes contain one
+policy request and use `WeeklyOptionPortfolioStudy.policy_steps`; evaluation uses
+`index_options.rl_env:OptionQuarterEval`, which holds one funded account across
+chronological requests and settles accepted open books through the quarter. The
+closed `index_options.mio_contract:OptionPolicyStudyContract` binds training and
+evaluation; `OptionPolicyTrainPacket` and `OptionPolicyEvalPacket` reuse
+`MIOPacketInputs`, `MIOPacketStudy.validate_intake`, and generic
+`StudyPacketOpen` / `StudyPacketClose`. The intake helper validates descriptor
+metadata and the canonical run-local artifact root; the quote-index reader
+verifies actual bytes when opened. Training and quarterly outcomes remain
+separate: per-entry scores do not replace the full account result.
+
+Read-only source audit confirmed the saved 2019 inference schedule is
+out-of-time: H1 fold 2 trained through 2018-12-31 and scored 2019-01-02 through
+2019-06-28; H2 fold 2 trained through 2019-06-28 and scored 2019-07-01 through
+2019-12-31. The source pin is `mio-broad-2019-inputs-full-20261027`, snapshot
+`20261028T031020Z-backfill-9c2a6ed5`, with the all-212-name declaration; H2
+omits SMCI. 2021 Q4 follows its separate approved eligibility-v2 source,
+which excludes the reviewed IBM/O cases (92/30 source counts). The original producer did not attest output bytes at run time;
+current onboarded bytes are pinned and preparation checks pass. This limits
+provenance claims even though the fit cutoff precedes the forecast origins.
+
+Focused synthetic checks recorded so far: `tests/pipeline_libs/test_sb3.py`,
+125 passed / 12 skipped; `children/index_options/tests/test_rl_env.py`, 33 passed
+(reported by its owner); `children/index_options/tests/test_ledger_studies.py`,
+273 passed; `children/index_options/tests/test_mio_packets.py`, 74 passed;
+`tests/pipeline_libs/test_pyomo.py`, 472 passed / 7 skipped (per its owner);
+the MIO saved JSON-spine/attested-comparison check, 2 passed. Ruff and
+`git diff --check` passed for the owned SB3 change; the ledger file Ruff check
+passed with the existing D102/E731/E702 findings excluded. RED evidence is
+partial: generic diagnostics and shared MIO intake-helper tests failed before
+the corresponding APIs existed; option packet/quarter contract tests were added
+with implementation. The focused MIO packet suite now includes a synthetic
+end-to-end train-to-attested-close-to-quarter-evaluation test: it trains PPO,
+closes training and a three-method baseline, restores the artifact, evaluates a
+quarter, checks request-hash/full-quantity replay parity and final settlement,
+and closes evaluation. These are pipeline/contract checks, not real-data
+empirical outcomes. `tests/docs/test_budgets.py` passes 4 tests after the docs
+updates. No independent final code review has completed. The
+`WeeklyOptionPortfolioStudy` AST hash is unchanged from its prior source:
+`04d086cd26fa537aecf59f8355ff9adc5c75e0e100174a54647f4268604b1487`.
+
+A warm generic-environment construction/reset microbenchmark measured 0.344 ms
+for 212 coordinates and 0.688 ms for 2,120 coordinates; padded observations
+used 1,772 and 17,036 bytes, respectively. This demonstrates only the generic
+adapter's fixed, linear observation shape, not an option-data or full-universe
+build. No exhaustive-catalogue timing comparison, representative real-data build,
+policy fit or quarter evaluation has run; therefore no empirical runtime or ETA
+is claimed.
+
+
+**Implementation acceptance matrix (checkpoint, 2026-11-02).** This records
+contract coverage only; real-data qualification remains open.
+
+- Entry points: generic `StructuredDecisionEnv`, option `OptionStructuredEntryEnv`
+and `OptionQuarterEval`, plus `OptionPolicyStudyContract` and its train/eval
+packet nodes are implemented. Synthetic focused tests cover training and
+quarter-evaluation entry points; no real-data invocation has run.
+- Read/split/maturity: versioned cohort payloads, bounded input intake, disjoint
+training/evaluation windows and maturity checks are exercised by synthetic
+contract fixtures. Proposed 2019/2021 packet bounds and the 2019-12-07 maturity
+candidate remain unfinalized; inventory/config templates are unlaunchable.
+- Saved inference and baseline pins: 2019 H1/H2 and Q2/Q3/Q4 receipt/config
+identities and the three-method scope are recorded in the inventory. The
+end-to-end fixture closes a three-method baseline; no saved real inference rows
+have been fit or replayed by the policy.
+- Train artifact/receipt: synthetic PPO training, artifact restoration, and
+attested training close are covered by the new MIO packet integration test.
+Real policy artifact and receipt do not exist yet.
+- Scoring and feasibility: option reward is computed from the completed
+submitted vector; full-vector constraints are checked through the shared
+`TransportActionScore.check_feasible`, while `candidate_screen` preserves the
+same LP screen as MIO. Synthetic fixtures cover the path; real option action
+coverage and filled-book outcomes are unmeasured.
+- Invalid cash and bounds: generic cash/bounds diagnostics and child domain
+invalid/executed-cash counters are implemented. Synthetic tests cover invalid
+submission semantics; no empirical invalid rate is available.
+- Quarter carry/replay: synthetic end-to-end evaluation carries one funded
+account across chronological requests, checks request hashes and full quantity
+vectors, and settles final holdings before the attested close. No saved 2021
+quarter was evaluated with the policy.
+- Diagnostics and failures: generic cumulative diagnostics remain readable
+across reset/close; packet contract tests cover attested close and fail-closed
+checks. No real-data partial-failure behavior has been observed.

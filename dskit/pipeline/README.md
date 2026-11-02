@@ -299,6 +299,15 @@ padded numeric observations, fixed reward scaling and explicit cash aliases.
 SB3 training/evaluation honors optional environment validation hooks; a hashed
 sidecar marker preserves legacy artifacts while enforcing marked compatibility.
 
+
+`libs.sb3.StructuredDecisionEnv` supplies a lazy bounded integer-vector adapter
+with fixed-size observations and a `MultiDiscrete([finish, coordinate, quantity])`
+action. Coordinate replacement avoids constructing a Cartesian action catalogue;
+the child validates and scores each completed vector. Out-of-padding or
+over-capacity actions submit cash immediately. Its `training_diagnostics()`
+returns a copy of cumulative episode, cash, invalid-bound and edit counts plus
+the scaled terminal-reward sum; resets and close preserve the counters.
+
 `option_pricing.OptionScenarioReprice` (by import path) fully reprices a
 JSON-declared European option book under named forward, IV, time and rate
 shocks. Each leg supplies its own strike, IV, days to expiry, signed quantity

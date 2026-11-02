@@ -1,0 +1,452 @@
+{
+  "authorization": "Owner-approved matched development comparison on earlier M53 forecasts and saved 2021 Q2-Q4 MIO outcomes; no predictor fitting/rescoring, provider pulls, completed MIO claim reopening, or sealed-window access.",
+  "evaluation_sources": [
+    {
+      "base_config": "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q2-complete.json",
+      "baseline_config_sha256": "6ef07eff1069f680a6a170c1cb9dcc95ef0e6bad105cd86b6c2e1a31124cc913",
+      "baseline_run_dir": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q2/mio-2021q2-complete-walkforward-frozen-m53-development-2021-06-30-7ef19de4",
+      "close_receipt_sha256": "d34467f5bef67e3ec136be0ed166782a1876fc7dd36552cef0cf5f8fce63949d",
+      "common_economic_params": {
+        "correlation_lookback": 60,
+        "correlation_min_pairs": 20,
+        "correlation_threshold": 0.6,
+        "deposit": 1000.0,
+        "deposit_every_days": 14,
+        "fill_sizing": "available_size",
+        "initial": 10000.0,
+        "solver": {
+          "absolute_gap": 50,
+          "group_screen": "lp",
+          "parity_tolerance": 0.001,
+          "relative_gap": 0.01,
+          "solver": "appsi_highs",
+          "solver_options": {
+            "mip_abs_gap": 50,
+            "mip_rel_gap": 0.01,
+            "threads": 1,
+            "time_limit": 900
+          },
+          "timeout_policy": "return"
+        },
+        "weekly_fraction": 0.25
+      },
+      "packet_id": "dev_2021q2_complete_20261101",
+      "quarter": "2021-Q2",
+      "requested_symbols": 212,
+      "resolved_document_hash": "052cf9e20b6b3c4e91e689335e64117a3ae7d565bcc63d3f1300142f965143d3",
+      "results_sha256": "b80d177bb986ccb9e244189120f9a8afa35f2abc3fa2b660ad08a4df024bb3df",
+      "selected_method_params": {
+        "component_fraction": null,
+        "id": "nominal_lp",
+        "name_fraction": 1,
+        "portfolio_fraction": 1,
+        "rho": 0,
+        "short_notional_fraction": 0.2
+      },
+      "source": "mio-2021q2-complete-inputs",
+      "source_manifest_sha256": "a16a04d6c68f2ef8ad34d83bbb03761ffac2c3b4f83799b86b037fa4d9987e69",
+      "source_pins": {
+        "bars": {
+          "file_count": 212,
+          "manifest_sha256": "80cf3c493827742d3e581b2cd0c6c3ebadce54d5852db85a2b2f48f20635c23a",
+          "other_files_bound_by_manifest": 212,
+          "snapshot": "20261101T075314Z-backfill-80cf3c49",
+          "source": "mio-market-complete-20261101"
+        },
+        "chain": {
+          "file_count": 212,
+          "manifest_sha256": "80cf3c493827742d3e581b2cd0c6c3ebadce54d5852db85a2b2f48f20635c23a",
+          "other_files_bound_by_manifest": 212,
+          "snapshot": "20261101T075314Z-backfill-80cf3c49",
+          "source": "mio-market-complete-20261101"
+        },
+        "contexts": {
+          "file_count": 1,
+          "file_pins": {
+            "shared": "contexts.parquet"
+          },
+          "manifest_sha256": "a16a04d6c68f2ef8ad34d83bbb03761ffac2c3b4f83799b86b037fa4d9987e69",
+          "other_files_bound_by_manifest": 0,
+          "snapshot": "20261101T080609Z-backfill-a16a04d6",
+          "source": "mio-2021q2-complete-inputs"
+        },
+        "corporate_actions": {
+          "file_count": 2,
+          "file_pins": {
+            "memo": "TTD_Split_48744.pdf",
+            "shared": "adjustments.json"
+          },
+          "manifest_sha256": "2629156d869d5f0c878b61b8c6c96dac9084b22e119e4d0f1f48c28ea4c19b11",
+          "other_files_bound_by_manifest": 0,
+          "snapshot": "20261031T162846Z-backfill-2629156d",
+          "source": "mio-ttd-split-occ-48744-20261031"
+        },
+        "forecasts": {
+          "file_count": 1,
+          "file_pins": {
+            "shared": "forecasts.parquet"
+          },
+          "manifest_sha256": "a16a04d6c68f2ef8ad34d83bbb03761ffac2c3b4f83799b86b037fa4d9987e69",
+          "other_files_bound_by_manifest": 0,
+          "snapshot": "20261101T080609Z-backfill-a16a04d6",
+          "source": "mio-2021q2-complete-inputs"
+        },
+        "sessions": {
+          "file_count": 1,
+          "file_pins": {
+            "shared": "sessions.parquet"
+          },
+          "manifest_sha256": "80cf3c493827742d3e581b2cd0c6c3ebadce54d5852db85a2b2f48f20635c23a",
+          "other_files_bound_by_manifest": 0,
+          "snapshot": "20261101T075314Z-backfill-80cf3c49",
+          "source": "mio-market-complete-20261101"
+        }
+      },
+      "window": {
+        "end_before": "2021-07-01",
+        "start": "2021-04-01"
+      }
+    },
+    {
+      "base_config": "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q3-complete.json",
+      "baseline_config_sha256": "a0a8cd793c3a9816a079ffb9ce9fcaf896cf28578404c8a0ccd934aff1d01b93",
+      "baseline_run_dir": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q3/mio-2021q3-complete-walkforward-frozen-m53-development-2021-09-30-5d31e90e",
+      "close_receipt_sha256": "378da46164741d4bfd6ede6c566439501bba4ce42b384d47f2d41a02b8213786",
+      "common_economic_params": {
+        "correlation_lookback": 60,
+        "correlation_min_pairs": 20,
+        "correlation_threshold": 0.6,
+        "deposit": 1000.0,
+        "deposit_every_days": 14,
+        "fill_sizing": "available_size",
+        "initial": 10000.0,
+        "solver": {
+          "absolute_gap": 50,
+          "group_screen": "lp",
+          "parity_tolerance": 0.001,
+          "relative_gap": 0.01,
+          "solver": "appsi_highs",
+          "solver_options": {
+            "mip_abs_gap": 50,
+            "mip_rel_gap": 0.01,
+            "threads": 1,
+            "time_limit": 900
+          },
+          "timeout_policy": "return"
+        },
+        "weekly_fraction": 0.25
+      },
+      "packet_id": "dev_2021q3_complete_20261101",
+      "quarter": "2021-Q3",
+      "requested_symbols": 212,
+      "resolved_document_hash": "94d33ae4d93cb7accf4b949beec201bce365e38c4ad6a68ae27aab2d7dfb0be7",
+      "results_sha256": "b965bf34ad05d48f7ca8e507b00f1d73b45c8066ab90ec4009f5dee5efa7e917",
+      "selected_method_params": {
+        "component_fraction": null,
+        "id": "nominal_lp",
+        "name_fraction": 1,
+        "portfolio_fraction": 1,
+        "rho": 0,
+        "short_notional_fraction": 0.2
+      },
+      "source": "mio-2021q3-complete-inputs",
+      "source_manifest_sha256": "77dbfc42bb2e15f18f5cdb65426254f7494ddd858be7de4bfcd5a8f648ad4107",
+      "source_pins": {
+        "bars": {
+          "file_count": 212,
+          "manifest_sha256": "80cf3c493827742d3e581b2cd0c6c3ebadce54d5852db85a2b2f48f20635c23a",
+          "other_files_bound_by_manifest": 212,
+          "snapshot": "20261101T075314Z-backfill-80cf3c49",
+          "source": "mio-market-complete-20261101"
+        },
+        "chain": {
+          "file_count": 212,
+          "manifest_sha256": "80cf3c493827742d3e581b2cd0c6c3ebadce54d5852db85a2b2f48f20635c23a",
+          "other_files_bound_by_manifest": 212,
+          "snapshot": "20261101T075314Z-backfill-80cf3c49",
+          "source": "mio-market-complete-20261101"
+        },
+        "contexts": {
+          "file_count": 1,
+          "file_pins": {
+            "shared": "contexts.parquet"
+          },
+          "manifest_sha256": "77dbfc42bb2e15f18f5cdb65426254f7494ddd858be7de4bfcd5a8f648ad4107",
+          "other_files_bound_by_manifest": 0,
+          "snapshot": "20261101T083050Z-backfill-77dbfc42",
+          "source": "mio-2021q3-complete-inputs"
+        },
+        "corporate_actions": {
+          "file_count": 2,
+          "file_pins": {
+            "memo": "occ-memos.json",
+            "shared": "adjustments.json"
+          },
+          "manifest_sha256": "35a5abc22b96e70a474e6742b131200c72386b542b458ed6d2d854c89eafbfee",
+          "other_files_bound_by_manifest": 0,
+          "snapshot": "20261101T013442Z-backfill-35a5abc2",
+          "source": "mio-2021q4-occ-splits"
+        },
+        "forecasts": {
+          "file_count": 1,
+          "file_pins": {
+            "shared": "forecasts.parquet"
+          },
+          "manifest_sha256": "77dbfc42bb2e15f18f5cdb65426254f7494ddd858be7de4bfcd5a8f648ad4107",
+          "other_files_bound_by_manifest": 0,
+          "snapshot": "20261101T083050Z-backfill-77dbfc42",
+          "source": "mio-2021q3-complete-inputs"
+        },
+        "sessions": {
+          "file_count": 1,
+          "file_pins": {
+            "shared": "sessions.parquet"
+          },
+          "manifest_sha256": "80cf3c493827742d3e581b2cd0c6c3ebadce54d5852db85a2b2f48f20635c23a",
+          "other_files_bound_by_manifest": 0,
+          "snapshot": "20261101T075314Z-backfill-80cf3c49",
+          "source": "mio-market-complete-20261101"
+        }
+      },
+      "window": {
+        "end_before": "2021-10-01",
+        "start": "2021-07-01"
+      }
+    },
+    {
+      "base_config": "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q4-eligibility-v2.json",
+      "baseline_config_sha256": "502417df96f227f37dea168753991d9e387497ce1f729abd60302a82b6461d2a",
+      "baseline_run_dir": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/runs/mio-q4-eligibility-v2/mio-2021q4-eligibility-v2-walkforward-frozen-m53-development-2021-12-31-76d6c632",
+      "close_receipt_sha256": "5c40cc22f0bfd0b291caa3339912df55e134787559d49b09ad44ee61b6fbf649",
+      "common_economic_params": {
+        "correlation_lookback": 60,
+        "correlation_min_pairs": 20,
+        "correlation_threshold": 0.6,
+        "deposit": 1000.0,
+        "deposit_every_days": 14,
+        "fill_sizing": "available_size",
+        "initial": 10000.0,
+        "solver": {
+          "absolute_gap": 50,
+          "group_screen": "lp",
+          "parity_tolerance": 0.001,
+          "relative_gap": 0.01,
+          "solver": "appsi_highs",
+          "solver_options": {
+            "mip_abs_gap": 50,
+            "mip_rel_gap": 0.01,
+            "threads": 1,
+            "time_limit": 900
+          },
+          "timeout_policy": "return"
+        },
+        "weekly_fraction": 0.25
+      },
+      "eligibility_source": "approved eligibility-v2; reviewed IBM/O exclusions with source counts 92/30",
+      "packet_id": "dev_2021q4_eligibility_v1_20261101",
+      "quarter": "2021-Q4",
+      "requested_symbols": 212,
+      "resolved_document_hash": "4f1bed0c95e02f20548eef8b462df50e583d3c1c4dc33f1110839624efde3987",
+      "results_sha256": "08d6631ecf4fac48f9d49746f8b7d914787d76fdeaa7294a3674188e73856f2f",
+      "selected_method_params": {
+        "component_fraction": null,
+        "id": "nominal_lp",
+        "name_fraction": 1,
+        "portfolio_fraction": 1,
+        "rho": 0,
+        "short_notional_fraction": 0.2
+      },
+      "source_pins": {
+        "bars": {
+          "file_count": 212,
+          "manifest_sha256": "80cf3c493827742d3e581b2cd0c6c3ebadce54d5852db85a2b2f48f20635c23a",
+          "other_files_bound_by_manifest": 212,
+          "snapshot": "20261101T075314Z-backfill-80cf3c49",
+          "source": "mio-market-complete-20261101"
+        },
+        "chain": {
+          "file_count": 212,
+          "manifest_sha256": "09d71fc276b6123c9012b9d8a5a4311493689e7b9207038e4ecb5e317b65e123",
+          "other_files_bound_by_manifest": 212,
+          "snapshot": "20261101T111540Z-backfill-09d71fc2",
+          "source": "mio-q4-tail-v2-20261101"
+        },
+        "contexts": {
+          "file_count": 1,
+          "file_pins": {
+            "shared": "contexts.parquet"
+          },
+          "manifest_sha256": "abcda46553aac4bffc4dcd64deb37d3ef00adecaa2329b9f0c6ea12cc116d168",
+          "other_files_bound_by_manifest": 0,
+          "snapshot": "20261101T133541Z-backfill-abcda465",
+          "source": "mio-q4-eligibility-v2-20261101"
+        },
+        "corporate_actions": {
+          "file_count": 2,
+          "file_pins": {
+            "memo": "occ-memos.json",
+            "shared": "adjustments.json"
+          },
+          "manifest_sha256": "35a5abc22b96e70a474e6742b131200c72386b542b458ed6d2d854c89eafbfee",
+          "other_files_bound_by_manifest": 0,
+          "snapshot": "20261101T013442Z-backfill-35a5abc2",
+          "source": "mio-2021q4-occ-splits"
+        },
+        "forecasts": {
+          "file_count": 1,
+          "file_pins": {
+            "shared": "forecasts.parquet"
+          },
+          "manifest_sha256": "abcda46553aac4bffc4dcd64deb37d3ef00adecaa2329b9f0c6ea12cc116d168",
+          "other_files_bound_by_manifest": 0,
+          "snapshot": "20261101T133541Z-backfill-abcda465",
+          "source": "mio-q4-eligibility-v2-20261101"
+        },
+        "sessions": {
+          "file_count": 1,
+          "file_pins": {
+            "shared": "sessions.parquet"
+          },
+          "manifest_sha256": "80cf3c493827742d3e581b2cd0c6c3ebadce54d5852db85a2b2f48f20635c23a",
+          "other_files_bound_by_manifest": 0,
+          "snapshot": "20261101T075314Z-backfill-80cf3c49",
+          "source": "mio-market-complete-20261101"
+        }
+      },
+      "window": {
+        "end_before": "2022-01-01",
+        "start": "2021-10-01"
+      }
+    }
+  ],
+  "frozen_runtime": {
+    "code_hashes": "PENDING final code freeze",
+    "dependencies": "PENDING final environment lock",
+    "policy_budgets": "PENDING scale preflight",
+    "training_artifact_receipts": "PENDING sequential training runs"
+  },
+  "inventory_sweep": {
+    "2019_source_study": [
+      "mio-2019-broad212.json",
+      "mio-2019-broad212-available-size-20261029.json"
+    ],
+    "2021_baseline_studies": [
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q2-complete.json",
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q3-complete.json",
+      "children/index_options/configs/mio-2021h2-walkforward-20261101/run-mio-2021q4-eligibility-v2.json"
+    ],
+    "discarded_for_comparison": "mio-2019-broad212-available-size-20261029.json contains w1_003_component25_lp and is not the desired three-method policy training base; the standard broad212 study also contains that method and is only the source/intake base. Select one method per policy packet.",
+    "existing_rl_config": "children/index_options/configs/rl-entry-synthetic.json"
+  },
+  "limitations": [
+    "No empirical full-universe build, policy fit, or quarter evaluation has run.",
+    "No exhaustive-catalogue comparison or runtime ETA is available.",
+    "Existing imported 2019 forecast bytes were not attested by the original producer at run time; currently onboarded bytes are pinned and preparation checks pass.",
+    "2019 H2 has an SMCI forecast availability gap; 2021 Q4 eligibility-v2 separately excludes IBM/O (92/30 source counts).",
+    "A 150000-coordinate action bound is only a provisional shape hint; a saved-receipt scan found 136308 maximum solver variables and 68499 candidate contracts, neither of which is a validated action dimension."
+  ],
+  "methods": [
+    "w1_003_shock10_lp",
+    "nominal_lp",
+    "w1_003_lp"
+  ],
+  "policy_run_matrix": {
+    "evaluation_runs": 27,
+    "methods_and_seeds": "Cartesian product of three listed methods and seeds 11/29/47",
+    "ordering": "serialize each training run; attest close receipt and state hash; then evaluate its frozen artifact on Q2, Q3, Q4 in chronological order. Do not run future eval packets before their predecessor links are bound.",
+    "training_runs": 9
+  },
+  "registry": {
+    "path": "/home/russell/data/index_options/mio-2021h2-walkforward-20261101/coverage-v2/protocol/exposure-registry.sqlite",
+    "id": "df32f3df-3963-4de0-b1d8-04016c246fb4",
+    "domain": "index_options_MIO_complete_coverage_20261101",
+    "read_only_inventory_revision": 16,
+    "active_claim": null,
+    "current_relevant_packets": [
+      "dev_2021q2_complete_20261101",
+      "dev_2021q3_complete_20261101",
+      "dev_2021q4_complete_20261101"
+    ],
+    "registry_notes": "Verified read-only SQLite snapshot: revision 16, active claim null, frontier 3. This is the active registry for new extension packets. Existing Q2/Q3/Q4 development packets remain in schedule; the eligible Q4 baseline receipt is sourced from a separate registry but matches the Q4 window exactly. The previously closed MIO 2019 full-year receipt is provenance/prior-exposure evidence only, not a new training packet or active registry.",
+    "planned_lifecycle": "Append exactly one 2019-01-02..2019-10-01 policy-training development packet after the current Q4 packet using StudyProtocolControl import_development with the old attested 2019 close receipt as prior-exposure evidence and finalized read_bounds. Then serialize fresh claims per method/seed against that training packet; for each claim bind inputs and execution, train, close, publish and dispose/review before starting the next. After all training packets close, serialize fresh claims for each method/seed against each existing Q2/Q3/Q4 development packet, each with its exact attested quarter baseline receipt and matching window. Preserve all old closed claims and the full Q4 eligibility receipt identity; never substitute or rewrite the old Q4 complete claim.",
+    "workflow": "Inventory only; no registry action has run. Re-read and verify revision/frontier before any authorized packet action, then follow the serialized plan above. Do not append an overlapping 2019 packet to the historical primary MIO registry."
+  },
+  "requested_universe": {
+    "policy": "Preserve all 212 requested names; disclose source availability and approved quarter eligibility exclusions.",
+    "symbol_count": 212,
+    "universe_sha256_prefix": "1bcc69eb5"
+  },
+  "scale_gate": {
+    "all_bounds": "PENDING read-bound and shape preflight; do not estimate or invent bounds.",
+    "evidence": "First saved 2019 nominal receipt has 123752 solver variables in the Jan 2 decision; actual action coordinate count is expected slightly smaller but remains unmeasured. This already exceeds the earlier 100000 draft pad. Derive max_coordinates/max_features/max_quantity/max_edits from persisted source metadata for every training and evaluation date, then measure representative memory/runtime before freezing budgets or launching.",
+    "maturity_note": "The declared maturity bound must equal or precede packet read_tail_end_before. Candidate 2019-12-07 from the planned 2019-10-01 packet end plus 60-day maximum DTE and 7-day padding must be confirmed in the final plan.",
+    "resource_note": "Parent probe at 19:55 UTC: WSL available memory 6.97 GiB; Windows 1.69 GiB (shared with WSL). Mac was about 90% free but is not eligible as-is: indexed quote descriptors retain WSL absolute artifact/index paths and there is no verified translation/remote registry wrapper. Do not stage data or run RL there.",
+    "result": "not run"
+  },
+  "seeds": [
+    11,
+    29,
+    47
+  ],
+  "status": "read-only inventory and unlaunchable config template prepared; no registry mutation or real-data RL run",
+  "training_source": {
+    "base_config": "children/index_options/configs/mio-2019-broad212.json",
+    "base_config_sha256": "7e5bdb7057d041ef8947d5ee22942ebb55d01d63887fabd8ce7ba5254261804e",
+    "forecast_context": "saved H1/H2 M53 source; fold 2; H1 trained through 2018-12-31, scored 2019-01-02..2019-06-28; H2 trained through 2019-06-28, scored 2019-07-01..2019-12-31; H2 has no SMCI forecast",
+    "label_maturity_end_before": "2019-12-07 candidate derived from the proposed 2019-10-01 packet end, 60-day maximum DTE, and 7-day tail padding; confirm against final packet read_bounds before freezing. Strictly before 2020-01-01.",
+    "manifest_sha256": "9c2a6ed5d0db549a8b8d6d0a7d18a7e1db893b169c1ddafebad470e31fff436a",
+    "policy_window": {
+      "end_before": "2019-10-01",
+      "start": "2019-01-02"
+    },
+    "snapshot": "20261028T031020Z-backfill-9c2a6ed5",
+    "source": "mio-broad-2019-inputs-full-20261027",
+    "source_pins": {
+      "bars": {
+        "file_count": 212,
+        "manifest_sha256": "9c2a6ed5d0db549a8b8d6d0a7d18a7e1db893b169c1ddafebad470e31fff436a",
+        "other_files_bound_by_manifest": 212,
+        "snapshot": "20261028T031020Z-backfill-9c2a6ed5",
+        "source": "mio-broad-2019-inputs-full-20261027"
+      },
+      "chain": {
+        "file_count": 212,
+        "manifest_sha256": "172dcbc0a47795c575838b757edbfd9cc5151595f7fe09472863a98d77a00363",
+        "other_files_bound_by_manifest": 212,
+        "snapshot": "20261027T133008Z-backfill-172dcbc0",
+        "source": "theta-exact-expiry-archive"
+      },
+      "contexts": {
+        "file_count": 1,
+        "file_pins": {
+          "shared": "contexts.parquet"
+        },
+        "manifest_sha256": "9c2a6ed5d0db549a8b8d6d0a7d18a7e1db893b169c1ddafebad470e31fff436a",
+        "other_files_bound_by_manifest": 0,
+        "snapshot": "20261028T031020Z-backfill-9c2a6ed5",
+        "source": "mio-broad-2019-inputs-full-20261027"
+      },
+      "forecasts": {
+        "file_count": 1,
+        "file_pins": {
+          "shared": "forecasts.parquet"
+        },
+        "manifest_sha256": "9c2a6ed5d0db549a8b8d6d0a7d18a7e1db893b169c1ddafebad470e31fff436a",
+        "other_files_bound_by_manifest": 0,
+        "snapshot": "20261028T031020Z-backfill-9c2a6ed5",
+        "source": "mio-broad-2019-inputs-full-20261027"
+      },
+      "sessions": {
+        "file_count": 1,
+        "file_pins": {
+          "shared": "sessions.parquet"
+        },
+        "manifest_sha256": "9c2a6ed5d0db549a8b8d6d0a7d18a7e1db893b169c1ddafebad470e31fff436a",
+        "other_files_bound_by_manifest": 0,
+        "snapshot": "20261028T031020Z-backfill-9c2a6ed5",
+        "source": "mio-broad-2019-inputs-full-20261027"
+      }
+    },
+    "training_mio_receipt": "Already-exposed development packet dev_2019_full_year_weekly in the historical MIO registry; prior exposure evidence only. New 2019 Jan-Oct policy packet must be imported into the active coverage-v2 registry using its attested close receipt and finalized read_bounds."
+  }
+}

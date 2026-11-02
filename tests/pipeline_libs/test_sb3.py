@@ -17,6 +17,7 @@ from dskit.pipeline.libs.sb3 import (
     Sb3EvalEpisodes,
     Sb3Policy,
     Sb3Train,
+    StructuredDecisionEnv,
     register,
 )
 from dskit.pipeline.node import Node, NodeContext, NodeKindRegistry, TrainableNode
@@ -593,6 +594,214 @@ def test_finite_decision_env_refuses_float32_overflow_without_warning():
         warnings.simplefilter("error")
         with pytest.raises(ValueError, match="float32"):
             env.reset(seed=2)
+
+
+class ToyStructuredEnv(StructuredDecisionEnv):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.submitted = []
+
+    def _start_episode(self, rng):
+        return [float(rng.random())], [2, 1, 0], {"start": 1}
+
+    def _finish_episode(self, quantities):
+        self.submitted.append(tuple(quantities))
+        return sum(quantities), {"submitted": list(quantities)}
+
+
+def test_structured_decision_env_reaches_full_vector_and_auto_finishes():
+    env = ToyStructuredEnv(
+        max_coordinates=3, max_quantity=2, max_features=2,
+        reward_scale=2, max_edits=3, feature_transform="identity",
+    )
+    obs, info = env.reset(seed=4)
+    assert info == {"start": 1}
+    assert env.action_space.nvec.tolist() == [2, 3, 3]
+    assert obs.shape == env.observation_space.shape
+    assert obs[1] == 3
+    assert obs[4:7].tolist() == [2.0, 1.0, 0.0]
+    assert obs[0] == 1 and obs[2] > 0 and obs[3] == 0
+    _, reward, terminated, truncated, _ = env.step(np.array([0, 0, 2], dtype=np.int64))
+    assert (reward, terminated, truncated) == (0, False, False)
+    assert env.submitted == []
+    _, reward, terminated, truncated, _ = env.step(np.array([0, 1, 1], dtype=np.int64))
+    assert (reward, terminated, truncated) == (0, False, False)
+    _, reward, terminated, truncated, info = env.step(
+        np.array([0, 2, 0], dtype=np.int64)
+    )
+    assert (reward, terminated, truncated) == (1.5, True, False)
+    assert env.submitted[-1] == (2, 1, 0)
+    assert info["termination_reason"] == "max_edits"
+    assert info["submitted_quantities"] == [2, 1, 0]
+
+
+@pytest.mark.parametrize(
+    "action, reason",
+    [([0, 2, 1], "capacity_exceeded"), ([0, 3, 0], "padded_coordinate")],
+)
+def test_structured_decision_env_invalid_proposal_submits_cash(action, reason):
+    env = ToyStructuredEnv(
+        max_coordinates=4, max_quantity=2, max_features=1,
+        reward_scale=1, max_edits=4, feature_transform="identity",
+    )
+    env.reset(seed=2)
+    _, reward, terminated, truncated, info = env.step(action)
+    assert (reward, terminated, truncated) == (0, True, False)
+    assert env.submitted[-1] == (0, 0, 0)
+    assert info["proposal_valid"] is False
+    assert info["invalid_reason"] == reason
+
+
+def test_structured_decision_env_training_diagnostics_are_cumulative_and_read_only():
+    env = ToyStructuredEnv(
+        max_coordinates=3, max_quantity=2, max_features=1,
+        reward_scale=1, max_edits=3, feature_transform="identity",
+    )
+    empty = {
+        "completed_episodes": 0,
+        "proposed_cash_episodes": 0,
+        "invalid_bounds_episodes": 0,
+        "total_edits": 0,
+        "terminal_reward_sum": 0.0,
+    }
+    assert env.training_diagnostics() == empty
+
+    env.reset(seed=1)
+    env.step([0, 0, 1])
+    env.step([1, 2, 0])
+    env.reset(seed=2)
+    env.step([1, 0, 0])
+    env.reset(seed=3)
+    env.step([0, 1, 2])  # over capacity: cash is actually submitted
+    diagnostics = env.training_diagnostics()
+    assert diagnostics == {
+        "completed_episodes": 3,
+        "proposed_cash_episodes": 2,
+        "invalid_bounds_episodes": 1,
+        "total_edits": 1,
+        "terminal_reward_sum": 1.0,
+    }
+    diagnostics["completed_episodes"] = 0
+    env.close()
+    assert env.training_diagnostics()["completed_episodes"] == 3
+
+
+def test_structured_decision_env_ppo_train_eval_roundtrip(tmp_path):
+    env_params = {
+        "max_coordinates": 3,
+        "max_quantity": 2,
+        "max_features": 1,
+        "reward_scale": 1,
+        "max_edits": 3,
+        "feature_transform": "signed_log1p",
+    }
+    env_ref = "tests.pipeline_libs.test_sb3:ToyStructuredEnv"
+    trainer = Sb3Train("train", {
+        "algo": "PPO",
+        "env": env_ref,
+        "env_params": env_params,
+        "total_timesteps": 8,
+        "seed": 5,
+        "algo_params": {"n_steps": 4, "batch_size": 4, "n_epochs": 1, "device": "cpu"},
+    })
+    trained = trainer.run_train(ctx(tmp_path), {})
+    trained_env = trained["policy"].model.get_env().envs[0].unwrapped
+    diagnostics = trained_env.training_diagnostics()
+    assert diagnostics["completed_episodes"] == len(trained_env.submitted)
+    assert diagnostics["completed_episodes"] > 0
+    assert diagnostics["proposed_cash_episodes"] <= diagnostics["completed_episodes"]
+    assert diagnostics["invalid_bounds_episodes"] <= diagnostics["completed_episodes"]
+    assert diagnostics["total_edits"] >= 0
+    assert math.isfinite(diagnostics["terminal_reward_sum"])
+    evaluator = Sb3Eval("eval", {
+        "artifact": trained["artifact_path"],
+        "split": "test",
+        "n_episodes": 1,
+    })
+    scored = evaluator.run(ctx(tmp_path, "eval"), {})
+    assert math.isfinite(scored["metrics"]["mean_reward"])
+    assert math.isfinite(scored["metrics"]["std_reward"])
+
+
+@pytest.mark.parametrize("quantities", [(a, b, 0) for a in range(3) for b in range(2)])
+def test_structured_decision_env_reaches_every_bounded_vector(quantities):
+    env = ToyStructuredEnv(
+        max_coordinates=3, max_quantity=2, max_features=1,
+        reward_scale=1, max_edits=3, feature_transform="identity",
+    )
+    env.reset(seed=8)
+    for coordinate, quantity in enumerate(quantities):
+        _, reward, terminated, truncated, _ = env.step(
+            np.array([0, coordinate, quantity], dtype=np.int64)
+        )
+        assert reward == (sum(quantities) if coordinate == 2 else 0)
+        assert terminated is (coordinate == 2)
+        assert truncated is False
+    assert env.submitted[-1] == quantities
+
+
+@pytest.mark.parametrize("action", [[0, 0, 1.0], [False, 0, 0], [0, 0], [0, 3, 0]])
+def test_structured_decision_env_rejects_malformed_or_out_of_space_action(action):
+    env = ToyStructuredEnv(
+        max_coordinates=3, max_quantity=2, max_features=1,
+        reward_scale=1, max_edits=3, feature_transform="identity",
+    )
+    env.reset(seed=9)
+    with pytest.raises(ValueError):
+        env.step(action)
+
+
+@pytest.mark.parametrize("capacities", [[True, 1], [1.0, 1], [-1, 1], [3, 1]])
+def test_structured_decision_env_rejects_malformed_capacities(capacities):
+    class BadCapacities(ToyStructuredEnv):
+        def _start_episode(self, rng):
+            return [0.0], capacities, {}
+
+    env = BadCapacities(
+        max_coordinates=2, max_quantity=2, max_features=1,
+        reward_scale=1, max_edits=2, feature_transform="identity",
+    )
+    with pytest.raises(ValueError, match="capacities"):
+        env.reset(seed=3)
+
+
+def test_structured_decision_env_finish_submits_zero_vector_immediately():
+    env = ToyStructuredEnv(
+        max_coordinates=4, max_quantity=2, max_features=1,
+        reward_scale=1, max_edits=4, feature_transform="identity",
+    )
+    env.reset(seed=3)
+    _, reward, terminated, truncated, info = env.step([1, 3, 2])
+    assert reward == 0
+    assert terminated and not truncated
+    assert env.submitted[-1] == (0, 0, 0)
+    assert info["termination_reason"] == "finish"
+
+
+def test_structured_decision_env_applies_declared_signed_log_transform():
+    class LargeFeature(ToyStructuredEnv):
+        def _start_episode(self, rng):
+            return [100.0], [2, 1, 0], {}
+
+    env = LargeFeature(
+        max_coordinates=3, max_quantity=2, max_features=1,
+        reward_scale=1, max_edits=3, feature_transform="signed_log1p",
+    )
+    obs, _ = env.reset(seed=1)
+    assert obs[2] == pytest.approx(np.log1p(100.0))
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"max_coordinates": 0, "max_quantity": 1, "max_features": 1, "reward_scale": 1, "max_edits": 1, "feature_transform": "identity"},
+        {"max_coordinates": 2, "max_quantity": 1, "max_features": 1, "reward_scale": 1, "max_edits": 1, "feature_transform": "identity"},
+        {"max_coordinates": 1, "max_quantity": 1, "max_features": 1, "reward_scale": 1, "max_edits": 1, "feature_transform": "zscore"},
+    ],
+)
+def test_structured_decision_env_validates_dimensions_and_transform(kwargs):
+    with pytest.raises(ValueError):
+        ToyStructuredEnv(**kwargs)
 
 
 class CompatibleEvaluationEnv(gymnasium.Env):

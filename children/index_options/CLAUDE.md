@@ -255,3 +255,6 @@ observations/ledger_studies wrappers and generic study_protocol.py. The scoped
 real debug reuses exposed2020 with M53; no fresh-packet freeze, holdout or2026
 read. Sparse day bands are independent of predictive expiry-rank cells.
 The shared registry and exact content/run pins govern every packet entrypoint.
+
+
+2026-11-02: Full-universe structured-policy extension is separately owner-approved; follow the scope, API, eligibility, and evidence boundaries in the README section “Full-universe structured-policy extension” and ADR-0278 amendment in the parent decision log.

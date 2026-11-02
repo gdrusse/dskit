@@ -2446,9 +2446,66 @@ class MIOPacketStudy(StudyNode):
 
     outputs = ("results", "audit")
 
-    def run(self, ctx, inputs):
+    @staticmethod
+    def validate_indexed_inputs(study, bounded, plan, artifact_root=None):
+        """Validate bounded quote-index descriptors against the canonical plan.
+
+        This checks descriptor metadata and path containment only. The quote
+        index owner verifies the indexed artifact's content digest when it opens
+        the index for actual reads. Invalid descriptors always raise ValueError.
+        """
+        try:
+            return MIOPacketStudy._validate_indexed_inputs(study, bounded, plan, artifact_root)
+        except (KeyError, TypeError, AttributeError, IndexError, OSError) as exc:
+            raise ValueError("invalid indexed quote descriptor") from exc
+
+    @staticmethod
+    def _validate_indexed_inputs(study, bounded, plan, artifact_root):
         from dskit.pipeline.base import value_hash
-        import json
+        import os
+
+        d = study["domain"]
+        symbols = d["params"]["symbols"]
+        indexed = any(bounded["inputs"][symbol].get("chain_index") is not None for symbol in symbols)
+        inline = any("chain" in bounded["inputs"][symbol] for symbol in symbols)
+        if indexed and inline:
+            raise ValueError("mixed inline and indexed quote inputs")
+        for symbol in symbols:
+            data = bounded["inputs"][symbol]
+            entry = data.get("chain_index")
+            if not isinstance(entry, dict) or set(entry) != {
+                    "index", "symbol", "relative", "source_pin", "bounds",
+                    "expiry_inventory_sha256", "forecast_expiries", "selected_rows", "basis_factors"}:
+                raise ValueError("invalid indexed quote descriptor")
+            if "chain" in data:
+                raise ValueError("mixed inline and indexed quote inputs")
+            source = d["sources"]["chain"]
+            expiries = sorted({r["expiry"] for r in data["forecasts"]})
+            descriptor = entry["index"]
+            if not isinstance(descriptor, dict):
+                raise ValueError("indexed quote descriptor disagrees with canonical plan")
+            index_path = os.path.realpath(descriptor.get("path", ""))
+            expected_root = (os.path.realpath(artifact_root) if artifact_root is not None
+                             else os.path.dirname(index_path))
+            try:
+                contained = os.path.commonpath([expected_root, index_path]) == expected_root
+            except (OSError, ValueError):
+                contained = False
+            if (entry["symbol"] != symbol or entry["relative"] != source["files"][symbol]
+                    or entry["source_pin"] != source["pin"] or entry["bounds"] != {
+                        "date": plan["read_bounds"]["chain"],
+                        "expiration": {"end_before": plan["read_bounds"]["chain"]["end_before"]}}
+                    or entry["forecast_expiries"] != expiries
+                    or entry["expiry_inventory_sha256"] != value_hash(expiries)
+                    or descriptor.get("rows") != entry["selected_rows"]
+                    or not contained):
+                raise ValueError("indexed quote descriptor disagrees with canonical plan")
+        return None
+
+    def validate_intake(self, ctx, inputs):
+        """Authenticate a packet's bounded intake and return canonical run inputs."""
+        from dskit.pipeline.base import value_hash
+        import os
 
         plan, registry = self.plan(), self.registry()
         permit, bounded, provenance = inputs["permit"], inputs["bounded_inputs"], inputs["provenance"]
@@ -2467,31 +2524,18 @@ class MIOPacketStudy(StudyNode):
         if "corporate_actions" not in d["sources"] and (
                 "adjustments" in bounded or "adjustments_sha256" in provenance):
             raise ValueError("unbound split event intake")
-        import os
-        from dskit.pipeline.base import value_hash as _value_hash
         artifact_root = (os.path.realpath(os.path.join(ctx.run_dir, "artifacts", "mio-quotes"))
                          if ctx is not None and getattr(ctx, "run_dir", None) else None)
-        for symbol in d["params"]["symbols"]:
-            entry = bounded["inputs"][symbol].get("chain_index")
-            if not isinstance(entry, dict) or set(entry) != {
-                    "index", "symbol", "relative", "source_pin", "bounds",
-                    "expiry_inventory_sha256", "forecast_expiries", "selected_rows", "basis_factors"}:
-                raise ValueError("invalid indexed quote descriptor")
-            source = d["sources"]["chain"]
-            expiries = sorted({r["expiry"] for r in bounded["inputs"][symbol]["forecasts"]})
-            descriptor = entry["index"]
-            index_path = os.path.realpath(descriptor.get("path", ""))
-            expected_root = artifact_root or os.path.dirname(index_path)
-            if (entry["symbol"] != symbol or entry["relative"] != source["files"][symbol]
-                    or entry["source_pin"] != source["pin"] or entry["bounds"] != {
-                        "date": plan["read_bounds"]["chain"],
-                        "expiration": {"end_before": plan["read_bounds"]["chain"]["end_before"]}}
-                    or entry["forecast_expiries"] != expiries
-                    or entry["expiry_inventory_sha256"] != _value_hash(expiries)
-                    or descriptor.get("rows") != entry["selected_rows"]
-                    or os.path.commonpath([expected_root, index_path]) != expected_root):
-                raise ValueError("indexed quote descriptor disagrees with canonical plan")
+        self.validate_indexed_inputs(self.params["study"], bounded, plan, artifact_root)
         params = {**d["params"], "selected_pairs": d["pairs"], "clocks": bounded["clocks"]}
+        return plan, registry, permit, bounded, provenance, params
+
+    def run(self, ctx, inputs):
+        """Run one authenticated packet and independently replay its results."""
+        import json
+
+        plan, registry, permit, bounded, provenance, params = self.validate_intake(ctx, inputs)
+        d = self.params["study"]["domain"]
         study = WeeklyOptionPortfolioStudy(params, bounded["inputs"],
                                           adjustments=bounded.get("adjustments"))
         results = []

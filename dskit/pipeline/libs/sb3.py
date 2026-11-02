@@ -86,6 +86,7 @@ __all__ = [
     "EPISODE_SCHEMA",
     "EPISODE_SPLITS",
     "FiniteDecisionEnv",
+    "StructuredDecisionEnv",
     "NODE_KINDS",
     "Sb3Eval",
     "Sb3EvalEpisodes",
@@ -363,13 +364,14 @@ class _Sb3Base(Node):
 
         cls = import_ref(ref)
         is_gym_env = isinstance(cls, type) and issubclass(cls, gymnasium.Env)
-        is_finite_decision_env = (
-            isinstance(cls, type) and issubclass(cls, FiniteDecisionEnv)
+        is_pack_env = (
+            isinstance(cls, type)
+            and issubclass(cls, (FiniteDecisionEnv, StructuredDecisionEnv))
         )
-        if not (is_gym_env or is_finite_decision_env):
+        if not (is_gym_env or is_pack_env):
             raise ValueError(
                 f"{self.key}: env {ref!r} is not a gymnasium.Env or "
-                "FiniteDecisionEnv subclass; the declared seam builds "
+                "SB3 decision environment subclass; the declared seam builds "
                 "environments, nothing else"
             )
         try:
@@ -1475,6 +1477,14 @@ class FiniteDecisionEnv(ABC):
         try:
             self._active = True
             features, actions, info = self._start_episode(self.np_random)
+            if isinstance(features, (list, tuple)) and any(
+                isinstance(value, (bool, np.bool_)) for value in features
+            ):
+                raise ValueError("numeric_features must not contain truth flags")
+            if isinstance(features, (list, tuple)) and any(
+                isinstance(value, (bool, np.bool_)) for value in features
+            ):
+                raise ValueError("numeric_features must not contain truth flags")
             original = np.asarray(features)
             if original.ndim != 1 or original.size > self.max_features:
                 raise ValueError("numeric_features must be flat and fit max_features")
@@ -1568,6 +1578,314 @@ class FiniteDecisionEnv(ABC):
         if self._active:
             self._active = False
             self._close_episode()
+
+
+class StructuredDecisionEnv(ABC):
+    """Lazy structured integer-vector decision environment for SB3.
+
+    Observation layout is [feature_count, coordinate_count, padded features,
+    padded capacities, padded quantities, edits_left]. Action is
+    [finish, coordinate, quantity] in a MultiDiscrete space. A child supplies
+    fixed context and capacities in _start_episode(rng), then scores the full
+    vector in _finish_episode(quantities). Complete-vector feasibility and
+    payoff belong to the child.
+
+    feature_transform is identity or signed_log1p (sign(x)*log1p(abs(x))) and
+    uses no fitted evaluation statistics. Assigning to a padded coordinate or
+    above its capacity submits cash immediately and records an invalid proposal
+    without an added penalty.
+    """
+
+    _PARAMS = (
+        "max_coordinates", "max_quantity", "max_features", "reward_scale",
+        "max_edits", "feature_transform",
+    )
+    _FEATURE_TRANSFORMS = ("identity", "signed_log1p")
+
+    def __new__(cls, *args, **kwargs):
+        if cls is StructuredDecisionEnv:
+            raise TypeError("StructuredDecisionEnv must be subclassed")
+        try:
+            import gymnasium as gym
+        except ImportError as exc:
+            raise ImportError("StructuredDecisionEnv requires gymnasium") from exc
+        if issubclass(cls, gym.Env):
+            return object.__new__(cls)
+        dynamic = type(f"_{cls.__name__}Gym", (cls, gym.Env), {})
+        dynamic.__module__ = cls.__module__
+        return object.__new__(dynamic)
+
+    def __init__(
+        self, *, max_coordinates, max_quantity, max_features, reward_scale,
+        max_edits, feature_transform,
+    ):
+        import gymnasium as gym
+        import numpy as np
+
+        for name, value in (
+            ("max_coordinates", max_coordinates),
+            ("max_features", max_features),
+            ("max_edits", max_edits),
+        ):
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if type(max_quantity) is not int or max_quantity < 0:
+            raise ValueError("max_quantity must be a nonnegative integer")
+        if max_quantity > 2**24 or max_coordinates > 2**63 - 1:
+            raise ValueError("quantity and coordinate bounds exceed supported numeric precision")
+        if max_edits < max_coordinates:
+            raise ValueError("max_edits must be at least max_coordinates")
+        if (
+            type(reward_scale) not in (int, float)
+            or not math.isfinite(float(reward_scale))
+            or reward_scale <= 0
+        ):
+            raise ValueError("reward_scale must be a positive finite number")
+        if type(feature_transform) is not str or feature_transform not in self._FEATURE_TRANSFORMS:
+            raise ValueError(
+                f"feature_transform must be one of {self._FEATURE_TRANSFORMS}, "
+                f"got {feature_transform!r}"
+            )
+        self.max_coordinates = max_coordinates
+        self.max_quantity = max_quantity
+        self.max_features = max_features
+        self.reward_scale = float(reward_scale)
+        self.max_edits = max_edits
+        self.feature_transform = feature_transform
+        self.action_space = gym.spaces.MultiDiscrete(
+            np.asarray([2, max_coordinates, max_quantity + 1], dtype=np.int64)
+        )
+        width = max_features + 2 * max_coordinates + 3
+        self.observation_space = gym.spaces.Box(
+            low=-np.inf, high=np.inf, shape=(width,), dtype=np.float32
+        )
+        self._active = False
+        self._done = True
+        self._features = np.zeros(max_features, dtype=np.float32)
+        self._feature_count = 0
+        self._capacities = np.zeros(max_coordinates, dtype=np.int64)
+        self._coordinate_count = 0
+        self._quantities = np.zeros(max_coordinates, dtype=np.int64)
+        self._edits = 0
+        self._diagnostic_completed_episodes = 0
+        self._diagnostic_proposed_cash_episodes = 0
+        self._diagnostic_invalid_bounds_episodes = 0
+        self._diagnostic_total_edits = 0
+        self._diagnostic_terminal_reward_sum = 0.0
+
+    def training_diagnostics(self):
+        """Return a read-only snapshot of cumulative training-episode counts.
+
+        Counters begin at construction and survive reset and close. A cash
+        episode is counted from the vector actually submitted to the child,
+        including an invalid-bounds episode whose fail-closed submission is
+        cash. The reward sum uses the scaled reward returned by Gymnasium.
+        """
+        if not math.isfinite(self._diagnostic_terminal_reward_sum):
+            raise RuntimeError("terminal reward diagnostic is not finite")
+        return {
+            "completed_episodes": self._diagnostic_completed_episodes,
+            "proposed_cash_episodes": self._diagnostic_proposed_cash_episodes,
+            "invalid_bounds_episodes": self._diagnostic_invalid_bounds_episodes,
+            "total_edits": self._diagnostic_total_edits,
+            "terminal_reward_sum": self._diagnostic_terminal_reward_sum,
+        }
+
+    @abstractmethod
+    def _start_episode(self, rng):
+        """Return numeric features, capacities, and reset info."""
+
+    @abstractmethod
+    def _finish_episode(self, quantities):
+        """Return raw reward and info for the submitted full vector."""
+
+    def reset(self, *, seed=None, options=None):
+        import gymnasium as gym
+        import numpy as np
+
+        if options is not None and (not isinstance(options, dict) or options):
+            raise ValueError("options must be None or an empty dict")
+        gym.Env.reset(self, seed=seed)
+        self._close_active()
+        self._done = True
+        try:
+            self._active = True
+            features, capacities, info = self._start_episode(self.np_random)
+            original = np.asarray(features)
+            if original.ndim != 1 or original.size > self.max_features:
+                raise ValueError("numeric_features must be flat and fit max_features")
+            if original.dtype.kind not in "iuf" or not np.all(np.isfinite(original)):
+                raise ValueError("numeric_features must contain finite real numbers")
+            with np.errstate(over="ignore", invalid="ignore"):
+                values = original.astype(np.float64)
+                if self.feature_transform == "signed_log1p":
+                    values = np.copysign(np.log1p(np.abs(values)), values)
+                values = values.astype(np.float32)
+            if not np.all(np.isfinite(values)):
+                raise ValueError("transformed numeric_features must be float32 representable")
+            if isinstance(capacities, np.ndarray):
+                raw_capacities = capacities
+            elif isinstance(capacities, (list, tuple)):
+                if any(
+                    isinstance(value, (bool, np.bool_))
+                    or not isinstance(value, (int, np.integer))
+                    for value in capacities
+                ):
+                    raise ValueError("capacities must contain exact integers")
+                raw_capacities = np.asarray(capacities, dtype=np.int64)
+            else:
+                raise ValueError("capacities must be a nonempty integer vector")
+                raise ValueError("capacities must be a nonempty integer vector")
+            raw_capacities = np.asarray(capacities)
+            if (
+                raw_capacities.ndim != 1
+                or raw_capacities.size == 0
+                or raw_capacities.size > self.max_coordinates
+                or raw_capacities.dtype.kind not in "iu"
+            ):
+                raise ValueError("capacities must be a nonempty integer vector within max_coordinates")
+            if np.any(raw_capacities < 0) or np.any(raw_capacities > self.max_quantity):
+                raise ValueError("capacities must be between zero and max_quantity")
+            if not isinstance(info, dict):
+                raise ValueError("reset info must be a dict")
+            self._features.fill(0)
+            self._features[:values.size] = values
+            self._feature_count = int(values.size)
+            self._capacities.fill(0)
+            self._capacities[:raw_capacities.size] = raw_capacities.astype(np.int64)
+            self._coordinate_count = int(raw_capacities.size)
+            self._quantities.fill(0)
+            self._edits = 0
+            self._done = False
+            return self._observation(), dict(info)
+        except Exception:
+            self._close_active()
+            self._done = True
+            raise
+
+    def _observation(self):
+        import numpy as np
+        observation = np.empty(self.observation_space.shape, dtype=np.float32)
+        observation[0] = self._feature_count
+        observation[1] = self._coordinate_count
+        offset = 2
+        observation[offset:offset + self.max_features] = self._features
+        offset += self.max_features
+        observation[offset:offset + self.max_coordinates] = self._capacities
+        offset += self.max_coordinates
+        observation[offset:offset + self.max_coordinates] = self._quantities
+        offset += self.max_coordinates
+        observation[offset] = self.max_edits - self._edits
+        return observation
+
+    def step(self, action):
+        import numpy as np
+        if not self._active or self._done:
+            raise RuntimeError("reset must start an active episode before step")
+        if isinstance(action, np.ndarray):
+            values = action
+            if values.shape != (3,) or values.dtype.kind not in "iu":
+                raise ValueError("action must be a three-element integer vector")
+        elif isinstance(action, (list, tuple)):
+            if len(action) != 3 or any(
+                isinstance(value, (bool, np.bool_))
+                or not isinstance(value, (int, np.integer))
+                for value in action
+            ):
+                raise ValueError("action must be a three-element integer vector")
+            values = np.asarray(action, dtype=np.int64)
+        else:
+            raise ValueError("action must be a three-element integer vector")
+        finish, coordinate, quantity = (int(value) for value in values)
+        if (
+            finish not in (0, 1)
+            or coordinate < 0 or coordinate >= self.max_coordinates
+            or quantity < 0 or quantity > self.max_quantity
+        ):
+            raise ValueError("action is outside the fixed MultiDiscrete action space")
+        if finish:
+            return self._submit("finish", requested_action=[finish, coordinate, quantity])
+        if coordinate >= self._coordinate_count:
+            return self._submit(
+                "invalid", requested_action=[finish, coordinate, quantity],
+                invalid_reason="padded_coordinate",
+            )
+        if quantity > self._capacities[coordinate]:
+            return self._submit(
+                "invalid", requested_action=[finish, coordinate, quantity],
+                invalid_reason="capacity_exceeded",
+            )
+        self._quantities[coordinate] = quantity
+        self._edits += 1
+        self._diagnostic_total_edits += 1
+        if self._edits >= self.max_edits:
+            return self._submit(
+                "max_edits", requested_action=[finish, coordinate, quantity]
+            )
+        return self._observation(), 0.0, False, False, {
+            "requested_action": [finish, coordinate, quantity],
+            "requested_quantities": self._quantities[:self._coordinate_count].tolist(),
+            "edits": self._edits,
+        }
+
+    def _submit(self, reason, *, requested_action, invalid_reason=None):
+        import numpy as np
+        requested_quantities = self._quantities[:self._coordinate_count].tolist()
+        submitted = (
+            np.zeros(self._coordinate_count, dtype=np.int64)
+            if invalid_reason is not None
+            else self._quantities[:self._coordinate_count].copy()
+        )
+        try:
+            raw_reward, info = self._finish_episode(submitted.tolist())
+            if (
+                isinstance(raw_reward, (bool, np.bool_))
+                or not isinstance(raw_reward, (int, float, np.number))
+            ):
+                raise ValueError("raw reward must be a finite number")
+            reward = float(raw_reward) / self.reward_scale
+            if not math.isfinite(reward):
+                raise ValueError("scaled reward must be finite")
+            terminal_reward_sum = self._diagnostic_terminal_reward_sum + reward
+            if not math.isfinite(terminal_reward_sum):
+                raise ValueError("cumulative scaled terminal reward must be finite")
+            if not isinstance(info, dict):
+                raise ValueError("step info must be a dict")
+            result = dict(info)
+            result.update(
+                requested_action=requested_action,
+                requested_quantities=requested_quantities,
+                submitted_quantities=submitted.tolist(),
+                edits=self._edits,
+                termination_reason=reason,
+                proposal_valid=invalid_reason is None,
+            )
+            if invalid_reason is not None:
+                result["invalid_reason"] = invalid_reason
+            self._diagnostic_completed_episodes += 1
+            if not np.any(submitted):
+                self._diagnostic_proposed_cash_episodes += 1
+            if invalid_reason is not None:
+                self._diagnostic_invalid_bounds_episodes += 1
+            self._diagnostic_terminal_reward_sum = terminal_reward_sum
+            self._done = True
+            self._close_active()
+            return (
+                np.zeros(self.observation_space.shape, dtype=np.float32),
+                reward, True, False, result,
+            )
+        except Exception:
+            self._done = True
+            self._close_active()
+            raise
+
+    def _close_active(self):
+        if self._active:
+            self._active = False
+            self._close_episode()
+
+    def _close_episode(self):
+        """Optional child cleanup hook, called once per active episode."""
 
     def close(self):
         """Idempotently close an active episode.

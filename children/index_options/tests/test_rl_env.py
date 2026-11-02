@@ -208,6 +208,13 @@ def test_synthetic_sb3_artifact_round_trip_and_paired_comparison(tmp_path, monke
 
     config_path = Path(__file__).parents[1] / "configs" / "rl-entry-synthetic.json"
     document_obj = json.loads(config_path.read_text())
+    from dskit.pipeline.base import value_hash
+    from index_options.rl_env import OptionEntryEnv
+    for node in document_obj["pipeline"].values():
+        env_params = node.get("params", {}).get("env_params")
+        if env_params:
+            env_params["source_hashes"] = OptionEntryEnv.source_identity()
+            env_params["dataset_sha256"] = value_hash(env_params["dataset"])
     document_obj["outputs"]["run_root"] = str(tmp_path / "runs")
     document = PipelineDocument.from_obj(document_obj)
     planned = plan(document)
@@ -393,3 +400,280 @@ def test_future_depth_changes_fills_and_reward_charges(
     assert info["uncertainty_deduction"] == pytest.approx(200.0 * expected_scale)
     assert info["risk_charge"] == pytest.approx(27.7023184648 * expected_scale)
     assert reward == pytest.approx(info["adjusted_reward"] / params["reward_scale"])
+
+
+def test_structured_entry_uses_shared_screen_and_complete_flat_allocation():
+    from index_options.rl_env import OptionStructuredEntryEnv
+
+    params = _structured_env_params()
+    env = OptionStructuredEntryEnv(**params)
+    observation, reset_info = env.reset(seed=11)
+    assert env.observation_space.contains(observation)
+    assert env.action_space.nvec.tolist() == [2, params["max_coordinates"], params["max_quantity"] + 1]
+    assert reset_info["screen"]["screen"] == "lp"
+    assert reset_info["screen"]["active_ids"]
+    original_program = copy.deepcopy(env._request["program"])
+    active_program = env._active_feature_request(
+        env._request, set(reset_info["screen"]["active_indices"]))["program"]
+    assert env._request["program"] == original_program
+    assert all(group in env._request["program"]["groups"]
+               for group in active_program["groups"])
+    for row in reset_info["screen"]["groups"]:
+        if not row["active"]:
+            start, end = env._group_coordinate_ranges[row["index"]]
+            assert env._capacities[start:end].tolist() == [0] * (end - start)
+    _, reward, terminated, truncated, info = env.step([1, 0, 0])
+    assert terminated and not truncated
+    assert reward == 0
+    assert info["submitted_quantities"] == [0] * len(env._coordinate_map)
+    assert info["screen"]["active_ids"] == reset_info["screen"]["active_ids"]
+    env.close()
+
+
+def test_structured_entry_scores_a_complete_feasible_proposal_without_mio(monkeypatch):
+    from index_options.rl_env import OptionStructuredEntryEnv
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    def no_integer_solve(*args, **kwargs):
+        raise AssertionError("structured RL path must not invoke an integer solver")
+    monkeypatch.setattr(TransportPortfolioSolve, "run", no_integer_solve)
+    env = OptionStructuredEntryEnv(**_structured_env_params())
+    env.reset(seed=11)
+    proposal = next(action for action in env._scorer.catalogue(100)
+                    if any(quantity for group in action for quantity in group))
+    flat = env._flatten(proposal)
+    for coordinate, quantity in enumerate(flat):
+        if quantity:
+            _, _, terminated, _, _ = env.step([0, coordinate, quantity])
+            assert not terminated
+    _, reward, terminated, truncated, info = env.step([1, 0, 0])
+    assert terminated and not truncated
+    assert info["completion_valid"] is True
+    assert info["contracts"] > 0
+    assert info["adjusted_reward"] == pytest.approx(
+        info["net_profit"] - info["uncertainty_deduction"] - info["risk_charge"])
+    assert reward == pytest.approx(info["adjusted_reward"] / env.reward_scale)
+    env.close()
+
+
+def test_structured_entry_complete_action_invalidates_to_cash():
+    from index_options.rl_env import OptionStructuredEntryEnv
+
+    env = OptionStructuredEntryEnv(**_structured_env_params())
+    env.reset(seed=11)
+    # This fixture-only impossible row makes even cash infeasible, exercising
+    # the complete-vector invalid path without depending on a market outcome.
+    env._scorer.joint = ({"id": "forced-test-row", "terms": {}, "upper": -1.},)
+    _, reward, terminated, truncated, info = env.step([1, 0, 0])
+    assert terminated and not truncated
+    assert reward == 0
+    assert info["completion_valid"] is False
+    assert info["completion_reason"]
+    assert info["executed_quantities"] == [0] * len(env._coordinate_map)
+    assert info["net_profit"] == 0
+    diagnostics = env.training_diagnostics()
+    assert diagnostics["domain_invalid_episodes"] == 1
+    assert diagnostics["executed_cash_episodes"] == 1
+    env.close()
+
+
+def _structured_env_params():
+    from dskit.pipeline.base import value_hash
+    from index_options.rl_env import OptionEntryEnv
+
+    params = _env_params()
+    params.pop("max_actions")
+    params.pop("max_combinations")
+    for cohort in params["dataset"]["cohorts"]:
+        cohort["params"]["solver"]["group_screen"] = "lp"
+    params["dataset_sha256"] = value_hash(params["dataset"])
+    params.update(max_coordinates=64, max_quantity=16, max_edits=64,
+                  feature_transform="signed_log1p")
+    params["source_hashes"] = OptionEntryEnv.source_identity()
+    return params
+
+
+
+def test_structured_v2_rejects_index_read_bounds_outside_split(monkeypatch):
+    from dskit.pipeline.base import value_hash
+    from index_options.ledger_studies import MIOPacketStudy
+    from index_options.rl_env import OptionStructuredEntryEnv
+
+    params = _structured_env_params()
+    source = params["dataset"]["cohorts"][0]
+    inputs = copy.deepcopy(source["inputs"])
+    for data in inputs.values():
+        data.pop("chain")
+        data["chain_index"] = {}
+    monkeypatch.setattr(MIOPacketStudy, "validate_indexed_inputs", staticmethod(
+        lambda study, bounded, plan, artifact_root=None: None))
+    context = {
+        "study": {}, "plan": {"read_bounds": {
+            "bars": {"start": "2018-12-31", "end_before": "2019-01-05"}}},
+        "artifact_root": "/owned/index-root",
+    }
+    dataset = {
+        "schema": OptionStructuredEntryEnv.PAYLOAD_SCHEMA, "synthetic": True,
+        "splits": params["dataset"]["splits"],
+        "payloads": {"indexed": {"inputs": inputs,
+                                      "adjustments": [], "index_context": context}},
+        "cohorts": [{"id": "indexed-train", "split": "train",
+                       "params": source["params"], "payload": "indexed"}],
+    }
+    params.update(dataset=dataset, dataset_sha256=value_hash(dataset),
+                  source_hashes=OptionStructuredEntryEnv.source_identity())
+    with pytest.raises(ValueError, match="indexed source read bounds outside requested split"):
+        OptionStructuredEntryEnv(**params)
+
+
+def test_structured_v2_payload_is_shared_across_cohorts():
+    from dskit.pipeline.base import value_hash
+    from index_options.rl_env import OptionStructuredEntryEnv
+
+    params = _structured_env_params()
+    source = params["dataset"]["cohorts"][0]
+    payload = {"inputs": source["inputs"], "adjustments": source["adjustments"],
+               "index_context": None}
+    cohorts = [
+        {"id": "train-a", "split": "train", "params": source["params"],
+         "payload": "shared"},
+        {"id": "train-b", "split": "train", "params": source["params"],
+         "payload": "shared"},
+    ]
+    dataset = {
+        "schema": OptionStructuredEntryEnv.PAYLOAD_SCHEMA, "synthetic": True,
+        "splits": params["dataset"]["splits"],
+        "payloads": {"shared": payload}, "cohorts": cohorts,
+    }
+    params.update(dataset=dataset, dataset_sha256=value_hash(dataset),
+                  source_hashes=OptionStructuredEntryEnv.source_identity())
+    env = OptionStructuredEntryEnv(**params)
+    assert len(env._cohorts) == 2
+    assert env._cohorts[0]["inputs"] is env._cohorts[1]["inputs"]
+    assert env._cohorts[0]["inputs"] is env.params["dataset"]["payloads"]["shared"]["inputs"]
+    env.close()
+
+
+def test_quarter_eval_carries_one_account_across_all_requests():
+    import numpy as np
+    from datetime import date, timedelta
+    from dskit.pipeline.base import value_hash
+    from index_options.rl_env import OptionQuarterEval, OptionStructuredEntryEnv
+
+    params, inputs = _weekly_portfolio_fixture()
+    params["methods"] = [params["methods"][0]]
+    params["solver"]["group_screen"] = "lp"
+    def shift(value):
+        if isinstance(value, dict):
+            return {key: shift(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [shift(item) for item in value]
+        if isinstance(value, str) and value.startswith("2019-"):
+            return (date.fromisoformat(value) + timedelta(days=7)).isoformat()
+        return value
+    params, inputs = shift(params), shift(inputs)
+    cohort = {"id": "quarter-val", "split": "val", "params": params,
+              "inputs": inputs, "adjustments": []}
+    dataset = {
+        "schema": OptionStructuredEntryEnv.SCHEMA, "synthetic": True,
+        "splits": {"train": {"start": "2019-01-02", "end_before": "2019-01-05"},
+                   "val": {"start": "2019-01-09", "end_before": "2019-02-20"}},
+        "cohorts": [cohort],
+    }
+    env_params = {
+        "dataset": dataset, "dataset_sha256": value_hash(dataset),
+        "source_hashes": OptionStructuredEntryEnv.source_identity(), "split": "val",
+        "max_coordinates": 64, "max_quantity": 16, "max_features": 4096,
+        "max_edits": 64, "reward_scale": 100., "feature_transform": "signed_log1p",
+    }
+    eval_params = {
+        "split": "val", "max_episode_steps": 8, "n_episodes": 1, "seed": 11,
+        "deterministic": True, "env": "index_options.rl_env:OptionStructuredEntryEnv",
+        "env_params": env_params, "algo": "PPO", "policy": "MlpPolicy",
+    }
+    evaluator = OptionQuarterEval("quarter", eval_params)
+
+    class CashPolicy:
+        def __init__(self):
+            self.calls = 0
+        def predict(self, observation, deterministic=True):
+            self.calls += 1
+            return np.asarray([1, 0, 0], dtype=np.int64), None
+
+    model = CashPolicy()
+    episode = evaluator._episode(0, eval_params["env"], env_params, model)
+    assert model.calls == len(episode["per_entry"])
+    assert len(episode["per_entry"]) > 1
+    dates = [entry["date"] for entry in episode["per_entry"]]
+    assert dates == sorted(set(dates))
+    assert episode["steps"] == len(dates)
+    assert episode["full_result"]["contributions"] > 0
+    assert [entry["sequence_index"] for entry in episode["per_entry"]] == list(range(len(dates)))
+    assert all(len(entry["request_hash"]) == 64 for entry in episode["per_entry"])
+    assert all(len(entry["screen_digest"]) == 64 for entry in episode["per_entry"])
+    assert all(isinstance(entry["executed_quantities"], list) for entry in episode["per_entry"])
+    assert episode["adjusted_quarter_reward"] == pytest.approx(
+        episode["net_profit"] - episode["uncertainty_deduction"] - episode["risk_charge"])
+    short_params = copy.deepcopy(eval_params)
+    short_params["max_episode_steps"] = 1
+    short_eval = OptionQuarterEval("short_quarter", short_params)
+    short_policy = CashPolicy()
+    with pytest.raises(ValueError, match="requests, above max_episode_steps"):
+        short_eval._episode(0, short_params["env"], env_params, short_policy)
+    assert short_policy.calls == 0
+
+
+
+def test_structured_eval_rejects_method_economics_drift():
+    import copy
+    from dskit.pipeline.base import value_hash
+    from index_options.rl_env import OptionStructuredEntryEnv
+
+    training = _structured_env_params()
+    evaluation = copy.deepcopy(training)
+    training["split"] = "train"
+    evaluation["split"] = "val"
+    evaluation["dataset"]["cohorts"][1]["params"]["methods"][0]["rho"] += 0.01
+    evaluation["dataset_sha256"] = value_hash(evaluation["dataset"])
+    problems = OptionStructuredEntryEnv.validate_evaluation_params(training, evaluation)
+    assert any("economic" in problem for problem in problems)
+
+
+def test_quarter_eval_allows_declared_full_universe_action_work_and_bounds_trace():
+    import copy
+    from index_options.rl_env import OptionQuarterEval
+
+    env_params = _structured_env_params()
+    env_params["max_coordinates"] = 140_000
+    env_params["max_edits"] = 140_000
+    params = {
+        "split": "val", "max_episode_steps": 14, "n_episodes": 1,
+        "seed": 11, "deterministic": True,
+        "env": "index_options.rl_env:OptionStructuredEntryEnv",
+        "env_params": env_params, "algo": "PPO", "policy": "MlpPolicy",
+    }
+    assert OptionQuarterEval.validate_params(params) == []
+
+    bounded_trace = copy.deepcopy(params)
+    bounded_trace["n_episodes"] = 1_001
+    bounded_trace["max_episode_steps"] = 1_000
+    selected = bounded_trace["env_params"]["dataset"]["cohorts"][1]
+    bounded_trace["env_params"]["dataset"]["cohorts"] = [selected] * 1_001
+    problems = OptionQuarterEval.validate_params(bounded_trace)
+    assert any("n_episodes * max_episode_steps" in problem for problem in problems)
+
+
+def test_structured_artifact_allows_separate_nonoverlapping_eval_dataset():
+    from dskit.pipeline.base import value_hash
+    from index_options.rl_env import OptionStructuredEntryEnv
+
+    training = _structured_env_params()
+    evaluation = copy.deepcopy(training)
+    training["split"] = "train"
+    evaluation["split"] = "val"
+    evaluation["dataset"]["cohorts"][1]["inputs"]["X"]["contexts"][0]["eval_marker"] = True
+    evaluation["dataset_sha256"] = value_hash(evaluation["dataset"])
+    assert OptionStructuredEntryEnv.validate_evaluation_params(training, evaluation) == []
+    evaluation["dataset"]["splits"]["val"]["start"] = "2019-01-04"
+    assert "overlap" in OptionStructuredEntryEnv.validate_evaluation_params(
+        training, evaluation)[0]
