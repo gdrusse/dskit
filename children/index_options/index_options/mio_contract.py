@@ -13,7 +13,51 @@ from dskit.pipeline.node import JsonArtifact, Node, reject_unknown_params
 from dskit.pipeline.study_protocol import StudyContract, StudyNode
 
 __all__ = ["MIOStudyContract", "OptionPolicyStudyContract", "OptionPolicyFeasibilityProbePacket",
-           "OptionPolicyTrainPacket", "OptionPolicyEvalPacket", "MIOModelZooSelection"]
+           "OptionPolicyDimensionsPacket", "OptionPolicyTrainPacket", "OptionPolicyEvalPacket",
+           "MIOModelZooSelection", "dimensions_memory_cap_bytes",
+           "dimensions_peak_rss_bytes"]
+
+
+_DIMENSIONS_MEMORY_MAX = 5 * 1024**3
+
+
+def dimensions_memory_cap_bytes():
+    """Return the active cgroup-v2 memory ceiling or refuse an unbounded scan."""
+    from pathlib import Path
+
+    try:
+        relative = next(line.split("::", 1)[1].strip() for line in
+                        open("/proc/self/cgroup", encoding="utf-8")
+                        if line.startswith("0::"))
+    except (OSError, StopIteration, IndexError):
+        raise ValueError("dimensions scan requires an enforced cgroup-v2 memory cap")
+    root = Path("/sys/fs/cgroup")
+    current = (root / relative.lstrip("/")).resolve()
+    limits = []
+    while current == root or root in current.parents:
+        try:
+            raw = (current / "memory.max").read_text().strip()
+            if raw != "max":
+                limits.append(int(raw))
+        except (OSError, ValueError):
+            pass
+        if current == root:
+            break
+        current = current.parent
+    if not limits:
+        raise ValueError("dimensions scan requires an enforced cgroup-v2 memory cap")
+    limit = min(limits)
+    if limit <= 0 or limit > _DIMENSIONS_MEMORY_MAX:
+        raise ValueError("dimensions scan memory cap exceeds the approved 5 GiB limit")
+    return limit
+
+
+def dimensions_peak_rss_bytes():
+    """Return the shared Linux process VmHWM, refusing unavailable evidence."""
+    value = _OptionPolicyPacketStudy._peak_rss_bytes()
+    if value is None:
+        raise ValueError("dimensions scan requires process VmHWM evidence")
+    return value
 
 
 class MIOModelZooSelection(Node):
@@ -672,8 +716,164 @@ class MIOStudyContract(StudyContract):
         return {"missing": missing, "read_bounds": bounds,
                 "cohort": [m["id"] for m in methods], "source_pins": pins}
 
+    @staticmethod
+    def dimensions_manifest(scope, plan, provenance, rows, expected_keys,
+                             row_counts, elapsed_seconds, peak_rss_bytes,
+                             memory_cap_bytes, counters):
+        """Build the closed scalar manifest shared by both sizing packet routes."""
+        requests = [row for row in rows if row.get("row_type") == "request"]
+        no_requests = [row for row in rows if row.get("row_type") == "no_request"]
+        maxima = {
+            "max_features": max((row["raw_feature_count"] for row in requests), default=0),
+            "max_coordinates": max((row["active_coordinate_count"] for row in requests), default=0),
+            "max_quantity": max((row["raw_max_capacity"] for row in requests), default=0),
+        }
+        expected_hash = value_hash(expected_keys)
+        manifest = {
+            "schema": "option-request-dimensions/v1", "scope": scope,
+            "plan_sha256": plan["sha256"],
+            "inputs_sha256": provenance["inputs_sha256"],
+            "source_pins_sha256": provenance["source_pins_sha256"],
+            "row_counts_sha256": value_hash(row_counts),
+            "expected_keys_sha256": expected_hash,
+            "expected_row_count": len(expected_keys),
+            "expected_request_count": len(requests),
+            "expected_no_request_count": len(no_requests),
+            "request_row_count": len(requests), "no_request_row_count": len(no_requests),
+            "rows": rows, "maxima": maxima,
+            "cash_advances": counters["cash_advances"],
+            "measurement_calls": counters["measurement_calls"],
+            "model_calls": counters["model_calls"],
+            "integer_optimizer_calls": counters["integer_optimizer_calls"],
+            "elapsed_seconds": elapsed_seconds, "peak_rss_bytes": peak_rss_bytes,
+            "memory_cap_bytes": memory_cap_bytes,
+        }
+        audit = {
+            "mode": "dimensions", "scope": scope,
+            "inputs_sha256": provenance["inputs_sha256"],
+            "source_pins_sha256": provenance["source_pins_sha256"],
+            "row_counts": row_counts, "expected_keys": expected_keys,
+            "expected_keys_sha256": expected_hash,
+            "dimensions_sha256": value_hash(manifest),
+        }
+        return manifest, audit
+
+    @classmethod
+    def validate_dimensions_result(cls, study, results, audit, provenance, *, policy=False):
+        """Validate a registry-bound request-dimensions receipt structurally."""
+        manifest_keys = {"schema", "scope", "plan_sha256", "inputs_sha256",
+            "source_pins_sha256", "row_counts_sha256", "expected_keys_sha256",
+            "expected_row_count", "expected_request_count", "expected_no_request_count",
+            "request_row_count", "no_request_row_count", "rows", "maxima",
+            "cash_advances", "measurement_calls", "model_calls", "integer_optimizer_calls",
+            "elapsed_seconds", "peak_rss_bytes", "memory_cap_bytes"}
+        audit_keys = {"mode", "scope", "inputs_sha256", "source_pins_sha256", "row_counts",
+                      "expected_keys", "expected_keys_sha256", "dimensions_sha256"}
+        if (not isinstance(results, list) or len(results) != 1
+                or not isinstance(results[0], dict)
+                or set(results[0]) != {"id", "status", "dimensions"}
+                or results[0]["id"] != "option-request-dimensions"
+                or results[0]["status"] != "completed"
+                or not isinstance(audit, dict) or set(audit) != audit_keys
+                or audit.get("mode") != "dimensions"
+                or not isinstance(provenance, dict)
+                or audit.get("inputs_sha256") != provenance.get("inputs_sha256")
+                or audit.get("source_pins_sha256") != provenance.get("source_pins_sha256")):
+            raise ValueError("dimensions receipt identity or result envelope differs")
+        manifest = results[0]["dimensions"]
+        if (not isinstance(manifest, dict) or set(manifest) != manifest_keys
+                or manifest.get("schema") != "option-request-dimensions/v1"
+                or manifest.get("scope") != audit.get("scope")
+                or manifest.get("plan_sha256") != provenance.get("plan_sha256")
+                or manifest.get("inputs_sha256") != provenance.get("inputs_sha256")
+                or manifest.get("source_pins_sha256") != provenance.get("source_pins_sha256")
+                or manifest.get("row_counts_sha256") != value_hash(audit.get("row_counts"))
+                or audit.get("expected_keys_sha256") != value_hash(audit.get("expected_keys"))
+                or manifest.get("expected_keys_sha256") != audit.get("expected_keys_sha256")
+                or audit.get("dimensions_sha256") != value_hash(manifest)):
+            raise ValueError("dimensions manifest is not bound to the authenticated packet")
+        rows, expected = manifest["rows"], audit["expected_keys"]
+        if not isinstance(rows, list) or not isinstance(expected, list) or len(rows) != len(expected):
+            raise ValueError("dimensions rows omit or add expected date/method keys")
+        request_keys = {"row_type", "sequence_index", "cohort_id", "method_id", "decision_date",
+            "request_hash", "screen_digest", "active_ids_sha256", "candidate_count",
+            "active_candidate_count", "active_coordinate_count", "raw_feature_count", "raw_max_capacity"}
+        no_request_keys = {"row_type", "sequence_index", "cohort_id", "method_id", "decision_date",
+                           "status", "candidate_count"}
+        skip_statuses = {"existing_cap_breach_cash", "no_entry_fill_session", "shock_risk_input",
+                         "shock_held_breach", "no_eligible_candidates"}
+        seen, requests, no_requests = set(), [], []
+        for index, (row, key) in enumerate(zip(rows, expected)):
+            if not isinstance(key, list) or len(key) != 3 or not isinstance(row, dict):
+                raise ValueError("invalid expected dimensions key")
+            if (row.get("sequence_index") != index
+                    or [row.get("cohort_id"), row.get("method_id"), row.get("decision_date")] != key
+                    or tuple(key) in seen):
+                raise ValueError("duplicate, missing or reordered dimensions key")
+            seen.add(tuple(key))
+            if row.get("row_type") == "request":
+                if (set(row) != request_keys or any(not OptionPolicyStudyContract._sha256(row.get(field)) for field in
+                        ("request_hash", "screen_digest", "active_ids_sha256"))
+                        or any(type(row.get(field)) is not int or row[field] < 0 for field in
+                            ("candidate_count", "active_candidate_count", "active_coordinate_count",
+                             "raw_max_capacity"))
+                        or type(row.get("raw_feature_count")) is not int or row["raw_feature_count"] < 1
+                        or row["active_candidate_count"] > row["candidate_count"]):
+                    raise ValueError("invalid measured request dimensions row")
+                requests.append(row)
+            elif row.get("row_type") == "no_request":
+                if (set(row) != no_request_keys or row.get("status") not in skip_statuses
+                        or type(row.get("candidate_count")) is not int or row["candidate_count"] < 0):
+                    raise ValueError("invalid skipped cash date dimensions row")
+                no_requests.append(row)
+            else:
+                raise ValueError("unknown dimensions row type")
+        domain = study.get("domain", {})
+        if policy:
+            declaration = domain.get("policy", {})
+            methods = domain.get("params", {}).get("methods", [])
+            if (audit["scope"] != "policy_training_window"
+                    or declaration.get("mode") != "probe"
+                    or declaration.get("probe_receipt") is not None
+                    or len(methods) != 1 or methods[0].get("id") != declaration.get("method_id")
+                    or any(key[1] != declaration.get("method_id") for key in expected)):
+                raise ValueError("policy dimensions scope/method differs from probe declaration")
+        else:
+            methods = domain.get("params", {}).get("methods", [])
+            if audit["scope"] != "saved_mio_quarter" or not methods:
+                raise ValueError("MIO dimensions scope/method differs from saved packet")
+            method_ids = [method["id"] for method in methods]
+            observed_method_order = []
+            for key in expected:
+                if not observed_method_order or observed_method_order[-1] != key[1]:
+                    observed_method_order.append(key[1])
+            if observed_method_order != method_ids:
+                raise ValueError("MIO dimensions method order differs from packet")
+        if ([manifest.get("expected_row_count"), manifest.get("expected_request_count"),
+             manifest.get("expected_no_request_count"), manifest.get("request_row_count"),
+             manifest.get("no_request_row_count")] !=
+                [len(expected), len(requests), len(no_requests), len(requests), len(no_requests)]
+                or manifest.get("cash_advances") != len(requests)
+                or manifest.get("measurement_calls") != len(requests)
+                or manifest.get("model_calls") != 0
+                or manifest.get("integer_optimizer_calls") != 0
+                or manifest.get("maxima") != {
+                    "max_features": max((row["raw_feature_count"] for row in requests), default=0),
+                    "max_coordinates": max((row["active_coordinate_count"] for row in requests), default=0),
+                    "max_quantity": max((row["raw_max_capacity"] for row in requests), default=0)}
+                or any(type(manifest.get(field)) is not int or manifest[field] <= 0 for field in
+                       ("peak_rss_bytes", "memory_cap_bytes"))
+                or isinstance(manifest.get("elapsed_seconds"), bool)
+                or not isinstance(manifest.get("elapsed_seconds"), (int, float))
+                or not math.isfinite(float(manifest["elapsed_seconds"]))
+                or manifest["elapsed_seconds"] < 0):
+            raise ValueError("dimensions row counts, maxima or operation counters differ")
+        return True
+
     def validate_result(self, study, results, audit, provenance):
         """Retain all methods; success requires exact replay and settled books."""
+        if isinstance(audit, dict) and audit.get("mode") == "dimensions":
+            return self.validate_dimensions_result(study, results, audit, provenance)
         ids = [m["id"] for m in study["domain"]["params"]["methods"]]
         if [r["id"] for r in results] != ids or audit["method_ids"] != ids:
             raise ValueError("missing, duplicated or reordered method")
@@ -713,6 +913,22 @@ class OptionPolicyStudyContract(MIOStudyContract):
                    "reset_completed", "step_calls", "learn_calls", "completed_episodes",
                    "total_edits", "elapsed_seconds", "rss_before_bytes", "rss_after_bytes",
                    "peak_rss_bytes", "diagnostics"}
+
+    @staticmethod
+    def option_packet_input_counts(study, bounded):
+        """Count rows in an authenticated packet without reading its quote indexes."""
+        rows = {}
+        for symbol in study["domain"]["params"]["symbols"]:
+            data = bounded["inputs"][symbol]
+            index = data.get("chain_index")
+            rows[symbol] = {
+                "forecasts": len(data.get("forecasts", [])),
+                "contexts": len(data.get("contexts", [])),
+                "bars": len(data.get("bars", [])),
+                "chain_rows": (len(data.get("chain", [])) if "chain" in data else
+                               (index.get("selected_rows") if isinstance(index, dict) else 0)),
+            }
+        return rows
 
     @staticmethod
     def selection(study):
@@ -867,11 +1083,11 @@ class OptionPolicyStudyContract(MIOStudyContract):
         from .ledger_studies import MIOPacketStudy
         import os
 
-        if phase not in {"probe", "train", "eval_episodes"}:
+        if phase not in {"probe", "dimensions", "train", "eval_episodes"}:
             raise ValueError("unsupported option execution authorization phase")
         self._validate_policy(study)
         policy = study["domain"]["policy"]
-        expected_mode = {"probe": "probe", "train": "training",
+        expected_mode = {"probe": "probe", "dimensions": "probe", "train": "training",
                          "eval_episodes": "evaluation"}[phase]
         if policy["mode"] != expected_mode:
             raise ValueError("policy mode does not authorize this execution phase")
@@ -890,9 +1106,9 @@ class OptionPolicyStudyContract(MIOStudyContract):
         # before the separate reviewed-publication query below.
         registry, params = MIOPacketStudy.validate_authenticated_intake(
             study, plan, permit, provenance, bounded_inputs, str(artifact_root))
-        if phase == "probe":
+        if phase in {"probe", "dimensions"}:
             if policy["probe_receipt"] is not None:
-                raise ValueError("probe creation cannot reuse a previous probe receipt")
+                raise ValueError("probe or dimensions preparation cannot reuse a previous probe receipt")
             return registry, params, None
 
         probe_study = study
@@ -1058,6 +1274,8 @@ class OptionPolicyStudyContract(MIOStudyContract):
 
     def validate_result(self, study, results, audit, provenance):
         """Close RL receipts without applying MIO solver-certificate checks."""
+        if isinstance(audit, dict) and audit.get("mode") == "dimensions":
+            return self.validate_dimensions_result(study, results, audit, provenance, policy=True)
         policy = study["domain"]["policy"]
         method_id = policy["method_id"]
         if (not isinstance(audit, dict) or audit.get("inputs_sha256") != provenance.get("inputs_sha256")
@@ -1179,13 +1397,13 @@ class _OptionPolicyPacketStudy(StudyNode):
 
     outputs = ("results", "audit", "artifact_path")
 
-    def _intake(self, ctx, inputs):
+    def _intake(self, ctx, inputs, *, phase_override=None):
         from pathlib import Path
         from .ledger_studies import MIOPacketStudy
         authenticated = MIOPacketStudy("intake", {"study": self.params["study"]}).validate_intake(ctx, inputs)
         plan, registry, permit, bounded, provenance, params = authenticated
         policy = self.params["study"]["domain"].get("policy", {})
-        phase = {"probe": "probe", "training": "train",
+        phase = phase_override or {"probe": "probe", "training": "train",
                  "evaluation": "eval_episodes"}.get(policy.get("mode"))
         if phase is None:
             raise ValueError("unsupported option policy execution mode")
@@ -1239,19 +1457,8 @@ class _OptionPolicyPacketStudy(StudyNode):
             "read_bounds": plan.get("read_bounds")})
 
     @staticmethod
-    def _row_counts(study, bounded):
-        rows = {}
-        for symbol in study["domain"]["params"]["symbols"]:
-            data = bounded["inputs"][symbol]
-            index = data.get("chain_index")
-            rows[symbol] = {
-                "forecasts": len(data.get("forecasts", [])),
-                "contexts": len(data.get("contexts", [])),
-                "bars": len(data.get("bars", [])),
-                "chain_rows": (len(data.get("chain", [])) if "chain" in data else
-                               (index.get("selected_rows") if isinstance(index, dict) else 0)),
-            }
-        return rows
+    def option_packet_input_counts(study, bounded):
+        return OptionPolicyStudyContract.option_packet_input_counts(study, bounded)
 
     @staticmethod
     def _rss_bytes():
@@ -1334,7 +1541,7 @@ class OptionPolicyFeasibilityProbePacket(_OptionPolicyPacketStudy):
                 reset_error = message
             diagnostics = env.last_request_diagnostics()
             train_diagnostics = env.training_diagnostics()
-            row_counts = self._row_counts(study_decl, bounded)
+            row_counts = self.option_packet_input_counts(study_decl, bounded)
             screen_digest = diagnostics.get("screen_digest")
             if not OptionPolicyStudyContract._sha256(screen_digest):
                 screen_digest = value_hash(diagnostics.get("screen"))
@@ -1409,6 +1616,73 @@ class OptionPolicyFeasibilityProbePacket(_OptionPolicyPacketStudy):
             if env is not None:
                 env.close()
         return self._close(registry, plan, permit, [result], audit, provenance)
+
+
+class OptionPolicyDimensionsPacket(_OptionPolicyPacketStudy):
+    """Measure all authenticated training requests; never restore or fit a model."""
+
+    role = "transform"
+
+    def run(self, ctx, inputs):
+        """Size every one-entry training cohort with the existing cash lifecycle."""
+        import time
+        from .rl_env import OptionStructuredEntryEnv
+
+        started = time.monotonic()
+        plan, registry, permit, bounded, provenance, params = self._intake(
+            ctx, inputs, phase_override="dimensions")
+        study_decl = self.params["study"]
+        policy = study_decl["domain"]["policy"]
+        if policy["mode"] != "probe" or policy["probe_receipt"] is not None:
+            raise ValueError("policy dimensions requires a fresh probe-mode declaration")
+        memory_cap = dimensions_memory_cap_bytes()
+        peak_before = dimensions_peak_rss_bytes()
+        dataset, canonical_hash = self._dataset(
+            ctx, study_decl, plan, permit, provenance, bounded, "training")
+        if dataset.get("canonical_payload_sha256") != canonical_hash:
+            raise ValueError("training dimensions builder identity differs")
+        row_counts = self.option_packet_input_counts(study_decl, bounded)
+        payloads = dataset["payloads"]
+        rows, expected_keys = [], []
+        cash_advances = measurement_calls = 0
+        for cohort in dataset["cohorts"]:
+            resolved = OptionStructuredEntryEnv._resolve_payload_cohort(
+                cohort, payloads, canonical=True)
+            window = cohort["entry_window"]
+            cohort_inputs = OptionStructuredEntryEnv._entry_window_inputs(
+                resolved["inputs"], window)
+            measured = OptionStructuredEntryEnv._measure_policy_method(
+                cohort["params"], cohort_inputs, resolved["adjustments"],
+                policy["method_id"], cohort_id=cohort["id"])
+            if measured["expected_dates"] != [window["start"]]:
+                raise ValueError("training cohort did not resolve to its exact one-week date")
+            rows.extend(measured["rows"])
+            expected_keys.extend([[cohort["id"], policy["method_id"], day]
+                                  for day in measured["expected_dates"]])
+            cash_advances += measured["cash_advances"]
+            measurement_calls += measured["measurement_calls"]
+            if measured["model_calls"] or measured["integer_optimizer_calls"]:
+                raise ValueError("dimensions path invoked a model or integer optimizer")
+        actual_keys = [[row["cohort_id"], row["method_id"], row["decision_date"]]
+                       for row in rows]
+        if actual_keys != expected_keys:
+            raise ValueError("dimensions traversal omitted or reordered an expected training week")
+        for index, row in enumerate(rows):
+            row["sequence_index"] = index
+        counters = {"cash_advances": cash_advances, "measurement_calls": measurement_calls,
+                    "model_calls": 0, "integer_optimizer_calls": 0}
+        manifest, audit = MIOStudyContract.dimensions_manifest(
+            "policy_training_window", plan, provenance, rows, expected_keys, row_counts,
+            time.monotonic()-started, max(peak_before, dimensions_peak_rss_bytes()),
+            memory_cap, counters)
+        results = [{"id": "option-request-dimensions", "status": "completed",
+                    "dimensions": manifest}]
+        OptionPolicyStudyContract().validate_dimensions_result(
+            study_decl, results, audit, provenance, policy=True)
+        registry.verify(plan, permit)
+        registry.bind(plan, permit, "execution", {
+            "results": results, "audit": audit, "provenance": provenance})
+        return {"results": results, "audit": audit, "artifact_path": None}
 
 
 class OptionPolicyTrainPacket(_OptionPolicyPacketStudy):

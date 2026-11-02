@@ -222,6 +222,11 @@ completed MIO claim, or any sealed window.
   shares one bounded payload across decision cohorts; indexed payloads carry a
   canonical plan and run-local artifact root. The index helper validates
   descriptors only; the quote-index owner checks artifact bytes when reading.
+- `OptionPolicyDimensionsPacket` and `MIOPacketDimensions` measure every
+  authenticated weekly request through the shared policy request/scoring path,
+  advancing only with zero quantities. Their scalar manifests include explicit
+  no-request weeks and call neither the integer portfolio optimizer nor an RL
+  model; the separate exact-recipe feasible reset is still required before fit.
 - Keep the requested universe at all 212 names and reuse the same three MIO
   methods (`w1_003_shock10_lp`, `nominal_lp`, `w1_003_lp`) and economic settings
   for each policy/quarter pair. Missing forecasts are availability exclusions,

@@ -1074,6 +1074,159 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
         """Return a quantity-free snapshot of the most recently prepared request."""
         return copy.deepcopy(self._last_request_diagnostics)
 
+    @classmethod
+    def measure_request(cls, request, solver_params):
+        """Measure and prepare one request for structured observation construction.
+
+        Parameters
+        ----------
+        request : dict
+            Original decision-time request containing the transport program and
+            aligned per-group metadata.
+        solver_params : dict
+            Frozen solver parameters whose candidate screen defines active groups.
+
+        Returns
+        -------
+        dict
+            Screen, active request projection, coordinate maps, unmodified
+            capacities and exact dense-feature count. The dense feature vector
+            itself is not allocated.
+
+        Raises
+        ------
+        ValueError
+            The program or structured feature arrays are invalid.
+        """
+        program = request["program"]
+        screen = TransportPortfolioSolve("reference", solver_params).candidate_screen(program)
+        active_indices = tuple(screen["active_indices"])
+        active_set = set(active_indices)
+        active_request = cls._active_feature_request(request, active_set)
+        capacities, coordinate_map, ranges = [], [], []
+        for group_index, group in enumerate(program["groups"]):
+            start = len(capacities)
+            if group_index in active_set:
+                for leg_index, capacity in enumerate(group["capacity"]):
+                    capacities.append(int(capacity))
+                    coordinate_map.append((group_index, leg_index))
+            ranges.append((start, len(capacities)))
+        raw_feature_count = (
+            cls._raw_feature_count(active_request) + 2 * len(screen["groups"])
+            if capacities else 1)
+        return {
+            "screen": screen,
+            "screen_digest": value_hash(screen),
+            "active_indices": list(active_indices),
+            "active_ids": list(screen["active_ids"]),
+            "active_group_count": len(active_indices),
+            "active_request": active_request,
+            "coordinate_map": tuple(coordinate_map),
+            "group_coordinate_ranges": tuple(ranges),
+            "capacities": tuple(capacities),
+            "active_coordinate_count": len(capacities),
+            "raw_max_capacity": max(capacities, default=0),
+            "raw_feature_count": raw_feature_count,
+        }
+
+    @classmethod
+    def _measure_policy_method(cls, params, inputs, adjustments, method_id, cohort_id=None):
+        """Measure and cash-advance every request in one existing account.
+
+        Parameters
+        ----------
+        params : dict
+            One canonical weekly study configuration.
+        inputs : dict
+            Authenticated original or cohort-projected inputs.
+        adjustments : list
+            The authenticated split adjustments, if any.
+        method_id : str
+            The single method whose requests are measured.
+        cohort_id : str or None
+            Optional training cohort identity for manifest rows.
+
+        Returns
+        -------
+        dict
+            Scalar rows and operation counts. Financial result fields are
+            discarded after reconciling every expected week.
+        """
+        study = WeeklyOptionPortfolioStudy(
+            params, inputs, adjustments=adjustments or [])
+        rows = []
+        measurement_calls = 0
+        cash_advances = 0
+        final_result = None
+        steps = study.policy_steps(method_id)
+        try:
+            try:
+                request = next(steps)
+            except StopIteration as done:
+                final_result = done.value
+                request = None
+            while request is not None:
+                measured = cls.measure_request(request, params["solver"])
+                groups = request["program"]["groups"]
+                rows.append({
+                    "row_type": "request",
+                    "sequence_index": len(rows),
+                    "cohort_id": cohort_id,
+                    "method_id": method_id,
+                    "decision_date": request["date"],
+                    "request_hash": value_hash(request),
+                    "screen_digest": measured["screen_digest"],
+                    "active_ids_sha256": value_hash(measured["active_ids"]),
+                    "candidate_count": len(groups),
+                    "active_candidate_count": measured["active_group_count"],
+                    "active_coordinate_count": measured["active_coordinate_count"],
+                    "raw_feature_count": measured["raw_feature_count"],
+                    "raw_max_capacity": measured["raw_max_capacity"],
+                })
+                measurement_calls += 1
+                cash = [[0 for _ in group["capacity"]] for group in groups]
+                try:
+                    request = steps.send(cash)
+                except StopIteration as done:
+                    final_result = done.value
+                    request = None
+                cash_advances += 1
+            decisions = final_result.get("decisions") if isinstance(final_result, dict) else None
+            if not isinstance(decisions, list) or [d.get("date") for d in decisions] != study.weeks:
+                raise ValueError("cash dimensions traversal did not complete the exact weekly lifecycle")
+            measured_dates = {row["decision_date"] for row in rows}
+            if len(measured_dates) != len(rows):
+                raise ValueError("duplicate measured policy request date")
+            by_date = {decision["date"]: decision for decision in decisions}
+            skip_statuses = {"existing_cap_breach_cash", "no_entry_fill_session",
+                             "shock_risk_input", "shock_held_breach", "no_eligible_candidates"}
+            for day in study.weeks:
+                decision = by_date[day]
+                if day in measured_dates:
+                    if decision.get("status") != "cash" or decision.get("decision_source") != "policy":
+                        raise ValueError("measured cash request did not reconcile to lifecycle status")
+                else:
+                    status = decision.get("status")
+                    if status not in skip_statuses:
+                        raise ValueError("unmeasured policy date lacks an approved skip status")
+                    rows.append({"row_type": "no_request", "sequence_index": len(rows),
+                                 "cohort_id": cohort_id, "method_id": method_id,
+                                 "decision_date": day, "status": status,
+                                 "candidate_count": decision.get("candidate_books")})
+        finally:
+            steps.close()
+            study.close_quote_indexes(verify=True)
+        rows.sort(key=lambda row: row["decision_date"])
+        for index, row in enumerate(rows):
+            row["sequence_index"] = index
+        no_requests = sum(row["row_type"] == "no_request" for row in rows)
+        return {"rows": rows, "expected_dates": list(study.weeks),
+                "cash_advances": cash_advances,
+                "measurement_calls": measurement_calls,
+                "request_row_count": measurement_calls,
+                "no_request_row_count": no_requests,
+                "model_calls": 0, "integer_optimizer_calls": 0}
+
     @staticmethod
     def _raw_feature_count(request):
         """Count the legacy numeric encoding without allocating its dense feature list."""
@@ -1122,53 +1275,41 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
 
     def _configure_request(self, request):
         program = request["program"]
-        solver = TransportPortfolioSolve("reference", self._cohort["params"]["solver"])
-        self._screen = solver.candidate_screen(program)
-        active = set(self._screen["active_indices"])
-        capacities, coordinate_map, ranges = [], [], []
-        for group_index, group in enumerate(program["groups"]):
-            start = len(capacities)
-            if group_index in active:
-                for leg_index, capacity in enumerate(group["capacity"]):
-                    capacities.append(int(capacity))
-                    coordinate_map.append((group_index, leg_index))
-            ranges.append((start, len(capacities)))
-        self._coordinate_count = len(capacities)
+        measurement = self.measure_request(request, self._cohort["params"]["solver"])
+        self._request_measurement = measurement
+        self._screen = measurement["screen"]
+        capacities = measurement["capacities"]
+        self._coordinate_count = measurement["active_coordinate_count"]
         self._last_request_diagnostics = {
             "cohort_id": self._cohort.get("id"),
             "decision_date": request.get("date"),
             "candidate_count": len(program["groups"]),
-            "active_candidate_count": len(active),
-            "active_coordinate_count": len(capacities),
-            "max_capacity": max(capacities, default=0),
-            "raw_feature_count": None,
-            "screen_digest": value_hash(self._screen),
+            "active_candidate_count": measurement["active_group_count"],
+            "active_coordinate_count": measurement["active_coordinate_count"],
+            "max_capacity": measurement["raw_max_capacity"],
+            "raw_feature_count": measurement["raw_feature_count"],
+            "screen_digest": measurement["screen_digest"],
             "screen": copy.deepcopy(self._screen),
         }
-        active_request = self._active_feature_request(request, active)
-        raw_feature_count = (self._raw_feature_count(active_request)
-                             + 2 * len(self._screen["groups"]))
-        self._last_request_diagnostics["raw_feature_count"] = raw_feature_count
         if not capacities:
             self._configure_empty_request()
-            self._last_request_diagnostics["raw_feature_count"] = len(self._request_features)
             return
-        if raw_feature_count > self.max_features:
+        if measurement["raw_feature_count"] > self.max_features:
             raise ValueError("request exceeds max_features")
-        if len(capacities) > self.max_coordinates:
+        if measurement["active_coordinate_count"] > self.max_coordinates:
             raise ValueError("request exceeds max_coordinates")
         if any(value > self.max_quantity for value in capacities):
             raise ValueError("request exceeds max_quantity")
-        self._group_coordinate_ranges = tuple(ranges)
-        self._coordinate_map = tuple(coordinate_map)
-        self._request_capacities = capacities
+        self._group_coordinate_ranges = measurement["group_coordinate_ranges"]
+        self._coordinate_map = measurement["coordinate_map"]
+        self._request_capacities = list(capacities)
         self._scorer = TransportActionScore(program, {
             "parity_tolerance": self._cohort["params"]["solver"]["parity_tolerance"]})
-        features = OptionEntryEnv._features(active_request, [])
-        for row in self._screen["groups"]:
+        features = OptionEntryEnv._features(measurement["active_request"], [])
+        for row in measurement["screen"]["groups"]:
             features.extend([float(row["active"]),
                              0. if row["lp_bound"] is None else float(row["lp_bound"])])
-        if len(features) != raw_feature_count:
+        if len(features) != measurement["raw_feature_count"]:
             raise ValueError("structured feature count differs from its prepared encoding")
         self._request_features = features
 
@@ -1220,6 +1361,7 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
         return [int(nested[group][leg]) for group, leg in self._coordinate_map]
 
     def step(self, action):
+        """Apply one structured edit or terminate with the proposed allocation."""
         if self._probe_only:
             raise RuntimeError("feasibility probe environments cannot step or submit")
         return super().step(action)

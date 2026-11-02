@@ -242,6 +242,71 @@ def test_real_json_spine_and_attested_comparison(study, tmp_path, caplog, monkey
     assert registry.snapshot()["frontier"] == 1
 
 
+def test_mio_dimensions_node_closes_exact_cash_only_coverage(study, tmp_path, monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+    from dskit.pipeline.study_protocol import StudyPacketClose
+    from index_options.ledger_studies import MIOPacketDimensions
+
+    monkeypatch.setattr("index_options.mio_contract.dimensions_memory_cap_bytes",
+                        lambda: 5 * 1024**3)
+    monkeypatch.setattr(TransportPortfolioSolve, "run", lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("dimensions node must not call integer MIO")))
+    _, plan, permit = _open(study)
+    ctx = NodeContext(name="dimensions", asof="2019-02-09", run_dir=str(tmp_path/"dimensions"))
+    intake = MIOPacketInputs("intake", {"study": study}).run(ctx, {"permit": permit})
+    node = MIOPacketDimensions("dimensions", {"study": study})
+    result = node.run(ctx, {"permit": permit,
+        "bounded_inputs": intake["bounded_inputs"], "provenance": intake["provenance"]})
+    manifest = result["results"][0]["dimensions"]
+    assert manifest["scope"] == "saved_mio_quarter"
+    assert manifest["expected_row_count"] == len(manifest["rows"])
+    assert manifest["request_row_count"] + manifest["no_request_row_count"] == manifest["expected_row_count"]
+    assert manifest["cash_advances"] == manifest["measurement_calls"] == manifest["request_row_count"]
+    assert manifest["model_calls"] == manifest["integer_optimizer_calls"] == 0
+    assert all(row["row_type"] in {"request", "no_request"} for row in manifest["rows"])
+
+    # The existing execution binding makes a changed/reordered manifest fail
+    # before structural close validation can publish it.
+    tampered = copy.deepcopy(result["audit"])
+    tampered["expected_keys"] = list(reversed(tampered["expected_keys"]))
+    close = StudyPacketClose("close", {"study": study})
+    with pytest.raises(ValueError, match="unverified execution or intake"):
+        close.run(ctx, {"permit": permit, "results": result["results"],
+                        "audit": tampered, "provenance": intake["provenance"]})
+
+
+def test_dimensions_contract_rejects_missing_reordered_and_fabricated_rows(study):
+    from dskit.pipeline.base import value_hash
+    from index_options.mio_contract import MIOStudyContract
+
+    methods = study["domain"]["params"]["methods"]
+    expected = [[None, method["id"], "2019-01-02"] for method in methods]
+    rows = [{"row_type": "no_request", "sequence_index": i, "cohort_id": None,
+             "method_id": method["id"], "decision_date": "2019-01-02",
+             "status": "no_eligible_candidates", "candidate_count": 0}
+            for i, method in enumerate(methods)]
+    provenance = {"plan_sha256": "a"*64, "inputs_sha256": "b"*64,
+                  "source_pins_sha256": "c"*64}
+    row_counts = {"X": {"forecasts": 0, "contexts": 0, "bars": 0, "chain_rows": 0}}
+    manifest, audit = MIOStudyContract.dimensions_manifest(
+        "saved_mio_quarter", {"sha256": provenance["plan_sha256"]}, provenance,
+        rows, expected, row_counts, 0.1, 1024, 5*1024**3,
+        {"cash_advances": 0, "measurement_calls": 0, "model_calls": 0,
+         "integer_optimizer_calls": 0})
+    result = [{"id": "option-request-dimensions", "status": "completed",
+               "dimensions": manifest}]
+    assert MIOStudyContract().validate_dimensions_result(study, result, audit, provenance)
+    altered = copy.deepcopy(audit)
+    altered["expected_keys"] = altered["expected_keys"] + [[None, "forged-method", "2019-01-02"]]
+    with pytest.raises(ValueError, match="dimensions manifest is not bound|reordered dimensions key"):
+        MIOStudyContract().validate_dimensions_result(study, result, altered, provenance)
+    omitted = copy.deepcopy(result)
+    omitted[0]["dimensions"]["rows"].pop()
+    with pytest.raises(ValueError, match="dimensions manifest is not bound|omit or add"):
+        MIOStudyContract().validate_dimensions_result(study, omitted, audit, provenance)
+    assert value_hash(audit["expected_keys"]) == audit["expected_keys_sha256"]
+
+
 def test_mio_quote_index_reuses_verified_bytes_across_run_dirs(study, tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache-home"))
     _, _, first_permit = _open(study)
@@ -1576,6 +1641,22 @@ def test_policy_packet_train_attested_eval_replay_and_close(study, tmp_path, mon
                        "policy": spec["policy"], "seed": spec["seed"],
                        "total_timesteps": spec["total_timesteps"]}
         return registry, plan, permit, ctx, env_params, node_params, bounded, provenance, artifact_root
+
+    dimensions_doc = configured("dev", tmp_path/"dimensions-registry.sqlite", mode="probe")
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+    monkeypatch.setattr("index_options.mio_contract.dimensions_memory_cap_bytes",
+                        lambda: 5 * 1024**3)
+    with monkeypatch.context() as dimensions_guard:
+        dimensions_guard.setattr(TransportPortfolioSolve, "run", lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("policy dimensions must not call integer MIO")))
+        _, _, dimensions_close, dimensions_receipt = run_close(
+            dimensions_doc, "policy-dimensions", "OptionPolicyDimensionsPacket", review=True)
+    dimension_manifest = dimensions_close["results"][0]["dimensions"]
+    assert dimension_manifest["scope"] == "policy_training_window"
+    assert dimension_manifest["request_row_count"] + dimension_manifest["no_request_row_count"] == len(
+        dimension_manifest["rows"])
+    assert dimension_manifest["model_calls"] == dimension_manifest["integer_optimizer_calls"] == 0
+    assert dimensions_receipt["port"] == "receipt"
 
     registry_path = tmp_path/"train-registry.sqlite"
     probe_doc = configured("dev", registry_path, mode="probe")

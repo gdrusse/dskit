@@ -2610,6 +2610,65 @@ class MIOPacketStudy(StudyNode):
         return {"results": results, "audit": audit}
 
 
+class MIOPacketDimensions(StudyNode):
+    """Measure every saved MIO request with zero quantities and no optimizer."""
+
+    outputs = ("results", "audit")
+
+    def run(self, ctx, inputs):
+        """Run authenticated cash-only request sizing for each configured method."""
+        import time
+        from index_options.mio_contract import (
+            MIOStudyContract, dimensions_memory_cap_bytes, dimensions_peak_rss_bytes,
+            OptionPolicyStudyContract)
+        from index_options.rl_env import OptionStructuredEntryEnv
+
+        plan, registry, permit, bounded, provenance, params = MIOPacketStudy(
+            "intake", {"study": self.params["study"]}).validate_intake(ctx, inputs)
+        if self.params["study"]["domain"].get("policy") is not None:
+            raise ValueError("saved MIO dimensions require an ordinary MIO packet")
+        memory_cap = dimensions_memory_cap_bytes()
+        started, peak_before = time.monotonic(), dimensions_peak_rss_bytes()
+        row_counts = OptionPolicyStudyContract.option_packet_input_counts(self.params["study"], bounded)
+        rows, expected_dates = [], None
+        cash_advances = measurement_calls = 0
+        for method in params["methods"]:
+            measured = OptionStructuredEntryEnv._measure_policy_method(
+                params, bounded["inputs"], bounded.get("adjustments", []), method["id"])
+            if expected_dates is None:
+                expected_dates = measured["expected_dates"]
+            elif measured["expected_dates"] != expected_dates:
+                raise ValueError("MIO methods produced different decision calendars")
+            rows.extend(measured["rows"])
+            cash_advances += measured["cash_advances"]
+            measurement_calls += measured["measurement_calls"]
+            if measured["model_calls"] or measured["integer_optimizer_calls"]:
+                raise ValueError("dimensions path invoked a model or integer optimizer")
+        expected_dates = expected_dates or []
+        expected_keys = [[None, method["id"], day]
+                         for method in params["methods"] for day in expected_dates]
+        actual_keys = [[row["cohort_id"], row["method_id"], row["decision_date"]]
+                       for row in rows]
+        if actual_keys != expected_keys:
+            raise ValueError("dimensions traversal omitted or reordered an expected MIO week")
+        for index, row in enumerate(rows):
+            row["sequence_index"] = index
+        counters = {"cash_advances": cash_advances, "measurement_calls": measurement_calls,
+                    "model_calls": 0, "integer_optimizer_calls": 0}
+        manifest, audit = MIOStudyContract.dimensions_manifest(
+            "saved_mio_quarter", plan, provenance, rows, expected_keys, row_counts,
+            time.monotonic()-started, max(peak_before, dimensions_peak_rss_bytes()),
+            memory_cap, counters)
+        results = [{"id": "option-request-dimensions", "status": "completed",
+                    "dimensions": manifest}]
+        MIOStudyContract().validate_dimensions_result(
+            self.params["study"], results, audit, provenance)
+        registry.verify(plan, permit)
+        registry.bind(plan, permit, "execution", {
+            "results": results, "audit": audit, "provenance": provenance})
+        return {"results": results, "audit": audit}
+
+
 class MIOPacketCompare(StudyNode):
     """Publish descriptive complete-cohort metrics; never select an unset winner."""
 

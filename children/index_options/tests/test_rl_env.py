@@ -494,6 +494,131 @@ def _structured_env_params():
 
 
 
+
+def test_structured_measurement_is_the_environment_preparation_owner(monkeypatch):
+    from index_options.rl_env import OptionEntryEnv, OptionStructuredEntryEnv
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    measured, screened = [], []
+    measure = OptionStructuredEntryEnv.measure_request
+    candidate_screen = TransportPortfolioSolve.candidate_screen
+
+    def record_measurement(request, solver_params):
+        result = measure(request, solver_params)
+        measured.append(result)
+        return result
+
+    def record_screen(self, request):
+        screened.append(request)
+        return candidate_screen(self, request)
+
+    monkeypatch.setattr(OptionStructuredEntryEnv, "measure_request",
+                        staticmethod(record_measurement))
+    monkeypatch.setattr(TransportPortfolioSolve, "candidate_screen", record_screen)
+    env = OptionStructuredEntryEnv(**_structured_env_params())
+    env.reset(seed=11)
+    assert len(measured) == len(screened) == 1
+    result = measured[0]
+    assert result["screen"] == env._screen
+    assert result["active_indices"] == env._screen["active_indices"]
+    assert result["active_ids"] == env._screen["active_ids"]
+    assert result["active_group_count"] == len(result["active_indices"])
+    assert result["coordinate_map"] == env._coordinate_map
+    assert list(result["capacities"]) == env._request_capacities
+    assert result["active_coordinate_count"] == len(env._coordinate_map)
+    assert result["raw_max_capacity"] == max(env._request_capacities)
+    assert result["raw_feature_count"] == len(env._request_features)
+    assert "features" not in result
+
+    # Measuring again counts the legacy encoding but never allocates it.
+    monkeypatch.setattr(OptionEntryEnv, "_features",
+                        staticmethod(lambda *args, **kwargs: (_ for _ in ()).throw(
+                            AssertionError("measurement allocated dense features"))))
+    second = OptionStructuredEntryEnv.measure_request(
+        env._request, env._cohort["params"]["solver"])
+    assert second["raw_feature_count"] == result["raw_feature_count"]
+    env.close()
+
+
+def test_dimensions_traversal_measures_requests_and_advances_cash_without_integer_solve(monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+    from index_options.rl_env import OptionStructuredEntryEnv
+
+    params, inputs = _weekly_portfolio_fixture()
+    params["solver"]["group_screen"] = "lp"
+    params.pop("clocks", None)
+    assert not hasattr(OptionStructuredEntryEnv, "measure_policy_method")
+    monkeypatch.setattr(TransportPortfolioSolve, "run", lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("dimensions must not call the integer portfolio solver")))
+    result = OptionStructuredEntryEnv._measure_policy_method(
+        params, inputs, [], params["methods"][0]["id"])
+    assert result["cash_advances"] == result["measurement_calls"] == result["request_row_count"]
+    assert result["request_row_count"] + result["no_request_row_count"] == len(result["rows"])
+    assert result["model_calls"] == result["integer_optimizer_calls"] == 0
+    assert result["rows"]
+    assert [row["sequence_index"] for row in result["rows"]] == list(range(len(result["rows"])))
+    requests = [row for row in result["rows"] if row["row_type"] == "request"]
+    assert len(requests) == result["request_row_count"]
+    assert all(len(row["request_hash"]) == 64 and row["raw_feature_count"] >= 1
+               for row in requests)
+    assert all("request_hash_material" not in row for row in requests)
+
+
+def test_dimensions_traversal_records_cash_weeks_without_fabricated_requests(monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+    from index_options.ledger_studies import WeeklyOptionPortfolioStudy
+    from index_options.rl_env import OptionStructuredEntryEnv
+
+    params, inputs = _weekly_portfolio_fixture()
+    params["solver"]["group_screen"] = "lp"
+    params.pop("clocks", None)
+    monkeypatch.setattr(WeeklyOptionPortfolioStudy, "_prepare",
+                        lambda self, day: ([], [], []))
+    monkeypatch.setattr(TransportPortfolioSolve, "run", lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("dimensions must not call the integer portfolio solver")))
+    result = OptionStructuredEntryEnv._measure_policy_method(
+        params, inputs, [], params["methods"][0]["id"])
+    assert result["request_row_count"] == result["cash_advances"] == 0
+    assert result["measurement_calls"] == 0
+    assert result["no_request_row_count"] == len(result["rows"]) > 0
+    assert all(row["row_type"] == "no_request"
+               and row["status"] == "no_eligible_candidates"
+               and row["candidate_count"] == 0 for row in result["rows"])
+    assert [row["sequence_index"] for row in result["rows"]] == list(range(len(result["rows"])))
+    assert result["model_calls"] == result["integer_optimizer_calls"] == 0
+
+
+def test_structured_measurement_preserves_empty_and_raw_capacity_edges(monkeypatch):
+    from index_options.rl_env import OptionStructuredEntryEnv
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params = _structured_env_params()
+    env = OptionStructuredEntryEnv(**params)
+    env.reset(seed=11)
+    original = env._request
+    solver = params["dataset"]["cohorts"][0]["params"]["solver"]
+    screen = {"screen": "lp", "parity_tolerance": 1e-9, "groups": [],
+              "active_indices": [], "active_ids": [], "fallback_index": None}
+    monkeypatch.setattr(TransportPortfolioSolve, "candidate_screen",
+                        lambda self, request: screen)
+    empty = OptionStructuredEntryEnv.measure_request(original, solver)
+    assert empty["coordinate_map"] == ()
+    assert empty["capacities"] == ()
+    assert empty["raw_max_capacity"] == 0
+    assert empty["raw_feature_count"] == 1
+
+    # Restore the real screen and ensure the measured capacity is the untrimmed
+    # per-coordinate quote bound, even when the environment's declared action
+    # quantity limit is smaller.
+    monkeypatch.undo()
+    high = copy.deepcopy(original)
+    high["program"]["groups"][0]["capacity"][0] = 23
+    high["metadata"][0]["items"][0]["capacity"] = 23
+    measured = OptionStructuredEntryEnv.measure_request(high, solver)
+    assert measured["raw_max_capacity"] >= 23
+    assert max(measured["capacities"]) == measured["raw_max_capacity"]
+    env.close()
+
 def test_structured_v2_rejects_index_read_bounds_outside_split(monkeypatch):
     from dskit.pipeline.base import value_hash
     from index_options.ledger_studies import MIOPacketStudy

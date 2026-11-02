@@ -545,12 +545,12 @@
   },
   "legacy_cli_smoke": {
     "config": "children/index_options/configs/rl-entry-synthetic.json",
-    "config_document_hash": "6f053afc40db6189774d35b79ce95c21e47071e06d1d6e7824d5a97eb09348b1",
-    "file_sha256": "fa72ca21a60b19b203d7f8f4e4a5895ca6b4ecbc2ac837adae9da9fb21bc513d",
-    "invocation": "python -m dskit.pipeline run /tmp/rl-entry-synthetic-cli-20261102.json --asof 2026-11-02; temporary copy changed only outputs.run_root to /tmp/rl-entry-synthetic-cli-run-20261102-authority",
-    "run_id": "rl-entry-synthetic-2026-11-02-82fd3418",
-    "run_document_hash": "6f053afc40db6189774d35b79ce95c21e47071e06d1d6e7824d5a97eb09348b1",
-    "result": "all 3 nodes completed; PPO trained 32 timesteps, artifact restored, two deterministic validation episodes completed; node durations 2.315s / 0.009s / 0.456s",
+    "config_document_hash": "3d36800d32132963d7521ce97a568e8c031b23783ecc598d12a28501b2258645",
+    "file_sha256": "8fd170b7835e4b3231855e1cd975d4d4c33f6533705c0904189ab398ad78bda0",
+    "invocation": "python -m dskit.pipeline run /tmp/rl-entry-synthetic-cli-20261102-dimensions-freeze-final.json --asof 2026-11-02; temporary copy changed only outputs.run_root to /tmp/rl-entry-synthetic-cli-run-20261102-dimensions-freeze-final",
+    "run_id": "rl-entry-synthetic-2026-11-02-c164e677",
+    "run_document_hash": "3d36800d32132963d7521ce97a568e8c031b23783ecc598d12a28501b2258645",
+    "result": "all 3 nodes completed; PPO trained 32 timesteps, artifact restored, two deterministic validation episodes completed; node durations 2.313s / 0.007s / 0.431s",
     "scope": "synthetic lifecycle smoke only; no empirical packet data or study fit"
   },
   "indexed_storage_preflight": {
@@ -565,12 +565,15 @@
     "gate": "Recheck total destination disk reserve for each dispatch; per-index sizes do not establish sufficient space for all artifacts, rollouts or logs."
   },
   "focused_test_evidence": {
-    "test_rl_env": "41 passed",
-    "test_mio_packets": "75 passed, 1 expected SB3 GPU/MLP warning",
+    "test_rl_env": "45 passed",
+    "test_mio_packets": "77 passed, 1 expected SB3 GPU/MLP warning",
     "test_sb3_and_ledger": "409 passed, 12 skipped (earlier focused run; no changes in those files since)",
     "test_docs_budgets": "4 passed",
     "mirror_pairs": "aligned",
-    "scope": "Focused evidence only; no full test suite or real-data study run."
+    "scope": "Focused evidence only; no full test suite or real-data study run.",
+    "test_dimensions_pair": "122 passed, 1 expected SB3 GPU/MLP warning",
+    "dimensions_public_api_sweep": "56 refs, 123 other worktrees; no near matches or origin/main mentions for public helpers",
+    "scoped_lint": "ruff check on touched Python files reports 8 pre-existing D102/E731 findings in unchanged methods; no findings on added or changed implementation lines"
   },
   "final_review_lock": {
     "candidate_commit": "362474255ba084ac1b69b230c905d24dc9d42e70",
@@ -629,22 +632,51 @@
       "synthetic reward/feasibility/invalid-cash/diagnostics/quarter-replay/settlement covered"
     ],
     "empirical_status": {
-      "first_cohort_discovery_probe": "in progress after final reviews; indexing inputs; no env step or fit reported yet",
+      "first_cohort_discovery_probe": "completed and reviewed-closed; reset attempted on Jan 2, refused at max_features=1 (reset_completed=false); zero steps/actions/learning; all-date dimensions scan pending",
       "policy_fit": "pending",
       "saved_quarter_evaluation": "pending",
-      "registry_mutation": "fresh authorized probe claim active; registry revision 19",
-      "full_scale_data_bounds_and_runtime": "unmeasured"
+      "registry_mutation": "discovery probe claim reviewed_closed; primary registry has no active claim at revision 22",
+      "full_scale_data_bounds_and_runtime": "all-date dimensions scan pending; first-cohort discovery only"
     },
     "review_scope": "Implementation review pass only; empirical qualification remains pending.",
     "post_review_probe": {
       "service": "rl-full212-discovery-20261102-2108.service",
+      "status": "completed infeasible discovery/reset attempt; claim reviewed_closed at registry revision 22",
       "memory_max_gib": 5,
       "swap": "disabled",
+      "receipt": "/home/russell/data/index_options/rl-full-universe-20261102/runs/shape-discovery/rl-full212-nominal-s11-shape-discovery-2019-12-06-073189e5/artifacts/json/c53a0157db341833c9dbbdf15aff457d900f2c1c9df6256c42ea2982209b0e27.json",
+      "receipt_sha256": "c53a0157db341833c9dbbdf15aff457d900f2c1c9df6256c42ea2982209b0e27",
+      "cohort": "first Jan 2, 2019 training request",
+      "reset_attempted": true,
+      "reset_completed": false,
+      "step_calls": 0,
+      "learn_calls": 0,
       "max_features": 1,
-      "active_claim_id": "a7a18c6f-863c-4752-9006-9b9f192ad39a",
-      "registry_revision": 19,
-      "latest_report": "indexing symbols; no environment step or fit; no feasibility result yet",
-      "forecast_use": "saved 2019 forecasts, no rescoring"
+      "raw_feature_count": 16823438,
+      "active_coordinate_count": 122612,
+      "active_candidate_count": 1140,
+      "candidate_count": 1184,
+      "raw_max_capacity": 3649,
+      "elapsed_seconds": 105.64,
+      "process_vm_hwm_bytes": 2735009792,
+      "latest_report": "completed bounds refusal; zero environment steps and learning; no fit",
+      "forecast_use": "saved 2019 forecasts, no rescoring",
+      "cgroup_peak_gib": 3.3
     }
+  },
+  "legacy_synthetic_source_hashes": {
+    "index_options.rl_env": "ab61bfdc789ea08893f4af943751ece9205261ba0d38a06c2716779d18c6cd99",
+    "index_options.ledger_studies": "02f42a007284abe8af60cc1b0f4f0856d2605d40c576465a413318acee948868",
+    "dskit.pipeline.libs.pyomo": "3bed4b4682622530ee17512fab388b64f240b5b54dd81547a310825b1e476df0",
+    "dskit.pipeline.libs.sb3": "a3e8973c8830532cd3f2ef9daae38874306af086ae8a734fd3c51f5cf1ebaf3f",
+    "dskit.pipeline.libs.option_ledger": "b6b53ca2a1ba6c4fc6e93ff18be755aee9d5a05cd1f4f8b2948bfbf02fb70c03",
+    "dskit.pipeline.option_structures": "0ebffbe128c7b1840717ce502f8342abb3111233f8015dbc7114acfce8dae96a",
+    "index_options.nodes": "b824383fc580c20cd4eb69d0e727f59daea322a0b22384763c8af702ecfad219",
+    "index_options.contracts": "a929e1708de7c982acbdc394c2344cff6f7fde9e52f3cc34f2e0371eaf270d41",
+    "index_options.distribution": "244224f3767428f7ee0b4d2a55978c74e9b2b06f60921fa507e82576d9bbf01a",
+    "dskit.pipeline.libs.predictive_cdf": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
+    "dskit.pipeline.option_pricing": "e5c4066505bab989848dd8f6433c7fa59370b441f06579541784082aad8d9c7e",
+    "dskit.pipeline.stats": "6d8ea675d15a8c7c3f3cf0bfffd9a8f14aff72da86c2c787a5ef57c900d51518",
+    "dskit.pipeline.records": "a61cd326c1bda2eb6c275a4e2311116cc08a58adb759f7de88a1cba2d7b54718"
   }
 }
