@@ -1525,6 +1525,58 @@ def test_policy_packet_train_attested_eval_replay_and_close(study, tmp_path, mon
                              receipt_ref)
         return pipeline, ran, receipt_data, receipt_ref
 
+    def direct_train_setup(doc, run_dir, *, bypass_probe_gate=False):
+        from dskit.pipeline.base import value_hash
+        from index_options.observations import MIOPacketInputs
+        from index_options.mio_contract import OptionPolicyStudyContract
+        from index_options.rl_env import OptionStructuredEntryEnv
+
+        plan = StudyContract.build(doc)
+        registry = ExposureRegistry(doc["registry"])
+        permit = registry.claim(plan, registry.freeze(plan))
+        ctx = type("Context", (), {"run_dir": str(run_dir)})()
+        intake = MIOPacketInputs("intake", {"study": doc}).run(ctx, {"permit": permit})
+        bounded, provenance = intake["bounded_inputs"], intake["provenance"]
+        artifact_root = str(run_dir/"artifacts"/"mio-quotes")
+        if bypass_probe_gate:
+            # Model a previously assembled, valid canonical dataset presented
+            # directly to SB3. This bypass is only for constructing that
+            # transport object; the direct execution facade below remains real.
+            from index_options.ledger_studies import MIOPacketStudy
+
+            def active_claim_only(self, study, plan, permit, provenance, bounded,
+                                  artifact_root, phase, *, run_dir=None):
+                auth_registry, params = MIOPacketStudy.validate_authenticated_intake(
+                    study, plan, permit, provenance, bounded, artifact_root)
+                return auth_registry, params, None
+
+            with monkeypatch.context() as local:
+                local.setattr(OptionPolicyStudyContract, "authorize_execution",
+                              active_claim_only)
+                dataset, canonical = OptionStructuredEntryEnv.packet_dataset(
+                    doc, plan, permit, provenance, bounded, artifact_root,
+                    phase="training", run_dir=str(run_dir))
+        else:
+            dataset, canonical = OptionStructuredEntryEnv.packet_dataset(
+                doc, plan, permit, provenance, bounded, artifact_root,
+                phase="training", run_dir=str(run_dir))
+        assert dataset["canonical_payload_sha256"] == canonical
+        if bypass_probe_gate:
+            # The direct facade receives the canonical packet shape, but not
+            # its reviewed-probe authorization.
+            pass
+        spec = doc["domain"]["policy"]["training"]
+        env_params = {**spec["env_bounds"],
+                      "feature_transform": spec["feature_transform"],
+                      "dataset": dataset, "dataset_sha256": value_hash(dataset),
+                      "source_hashes": OptionStructuredEntryEnv.source_identity(),
+                      "split": "train"}
+        node_params = {"algo": spec["algo"], "algo_params": spec["algo_params"],
+                       "env": spec["env"], "env_params": env_params,
+                       "policy": spec["policy"], "seed": spec["seed"],
+                       "total_timesteps": spec["total_timesteps"]}
+        return registry, plan, permit, ctx, env_params, node_params, bounded, provenance, artifact_root
+
     registry_path = tmp_path/"train-registry.sqlite"
     probe_doc = configured("dev", registry_path, mode="probe")
     probe_pipeline, probe_run, probe_close, probe_receipt = run_close(
@@ -1535,6 +1587,51 @@ def test_policy_packet_train_attested_eval_replay_and_close(study, tmp_path, mon
 
     train_doc = configured("dev", registry_path, mode="training",
                            probe_receipt=probe_receipt)
+    (direct_registry, direct_plan, direct_permit, direct_ctx, direct_env, direct_params,
+     direct_bounded, direct_provenance, direct_artifact_root) = direct_train_setup(
+        train_doc, tmp_path/"direct-reviewed-train")
+    from dskit.pipeline.libs.sb3 import Sb3Train
+
+    reached = []
+    def stop_after_authorized_hook(key, algo):
+        reached.append("algo")
+        raise RuntimeError("authorization passed")
+    with monkeypatch.context() as direct_patch:
+        direct_patch.setattr(Sb3Train, "_resolve_algo",
+                             staticmethod(stop_after_authorized_hook))
+        direct_node = Sb3Train("direct_train", direct_params)
+        with pytest.raises(RuntimeError, match="authorization passed"):
+            direct_node.run_train(direct_ctx, {})
+    assert reached == ["algo"]
+
+    from index_options.rl_env import OptionStructuredEntryEnv
+    wrong_root_ctx = type("Context", (), {
+        "run_dir": str(tmp_path/"wrong-current-run")})()
+    wrong_root_problems = OptionStructuredEntryEnv.validate_execution_context(
+        wrong_root_ctx, direct_params, "train")
+    assert any("quote root differs" in problem for problem in wrong_root_problems)
+
+    changed_config = copy.deepcopy(direct_params)
+    changed_config["total_timesteps"] += 1
+    changed_problems = OptionStructuredEntryEnv.validate_execution_context(
+        direct_ctx, changed_config, "train")
+    assert any("SB3 node settings differ" in problem for problem in changed_problems)
+
+    changed_provenance = copy.deepcopy(direct_provenance)
+    changed_provenance["inputs_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="unverified bounded intake"):
+        OptionStructuredEntryEnv.packet_dataset(
+            train_doc, direct_plan, direct_permit, changed_provenance,
+            direct_bounded, direct_artifact_root, phase="training",
+            run_dir=direct_ctx.run_dir)
+
+    direct_registry.dispose("dev", "abandon", "direct facade authorization check")
+    with pytest.raises(ValueError, match="inactive packet permit"):
+        OptionStructuredEntryEnv.packet_dataset(
+            train_doc, direct_plan, direct_permit, direct_provenance,
+            direct_bounded, direct_artifact_root, phase="training",
+            run_dir=direct_ctx.run_dir)
+
     train_pipeline, train_run, train_close, _ = run_close(
         train_doc, "policy-train", "OptionPolicyTrainPacket")
     assert train_close["results"][0]["training"]["completed_episodes"] > 0
@@ -1569,3 +1666,43 @@ def test_policy_packet_train_attested_eval_replay_and_close(study, tmp_path, mon
     assert result["result"]["unbounded_books"] == 0
     assert eval_close["audit"]["runtime_checks"] == {
         "artifact_state": True, "decision_replay": True, "settled_account": True}
+
+
+    # A completed but abandoned probe is not an execution authorization. A
+    # fresh, active train claim with the same economics/source still must stop
+    # before the direct SB3 facade resolves a model or constructs an env.
+    abandoned_registry_path = tmp_path/"abandoned-probe-registry.sqlite"
+    abandoned_probe = configured("dev", abandoned_registry_path, mode="probe")
+    _, _, abandoned_close, abandoned_ref = run_close(
+        abandoned_probe, "abandoned-policy-probe",
+        "OptionPolicyFeasibilityProbePacket", review=False)
+    assert abandoned_close["results"][0]["probe"]["feasible"] is True
+    ExposureRegistry(abandoned_probe["registry"]).dispose(
+        "dev", "abandon", "completed probe intentionally not reviewed")
+    abandoned_train = configured("dev", abandoned_registry_path, mode="training",
+                                 probe_receipt=abandoned_ref)
+    (abandoned_registry, abandoned_plan, abandoned_permit, abandoned_ctx,
+     abandoned_env, abandoned_node_params, bounded, provenance, artifact_root) = (
+        direct_train_setup(abandoned_train, tmp_path/"direct-abandoned-train",
+                           bypass_probe_gate=True))
+
+    # Direct public construction and packet preparation must independently
+    # reject the abandoned publication even though the new claim is active.
+    with pytest.raises(ValueError, match="published and reviewed"):
+        OptionStructuredEntryEnv(**abandoned_env)
+    with pytest.raises(ValueError, match="published and reviewed"):
+        OptionStructuredEntryEnv.packet_dataset(
+            abandoned_train, abandoned_plan, abandoned_permit, provenance, bounded,
+            artifact_root, phase="training", run_dir=abandoned_ctx.run_dir)
+
+    reached = []
+    def forbidden_effect(key, *args, **kwargs):
+        reached.append(key)
+        raise AssertionError("model/environment work began before authorization")
+    with monkeypatch.context() as direct_patch:
+        direct_patch.setattr(Sb3Train, "_resolve_algo", forbidden_effect)
+        direct_patch.setattr(Sb3Train, "_build_env", forbidden_effect)
+        direct_node = Sb3Train("direct_abandoned_train", abandoned_node_params)
+        with pytest.raises(ValueError, match="published and reviewed"):
+            direct_node.run_train(abandoned_ctx, {})
+    assert reached == []

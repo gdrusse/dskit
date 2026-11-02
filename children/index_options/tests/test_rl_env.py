@@ -792,3 +792,125 @@ def test_real_probe_mode_cannot_enter_direct_sb3_train_hook(monkeypatch):
     ctx = type("Context", (), {"run_dir": run_dir})()
     problems = OptionStructuredEntryEnv.validate_execution_context(ctx, params, "train")
     assert problems == ["policy mode does not authorize this execution phase"]
+
+def test_probe_only_structured_env_blocks_submission_after_reset(monkeypatch):
+    from index_options.rl_env import OptionStructuredEntryEnv
+
+    env = OptionStructuredEntryEnv(**_structured_env_params())
+    env._probe_only = True
+    env.reset(seed=3)
+    submitted = []
+    monkeypatch.setattr(env, "_finish_episode",
+                        lambda quantities: submitted.append(quantities))
+    with pytest.raises(RuntimeError, match="cannot step or submit"):
+        env.step([1, 0, 0])
+    assert submitted == []
+    assert env.last_result is None
+    assert env._done is False
+    env.close()
+
+
+def test_direct_train_hook_uses_shared_execution_authorizer(monkeypatch):
+    """The direct SB3 facade must share packet and reviewed-probe authorization."""
+    from index_options.mio_contract import OptionPolicyStudyContract
+    from index_options.rl_env import OptionStructuredEntryEnv
+
+    run_dir = "/tmp/option-policy-direct-run"
+    spec = {
+        "env": "index_options.rl_env:OptionStructuredEntryEnv",
+        "env_schema": OptionStructuredEntryEnv.PAYLOAD_SCHEMA,
+        "env_bounds": {"max_coordinates": 4, "max_quantity": 2,
+                       "max_features": 8, "reward_scale": 1.0, "max_edits": 4},
+        "feature_transform": "identity", "algo": "PPO", "algo_params": {"gamma": 1.0},
+        "policy": "MlpPolicy", "seed": 11, "total_timesteps": 12,
+    }
+    study = {"domain": {"policy": {"mode": "training", "training": spec}}}
+    context = {"study": study, "plan": {}, "permit": {}, "provenance": {},
+               "artifact_root": run_dir + "/artifacts/mio-quotes"}
+    from dskit.pipeline.base import value_hash
+    canonical = "f" * 64
+    dataset = {"schema": OptionStructuredEntryEnv.PAYLOAD_SCHEMA, "synthetic": False,
+               "payloads": {"packet": {"bounded": {}, "index_context": context}},
+               "canonical_payload_sha256": canonical}
+    env_params = {**spec["env_bounds"], "feature_transform": spec["feature_transform"],
+                  "dataset": dataset, "dataset_sha256": value_hash(dataset),
+                  "source_hashes": {"source": "hash"}, "split": "train"}
+    node_params = {"algo": spec["algo"], "algo_params": spec["algo_params"],
+                   "env": spec["env"], "env_params": env_params, "policy": spec["policy"],
+                   "seed": spec["seed"], "total_timesteps": spec["total_timesteps"]}
+    called = []
+
+    def authorize(cls, *args, **kwargs):
+        called.append((args, kwargs))
+        return None, None, ({}, {})
+
+    monkeypatch.setattr(OptionPolicyStudyContract, "_validate_policy", lambda self, value: None)
+    monkeypatch.setattr(OptionPolicyStudyContract, "authorize_execution",
+                        classmethod(authorize), raising=False)
+    monkeypatch.setattr(OptionStructuredEntryEnv, "packet_dataset",
+                        classmethod(lambda cls, *args, **kwargs: (dataset, canonical)))
+    monkeypatch.setattr(OptionStructuredEntryEnv, "source_identity",
+                        classmethod(lambda cls: env_params["source_hashes"]))
+    monkeypatch.setattr(OptionStructuredEntryEnv, "_verify_training_probe",
+                        classmethod(lambda *args, **kwargs: None))
+    ctx = type("Context", (), {"run_dir": run_dir})()
+
+    assert OptionStructuredEntryEnv.validate_execution_context(ctx, node_params, "train") == []
+    assert len(called) == 1
+    args, kwargs = called[0]
+    assert args[:2] == (study, {})
+    assert args[6] == "train"
+    assert kwargs.get("run_dir") == run_dir
+
+
+def test_direct_quarter_eval_refuses_before_model_load_without_reviewed_publication(monkeypatch):
+    """The public quarter-evaluation facade authorizes before restoring a model."""
+    from index_options.mio_contract import OptionPolicyStudyContract
+    from index_options.rl_env import OptionQuarterEval, OptionStructuredEntryEnv
+
+    run_dir = "/tmp/option-policy-eval-run"
+    policy = {"mode": "evaluation", "training": {},
+              "evaluation": {"split": "val", "env": "index_options.rl_env:OptionStructuredEntryEnv",
+                             "max_episode_steps": 2, "n_episodes": 1,
+                             "seed": 11, "deterministic": True}}
+    context = {"study": {"domain": {"policy": policy}}, "plan": {}, "permit": {},
+               "provenance": {}, "artifact_root": run_dir + "/artifacts/mio-quotes"}
+    dataset = {"schema": OptionStructuredEntryEnv.PAYLOAD_SCHEMA, "synthetic": False,
+               "splits": {"train": {"start": "2019-01-01", "end_before": "2019-01-02"},
+                          "val": {"start": "2020-01-01", "end_before": "2020-01-02"}},
+               "payloads": {"packet": {"bounded": {}, "index_context": context}},
+               "cohorts": [{"id": "val", "split": "val"}]}
+    env_params = {"dataset": dataset, "dataset_sha256": "dataset-hash",
+                  "source_hashes": {}, "split": "val", "max_coordinates": 4,
+                  "max_quantity": 2, "max_features": 8, "max_edits": 4,
+                  "reward_scale": 1.0, "feature_transform": "identity"}
+    node_params = {"artifact": "trained-artifact", "algo": "PPO", "policy": "MlpPolicy",
+                   "env": "index_options.rl_env:OptionStructuredEntryEnv",
+                   "env_params": env_params, "split": "val", "max_episode_steps": 2,
+                   "n_episodes": 1, "seed": 11, "deterministic": True}
+    evaluator = OptionQuarterEval("quarter", node_params)
+    effects = []
+    calls = []
+
+    def authorize(cls, *args, **kwargs):
+        calls.append((args, kwargs))
+        raise ValueError("probe publication is not reviewed")
+
+    monkeypatch.setattr(OptionPolicyStudyContract, "_validate_policy", lambda self, value: None)
+    monkeypatch.setattr(OptionPolicyStudyContract, "authorize_execution",
+                        classmethod(authorize), raising=False)
+    monkeypatch.setattr(evaluator, "pinned_artifact", lambda *args, **kwargs: "artifact")
+    monkeypatch.setattr(evaluator, "_read_sidecar", lambda reference: {
+        "env": node_params["env"], "algo": "PPO",
+        "execution_context_contract": "validate-execution-context/v1"})
+    monkeypatch.setattr(evaluator, "_resolved_environment",
+                        lambda sidecar: (node_params["env"], env_params))
+    monkeypatch.setattr(evaluator, "_load_model",
+                        lambda *args: effects.append("model_load"))
+
+    with pytest.raises(ValueError, match="execution context is incompatible"):
+        evaluator.run(type("Context", (), {"run_dir": run_dir})(), {})
+    assert effects == []
+    assert len(calls) == 1
+    assert calls[0][0][6] == "eval_episodes"
+    assert calls[0][1]["run_dir"] == run_dir

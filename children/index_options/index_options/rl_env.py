@@ -447,9 +447,8 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
 
     @classmethod
     def packet_dataset(cls, study, plan, permit, provenance, bounded_inputs,
-                       artifact_root, *, phase):
+                       artifact_root, *, phase, run_dir=None):
         """Build a single-payload cohort dataset from one authenticated packet."""
-        from index_options.ledger_studies import MIOPacketStudy
         from index_options.mio_contract import OptionPolicyStudyContract
 
         if phase not in {"training", "evaluation"}:
@@ -460,8 +459,11 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
         if ((isinstance(expected_mode, str) and policy["mode"] != expected_mode)
                 or (isinstance(expected_mode, set) and policy["mode"] not in expected_mode)):
             raise ValueError("policy mode does not match packet dataset phase")
-        _, params = MIOPacketStudy.validate_authenticated_intake(
-            study, plan, permit, provenance, bounded_inputs, artifact_root)
+        auth_phase = {"probe": "probe", "training": "train",
+                      "evaluation": "eval_episodes"}[policy["mode"]]
+        _, params, _ = OptionPolicyStudyContract().authorize_execution(
+            study, plan, permit, provenance, bounded_inputs, artifact_root,
+            auth_phase, run_dir=run_dir)
         clocks = copy.deepcopy(bounded_inputs["clocks"])
         cohorts = []
         if phase == "training":
@@ -522,13 +524,16 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
         return dataset, canonical
 
     @classmethod
-    def _verify_training_probe(cls, study, plan, training, dataset, canonical):
+    def _verify_training_probe(cls, study, plan, training, dataset, canonical,
+                               authorized_probe=None):
         """Bind the reviewed first-request feasibility probe to this exact fit recipe."""
         from index_options.mio_contract import OptionPolicyStudyContract
 
         contract = OptionPolicyStudyContract()
-        artifact, evidence = contract._verify_probe_receipt(
-            study, study["domain"]["policy"]["probe_receipt"], training)
+        artifact, evidence = (authorized_probe if authorized_probe is not None else
+            contract._verify_probe_receipt(
+                study, study["domain"]["policy"]["probe_receipt"], training,
+                verify_registry=True))
         source_hashes = cls.source_identity()
         policy = study["domain"]["policy"]
         spec = policy["training"]
@@ -604,7 +609,15 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
         try:
             env_params = node_params.get("env_params")
             dataset = env_params.get("dataset") if isinstance(env_params, dict) else None
-            if not isinstance(dataset, dict) or dataset.get("synthetic") is True:
+            if not isinstance(dataset, dict):
+                return problems
+            packet_payloads = dataset.get("payloads")
+            packet = (packet_payloads.get("packet")
+                      if isinstance(packet_payloads, dict) else None)
+            has_authenticated_context = (
+                dataset.get("schema") == cls.PAYLOAD_SCHEMA
+                and isinstance(packet, dict) and packet.get("index_context") is not None)
+            if dataset.get("synthetic") is True and not has_authenticated_context:
                 return problems
             if dataset.get("schema") != cls.PAYLOAD_SCHEMA:
                 return ["real option policy requires authenticated v2 packet dataset"]
@@ -615,6 +628,8 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
             if not isinstance(context, dict) or set(context) != {
                     "study", "plan", "permit", "provenance", "artifact_root"}:
                 return ["authenticated packet context is incomplete"]
+            if not getattr(ctx, "run_dir", None):
+                return ["current SB3 execution run directory is required"]
             from index_options.mio_contract import OptionPolicyStudyContract
             OptionPolicyStudyContract()._validate_policy(context["study"])
             expected_root = os.path.realpath(os.path.join(
@@ -627,10 +642,14 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
                              "eval_episodes": "evaluation"}[phase]
             if policy["mode"] != expected_mode:
                 return ["policy mode does not authorize this execution phase"]
+            _, _, authorized_probe = OptionPolicyStudyContract().authorize_execution(
+                context["study"], context["plan"], context["permit"],
+                context["provenance"], payload["bounded"], context["artifact_root"],
+                phase, run_dir=getattr(ctx, "run_dir", None))
             expected_dataset, canonical = cls.packet_dataset(
                 context["study"], context["plan"], context["permit"],
                 context["provenance"], payload["bounded"], context["artifact_root"],
-                phase=selected_phase)
+                phase=selected_phase, run_dir=getattr(ctx, "run_dir", None))
             if dataset != expected_dataset or dataset.get("canonical_payload_sha256") != canonical:
                 problems.append("dataset differs from authenticated canonical packet builder")
             spec = policy["training"]
@@ -643,7 +662,8 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
                             else policy["evaluation"]["split"]}
             if selected_phase == "training" and policy["mode"] == "training":
                 cls._verify_training_probe(
-                    context["study"], context["plan"], spec, expected_dataset, canonical)
+                    context["study"], context["plan"], spec, expected_dataset, canonical,
+                    authorized_probe=authorized_probe)
             if env_params != expected_env:
                 problems.append("environment settings differ from frozen policy declaration")
             if phase == "probe":
@@ -742,6 +762,7 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
         self.last_proposal_feasible = None
         self.last_proposal_reason = None
         self._last_request_diagnostics = None
+        self._probe_only = False
         self._diagnostic_domain_invalid_episodes = 0
         self._diagnostic_executed_cash_episodes = 0
         super().__init__(**{key: params[key] for key in StructuredDecisionEnv._PARAMS})
@@ -773,6 +794,11 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
                 if not dataset["synthetic"]:
                     raise ValueError("real option policy requires canonical authenticated packet data")
             payloads = self._validate_payloads(dataset["payloads"])
+            if payloads is not None:
+                context = payloads["packet"]["index_context"] if "packet" in payloads else None
+                if isinstance(context, dict):
+                    self._probe_only = (
+                        context["study"]["domain"]["policy"]["mode"] == "probe")
         else:
             raise ValueError("unsupported cohort dataset schema")
         OptionEntryEnv._splits(dataset["splits"])
@@ -846,9 +872,15 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
                         or not isinstance(context["artifact_root"], str)):
                     raise ValueError("invalid indexed payload context")
                 if canonical:
-                    MIOPacketStudy.validate_authenticated_intake(
+                    from index_options.mio_contract import OptionPolicyStudyContract
+                    policy_mode = context["study"]["domain"]["policy"]["mode"]
+                    phase = {"probe": "probe", "training": "train",
+                             "evaluation": "eval_episodes"}.get(policy_mode)
+                    if phase is None:
+                        raise ValueError("unsupported option policy constructor mode")
+                    OptionPolicyStudyContract().authorize_execution(
                         context["study"], context["plan"], context["permit"],
-                        context["provenance"], bounded, context["artifact_root"])
+                        context["provenance"], bounded, context["artifact_root"], phase)
                 else:
                     MIOPacketStudy.validate_indexed_inputs(
                         context["study"], {"inputs": inputs},
@@ -1060,7 +1092,7 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
             shape, size = shape_count(value)
             return 1 + len(shape) + size
 
-        program, metadata, account = request["program"], request["metadata"], request["account"]
+        program, metadata = request["program"], request["metadata"]
         count = 6 + 1
         for group, meta in zip(program["groups"], metadata):
             count += 3
@@ -1187,7 +1219,14 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
             return [0]
         return [int(nested[group][leg]) for group, leg in self._coordinate_map]
 
+    def step(self, action):
+        if self._probe_only:
+            raise RuntimeError("feasibility probe environments cannot step or submit")
+        return super().step(action)
+
     def _finish_episode(self, quantities):
+        if self._probe_only:
+            raise RuntimeError("feasibility probe environments cannot finish or submit")
         if self._bound_mode:
             nested = self._unflatten(quantities)
             if self._scorer is None:

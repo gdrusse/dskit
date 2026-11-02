@@ -854,6 +854,66 @@ class OptionPolicyStudyContract(MIOStudyContract):
                 raise ValueError("feasibility probe must be published and reviewed before training")
         return artifact, evidence
 
+    def authorize_execution(self, study, plan, permit, provenance, bounded_inputs,
+                            artifact_root, phase, *, run_dir=None):
+        """Single owner for real option-policy execution authorization.
+
+        Phases are the public facade names: probe, train and eval_episodes.
+        Probe preparation needs a fresh active claim but no prior review.
+        Training and evaluation additionally require the exact attested probe
+        receipt to have a reviewed, closed registry publication. Registry
+        queries happen only after intake verification has returned.
+        """
+        from .ledger_studies import MIOPacketStudy
+        import os
+
+        if phase not in {"probe", "train", "eval_episodes"}:
+            raise ValueError("unsupported option execution authorization phase")
+        self._validate_policy(study)
+        policy = study["domain"]["policy"]
+        expected_mode = {"probe": "probe", "train": "training",
+                         "eval_episodes": "evaluation"}[phase]
+        if policy["mode"] != expected_mode:
+            raise ValueError("policy mode does not authorize this execution phase")
+        if run_dir is not None:
+            if not isinstance(run_dir, (str, os.PathLike)) or not str(run_dir):
+                raise ValueError("current policy execution run directory is required")
+            expected_root = os.path.realpath(os.path.join(
+                str(run_dir), "artifacts", "mio-quotes"))
+            if os.path.realpath(str(artifact_root)) != expected_root:
+                raise ValueError("indexed quote root differs from the current execution context")
+        elif not isinstance(artifact_root, (str, os.PathLike)) or not os.path.isabs(str(artifact_root)):
+            raise ValueError("authenticated absolute quote artifact root required")
+
+        # This checks the current active permit, exact provenance and bounded
+        # inputs, and descriptor containment. Its SQLite reads have completed
+        # before the separate reviewed-publication query below.
+        registry, params = MIOPacketStudy.validate_authenticated_intake(
+            study, plan, permit, provenance, bounded_inputs, str(artifact_root))
+        if phase == "probe":
+            if policy["probe_receipt"] is not None:
+                raise ValueError("probe creation cannot reuse a previous probe receipt")
+            return registry, params, None
+
+        probe_study = study
+        probe_ref = policy["probe_receipt"]
+        if phase == "eval_episodes":
+            training_ref = policy["artifact"].get("training_receipt")
+            trained = self._receipt(training_ref)
+            training_plan = trained.get("plan")
+            probe_study = (training_plan.get("study", {})
+                           if isinstance(training_plan, dict) else {})
+            train_policy = probe_study.get("domain", {}).get("policy", {})
+            if (not isinstance(train_policy, dict)
+                    or train_policy.get("mode") != "training"
+                    or train_policy.get("training") != policy["training"]
+                    or train_policy.get("probe_receipt") != probe_ref):
+                raise ValueError("evaluation training receipt differs from its reviewed probe binding")
+            probe_ref = train_policy["probe_receipt"]
+        verified_probe = self._verify_probe_receipt(
+            probe_study, probe_ref, policy["training"], verify_registry=True)
+        return registry, params, verified_probe
+
     def _validate_policy(self, study):
         from .rl_env import OptionStructuredEntryEnv, OptionEntryEnv
         policy = study["domain"].get("policy")
@@ -1116,28 +1176,23 @@ class OptionPolicyStudyContract(MIOStudyContract):
 
 class _OptionPolicyPacketStudy(StudyNode):
     """Authenticated policy packet intake and registry execution binding."""
+
     outputs = ("results", "audit", "artifact_path")
 
     def _intake(self, ctx, inputs):
+        from pathlib import Path
         from .ledger_studies import MIOPacketStudy
         authenticated = MIOPacketStudy("intake", {"study": self.params["study"]}).validate_intake(ctx, inputs)
         plan, registry, permit, bounded, provenance, params = authenticated
         policy = self.params["study"]["domain"].get("policy", {})
-        if policy.get("mode") in {"training", "evaluation"}:
-            probe_study = self.params["study"]
-            if policy.get("mode") == "evaluation":
-                # The feasibility probe is bound to the training packet and its
-                # reviewed registry claim. Evaluation uses a fresh packet claim
-                # (and may use a distinct registry), so verify the probe against
-                # the attested training study rather than this evaluation study.
-                training_ref = policy.get("artifact", {}).get("training_receipt", {})
-                trained = OptionPolicyStudyContract()._receipt(training_ref)
-                training_plan = trained.get("plan")
-                probe_study = (training_plan.get("study", {})
-                               if isinstance(training_plan, dict) else {})
-            OptionPolicyStudyContract()._verify_probe_receipt(
-                probe_study, policy["probe_receipt"], policy["training"],
-                verify_registry=True)
+        phase = {"probe": "probe", "training": "train",
+                 "evaluation": "eval_episodes"}.get(policy.get("mode"))
+        if phase is None:
+            raise ValueError("unsupported option policy execution mode")
+        OptionPolicyStudyContract().authorize_execution(
+            self.params["study"], plan, permit, provenance, bounded,
+            str(Path(ctx.run_dir) / "artifacts" / "mio-quotes"), phase,
+            run_dir=ctx.run_dir)
         return authenticated
 
     @staticmethod
@@ -1147,7 +1202,8 @@ class _OptionPolicyPacketStudy(StudyNode):
 
         artifact_root = str(Path(ctx.run_dir) / "artifacts" / "mio-quotes")
         return OptionStructuredEntryEnv.packet_dataset(
-            study, plan, permit, provenance, bounded, artifact_root, phase=phase)
+            study, plan, permit, provenance, bounded, artifact_root, phase=phase,
+            run_dir=ctx.run_dir)
 
     @staticmethod
     def _environment_params(policy, dataset, split):
@@ -1357,6 +1413,7 @@ class OptionPolicyFeasibilityProbePacket(_OptionPolicyPacketStudy):
 
 class OptionPolicyTrainPacket(_OptionPolicyPacketStudy):
     """Train a policy only from the authenticated packet's saved development forecasts."""
+
     role = "transform"
 
     def run(self, ctx, inputs):
@@ -1372,7 +1429,7 @@ class OptionPolicyTrainPacket(_OptionPolicyPacketStudy):
             ctx, study_decl, plan, permit, provenance, bounded, "training")
         env_params = self._environment_params(policy, dataset, "train")
         probe_artifact, probe = OptionPolicyStudyContract()._verify_probe_receipt(
-            study_decl, policy["probe_receipt"], spec)
+            study_decl, policy["probe_receipt"], spec, verify_registry=True)
         effective_env_hash = value_hash(
             self._effective_env_identity(policy, canonical_hash))
         if (probe.get("canonical_payload_sha256") != canonical_hash
@@ -1429,6 +1486,7 @@ class OptionPolicyTrainPacket(_OptionPolicyPacketStudy):
 
 class OptionPolicyEvalPacket(_OptionPolicyPacketStudy):
     """Evaluate one complete packet and independently replay submitted quantities."""
+
     role = "transform"
 
     def run(self, ctx, inputs):
