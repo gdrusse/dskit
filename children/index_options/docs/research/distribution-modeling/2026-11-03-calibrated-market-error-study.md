@@ -86,3 +86,12 @@ Sweep: `tools/sweep/sweep calibrated-market-error residual offset conditional-ca
 - Prior `mlp-learning-audit-20261103/ridge-stability-study/protocol.json` and `timing-audit.json`: exact38 inputs,68 excluded option inputs, inherited cohort limitations. Other chat's ongoing frozen-model blend is separate.
 - [Song et al., Distribution calibration for regression, ICML2019](https://proceedings.mlr.press/v97/song19a.html): post-hoc distribution correction is a recognized method; this paper does not establish an options-market edge or validate our proposed ridge model.
 - [Dheur and Ben Taieb, ICML2023 calibration study](https://proceedings.mlr.press/v202/dheur23a.html): calibration and sharpness can trade off; calibration plots alone are not an accuracy verdict. Application here is our proposed inference.
+
+
+### Pre-fit review corrections, 2026-11-03
+
+Both independent lenses on candidate1 found the same outer-year settlement and expiry-cell defects; the integration lens also demonstrated constant-column roundoff creating a missingness signal and unordered family metadata changing ablation meanings. All findings are retained in the run's review-correctness.json and review-integration.json.
+
+The corrected implementation keeps all 449,498 ranked identities, including 19,493 rows settling in the following year before the global2024 cutoff. Training and inner-label boundaries remain strict. Constant observed columns collapse to zero before imputation can invent variance. Explicit family_order binds bitmasks and ablations to the configuration identity; verification also checks the frozen inventory before loading outcomes. The continuation verdict records every predeclared clause, with undefined intervals failing.
+
+A0006 metadata uses fixed weekly windows1-7 through43-49 and50-60, retaining Thursday expiries. Monthly positions come from the complete listed panel before eligibility. The original exhaustive92-weekly roster and118-name cohort reconstruct26 monthly names and agree with every existing recorded classification, including the lone additional warmup GEO row. Monthly positions1-3 are flagged underpowered, higher positions supplementary; monthly pooled groups accompany ticker cells. Every forecast value and identity is unchanged; only reporting metadata changed. The corrected prepared snapshot and metadata parity receipt are registered through onboarding. The launcher binds imports to this worktree. No real residual fit or new annual score was read during these corrections.

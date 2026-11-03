@@ -27,10 +27,10 @@
       }
     },
     "prepared": {
-      "source": "market-error-prepared-20261103",
+      "source": "market-error-prepared-v2-20261103",
       "stream": "files",
-      "snapshot": "20261103T215650Z-backfill-228051d2",
-      "manifest_sha256": "228051d232958b79f4aab6f4dc78180f426a4191d26f39cb8557c665093290ff",
+      "snapshot": "20261103T222004Z-backfill-36c9cfba",
+      "manifest_sha256": "36c9cfbad6ce5396b1e20df69d27793fb068e6063d2e9caa7e7ae41ae819d83b",
       "root": "/home/russell/data/index_options/market-error-study-20261103/ob",
       "files": {
         "baseline-learning-2018Q1.parquet": "1b5f73c3ff1fc9f7e24fa43dcefbe7158a01a7732f6122448d4b10b0c8f59219",
@@ -43,8 +43,20 @@
         "baseline-learning-2022.parquet": "1626bc02636753f734f7642057e453a20c306eacefc0c23cb41cb7c696307840",
         "baseline-learning-2023.parquet": "a2edb32c25b629d1daeff66ec3a2a638f4423f104da3579e4e551e116e8c1609",
         "baseline-ledger.json": "df57b2e7be73f3b26d6a42b32ea3d06ff4852baaac9e39b6ee4e793fac3c24ef",
-        "forecasts.parquet": "adfb863390d74520c6f7727eea9e0bfe8a222b935b234049ddac8eb18d823da3",
+        "cell-metadata.json": "0b0f466a760c67eb88991bd05300838c91cc32ba8cecca262f80cbe9a3d5558c",
+        "forecasts.parquet": "29f7002f0cbf6532b72642ed2ad1d37d37e51861a10dc71d0ef05a5ba9664769",
         "history.parquet": "7248f9fa9676ffb0fe4f765b1595d6e347c4bf65b259b8e42b516687e614cab3"
+      }
+    },
+    "classification": {
+      "source": "market-error-cell-classification-v2-20261103",
+      "stream": "files",
+      "snapshot": "20261103T221906Z-backfill-6d7a5a47",
+      "manifest_sha256": "6d7a5a475068261ad3c63ec614e18039467cb20926606e6116d78b5f2b52d3e7",
+      "root": "/home/russell/data/index_options/market-error-study-20261103/ob",
+      "files": {
+        "analysis/wf-wide-mlp64/wf_wide_mlp64_cells_ticker_rank_year.csv": "eea0c3bcff1461476ffd6e8b5a3acb1f5c0acdd39d337c5a19a8b03e0a653dc1",
+        "registration/cohorts.json": "3334cfe9d55b7f973a0e14590ea735e0fe3b41b89bc44e07955f52bbac8ecaac"
       }
     }
   },
@@ -272,13 +284,26 @@
     },
     "groups": [
       [
-        "symbol"
+        "kind"
       ],
       [
+        "kind",
+        "cell_status"
+      ],
+      [
+        "kind",
+        "cell_status",
         "expiry_rank"
       ],
       [
         "symbol",
+        "kind",
+        "cell_status"
+      ],
+      [
+        "symbol",
+        "kind",
+        "cell_status",
         "expiry_rank"
       ]
     ],
@@ -432,18 +457,37 @@
       "raw": "f0db364e4d149fe7dc22a34e2de90ef117599d32a2ab6705fe8da8e03f7b2c85",
       "maps": "f9ddf3ff2f45a27f0fd9c37065828ec4a8e471e65b0d2317108cfb433167e04d",
       "features": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
-      "dskit/pipeline/libs/cdf_grid_methods.py": "76e7b0629abf164ce32f94aee7a26755badbc87c741efda56d509a8ef3b32a44",
-      "dskit/pipeline/libs/cdf_research.py": "6702c03ee36d58240d3e6e66c0c137995622ede70f324b9609242994e8b94a75",
+      "dskit/pipeline/libs/cdf_grid_methods.py": "60803ccc00d387b34ae046324759bbf0924c981fa6acc8546f3b3f75ae0756e8",
+      "dskit/pipeline/libs/cdf_research.py": "3b460a26d9d09fe7732b5d7d07bf4b243da2acb22ddda060f2386d69531faee5",
       "dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
       "dskit/pipeline/distribution_scores.py": "c2867aae1eac48984a92a4f4d645e8d304ff2bcba457c7b2150d9c3d0c558849",
       "prepared_history": "7248f9fa9676ffb0fe4f765b1595d6e347c4bf65b259b8e42b516687e614cab3",
-      "prepared_forecasts": "adfb863390d74520c6f7727eea9e0bfe8a222b935b234049ddac8eb18d823da3",
-      "ledger": "df57b2e7be73f3b26d6a42b32ea3d06ff4852baaac9e39b6ee4e793fac3c24ef"
+      "prepared_forecasts": "29f7002f0cbf6532b72642ed2ad1d37d37e51861a10dc71d0ef05a5ba9664769",
+      "ledger": "df57b2e7be73f3b26d6a42b32ea3d06ff4852baaac9e39b6ee4e793fac3c24ef",
+      "cell_metadata": "0b0f466a760c67eb88991bd05300838c91cc32ba8cecca262f80cbe9a3d5558c"
     },
     "pit_series": [
       "symbol",
+      "kind",
       "expiry_rank"
-    ]
+    ],
+    "family_order": [
+      "returns_momentum",
+      "realized_volatility",
+      "stock_liquidity",
+      "maturity_calendar"
+    ],
+    "continuation": {
+      "controls": [
+        "null",
+        "f0_only"
+      ],
+      "folds": [
+        "2021",
+        "2022",
+        "2023"
+      ]
+    }
   },
   "expected_ranked_rows": 449498,
   "expected_ranked_identity_sha256": "d9b0ccd654b66e537b8c1fd8148bcf70640a2f1b587abecf7400fedc4ef2bd05"

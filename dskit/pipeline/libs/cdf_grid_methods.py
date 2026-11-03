@@ -2672,7 +2672,11 @@ class ResidualRidgeCDF:
                          out=np.zeros(raw.shape[1]), where=counts > 0)
         filled = np.where(present, raw, mean)
         scale = filled.std(axis=0)
-        active = (counts > 0) & (scale > 0)
+        # Check observed constancy before mean imputation: roundoff in a
+        # constant column's mean must not manufacture a missingness predictor.
+        low = np.where(present, raw, np.inf).min(axis=0)
+        high = np.where(present, raw, -np.inf).max(axis=0)
+        active = (counts > 0) & (high > low) & (scale > 0)
         scale = np.where(active, scale, 1.)
         design = (filled - mean) / scale
         design[:, ~active] = 0.
@@ -2756,9 +2760,14 @@ class ResidualRidgeCDF:
             raise ValueError("invalid residual projection values")
         result = np.clip(values, 0., 1.)
         crossing = np.flatnonzero((np.diff(values, axis=1) < 0).any(axis=1))
-        for i in crossing:
-            result[i] = isotonic_regression(values[i], sample_weight=self.grid.quadratic_weights(),
-                                            y_min=0., y_max=1., increasing=True)
+        from sklearn import config_context
+
+        weights = self.grid.quadratic_weights()
+        # Shape, finiteness and positive weights were checked by this owner.
+        with config_context(skip_parameter_validation=True, assume_finite=True):
+            for i in crossing:
+                result[i] = isotonic_regression(values[i], sample_weight=weights,
+                                                y_min=0., y_max=1., increasing=True)
         return result
 
     def predict(self, features, baseline, *, details=False):

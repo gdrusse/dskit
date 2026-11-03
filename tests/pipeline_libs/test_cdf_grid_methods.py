@@ -3682,3 +3682,25 @@ def test_residual_ridge_prediction_diagnostics_respect_exact_null():
     pred, details = model.predict(None, base, details=True)
     assert pred.tobytes() == base.tobytes()
     assert details == {"rows": 1, "correction_squared": 0., "projection_squared": 0., "repaired_rows": 0}
+
+
+@pytest.mark.parametrize("constant", [.1, .3, 1e10])
+def test_residual_constant_observed_values_cannot_turn_missingness_into_signal(constant):
+    model = cgm.ResidualRidgeCDF([-1., 1.], [1., 1.], .0001)
+    base = np.tile([.2, .8], (4, 1))
+    model.fit([[constant], [constant], [constant], [np.nan]], base, [2., 2., 2., -2.])
+    assert model.state["active"] == [False, False, False]
+    for fitted in (model, cgm.ResidualRidgeCDF.from_state(json.loads(json.dumps(model.state)))):
+        prediction = fitted.predict([[constant], [np.nan], [constant + 1]], base[:3])
+        assert np.array_equal(prediction[0], prediction[1])
+        assert np.array_equal(prediction[0], prediction[2])
+        assert np.allclose(prediction, .25)
+
+
+def test_residual_projection_matches_validated_library_byte_for_byte():
+    from sklearn.isotonic import isotonic_regression
+    model = cgm.ResidualRidgeCDF([-3., -1., 0., 2.], [.25, 1., .25, 1.], 1.)
+    values = np.random.default_rng(29).normal(size=(128, 4))
+    expected = np.array([isotonic_regression(row, sample_weight=[.25, 1.5, .375, 1.],
+                                            y_min=0., y_max=1.) for row in values])
+    assert np.array_equal(model.project(values), expected)

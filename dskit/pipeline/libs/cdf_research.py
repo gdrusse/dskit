@@ -988,9 +988,11 @@ class ResidualCDFStudy:
     _PARAMS = ("identity", "date", "end", "baseline_asof", "outcome", "baseline",
                "features", "families", "alphas", "z_grid", "score_weights",
                "tail_width", "end_before", "output", "folds", "provenance",
-               "batch_rows", "clusters", "comparators", "groups", "periods", "pit_series")
+               "batch_rows", "clusters", "comparators", "groups", "periods", "pit_series",
+               "family_order", "continuation")
     _DEFAULTS = {"batch_rows": 4096, "clusters": None, "comparators": {},
-                 "groups": [], "periods": {}, "pit_series": []}
+                 "groups": [], "periods": {}, "pit_series": [],
+                 "family_order": None, "continuation": None}
 
     def __init__(self, params):
         from dskit.pipeline.libs.cdf_grid_methods import ResidualRidgeCDF
@@ -1016,6 +1018,12 @@ class ResidualCDFStudy:
         members = [f for group in p["families"].values() for f in group]
         if len(set(members)) != len(members) or set(members) != set(p["features"]):
             raise ValueError("families must partition the feature inventory")
+        if p["family_order"] is None:
+            p["family_order"] = list(p["families"])
+        if (not isinstance(p["family_order"], list)
+                or len(p["family_order"]) != len(p["families"])
+                or set(p["family_order"]) != set(p["families"])):
+            raise ValueError("family_order must list every family exactly once")
         if (not isinstance(p["alphas"], list) or not p["alphas"]
                 or not all(_positive(v) for v in p["alphas"])
                 or len(set(p["alphas"])) != len(p["alphas"])):
@@ -1040,6 +1048,15 @@ class ResidualCDFStudy:
             if len(bounds) != 2 or _date(bounds[0]) >= _date(bounds[1]):
                 raise ValueError("invalid period bounds")
         self._validate_folds()
+        rule = p["continuation"]
+        if rule is not None:
+            ranked = {f["name"] for f in p["folds"] if f.get("ranked", True)}
+            if (not isinstance(rule, dict) or set(rule) != {"controls", "folds"}
+                    or any(not isinstance(rule[k], list) or not rule[k]
+                           or len(set(rule[k])) != len(rule[k]) for k in ("controls", "folds"))
+                    or set(rule["controls"]) - {"null", "f0_only"}
+                    or set(rule["folds"]) - ranked):
+                raise ValueError("invalid continuation controls or ranked folds")
         self.output = Path(p["output"])
 
     def _validate_folds(self):
@@ -1128,7 +1145,7 @@ class ResidualCDFStudy:
         p = self.params
         specs = {"f0_only": []}
         specs.update({f"feature_{i:03d}": [f] for i, f in enumerate(p["features"])})
-        families = list(p["families"].values())
+        families = [p["families"][name] for name in p["family_order"]]
         for mask in range(1, 2 ** len(families)):
             chosen = {f for i, family in enumerate(families) if mask & (1 << i) for f in family}
             specs[f"families_{mask:02d}"] = [f for f in p["features"] if f in chosen]
@@ -1305,8 +1322,8 @@ class ResidualCDFStudy:
             train = self._history(history, fold, fold["start"])
             future = forecasts[(forecasts[p["date"]] >= fold["start"])
                                & (forecasts[p["date"]] < fold["stop"])]
-            if future.empty or not (future[p["end"]] < fold["stop"]).all():
-                raise ValueError("empty outer fold or labels reaching its boundary")
+            if future.empty:
+                raise ValueError("empty outer fold")
             ranked = fold.get("ranked", True)
             if ranked:
                 losses, blocks = self._inner(history, fold, progress)
@@ -1443,6 +1460,8 @@ class ResidualCDFStudy:
         store = AtomicFitStore(self.output / "freeze", self.params)
         store.verify()
         book = json.loads((store.path / "models.json").read_text())
+        if book["specifications"] != self.specifications() or book["candidates"] != self.candidates():
+            raise IntegrityError("frozen residual inventory differs from current configuration")
         frame = self._frame(forecasts, outcomes=False)
         if self._frame_hash(frame, list(frame.columns)) != book["forecast_hash"]:
             raise IntegrityError("forecast input hash mismatch")
@@ -1455,6 +1474,24 @@ class ResidualCDFStudy:
                 if self._digest(prediction) != saved["prediction_sha256"]:
                     raise IntegrityError("regenerated prediction hash mismatch")
         return book, frame
+
+    def _continuation(self, means, by_fold, pairs):
+        """Record every frozen research continuation clause; no promotion grant."""
+        rule = self.params["continuation"]
+        if rule is None:
+            return None
+        clauses = {}
+        for control in rule["controls"]:
+            clauses["pooled_vs_" + control] = means[control] > means["selected"]
+            interval = pairs["selected_vs_" + control]["ci95"]
+            clauses["pooled_ci95_vs_" + control] = (
+                interval is not None and math.isfinite(interval[0]) and interval[0] > 0)
+            for fold in rule["folds"]:
+                clauses[fold + "_vs_" + control] = by_fold[fold][control] > by_fold[fold]["selected"]
+        failed = [name for name, passed in clauses.items() if not passed]
+        return {"passed": not failed, "clauses": clauses, "failed_clauses": failed,
+                "status": "further_research_eligible" if not failed else "stop_feature_operator_search",
+                "promotion_assessed": False}
 
     def evaluate(self, forecasts, load_outcomes, progress=None):
         """Verify the complete freeze, then call the outcome loader exactly once.
@@ -1540,7 +1577,7 @@ class ResidualCDFStudy:
                         combined[control] - combined[name], *(combined[c] for c in p["clusters"]))
         full_name = list(self.specifications())[-1]
         full_mask = 2 ** len(p["families"]) - 1
-        for i, family in enumerate(p["families"]):
+        for i, family in enumerate(p["family_order"]):
             less = full_mask ^ (1 << i)
             reduced = f"families_{less:02d}" if less else "f0_only"
             pairs["ablation_" + family] = self.paired(
@@ -1570,6 +1607,7 @@ class ResidualCDFStudy:
                                "mean_losses": {name: float(cell[name].mean()) for name in names}})
         report = {"rows": len(combined), "mean_losses": means, "by_fold": by_fold,
                   "paired": pairs, "diagnostics": diagnostic_means, "corrections": correction_summary,
+                  "continuation": self._continuation(means, by_fold, pairs),
                   "warmup_unranked": warmup,
                   "slices": slices, "candidate_count": len(self.candidates()),
                   "config_hash": value_hash(p), "interpretation": "retrospective predictive comparison"}

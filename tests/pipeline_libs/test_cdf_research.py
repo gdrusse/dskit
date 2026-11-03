@@ -680,3 +680,66 @@ def test_residual_study_warmup_does_not_enter_pooled_diagnostics(tmp_path):
     assert result["rows"] == 12
     assert sum(result["diagnostics"]["null"]["pit_histogram"]) == 12
     assert set(result["warmup_unranked"]) == {"warmup"}
+
+
+
+def test_residual_outer_forecasts_may_settle_next_year_before_sealed_cutoff(tmp_path):
+    import copy
+    import pandas as pd
+    from dskit.pipeline.libs.cdf_research import ResidualCDFStudy
+    study, history, forecast, _ = residual_study_fixture(tmp_path)
+    params = copy.deepcopy(study.params)
+    params["end_before"] = "2024-01-01"
+    next_fold = copy.deepcopy(params["folds"][0])
+    next_fold.update(name="2023", start="2023-01-01", stop="2024-01-01")
+    params["folds"].append(next_fold)
+    forecast["expiry"] = forecast.expiry.str.replace("2022", "2023")
+    later = forecast.copy()
+    later["date"] = later.date.str.replace("2022", "2023")
+    later["expiry"] = later.expiry.str.replace("-01-", "-02-")
+    all_forecasts = pd.concat([forecast, later], ignore_index=True)
+    book = ResidualCDFStudy(params).freeze(history, all_forecasts)
+    assert sum(f["forecast_rows"] for f in book["folds"].values()) == len(all_forecasts)
+    assert all(f["max_training_end"] < name + "-01-01" for name, f in book["folds"].items())
+
+
+def test_residual_family_semantics_survive_json_key_order_and_changed_order_refuses(tmp_path):
+    import copy
+    from dskit.pipeline.libs.cdf_research import ResidualCDFStudy
+    study, history, forecast, outcomes = residual_study_fixture(tmp_path)
+    assert study.params["family_order"] == ["signal", "noise"]
+    study.freeze(history, forecast)
+    reordered = copy.deepcopy(study.params)
+    reordered["families"] = dict(reversed(list(reordered["families"].items())))
+    same = ResidualCDFStudy(reordered)
+    assert same.specifications() == study.specifications()
+    changed = copy.deepcopy(reordered)
+    changed["family_order"].reverse()
+    calls = []
+    def load():
+        calls.append(1)
+        return outcomes
+    with pytest.raises(IntegrityError):
+        ResidualCDFStudy(changed).evaluate(forecast, load)
+    assert not calls
+    report = same.evaluate(forecast, load)
+    assert calls == [1]
+    assert report["paired"]["ablation_signal"]["mean_improvement"] > 0
+
+
+def test_residual_continuation_requires_every_predeclared_clause(tmp_path):
+    from dskit.pipeline.libs.cdf_research import ResidualCDFStudy
+    study, _, _, _ = residual_study_fixture(tmp_path)
+    params = dict(study.params, continuation={"controls": ["null", "f0_only"], "folds": ["2022"]})
+    study = ResidualCDFStudy(params)
+    means = {"selected": 1., "null": 2., "f0_only": 1.5}
+    annual = {"2020": {"selected": 3., "null": 2., "f0_only": 2.}, "2022": means}
+    pairs = {"selected_vs_" + c: {"ci95": [.01, 1.]} for c in ("null", "f0_only")}
+    assert study._continuation(means, annual, pairs)["passed"] is True
+    pairs["selected_vs_null"]["ci95"] = None
+    failed = study._continuation(means, annual, pairs)
+    assert failed["passed"] is False
+    assert failed["failed_clauses"] == ["pooled_ci95_vs_null"]
+    pairs["selected_vs_null"]["ci95"] = [.01, 1.]
+    annual["2022"] = dict(means, selected=1.5)
+    assert study._continuation(means, annual, pairs)["failed_clauses"] == ["2022_vs_f0_only"]
