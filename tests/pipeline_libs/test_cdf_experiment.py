@@ -957,3 +957,178 @@ def test_ticker_head_queue_is_unchanged_by_the_key_existing(experiment_config):
     assert model.head_features == (len(experiment_config["arms"]["base"]["features"]),
                                    len(experiment_config["arms"]["base"]["features"])+1)
     assert json.loads((root/"completed/summary.json").read_text())["settings"]["head_features"]
+
+
+@pytest.mark.parametrize("regime", ["pooled", "unpooled"])
+def test_eval_rows_do_not_gate_training_admission(experiment_config, monkeypatch, regime):
+    import pandas as pd
+    from pathlib import Path
+    from dskit.pipeline.libs.cdf_experiment import AtomicFitStore, CDFExperiment, IntegrityError
+
+    config = experiment_config
+    config["capacity"]["unpooled"].update(device="cpu", absolute=100000, per_row=1000)
+    panel = pd.read_parquet(config["panel"])
+    panel = panel[~((panel["symbol"] == "BBB")
+                    & (panel["quote_date"] >= "2001-02-01"))]
+    panel.to_parquet(config["panel"], index=False)
+    config["panel_sha256"] = AtomicFitStore.file_hash(config["panel"])
+    exp = CDFExperiment(config)
+    frame = exp.load_panel()
+    bands, groups, admission = exp._bands(
+        frame, exp.study.plan.calendar(frame), 1, config["arms"]["base"])
+
+    assert groups == ["AAA", "BBB"]
+    assert admission["AAA"]["eligible"] and admission["AAA"]["val_n"] == 3
+    assert admission["BBB"]["eligible"] and admission["BBB"]["val_n"] == 0
+    assert len(bands[2]) == 3
+
+    exp.run(regime)
+    candidate = config["candidates"][0]["name"]
+    units = ["pooled"] if regime == "pooled" else groups
+    for unit in units:
+        root = Path(config["output"])/regime/"base"/candidate/"1"/unit
+        assert (root/"fit"/"complete.json").is_file()
+        assert (root/"completed"/"complete.json").is_file()
+        scoreable = unit == "pooled" or unit == "AAA"
+        if scoreable:
+            assert (root/"scores"/"AAA"/"complete.json").is_file()
+        else:
+            assert not (root/"scores").exists()
+
+    def no_refit(*args, **kwargs):
+        raise AssertionError("completed fit was refit on resume")
+    monkeypatch.setattr(TorchCDF, "fit", no_refit)
+    exp.run(regime)
+
+    root = Path(config["output"])/regime/"base"/candidate/"1"/("pooled" if regime == "pooled" else "AAA")
+    unexpected = root/"scores"/"BBB"
+    unexpected.mkdir(parents=True)
+    with pytest.raises(IntegrityError):
+        exp.run(regime)
+    import shutil
+    shutil.rmtree(unexpected)
+    shutil.rmtree(root/"scores"/"AAA")
+    with pytest.raises(IntegrityError):
+        exp.run(regime)
+
+
+@pytest.mark.parametrize("regime", ["pooled", "unpooled"])
+def test_all_eval_empty_still_fits_and_resumes(experiment_config, monkeypatch, regime):
+    from pathlib import Path
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+
+    config = experiment_config
+    config["capacity"]["unpooled"].update(device="cpu", absolute=100000, per_row=1000)
+    config["date_upper_exclusive"] = "2001-02-01"
+    exp = CDFExperiment(config)
+    frame = exp.load_panel()
+    bands, groups, admission = exp._bands(
+        frame, exp.study.plan.calendar(frame), 1, config["arms"]["base"])
+    assert groups == ["AAA", "BBB"]
+    assert all(admission[g]["eligible"] and admission[g]["val_n"] == 0 for g in groups)
+    assert bands[2].empty
+
+    exp.run(regime)
+    candidate = config["candidates"][0]["name"]
+    units = ["pooled"] if regime == "pooled" else groups
+    for unit in units:
+        root = Path(config["output"])/regime/"base"/candidate/"1"/unit
+        assert (root/"fit"/"complete.json").is_file()
+        assert (root/"completed"/"complete.json").is_file()
+        assert not (root/"scores").exists()
+
+    def no_refit(*args, **kwargs):
+        raise AssertionError("completed empty-evaluation fit was refit on resume")
+    monkeypatch.setattr(TorchCDF, "fit", no_refit)
+    exp.run(regime)
+
+
+@pytest.mark.parametrize(("observed", "refit"), [
+    (False, False), (True, False), (False, True), (True, True),
+])
+def test_future_panel_changes_do_not_change_fit_or_checkpoint(
+        experiment_config, tmp_path, observed, refit):
+    import copy
+    import json
+    import pandas as pd
+    from pathlib import Path
+    from dskit.pipeline.libs.cdf_experiment import AtomicFitStore, CDFExperiment
+    from dskit.pipeline.libs.predictive_cdf import TorchCDF
+
+    first = experiment_config
+    feature = first["arms"]["base"]["features"][0]
+    if observed:
+        first["arms"]["base"]["observed_columns"] = [feature]
+    first["refit_full_train"] = refit
+    first_exp = CDFExperiment(first)
+    first_frame = first_exp.load_panel()
+    first_bands, first_groups, _ = first_exp._bands(
+        first_frame, first_exp.study.plan.calendar(first_frame), 1, first["arms"]["base"])
+
+    second = copy.deepcopy(first)
+    second["output"] = str(tmp_path/"second-out")
+    second["panel"] = str(tmp_path/"second-panel.parquet")
+    panel = pd.read_parquet(first["panel"])
+    future = panel["quote_date"] >= "2001-02-01"
+    panel.loc[future, feature] += 1000.0
+    panel.loc[future, "terminal_return"] += 10.0
+    panel.to_parquet(second["panel"], index=False)
+    second["panel_sha256"] = AtomicFitStore.file_hash(second["panel"])
+    second_exp = CDFExperiment(second)
+    second_frame = second_exp.load_panel()
+    second_bands, second_groups, _ = second_exp._bands(
+        second_frame, second_exp.study.plan.calendar(second_frame), 1, second["arms"]["base"])
+
+    assert first_exp.identity != second_exp.identity
+    assert first_groups == second_groups == ["AAA", "BBB"]
+    pd.testing.assert_frame_equal(first_bands[0], second_bands[0])
+    pd.testing.assert_frame_equal(first_bands[1], second_bands[1])
+
+    first_exp.run("pooled", limit=1)
+    second_exp.run("pooled", limit=1)
+    candidate = first["candidates"][0]["name"]
+    roots = [Path(c["output"])/"pooled/base"/candidate/"1/pooled/fit"
+             for c in (first, second)]
+    assert AtomicFitStore.file_hash(roots[0]/"model/weights.pt") == AtomicFitStore.file_hash(roots[1]/"model/weights.pt")
+    meta = [json.loads((root/"metadata.json").read_text()) for root in roots]
+    assert meta[0]["features"] == meta[1]["features"]
+    assert meta[0]["groups"] == meta[1]["groups"]
+    assert meta[0]["medians"] == meta[1]["medians"]
+    assert meta[0]["band_counts"][:2] == meta[1]["band_counts"][:2]
+    settings = [json.loads((root.parent/"completed/summary.json").read_text())["settings"]
+                for root in roots]
+    assert settings[0] == settings[1]
+    models = [TorchCDF.load_checkpoint(root/"model") for root in roots]
+    np.testing.assert_array_equal(models[0].scaler.mean_, models[1].scaler.mean_)
+    np.testing.assert_array_equal(models[0].scaler.scale_, models[1].scaler.scale_)
+
+
+@pytest.mark.parametrize("refit", [False, True])
+@pytest.mark.parametrize("val_mode", ["empty", "starts_late"])
+def test_chronology_uses_configured_validation_boundary_without_rows(
+        experiment_config, monkeypatch, refit, val_mode):
+    import pandas as pd
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment, IntegrityError
+
+    config = experiment_config
+    if val_mode == "empty":
+        config["date_upper_exclusive"] = "2001-02-01"
+    if refit:
+        config["refit_full_train"] = True
+    exp = CDFExperiment(config)
+    frame = exp.load_panel()
+    fold = exp.study.plan.ids()[0]
+    fit, cal, val = exp.study.plan.bands(
+        frame, fold, exp.study.plan.calendar(frame))
+    cal = cal.copy()
+    cal.loc[cal.index[-1], "settlement_date"] = "2001-02-02"
+    if val_mode == "empty":
+        val = val.iloc[:0]
+    else:
+        val = val[val["quote_date"] > "2001-02-01"]
+        assert not val.empty and val["quote_date"].min() > "2001-02-01"
+    monkeypatch.setattr(exp.study.plan, "bands", lambda *_: (fit, cal, val))
+
+    with pytest.raises(IntegrityError, match="chronological purge boundary"):
+        exp._bands(frame, exp.study.plan.calendar(frame), fold, config["arms"]["base"])
+

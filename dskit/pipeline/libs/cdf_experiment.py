@@ -332,7 +332,7 @@ class CDFExperiment:
             f, m, v = [b[b[s["group"]] == ticker] for b in (fit, cal, val)]
             disjoint = self.disjoint_count(f, s["date"], s["end"])
             eligible = (len(f) >= arm["min_fit"] and len(m) >= arm["min_cal"]
-                        and disjoint >= arm["min_disjoint"] and len(v) > 0)
+                        and disjoint >= arm["min_disjoint"])
             admission[ticker] = {"fit_n": len(f), "cal_n": len(m), "val_n": len(v),
                                  "disjoint_labels": disjoint, "eligible": eligible}
             if eligible:
@@ -341,7 +341,7 @@ class CDFExperiment:
         if groups:
             fit_end = bands[0][s["end"]].max()
             cal_end = bands[1][s["end"]].max()
-            val_start = bands[2][s["date"]].min()
+            val_start = self.study.plan.folds[fold]["val_start"]
             if self.config.get("refit_full_train"):
                 ordered = fit_end < val_start and cal_end < val_start
             else:
@@ -437,14 +437,17 @@ class CDFExperiment:
                     "target_normalization": s["target"]+"/"+s["reference"],
                     "elapsed_seconds": time.monotonic()-started,
                     "band_counts": [len(b) for b in bands],
-                    "band_dates": [{k: [b[k].min(), b[k].max()] for k in (s["date"], s["end"])}
-                                   for b in bands],
+                    "band_dates": [
+                        ({k: [None, None] for k in (s["date"], s["end"])} if b.empty else
+                         {k: [b[k].min(), b[k].max()] for k in (s["date"], s["end"])})
+                        for b in bands],
                     "observed_fit_counts": bands[0][arm["features"]].notna().sum().to_dict()}
         with tempfile.TemporaryDirectory(dir=path.parent) as temp:
             checkpoint = Path(temp)/"model"
             model.save_checkpoint(checkpoint)
             restored = TorchCDF.load_checkpoint(checkpoint)
-            probe = arrays[2][:min(7, len(arrays[2]))]
+            # Checkpoint round-trip uses only fixed fit/cal features, never evaluation rows.
+            probe = np.concatenate((arrays[0][:4], arrays[1][:3]), axis=0)
             np.testing.assert_allclose(model.curve(probe).cdf([-.5, 0., .5]),
                                        restored.curve(probe).cdf([-.5, 0., .5]), rtol=1e-6, atol=1e-7)
             files = {"model/"+p.name: p.read_bytes() for p in checkpoint.iterdir()}
@@ -464,6 +467,8 @@ class CDFExperiment:
                 continue
             fmask, vmask = [(b[s["group"]] == ticker).to_numpy() for b in (bands[0], bands[2])]
             f, v = bands[0].loc[fmask], bands[2].loc[vmask]
+            if v.empty:
+                continue
             xv = arrays[2][vmask]
             baseline_x = [b[[s["horizon"], s["reference"]]].to_numpy() for b in (f,v)]
             yf, yv = [(b[s["target"]]/b[s["reference"]]).to_numpy() for b in (f,v)]
@@ -529,6 +534,9 @@ class CDFExperiment:
                     continue
                 if not path.is_dir() or path.name not in groups:
                     raise IntegrityError("unexpected score shard")
+                s = self.config["study"]
+                if bands[2][bands[2][s["group"]] == path.name].empty:
+                    raise IntegrityError("score shard has no evaluation rows")
                 published.append(path)
         fit = root/"fit"
         if not fit.exists():
@@ -544,9 +552,9 @@ class CDFExperiment:
             import pandas as pd
             s = self.config["study"]
             try:
+                expected = bands[2][bands[2][s["group"]] == path.name]
                 scores = pd.read_parquet(path/"scores.parquet")
-                self.check_pairing(bands[2][bands[2][s["group"]] == path.name],
-                                   scores, s["identity"])
+                self.check_pairing(expected, scores, s["identity"])
                 metrics = [label+"_"+metric for label in ("model", "baseline")
                            for metric in ("crps", "tail_crps", "weighted_crps")]
                 if not np.isfinite(scores[metrics].to_numpy(dtype=float)).all():
@@ -566,7 +574,9 @@ class CDFExperiment:
             complete.verify()
             # Completed summaries never substitute for validating their artifacts.
             fit_record = AtomicFitStore(root/"fit", identity).verify()
-            for ticker in groups:
+            scoreable = [g for g in groups
+                         if not bands[2][bands[2][self.config["study"]["group"]] == g].empty]
+            for ticker in scoreable:
                 AtomicFitStore(root/"scores"/ticker, {"fit": identity,
                     "checkpoint": value_hash(fit_record), "ticker": ticker}).verify()
             return "complete"

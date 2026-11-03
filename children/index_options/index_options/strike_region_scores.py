@@ -353,6 +353,8 @@ class _ArchiveStrikes(_ListedStrikes):
 
     def _read(self, frame):
         """Add the valid-quote strikes of every identity of ``frame`` not yet seen to the cache."""
+        if frame.empty:
+            return
         import pyarrow.parquet as pq
 
         todo = frame[[(s, d, e) not in self.strikes for s, d, e in
@@ -1010,9 +1012,11 @@ class StrikeRegionScores(Node):
             curves.append(result["curves"])
             hashes[cell["name"]] = result["hashes"]
             for band, rows in result["rows"].items():
+                position = 0 if band == "fit" else 2
+                population = len(cell["bands"][position])
                 ids = {"arm": cell["arm"], "candidate": cell["candidate"], "fold": cell["fold"], "band": band,
-                       "band_sampled": bool(rows.band_sampled.iloc[0]),
-                       "band_rows_population": int(rows.band_rows_population.iloc[0])}
+                       "band_sampled": population > len(rows),
+                       "band_rows_population": population}
                 cells.append(table.aggregate(rows, ids))
                 data = pa.Table.from_pandas(rows, preserve_index=False)
                 if writer is None:
@@ -1094,12 +1098,19 @@ class StrikeRegionScores(Node):
         record = AtomicFitStore(root / "fit", identity).verify()
         checkpoint = value_hash(record)
         shards = root / "scores"
+        scoreable = {ticker for ticker in cell["groups"]
+                     if not cell["bands"][2][cell["bands"][2][self.world.fields["group"]] == ticker].empty}
         for path in sorted(shards.iterdir()) if shards.exists() else ():
-            if ".pending-" not in path.name and not (path.is_dir() and path.name in cell["groups"]):
+            if ".pending-" not in path.name and not (path.is_dir() and path.name in scoreable):
                 raise IntegrityError(f"unexpected score shard {path.name} under {shards}")
         for ticker in cell["groups"]:
-            AtomicFitStore(root / "scores" / ticker, {"fit": identity, "checkpoint": checkpoint,
-                                                      "ticker": ticker}).verify()
+            shard = root / "scores" / ticker
+            if ticker not in scoreable:
+                if shard.exists():
+                    raise IntegrityError(f"score shard has no validation rows: {ticker}")
+                continue
+            AtomicFitStore(shard, {"fit": identity, "checkpoint": checkpoint,
+                                   "ticker": ticker}).verify()
         return {"status": "complete", "checkpoint": checkpoint}
 
     def _score_cell(self, cell):
@@ -1260,7 +1271,16 @@ class StrikeRegionScores(Node):
         identity sets must be equal.
         """
         f, tol = self.world.fields, self.params["stored_tolerance"]
-        stored = pd.concat([pd.read_parquet(cell["root"] / "scores" / t / "scores.parquet") for t in cell["groups"]])
+        scoreable = [ticker for ticker in cell["groups"]
+                     if not cell["bands"][2][cell["bands"][2][f["group"]] == ticker].empty]
+        if val.empty:
+            if mixture is not None or scoreable:
+                raise IntegrityError(f"{cell['name']}: empty validation rows disagree with scoreable groups")
+            return
+        if mixture is None or not scoreable:
+            raise IntegrityError(f"{cell['name']}: validation rows lack a restored model mixture")
+        stored = pd.concat([pd.read_parquet(cell["root"] / "scores" / t / "scores.parquet")
+                            for t in scoreable], ignore_index=True)
         keys = f["identity"]
         parts = ("weights", "means", "scales")
         names = [f"{part}{j}" for part in parts for j in range(mixture.shape[2])]

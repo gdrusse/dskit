@@ -1113,3 +1113,43 @@ def test_validation_band_sample_is_optional_and_must_be_a_positive_integer_or_no
     assert StrikeRegionScores.validate_params(make_params(world, validation_band_sample=None)) == []
     assert StrikeRegionScores.validate_params(make_params(world, validation_band_sample=5)) == []
     assert StrikeRegionScores.validate_params(make_params(world, validation_band_sample=0))
+
+
+@pytest.mark.parametrize("missing", ["partial", "all"])
+def test_score_collector_preserves_fits_when_validation_group_is_empty(world, missing):
+    """Training-eligible groups without validation rows keep fit artifacts and emit no fake scores."""
+    modified = copy.copy(world)
+    cfg = copy.deepcopy(world.cfg)
+    panel = world.panel.copy()
+    if missing == "partial":
+        panel = panel[~((panel.symbol == "BBB") & (panel.quote_date >= VAL_DATES[0]))]
+        expected_val_rows = int((panel.quote_date >= VAL_DATES[0]).sum())
+    else:
+        panel = panel[panel.quote_date < VAL_DATES[0]]
+        expected_val_rows = 0
+    modified.panel_path = world.tmp / f"panel-{missing}-empty-val.parquet"
+    panel.to_parquet(modified.panel_path)
+    cfg["panel"] = str(modified.panel_path)
+    cfg["panel_sha256"] = AtomicFitStore.file_hash(cfg["panel"])
+    cfg["output"] = str(world.tmp / f"experiment-{missing}-empty-val")
+    modified.cfg = cfg
+    modified.document = world.tmp / f"experiment-{missing}-empty-val.json"
+    modified.document.write_text(json.dumps(cfg))
+    modified.counter = 100 if missing == "partial" else 200
+    CDFExperiment(cfg).run("pooled")
+
+    out, params = run_node(modified)
+    rows = pd.read_parquet(Path(params["output"]) / "rows.parquet")
+    summary = json.loads((Path(params["output"]) / "summary.json").read_text())
+    assert out["summary"]["scored_cells"] == 1
+    assert summary["scored_cells"][0]["groups"] == list(TICKERS)
+    assert summary["scored_cells"][0]["rows"]["val"] == expected_val_rows
+    assert len(rows[rows.band == "val"]) == expected_val_rows
+    fit_root = Path(cfg["output"]) / "pooled/base/PatchTST/1/pooled/fit"
+    assert (fit_root / "complete.json").is_file()
+    score_root = Path(cfg["output"]) / "pooled/base/PatchTST/1/pooled/scores"
+    if missing == "partial":
+        assert (score_root / "AAA/complete.json").is_file()
+        assert not (score_root / "BBB").exists()
+    else:
+        assert not score_root.exists()
