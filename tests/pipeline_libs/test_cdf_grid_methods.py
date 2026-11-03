@@ -3704,3 +3704,49 @@ def test_residual_projection_matches_validated_library_byte_for_byte():
     expected = np.array([isotonic_regression(row, sample_weight=[.25, 1.5, .375, 1.],
                                             y_min=0., y_max=1.) for row in values])
     assert np.array_equal(model.project(values), expected)
+
+
+@pytest.mark.parametrize("kind", ["residual_ridge", "linear_pool"])
+def test_feature_source_date_alias_refuses_before_publication(tmp_path, kind):
+    if kind == "residual_ridge":
+        df, original = _residual_params(tmp_path)
+        params = sourced(tmp_path, df, original["method"], columns=("x",),
+                         fallback="market", ranked_folds=[1, 2])
+    else:
+        df, _ = feature_frame(np.random.default_rng(664), "linear", n_fit=100, n_val=50, folds=(1,))
+        params = sourced(tmp_path, df, featured_method(kind))
+    path = tmp_path / "ext_features.parquet"
+    ext = pd.read_parquet(path)
+    alias = ext.iloc[:1].copy()
+    alias["quote_date"] += pd.Timedelta(hours=12)
+    pd.concat([ext, alias], ignore_index=True).to_parquet(path, index=False)
+    params["method"]["feature_source"]["sha256"] = sha(path)
+    with pytest.raises(ValueError, match="duplicate"):
+        run(params)
+    assert not (tmp_path / "out").exists() and not (tmp_path / ".out.partial").exists()
+
+
+def test_component_source_date_alias_refuses_before_publication(tmp_path):
+    df, ext = external_setup(tmp_path)
+    alias = ext.iloc[:1].copy()
+    alias["quote_date"] += pd.Timedelta(hours=12)
+    params = external_params(tmp_path, df, pd.concat([ext, alias], ignore_index=True))
+    with pytest.raises(ValueError, match="duplicate"):
+        run(params)
+    assert not (tmp_path / "out").exists() and not (tmp_path / ".out.partial").exists()
+
+
+@pytest.mark.parametrize("source", ["inline", "external"])
+def test_residual_null_facade_ignores_unused_feature_values_and_io(tmp_path, source):
+    df, params = _residual_params(tmp_path, alpha=None)
+    if source == "inline":
+        df["x"] = "unused nonnumeric value"
+    else:
+        df = df.drop(columns="x")
+        params["method"]["feature_source"] = dict(path=str(tmp_path / "absent.parquet"),
+                                                   sha256="0"*64, keys=["row_id", "quote_date"])
+    df.to_parquet(params["source"], index=False)
+    params["source_sha256"] = sha(params["source"])
+    run(params)
+    actual = joined(read_out(params)[0], df)
+    assert np.array_equal(cdf_columns(actual), cdfs(actual, "mkt"))

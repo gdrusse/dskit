@@ -743,3 +743,48 @@ def test_residual_continuation_requires_every_predeclared_clause(tmp_path):
     pairs["selected_vs_null"]["ci95"] = [.01, 1.]
     annual["2022"] = dict(means, selected=1.5)
     assert study._continuation(means, annual, pairs)["failed_clauses"] == ["2022_vs_f0_only"]
+
+
+@pytest.mark.parametrize("side", ["forecast", "learning"])
+@pytest.mark.parametrize("fault", ["date_alias", "expiry_alias", "blank_symbol"])
+def test_residual_baseline_identity_normalization_precedes_calibration(tmp_path, monkeypatch, side, fault):
+    import pandas as pd
+    from dskit.pipeline.libs.cdf_grid_methods import GridCDFMethod
+    study, history, forecasts, _ = residual_study_fixture(tmp_path)
+    learning = history.iloc[:2].copy().assign(pit=[.2, .8])
+    target = forecasts if side == "forecast" else learning
+    if fault == "blank_symbol":
+        target.loc[target.index[0], "symbol"] = "  "
+    else:
+        alias = target.iloc[:1].copy()
+        column = "date" if fault == "date_alias" else "expiry"
+        alias[column] = alias[column] + "T12:00:00"
+        target = pd.concat([target, alias], ignore_index=True)
+        # A uniformly parseable timestamp representation isolates identity validation.
+        target[column] = pd.to_datetime(target[column], format="mixed")
+    if side == "forecast":
+        forecasts = target
+    else:
+        learning = target
+    calls = []
+    original = GridCDFMethod.calibration_map
+    def tracked(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(GridCDFMethod, "calibration_map", staticmethod(tracked))
+    with pytest.raises((ValueError, IntegrityError), match="identit|duplicate|pair"):
+        study.issue_baselines(forecasts, {"annual": learning},
+                              [dict(name="annual", start="2022-01-01", stop="2023-01-01", expected=None)],
+                              raw_columns=["b0", "b1", "b2"], pit_column="pit", knots=3)
+    assert not calls
+    assert not (tmp_path / "study").exists()
+
+
+@pytest.mark.parametrize("side", ["history", "forecast"])
+def test_residual_blank_identity_refuses_before_freeze_claim(tmp_path, side):
+    study, history, forecast, _ = residual_study_fixture(tmp_path)
+    target = history if side == "history" else forecast
+    target.loc[target.index[0], "symbol"] = " \t"
+    with pytest.raises((ValueError, IntegrityError), match="identit|pair"):
+        study.freeze(history, forecast)
+    assert not (tmp_path / "study").exists()

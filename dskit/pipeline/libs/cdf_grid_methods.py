@@ -1074,12 +1074,12 @@ class _FeatureSourced(ABC):
         keys, names = source["keys"], self.source_columns()
         table = _Source.read(source["path"], [*keys, *names], [date], self.params["end_before"])
         right = table.to_pandas(date_as_object=False)
-        if right.duplicated(subset=keys).any():
-            raise ValueError(f"feature source {source['path']} holds duplicate keys {keys}")
         left = pd.DataFrame({k: panel.frame[k].to_numpy() for k in keys})
         for frame in (left, right):
             frame[date] = _Dates.day_numbers(frame[date])
-        joined = left.merge(right, on=keys, how="left", sort=False)
+        if right.duplicated(subset=keys).any():
+            raise ValueError(f"feature source {source['path']} holds duplicate keys {keys}")
+        joined = left.merge(right, on=keys, how="left", sort=False, validate="many_to_one")
         for name in names:
             panel.extra[name] = pd.to_numeric(joined[name]).to_numpy(dtype=float)
 
@@ -2858,13 +2858,16 @@ class _ResidualRidgeMethod(_FeatureSourced, _Method):
         return self.spec["features"]
 
     def needed_columns(self):
-        """Read the baseline's training cutoff and configured features/keys."""
+        """Read the baseline cutoff; only a nonnull correction needs features."""
+        if self.spec["alpha"] is None:
+            return [self.spec["baseline_asof"]]
         return [self.spec["baseline_asof"], *(self.source_keys() if self.spec.get("feature_source")
                                             else self.spec["features"])]
 
     def prepare(self, panel):
         """Refuse noncausal baselines before reading or fitting residual targets."""
-        super().prepare(panel)
+        if self.spec["alpha"] is not None:
+            super().prepare(panel)
         asof = _Dates.day_numbers(panel.frame[self.spec["baseline_asof"]])
         if (asof >= panel.date_days).any():
             raise ValueError("baseline cutoff must precede each forecast date")
@@ -2877,6 +2880,8 @@ class _ResidualRidgeMethod(_FeatureSourced, _Method):
         """Return original numeric cells, including missing values."""
         import numpy as np
 
+        if self.spec["alpha"] is None:
+            return None
         return np.column_stack([panel.numeric(f)[rows] for f in self.spec["features"]]) if self.spec["features"] else None
 
     def fit(self, panel, rows, fold, weights=None, tag=None):
@@ -2885,7 +2890,8 @@ class _ResidualRidgeMethod(_FeatureSourced, _Method):
         if (panel.settle_days[rows] >= reference).any():
             raise ValueError("residual training labels must settle before target forecasts")
         model = ResidualRidgeCDF(self.grid.z, self.grid.weights, self.spec["alpha"])
-        model.fit(self._features(panel, rows), panel.cdf[self.spec["base"]][rows], panel.y[rows], weights)
+        outcomes = panel.y[rows] if self.spec["alpha"] is not None else None
+        model.fit(self._features(panel, rows), panel.cdf[self.spec["base"]][rows], outcomes, weights)
         return _Fitted(model.state, model)
 
     def predict(self, panel, rows, fitted):
@@ -2974,12 +2980,12 @@ class _Components:
             wanted = [*keys, *names, *([spec["pit_column"]] if spec.get("pit_column") else [])]
             right = _Source.read(spec["path"], list(dict.fromkeys(wanted)), [date], end_before).to_pandas(
                 date_as_object=False)
-            if right.duplicated(subset=keys).any():
-                raise ValueError(f"component {spec['name']!r} file {spec['path']} holds duplicate keys {keys}")
             left = pd.DataFrame({k: panel.frame[k].to_numpy() for k in keys})
             for frame in (left, right):
                 frame[date] = _Dates.day_numbers(frame[date])
-            joined = left.merge(right, on=keys, how="left", sort=False)
+            if right.duplicated(subset=keys).any():
+                raise ValueError(f"component {spec['name']!r} file {spec['path']} holds duplicate keys {keys}")
+            joined = left.merge(right, on=keys, how="left", sort=False, validate="many_to_one")
             raw[spec["name"]] = np.column_stack([pd.to_numeric(joined[n]).to_numpy(dtype=float) for n in names])
             if spec.get("pit_column"):
                 panel.external_pit[spec["name"]] = pd.to_numeric(joined[spec["pit_column"]]).to_numpy(dtype=float)

@@ -1096,6 +1096,7 @@ class ResidualCDFStudy:
         import numpy as np
         import pandas as pd
         from dskit.pipeline.libs.cdf_grid_methods import GridCDFMethod
+        from dskit.pipeline.libs.cdf_experiment import CDFExperiment
 
         p, result, receipts = self.params, forecasts.copy(), {}
         if (result.empty or result[p["identity"]].isna().any().any()
@@ -1106,6 +1107,7 @@ class ResidualCDFStudy:
         if result[[p["date"], p["end"]]].isna().any().any() or not (
                 (result[p["date"]] < result[p["end"]]) & (result[p["end"]] < p["end_before"])).all():
             raise ValueError("baseline ledger reaches temporal boundary")
+        CDFExperiment.check_pairing(result, result, p["identity"])
         self.estimator.fit(None, result[raw_columns].to_numpy(), None)
         assigned = np.zeros(len(result), int)
         if set(learning) != {block["name"] for block in blocks} or len(learning) != len(blocks):
@@ -1124,6 +1126,7 @@ class ResidualCDFStudy:
                 batch[column] = pd.to_datetime(batch[column], errors="raise").dt.strftime("%Y-%m-%d")
             if not ((batch[p["date"]] < batch[p["end"]]) & (batch[p["end"]] < block["start"])).all():
                 raise ValueError("calibration availability must precede issued baseline")
+            CDFExperiment.check_pairing(batch, batch, p["identity"])
             g = GridCDFMethod.calibration_map(batch[pit_column], knots)
             if block["expected"] is not None and not np.array_equal(g, np.asarray(block["expected"], float)):
                 raise ValueError("saved calibration map does not reproduce exactly")
@@ -1189,6 +1192,7 @@ class ResidualCDFStudy:
         """Validate complete causal rows; predictions must not carry outcomes."""
         import numpy as np
         import pandas as pd
+        from dskit.pipeline.libs.cdf_experiment import CDFExperiment
 
         p = self.params
         data = frame.copy()
@@ -1210,11 +1214,10 @@ class ResidualCDFStudy:
                 or not (data[p["date"]] < data[p["end"]]).all()
                 or not (data[p["end"]] < p["end_before"]).all()):
             raise ValueError("baseline or outcome chronology violation")
+        CDFExperiment.check_pairing(data, data, p["identity"])
         self.estimator.fit(None, data[p["baseline"]].to_numpy(), None)
         for name in p["features"]:
             data[name] = pd.to_numeric(data[name], errors="raise")
-        if data.duplicated(p["identity"]).any():
-            raise ValueError("forecast identities collide after clock normalization")
         if not outcomes:
             metadata = p["clusters"] + p["pit_series"] + [c for group in p["groups"] for c in group]
             if set(metadata) - set(data) or data[metadata].isna().any().any():
