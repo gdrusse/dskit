@@ -24,6 +24,7 @@ __all__ = [
     "CDFReferenceScores",
     "PairedForecastScores",
     "ResidualCDFStudy",
+    "SettledErrorFeatures",
 ]
 
 
@@ -989,7 +990,7 @@ class ResidualCDFStudy:
                "features", "families", "alphas", "z_grid", "score_weights",
                "tail_width", "end_before", "output", "folds", "provenance",
                "batch_rows", "clusters", "comparators", "groups", "periods", "pit_series",
-               "family_order", "continuation")
+               "family_order", "continuation", "feature_specs")
     _DEFAULTS = {"batch_rows": 4096, "clusters": None, "comparators": {},
                  "groups": [], "periods": {}, "pit_series": [],
                  "family_order": None, "continuation": None}
@@ -999,7 +1000,8 @@ class ResidualCDFStudy:
 
         self.params = copy.deepcopy({**self._DEFAULTS, **params})
         p = self.params
-        if set(p) != set(self._PARAMS):
+        if (set(p) - set(self._PARAMS)
+                or (set(self._PARAMS) - {"feature_specs"}) - set(p)):
             raise ValueError("unknown or missing residual study parameters")
         self.estimator = ResidualRidgeCDF(p["z_grid"], p["score_weights"], None)
         for key in ("identity", "baseline", "features"):
@@ -1041,6 +1043,7 @@ class ResidualCDFStudy:
         if (not isinstance(p["clusters"], list) or len(p["clusters"]) != 2
                 or len(set(p["clusters"])) != 2):
             raise ValueError("two distinct cluster columns required")
+        self._validate_specs()
         for name, columns in p["comparators"].items():
             if name in {"null", "selected", *self.specifications()} or len(columns) != len(p["baseline"]):
                 raise ValueError("invalid comparator name or grid")
@@ -1058,6 +1061,29 @@ class ResidualCDFStudy:
                     or set(rule["folds"]) - ranked):
                 raise ValueError("invalid continuation controls or ranked folds")
         self.output = Path(p["output"])
+
+    def _validate_specs(self):
+        """Validate explicit ordered recipes without changing legacy identities."""
+        p = self.params
+        if "feature_specs" not in p:
+            return
+        specs = p["feature_specs"]
+        if not isinstance(specs, list) or not specs:
+            raise ValueError("nonempty ordered feature_specs required")
+        names = set()
+        for spec in specs:
+            if not isinstance(spec, dict) or set(spec) != {"name", "features"}:
+                raise ValueError("invalid explicit feature specification")
+            name, columns = spec["name"], spec["features"]
+            if (not isinstance(name, str) or not name.strip() or name in names
+                    or name in {"null", "selected", "f0_only"}
+                    or not isinstance(columns, list) or not columns
+                    or any(not isinstance(c, str) for c in columns)
+                    or len(set(columns)) != len(columns) or set(columns) - set(p["features"])):
+                raise ValueError("invalid explicit specification name or features")
+            names.add(name)
+        if any(not f.get("ranked", True) for f in p["folds"]):
+            raise ValueError("explicit specifications do not support unranked fits")
 
     def _validate_folds(self):
         """Require disjoint outer intervals and strictly earlier inner blocks."""
@@ -1147,6 +1173,9 @@ class ResidualCDFStudy:
         """Return F0-only, ordered singles, then complete-family bitmasks."""
         p = self.params
         specs = {"f0_only": []}
+        if "feature_specs" in p:
+            specs.update((v["name"], list(v["features"])) for v in p["feature_specs"])
+            return specs
         specs.update({f"feature_{i:03d}": [f] for i, f in enumerate(p["features"])})
         families = [p["families"][name] for name in p["family_order"]]
         for mask in range(1, 2 ** len(families)):
@@ -1580,7 +1609,7 @@ class ResidualCDFStudy:
                         combined[control] - combined[name], *(combined[c] for c in p["clusters"]))
         full_name = list(self.specifications())[-1]
         full_mask = 2 ** len(p["families"]) - 1
-        for i, family in enumerate(p["family_order"]):
+        for i, family in enumerate([] if "feature_specs" in p else p["family_order"]):
             less = full_mask ^ (1 << i)
             reduced = f"families_{less:02d}" if less else "f0_only"
             pairs["ablation_" + family] = self.paired(
@@ -1621,3 +1650,174 @@ class ResidualCDFStudy:
             files[name] = buffer.getvalue()
         store.publish(files)
         return report
+
+
+class SettledErrorFeatures:
+    """Aggregate issued probability errors using strictly earlier settled labels.
+
+    Parameters
+    ----------
+    params : dict
+        Explicit identity/date/end/outcome/baseline mappings, grid and weights,
+        global windows, named grouping columns, group/probability windows,
+        probability edges, positive prior_rows, exclusions and end_before.
+        Windows include settlement on date minus window and exclude date itself.
+        Probability bins use right insertion at each edge.
+
+    Examples
+    --------
+    Supply a fully declared contract and outcome-free queries::
+
+        transform = SettledErrorFeatures(params)
+        features = transform.transform(historical_issued_forecasts, queries)
+    """
+
+    _PARAMS = ("identity", "date", "end", "outcome", "baseline", "z_grid",
+               "score_weights", "end_before", "windows", "groups", "group_window",
+               "probability_edges", "probability_window", "prior_rows", "exclusions")
+
+    def __init__(self, params):
+        from dskit.pipeline.libs.cdf_grid_methods import ResidualRidgeCDF
+
+        self.params = copy.deepcopy(params)
+        p = self.params
+        if set(p) != set(self._PARAMS):
+            raise ValueError("unknown or missing settled-error parameters")
+        self.grid = ResidualRidgeCDF(p["z_grid"], p["score_weights"], None)
+        for key in ("identity", "baseline"):
+            values = p[key]
+            if (not isinstance(values, list) or not values or any(not isinstance(v, str) or not v.strip() for v in values)
+                    or len(set(values)) != len(values)):
+                raise ValueError("invalid settled-error column inventory")
+        if (p["date"] not in p["identity"] or p["outcome"] in p["identity"] + p["baseline"]
+                or len(p["baseline"]) != len(p["z_grid"])
+                or len({p["date"], p["end"], p["outcome"]}) != 3):
+            raise ValueError("invalid settled-error clocks or baseline")
+        _date(p["end_before"])
+        if (not isinstance(p["windows"], list) or not p["windows"]
+                or any(type(v) is not int or v < 1 for v in p["windows"])
+                or len(set(p["windows"])) != len(p["windows"])
+                or any(type(p[k]) is not int or p[k] not in p["windows"]
+                       for k in ("group_window", "probability_window"))
+                or not _positive(p["prior_rows"])):
+            raise ValueError("invalid settled-error windows or shrinkage")
+        edges = p["probability_edges"]
+        if (not isinstance(edges, list) or not edges or any(not _positive(v) or v >= 1 for v in edges)
+                or any(a >= b for a, b in zip(edges, edges[1:]))):
+            raise ValueError("probability edges must increase strictly inside zero and one")
+        if (not isinstance(p["groups"], dict) or any(
+                not isinstance(name, str) or not name.strip() or not isinstance(cols, list) or not cols
+                or any(not isinstance(c, str) or not c.strip() or c == p["outcome"] for c in cols)
+                or len(set(cols)) != len(cols) for name, cols in p["groups"].items())):
+            raise ValueError("invalid settled-error group mapping")
+        for bounds in p["exclusions"]:
+            if not isinstance(bounds, list) or len(bounds) != 2 or _date(bounds[0]) >= _date(bounds[1]):
+                raise ValueError("invalid settled-error exclusion")
+        self.audit = None
+
+    def _frame(self, frame, outcomes):
+        """Normalize clocks before checking identity and bounded causal rows."""
+        import numpy as np
+        import pandas as pd
+        from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+
+        p, data = self.params, frame.copy()
+        required = set(p["identity"] + p["baseline"] + [p["date"], p["end"]])
+        required.update(c for cols in p["groups"].values() for c in cols)
+        if outcomes:
+            required.add(p["outcome"])
+        elif p["outcome"] in data:
+            raise ValueError("memory queries must not contain outcomes")
+        if required - set(data) or data[list(required)].isna().any().any():
+            raise ValueError("missing settled-error fields")
+        for col in (p["date"], p["end"]):
+            data[col] = pd.to_datetime(data[col], errors="raise").dt.strftime("%Y-%m-%d")
+        CDFExperiment.check_pairing(data, data, p["identity"])
+        if not ((data[p["date"]] < data[p["end"]]) & (data[p["end"]] < p["end_before"])).all():
+            raise ValueError("settled-error row reaches temporal boundary")
+        self.grid.fit(None, data[p["baseline"]].to_numpy(), None)
+        if outcomes and not np.isfinite(data[p["outcome"]].to_numpy(float)).all():
+            raise ValueError("nonfinite memory outcome")
+        return data.reset_index(drop=True)
+
+    @staticmethod
+    def _window(ends, residual, dates, window, history_codes, query_codes):
+        """Return group/window residual sums and counts through prefix sums."""
+        import numpy as np
+
+        sums = np.zeros((len(dates), residual.shape[1]))
+        counts = np.zeros(len(dates), dtype=int)
+        for code in np.unique(query_codes):
+            query = np.flatnonzero(query_codes == code)
+            past = np.flatnonzero(history_codes == code)
+            if not len(past):
+                continue
+            past = past[np.argsort(ends[past], kind="stable")]
+            ordered = ends[past]
+            prefix = np.vstack([np.zeros(residual.shape[1]), np.cumsum(residual[past], axis=0)])
+            upper = np.searchsorted(ordered, dates[query], side="left")
+            lower = np.searchsorted(ordered, dates[query] - np.timedelta64(window, "D"), side="left")
+            sums[query] = prefix[upper] - prefix[lower]
+            counts[query] = upper - lower
+        return sums, counts
+
+    def transform(self, history, queries):
+        """Return identity columns and causal pooled/group/conditional errors.
+
+        Parameters
+        ----------
+        history : pandas.DataFrame
+            Issued baseline forecasts and finite outcomes, globally bounded.
+        queries : pandas.DataFrame
+            Outcome-free baseline forecasts and known grouping metadata.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Same query order, normalized identities and named numerical features.
+            ``audit`` records retained/excluded history counts and window rules.
+
+        Raises
+        ------
+        ValueError
+            Schema, identities, probabilities or chronology violate the contract.
+        """
+        import numpy as np
+        import pandas as pd
+
+        p = self.params
+        h, q = self._frame(history, True), self._frame(queries, False)
+        keep = np.ones(len(h), bool)
+        for start, stop in p["exclusions"]:
+            keep &= ~((h[p["date"]] < stop) & (h[p["end"]] >= start)).to_numpy()
+        original_count = len(h)
+        h = h.loc[keep].reset_index(drop=True)
+        base = h[p["baseline"]].to_numpy(float)
+        residual = self.grid.grid.indicator(h[p["outcome"]].to_numpy(float)) - base
+        ends = h[p["end"]].to_numpy(dtype="datetime64[D]")
+        dates = q[p["date"]].to_numpy(dtype="datetime64[D]")
+        features, pooled = {}, {}
+        for window in p["windows"]:
+            sums, counts = self._window(ends, residual, dates, window, np.zeros(len(h), int), np.zeros(len(q), int))
+            pooled[window] = np.divide(sums, counts[:, None], out=np.zeros_like(sums), where=counts[:, None] > 0)
+            features.update((f"pool_{window}_{i}", pooled[window][:, i]) for i in range(base.shape[1]))
+        window, prior = p["group_window"], p["prior_rows"]
+        for name, columns in sorted(p["groups"].items()):
+            categories = pd.MultiIndex.from_frame(pd.concat([h[columns], q[columns]], ignore_index=True))
+            codes = pd.factorize(categories)[0]
+            sums, counts = self._window(ends, residual, dates, window, codes[:len(h)], codes[len(h):])
+            mean = (sums + prior * pooled[window]) / (counts[:, None] + prior)
+            features.update((f"group_{name}_{window}_{i}", mean[:, i]) for i in range(base.shape[1]))
+        window = p["probability_window"]
+        query_base = q[p["baseline"]].to_numpy(float)
+        for i in range(base.shape[1]):
+            hc = np.searchsorted(p["probability_edges"], base[:, i], side="right")
+            qc = np.searchsorted(p["probability_edges"], query_base[:, i], side="right")
+            sums, counts = self._window(ends, residual[:, i:i+1], dates, window, hc, qc)
+            features[f"bin_{window}_{i}"] = (sums[:, 0] + prior * pooled[window][:, i]) / (counts + prior)
+        if set(features) & set(p["identity"]):
+            raise ValueError("feature names collide with identity")
+        self.audit = {"input_rows": original_count, "retained_rows": len(h),
+                      "excluded_rows": original_count - len(h), "query_rows": len(q),
+                      "window": "date-window <= settlement < date", "bin_edge": "right insertion"}
+        return pd.concat([q[p["identity"]], pd.DataFrame(features)], axis=1)

@@ -788,3 +788,125 @@ def test_residual_blank_identity_refuses_before_freeze_claim(tmp_path, side):
     with pytest.raises((ValueError, IntegrityError), match="identit|pair"):
         study.freeze(history, forecast)
     assert not (tmp_path / "study").exists()
+
+
+def memory_fixture():
+    import pandas as pd
+    import dskit.pipeline.libs.cdf_research as owner
+
+    assert hasattr(owner, "SettledErrorFeatures"), "settled-error transform is absent"
+    params = dict(identity=["symbol", "date", "end"], date="date", end="end",
+                  outcome="y", baseline=["b0", "b1", "b2"], z_grid=[-1., 0., 1.],
+                  score_weights=[1., 1., 1.], end_before="2021-01-01", windows=[2, 10],
+                  groups={"symbol": ["symbol"]}, group_window=10,
+                  probability_edges=[.5], probability_window=10, prior_rows=2., exclusions=[])
+    history = pd.DataFrame([
+        dict(symbol="A", date="2020-01-01", end="2020-01-03", y=0., b0=.2, b1=.5, b2=.8),
+        dict(symbol="B", date="2020-01-02", end="2020-01-04", y=2., b0=.6, b1=.7, b2=.9),
+        dict(symbol="A", date="2020-01-03", end="2020-01-05", y=-2., b0=.2, b1=.5, b2=.8),
+    ])
+    queries = pd.DataFrame([
+        dict(symbol="A", date=f"2020-01-{day:02d}", end="2020-01-20", b0=.2, b1=.5, b2=.8)
+        for day in [3, 4, 5, 6]
+    ])
+    return owner.SettledErrorFeatures(params), history, queries
+
+
+def test_settled_error_strict_delay_windows_groups_and_bins():
+    import numpy as np
+
+    transform, history, queries = memory_fixture()
+    result = transform.transform(history, queries)
+    pool = result[[f"pool_10_{i}" for i in range(3)]].to_numpy()
+    np.testing.assert_array_equal(pool[0], [0., 0., 0.])
+    np.testing.assert_allclose(pool[1], [-.2, .5, .2])
+    np.testing.assert_allclose(pool[2], [-.4, -.1, -.35])
+    np.testing.assert_allclose(result.loc[3, [f"pool_2_{i}" for i in range(3)]].to_numpy(float), [.1, -.1, -.35])
+    np.testing.assert_allclose(result.loc[2, [f"group_symbol_10_{i}" for i in range(3)]].to_numpy(float), [-1/3, .1, -1/6])
+    assert result.loc[2, "bin_10_0"] == pytest.approx(-1/3)
+    assert result.loc[2, "bin_10_1"] == pytest.approx(-.1)
+    assert result[queries.columns.intersection(["symbol", "date", "end"])].equals(queries[["symbol", "date", "end"]])
+
+
+def test_settled_error_future_and_monitor_labels_cannot_change_features():
+    import pandas as pd
+
+    transform, history, queries = memory_fixture()
+    expected = transform.transform(history, queries.iloc[:3])
+    changed = history.copy()
+    changed.loc[changed.end >= "2020-01-05", "y"] = 999.
+    pd.testing.assert_frame_equal(expected, transform.transform(changed, queries.iloc[:3]))
+    transform.params["exclusions"] = [["2020-01-04", "2020-01-06"]]
+    expected = transform.transform(history, queries)
+    changed.loc[changed.end >= "2020-01-04", "y"] = -999.
+    pd.testing.assert_frame_equal(expected, transform.transform(changed, queries))
+    assert transform.audit["excluded_rows"] == 2
+
+
+@pytest.mark.parametrize("fault", ["alias_duplicate", "blank", "future", "equal_end", "nonfinite", "outcome_query", "missing_group"])
+def test_settled_error_rejects_invalid_frames(fault):
+    import pandas as pd
+
+    transform, history, queries = memory_fixture()
+    if fault == "alias_duplicate":
+        extra = history.iloc[[0]].copy()
+        extra["date"] = "2020-01-01T00:00:00"
+        history = pd.concat([history, extra], ignore_index=True)
+    elif fault == "blank":
+        history.loc[0, "symbol"] = " "
+    elif fault == "future":
+        history.loc[0, "end"] = "2021-01-01"
+    elif fault == "equal_end":
+        history.loc[0, "end"] = history.loc[0, "date"]
+    elif fault == "nonfinite":
+        history.loc[0, "y"] = float("nan")
+    elif fault == "outcome_query":
+        queries["y"] = 0.
+    elif fault == "missing_group":
+        transform.params["groups"] = {"missing": ["absent"]}
+    with pytest.raises((ValueError, IntegrityError)):
+        transform.transform(history, queries)
+
+
+def test_explicit_residual_specs_freeze_evaluate_and_preserve_legacy_identity(tmp_path):
+    import copy
+    from dskit.pipeline.libs.cdf_research import ResidualCDFStudy
+
+    legacy, history, forecast, outcomes = residual_study_fixture(tmp_path)
+    original = copy.deepcopy(legacy.params)
+    assert "feature_specs" not in original
+    assert ResidualCDFStudy(original).params == original
+    params = {**original, "feature_specs": [dict(name="z_signal", features=["signal"]),
+                                           dict(name="a_joint", features=["signal", "noise"])]}
+    study = ResidualCDFStudy(params)
+    assert list(study.specifications()) == ["f0_only", "z_signal", "a_joint"]
+    assert len(study.candidates()) == 7
+    study.freeze(history, forecast)
+    result = study.evaluate(forecast, lambda: outcomes)
+    assert result["rows"] == len(forecast)
+    assert not any(k.startswith("ablation_") for k in result["paired"])
+    assert "a_joint_vs_null" in result["paired"]
+
+
+@pytest.mark.parametrize("fault", ["unknown_feature", "reserved_name", "duplicate_name", "duplicate_feature", "empty", "unranked", "extra_key"])
+def test_explicit_residual_specs_default_deny(tmp_path, fault):
+    from dskit.pipeline.libs.cdf_research import ResidualCDFStudy
+
+    study, _, _, _ = residual_study_fixture(tmp_path)
+    params = dict(study.params, feature_specs=[dict(name="chosen", features=["signal"])])
+    if fault == "unknown_feature":
+        params["feature_specs"][0]["features"] = ["not_a_feature"]
+    elif fault == "reserved_name":
+        params["feature_specs"][0]["name"] = "selected"
+    elif fault == "duplicate_name":
+        params["feature_specs"] *= 2
+    elif fault == "duplicate_feature":
+        params["feature_specs"][0]["features"] *= 2
+    elif fault == "empty":
+        params["feature_specs"] = []
+    elif fault == "unranked":
+        params["folds"][0]["ranked"] = False
+    elif fault == "extra_key":
+        params["feature_specs"][0]["typo"] = 1
+    with pytest.raises(ValueError):
+        ResidualCDFStudy(params)
