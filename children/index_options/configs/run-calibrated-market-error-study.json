@@ -1,0 +1,450 @@
+{
+  "name": "calibrated-market-error-study",
+  "notes": "ADR-0290 approved 2026-11-03, including explicit settlement-date availability assumption. Retrospective predictive study only; 2024-2026 sealed. Generic ResidualCDFStudy owns learning, strict inner selection, immutable forecast freeze and paired evaluation. Run-owned preparation records exact annual calibration identities and source pins through onboarding. The 2019 fixed-alpha warmup is unranked. 379 settings/year; no search expansion or trading. The four control CDFs and all features are bound before fitting. M53 is context only, not blended. Source maps retain original fit bands; missing 2018 maps use expanding settled history.",
+  "uses": "dskit.pipeline.libs.cdf_research:ResidualCDFStudy",
+  "sources": {
+    "base": {
+      "source": "mio-debug-20261027",
+      "stream": "files",
+      "snapshot": "20261027T214746Z-backfill-d8b827cf",
+      "manifest_sha256": "d8b827cf1654034fcf6bf14b13d5b7cdce3350e2c10f614b65022964793860c4",
+      "root": "/home/russell/data/index_options/ob",
+      "files": {
+        "scores/strike-region-scores-wf-wide-mlp64/rows.parquet": "f0db364e4d149fe7dc22a34e2de90ef117599d32a2ab6705fe8da8e03f7b2c85",
+        "scores/edge-method-53-qa-mlp64-rolling-by-dispersion/fit.json": "f9ddf3ff2f45a27f0fd9c37065828ec4a8e471e65b0d2317108cfb433167e04d",
+        "documents/study/run-strike-screen-fits-wf-wide-mlp64.json": "d712ce6e1ae8d583ba79b704d0ea69c3d1c0b8ba0e8f403cf8fc80ae518000a3"
+      }
+    },
+    "features": {
+      "source": "market-error-feature-inputs-20261103",
+      "stream": "files",
+      "snapshot": "20261103T215114Z-backfill-959babb4",
+      "manifest_sha256": "959babb41e7593f0e5408437cb26a0689739439d3d262a9c94d4f1d45c610193",
+      "root": "/home/russell/data/index_options/market-error-study-20261103/ob",
+      "files": {
+        "panel/panel-cache/frame.parquet": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
+        "registration/strike-screen-folds-walkforward.jsonl": "e8ad1594afe8982a1225203135d2d9917db5c99e3faca6c90bd2c4a84ef6330a"
+      }
+    },
+    "prepared": {
+      "source": "market-error-prepared-20261103",
+      "stream": "files",
+      "snapshot": "20261103T215650Z-backfill-228051d2",
+      "manifest_sha256": "228051d232958b79f4aab6f4dc78180f426a4191d26f39cb8557c665093290ff",
+      "root": "/home/russell/data/index_options/market-error-study-20261103/ob",
+      "files": {
+        "baseline-learning-2018Q1.parquet": "1b5f73c3ff1fc9f7e24fa43dcefbe7158a01a7732f6122448d4b10b0c8f59219",
+        "baseline-learning-2018Q2.parquet": "e2cafd24e08a0372cc50224fe4aa151c52d124bdbbd2c0200547f9dd7e73acb9",
+        "baseline-learning-2018Q3.parquet": "9e432d882a5e25bfa9e6fcc089705af8f26d0a8a839c731e8a294769cbac58d7",
+        "baseline-learning-2018Q4.parquet": "b1bdcbbafc9a4ad233c67d6543029f2f2d14847fb3c49c246cc2b7b7207dce13",
+        "baseline-learning-2019.parquet": "dc2dceb045d75e65a518e53facc53e366ca4164e2d7267cf0b2b4ac659a46003",
+        "baseline-learning-2020.parquet": "d19d22a14cac7d680f41acb6bcc8b3daa91d4d4805ae8a63c70a9fca6c13b6ab",
+        "baseline-learning-2021.parquet": "03b9a028569af0f7bcf23a91f22057d6a3c13f802547e1e874bdb6fed450fefe",
+        "baseline-learning-2022.parquet": "1626bc02636753f734f7642057e453a20c306eacefc0c23cb41cb7c696307840",
+        "baseline-learning-2023.parquet": "a2edb32c25b629d1daeff66ec3a2a638f4423f104da3579e4e551e116e8c1609",
+        "baseline-ledger.json": "df57b2e7be73f3b26d6a42b32ea3d06ff4852baaac9e39b6ee4e793fac3c24ef",
+        "forecasts.parquet": "adfb863390d74520c6f7727eea9e0bfe8a222b935b234049ddac8eb18d823da3",
+        "history.parquet": "7248f9fa9676ffb0fe4f765b1595d6e347c4bf65b259b8e42b516687e614cab3"
+      }
+    }
+  },
+  "params": {
+    "identity": [
+      "symbol",
+      "quote_date",
+      "expiry"
+    ],
+    "date": "quote_date",
+    "end": "settlement_date",
+    "baseline_asof": "baseline_asof",
+    "outcome": "y",
+    "baseline": [
+      "issued_cdf_zm3",
+      "issued_cdf_zm2.5",
+      "issued_cdf_zm2",
+      "issued_cdf_zm1.5",
+      "issued_cdf_zm1",
+      "issued_cdf_zm0.5",
+      "issued_cdf_zp0",
+      "issued_cdf_zp0.5",
+      "issued_cdf_zp1",
+      "issued_cdf_zp1.5",
+      "issued_cdf_zp2",
+      "issued_cdf_zp2.5",
+      "issued_cdf_zp3"
+    ],
+    "features": [
+      "ret_lag_21",
+      "ret_lag_20",
+      "ret_lag_19",
+      "ret_lag_18",
+      "ret_lag_17",
+      "ret_lag_16",
+      "ret_lag_15",
+      "ret_lag_14",
+      "ret_lag_13",
+      "ret_lag_12",
+      "ret_lag_11",
+      "ret_lag_10",
+      "ret_lag_9",
+      "ret_lag_8",
+      "ret_lag_7",
+      "ret_lag_6",
+      "ret_lag_5",
+      "ret_lag_4",
+      "ret_lag_3",
+      "ret_lag_2",
+      "ret_lag_1",
+      "ret_lag_0",
+      "log_sessions_to_expiry",
+      "calendar_days_per_session",
+      "momentum_5",
+      "momentum_22",
+      "rv_1",
+      "rv_5",
+      "rv_22",
+      "rv_66",
+      "down_rv_5",
+      "down_rv_22",
+      "up_rv_5",
+      "up_rv_22",
+      "vl_log_volume_ratio_66",
+      "vl_log_volume_ratio",
+      "vl_log_dollar_volume",
+      "vl_amihud"
+    ],
+    "families": {
+      "returns_momentum": [
+        "ret_lag_21",
+        "ret_lag_20",
+        "ret_lag_19",
+        "ret_lag_18",
+        "ret_lag_17",
+        "ret_lag_16",
+        "ret_lag_15",
+        "ret_lag_14",
+        "ret_lag_13",
+        "ret_lag_12",
+        "ret_lag_11",
+        "ret_lag_10",
+        "ret_lag_9",
+        "ret_lag_8",
+        "ret_lag_7",
+        "ret_lag_6",
+        "ret_lag_5",
+        "ret_lag_4",
+        "ret_lag_3",
+        "ret_lag_2",
+        "ret_lag_1",
+        "ret_lag_0",
+        "momentum_5",
+        "momentum_22"
+      ],
+      "realized_volatility": [
+        "rv_1",
+        "rv_5",
+        "rv_22",
+        "rv_66",
+        "down_rv_5",
+        "down_rv_22",
+        "up_rv_5",
+        "up_rv_22"
+      ],
+      "stock_liquidity": [
+        "vl_log_volume_ratio_66",
+        "vl_log_volume_ratio",
+        "vl_log_dollar_volume",
+        "vl_amihud"
+      ],
+      "maturity_calendar": [
+        "log_sessions_to_expiry",
+        "calendar_days_per_session"
+      ]
+    },
+    "alphas": [
+      100,
+      10,
+      1,
+      0.1,
+      0.01,
+      0.001,
+      0.0001
+    ],
+    "z_grid": [
+      -3.0,
+      -2.5,
+      -2.0,
+      -1.5,
+      -1.0,
+      -0.5,
+      0.0,
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0
+    ],
+    "score_weights": [
+      0.25,
+      1,
+      1,
+      1,
+      1,
+      1,
+      0.25,
+      1,
+      1,
+      1,
+      1,
+      1,
+      0.25
+    ],
+    "tail_width": 4.0,
+    "end_before": "2024-01-01",
+    "output": "/home/russell/data/index_options/market-error-study-20261103/run",
+    "batch_rows": 4096,
+    "clusters": [
+      "expiry",
+      "symbol"
+    ],
+    "comparators": {
+      "market": [
+        "market_cdf_zm3",
+        "market_cdf_zm2.5",
+        "market_cdf_zm2",
+        "market_cdf_zm1.5",
+        "market_cdf_zm1",
+        "market_cdf_zm0.5",
+        "market_cdf_zp0",
+        "market_cdf_zp0.5",
+        "market_cdf_zp1",
+        "market_cdf_zp1.5",
+        "market_cdf_zp2",
+        "market_cdf_zp2.5",
+        "market_cdf_zp3"
+      ],
+      "baseline": [
+        "baseline_cdf_zm3",
+        "baseline_cdf_zm2.5",
+        "baseline_cdf_zm2",
+        "baseline_cdf_zm1.5",
+        "baseline_cdf_zm1",
+        "baseline_cdf_zm0.5",
+        "baseline_cdf_zp0",
+        "baseline_cdf_zp0.5",
+        "baseline_cdf_zp1",
+        "baseline_cdf_zp1.5",
+        "baseline_cdf_zp2",
+        "baseline_cdf_zp2.5",
+        "baseline_cdf_zp3"
+      ],
+      "pooled": [
+        "pooled_cdf_zm3",
+        "pooled_cdf_zm2.5",
+        "pooled_cdf_zm2",
+        "pooled_cdf_zm1.5",
+        "pooled_cdf_zm1",
+        "pooled_cdf_zm0.5",
+        "pooled_cdf_zp0",
+        "pooled_cdf_zp0.5",
+        "pooled_cdf_zp1",
+        "pooled_cdf_zp1.5",
+        "pooled_cdf_zp2",
+        "pooled_cdf_zp2.5",
+        "pooled_cdf_zp3"
+      ],
+      "model": [
+        "model_cdf_zm3",
+        "model_cdf_zm2.5",
+        "model_cdf_zm2",
+        "model_cdf_zm1.5",
+        "model_cdf_zm1",
+        "model_cdf_zm0.5",
+        "model_cdf_zp0",
+        "model_cdf_zp0.5",
+        "model_cdf_zp1",
+        "model_cdf_zp1.5",
+        "model_cdf_zp2",
+        "model_cdf_zp2.5",
+        "model_cdf_zp3"
+      ]
+    },
+    "groups": [
+      [
+        "symbol"
+      ],
+      [
+        "expiry_rank"
+      ],
+      [
+        "symbol",
+        "expiry_rank"
+      ]
+    ],
+    "periods": {
+      "S0_pre_crash": [
+        "2020-01-02",
+        "2020-02-15"
+      ],
+      "S1_covid_crash": [
+        "2020-02-15",
+        "2020-07-01"
+      ],
+      "S2_recovery": [
+        "2020-07-01",
+        "2022-01-01"
+      ],
+      "S3_rate_shock": [
+        "2022-01-03",
+        "2022-12-31"
+      ],
+      "S4_2023": [
+        "2023-01-03",
+        "2023-12-30"
+      ]
+    },
+    "folds": [
+      {
+        "name": "2019",
+        "start": "2019-01-01",
+        "stop": "2020-01-01",
+        "fit_start": "2018-01-01",
+        "exclusions": [
+          [
+            "2018-09-04",
+            "2019-01-01"
+          ]
+        ],
+        "inner": [],
+        "ranked": false
+      },
+      {
+        "name": "2020",
+        "start": "2020-01-01",
+        "stop": "2021-01-01",
+        "fit_start": "2018-01-01",
+        "exclusions": [
+          [
+            "2019-09-05",
+            "2020-01-01"
+          ]
+        ],
+        "inner": [
+          [
+            "2018-10-01",
+            "2019-01-01"
+          ],
+          [
+            "2019-01-01",
+            "2019-04-01"
+          ],
+          [
+            "2019-04-01",
+            "2019-07-01"
+          ]
+        ],
+        "ranked": true
+      },
+      {
+        "name": "2021",
+        "start": "2021-01-01",
+        "stop": "2022-01-01",
+        "fit_start": "2018-01-01",
+        "exclusions": [
+          [
+            "2020-09-04",
+            "2021-01-01"
+          ]
+        ],
+        "inner": [
+          [
+            "2019-10-01",
+            "2020-01-01"
+          ],
+          [
+            "2020-01-01",
+            "2020-04-01"
+          ],
+          [
+            "2020-04-01",
+            "2020-07-01"
+          ]
+        ],
+        "ranked": true
+      },
+      {
+        "name": "2022",
+        "start": "2022-01-01",
+        "stop": "2023-01-01",
+        "fit_start": "2018-01-01",
+        "exclusions": [
+          [
+            "2021-09-07",
+            "2022-01-01"
+          ]
+        ],
+        "inner": [
+          [
+            "2020-10-01",
+            "2021-01-01"
+          ],
+          [
+            "2021-01-01",
+            "2021-04-01"
+          ],
+          [
+            "2021-04-01",
+            "2021-07-01"
+          ]
+        ],
+        "ranked": true
+      },
+      {
+        "name": "2023",
+        "start": "2023-01-01",
+        "stop": "2024-01-01",
+        "fit_start": "2018-01-01",
+        "exclusions": [
+          [
+            "2022-09-06",
+            "2023-01-01"
+          ]
+        ],
+        "inner": [
+          [
+            "2021-10-01",
+            "2022-01-01"
+          ],
+          [
+            "2022-01-01",
+            "2022-04-01"
+          ],
+          [
+            "2022-04-01",
+            "2022-07-01"
+          ]
+        ],
+        "ranked": true
+      }
+    ],
+    "provenance": {
+      "raw": "f0db364e4d149fe7dc22a34e2de90ef117599d32a2ab6705fe8da8e03f7b2c85",
+      "maps": "f9ddf3ff2f45a27f0fd9c37065828ec4a8e471e65b0d2317108cfb433167e04d",
+      "features": "186def50f18e23523365807942ab4862c135c6dac1361445711daeb384c25144",
+      "dskit/pipeline/libs/cdf_grid_methods.py": "76e7b0629abf164ce32f94aee7a26755badbc87c741efda56d509a8ef3b32a44",
+      "dskit/pipeline/libs/cdf_research.py": "6702c03ee36d58240d3e6e66c0c137995622ede70f324b9609242994e8b94a75",
+      "dskit/pipeline/libs/predictive_cdf.py": "0ea703918b7d7cc3532960d2e14ff8d9bdd4d83422b6e0c1fac5cbccf174c059",
+      "dskit/pipeline/distribution_scores.py": "c2867aae1eac48984a92a4f4d645e8d304ff2bcba457c7b2150d9c3d0c558849",
+      "prepared_history": "7248f9fa9676ffb0fe4f765b1595d6e347c4bf65b259b8e42b516687e614cab3",
+      "prepared_forecasts": "adfb863390d74520c6f7727eea9e0bfe8a222b935b234049ddac8eb18d823da3",
+      "ledger": "df57b2e7be73f3b26d6a42b32ea3d06ff4852baaac9e39b6ee4e793fac3c24ef"
+    },
+    "pit_series": [
+      "symbol",
+      "expiry_rank"
+    ]
+  },
+  "expected_ranked_rows": 449498,
+  "expected_ranked_identity_sha256": "d9b0ccd654b66e537b8c1fd8148bcf70640a2f1b587abecf7400fedc4ef2bd05"
+}

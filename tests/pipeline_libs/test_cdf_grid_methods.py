@@ -3571,3 +3571,114 @@ def test_a_feature_source_without_features_is_refused_and_a_kind_without_feature
         params = sourced(tmp_path, df, {**pool_method(kind=kind)} if kind == "beta_pool" else
                          {"kind": "pit_map", "learn": "fit_band", "component": "market", "knots": 21, "min_rows": 10})
         assert any("feature_source" in p for p in GridCDFMethod.validate_params(params))
+
+
+# ADR-0290: fixed-baseline signed-probability residuals.
+def _residual_class():
+    assert hasattr(cgm, "ResidualRidgeCDF"), "fixed-baseline residual estimator is absent"
+    return cgm.ResidualRidgeCDF
+
+
+def test_residual_ridge_null_is_exact_without_features_or_outcomes():
+    cls = _residual_class()
+    base = np.array([[0., .25, 1.], [.1, .4, .9]], dtype=np.float32)
+    model = cls([-1., 0., 1.], [1., 2., 1.], alpha=None)
+    model.fit(None, base, None)
+    result = model.predict(None, base)
+    assert result.dtype == base.dtype and result.tobytes() == base.tobytes()
+
+
+def test_residual_ridge_constant_inputs_recover_empirical_cdf_and_residual_sign():
+    cls = _residual_class()
+    base = np.tile([.1, .4], (3, 1))
+    model = cls([-1., 1.], [1., 1.], alpha=100.)
+    model.fit(np.full((3, 1), np.nan), base, np.array([-2., 0., 2.]))
+    result = model.predict(np.array([[np.nan], [999.]]), base[:2])
+    assert np.allclose(result, [[1/3, 2/3]] * 2, atol=1e-14)
+    assert np.all(np.asarray(model.state["intercept"]) > 0)
+
+
+def test_residual_ridge_projection_uses_weights_before_bounds():
+    cls = _residual_class()
+    model = cls([-1., 0., 1.], [2., 3., 2.], alpha=1.)
+    # Equal spacing gives trapezoid coefficients [1,3,1].
+    assert model.project(np.array([[.8, .2, .6]])).ravel() == pytest.approx([.35, .35, .6])
+    assert model.project(np.array([[10., -5., 1.]])).ravel() == pytest.approx([0., 0., 1.])
+    two = cls([-1., 1.], [1., 1.], alpha=1.)
+    assert two.project(np.array([[10., -5.]])).ravel() == pytest.approx([1., 1.])
+
+
+def test_residual_ridge_imputes_each_column_from_training_and_restores():
+    cls = _residual_class()
+    x = np.array([[-1., -1.], [1., -1.], [-1., 1.], [1., 1.]])
+    base = np.tile([.2, .7], (4, 1))
+    model = cls([-1., 1.], [1., 1.], alpha=.01)
+    model.fit(x, base, np.array([-2., -2., 2., 2.]))
+    result = model.predict(np.array([[np.nan, 1.], [0., 1.], [0., -1.]]), base[:3])
+    assert np.array_equal(result[0], result[1])
+    assert not np.allclose(result[1], result[2])
+    restored = cls.from_state(json.loads(json.dumps(model.state)))
+    assert np.array_equal(restored.predict(x, base), model.predict(x, base))
+
+
+def test_residual_ridge_rejects_invalid_baseline_and_nonfinite_outcomes():
+    cls = _residual_class()
+    for base in [np.array([[.8, .2]]), np.array([[0., 1.01]]), np.array([[0., np.nan]])]:
+        with pytest.raises(ValueError, match="baseline"):
+            cls([-1., 1.], [1., 1.], alpha=1.).fit(np.ones((1, 1)), base, np.array([0.]))
+    with pytest.raises(ValueError, match="outcome"):
+        cls([-1., 1.], [1., 1.], alpha=1.).fit(np.ones((1, 1)), np.array([[.2, .8]]), np.array([np.nan]))
+
+
+def _residual_params(tmp_path, alpha=.1):
+    df = gbm_frame(np.random.default_rng(76))
+    df["settlement_date"] = df["quote_date"] + pd.Timedelta(days=1)
+    df["base_asof"] = "2019-12-31"
+    method = {"kind": "residual_ridge", "learn": "fit_band", "base": "market", "features": ["x"],
+              "alpha": alpha, "baseline_asof": "base_asof"}
+    return df, params_for(tmp_path, df, method, fallback="market", ranked_folds=[1, 2])
+
+
+def test_residual_ridge_pipeline_corrects_known_signal_and_persists_state(tmp_path):
+    assert "residual_ridge" in cgm.METHOD_KINDS, "residual method is absent"
+    df, params = _residual_params(tmp_path)
+    run(params)
+    forecasts, fit, _ = read_out(params)
+    full = joined(forecasts, df)
+    val = full[full.band == "val"]
+    corrected = val[[f"method_cdf_{z}" for z in LABELS]].to_numpy()
+    assert tw(corrected, val.y).mean() < tw(cdfs(val, "mkt"), val.y).mean() * .9
+    assert (np.diff(corrected, axis=1) >= 0).all()
+    assert "intercept" in fit["folds"]["1"]["state"]
+
+
+def test_residual_ridge_pipeline_refuses_future_baseline_or_label(tmp_path):
+    assert "residual_ridge" in cgm.METHOD_KINDS, "residual method is absent"
+    df, params = _residual_params(tmp_path)
+    for field in ["base_asof", "settlement_date"]:
+        bad = df.copy()
+        bad[field] = "2029-01-01"
+        bad.to_parquet(params["source"], index=False)
+        params["source_sha256"] = sha(params["source"])
+        with pytest.raises(ValueError, match="baseline|settle"):
+            run(params)
+        assert not __import__("pathlib").Path(params["output"]).exists()
+
+
+@pytest.mark.parametrize("change", [{"learn": "rolling", "refit_days": 21}, {"fallback": "model"}])
+def test_residual_ridge_refuses_unsupported_rolling_or_different_fallback(tmp_path, change):
+    _, params = _residual_params(tmp_path)
+    if "fallback" in change:
+        params.update(change)
+    else:
+        params["method"].update(change)
+    assert cgm.GridCDFMethod.validate_params(params)
+
+
+def test_residual_ridge_prediction_diagnostics_respect_exact_null():
+    model = cgm.ResidualRidgeCDF([-1., 0., 1.], [1., 1., 1.], None)
+    base = np.array([[.1, .5, .9]])
+    model.fit(None, base, None)
+    pred, details = model.predict(None, base, details=True)
+    assert pred.tobytes() == base.tobytes()
+    assert details == {"rows": 1, "correction_squared": 0., "projection_squared": 0., "repaired_rows": 0}

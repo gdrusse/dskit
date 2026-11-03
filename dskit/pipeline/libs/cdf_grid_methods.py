@@ -85,7 +85,7 @@ from dskit.pipeline.libs.lightgbm import (
 from dskit.pipeline.node import Node, check_int_param, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
-__all__ = ["GridCDFMethod", "METHOD_KINDS", "NODE_KINDS", "SCHEMA_VERSION"]
+__all__ = ["GridCDFMethod", "ResidualRidgeCDF", "METHOD_KINDS", "NODE_KINDS", "SCHEMA_VERSION"]
 
 #: Deliberately EMPTY: a document names ``dskit.pipeline.libs.cdf_grid_methods:GridCDFMethod``.
 NODE_KINDS = ()
@@ -2571,9 +2571,322 @@ class _BinaryGbmMethod(_FeatureSourced, _Method):
         return np.clip(np.maximum.accumulate(proba.reshape(len(rows), self.grid.points), axis=1), 0.0, 1.0)
 
 
+
+
+class ResidualRidgeCDF:
+    """Ridge on signed threshold errors around a frozen probability baseline.
+
+    Parameters
+    ----------
+    z_grid : sequence of float
+        Strictly increasing return thresholds.
+    score_weights : sequence of float
+        Positive threshold weights, before trapezoidal integration.
+    alpha : float or None
+        Positive penalty in a mean-squared-loss objective. None is the exact
+        baseline, with no imputation, outcome access or projection.
+
+    Examples
+    --------
+    Instantiate the exact-null control::
+
+        estimator = ResidualRidgeCDF([-1, 1], [1, 1], alpha=None)
+    """
+
+    def __init__(self, z_grid, score_weights, alpha):
+        import numpy as np
+
+        z, weights = np.asarray(z_grid, float), np.asarray(score_weights, float)
+        if (z.ndim != 1 or len(z) < 2 or weights.shape != z.shape
+                or not np.isfinite(z).all() or not (np.diff(z) > 0).all()
+                or not np.isfinite(weights).all() or not (weights > 0).all()):
+            raise ValueError("invalid residual CDF grid or positive score weights")
+        if alpha is not None and not (number_ok(alpha) and alpha > 0):
+            raise ValueError("alpha must be positive or None for the exact null")
+        self.grid = _Grid(z.tolist(), [str(i) for i in range(len(z))], weights.tolist(), 1.)
+        self.alpha = alpha
+        self.state = None
+
+    def _baseline(self, baseline):
+        """Validate the whole baseline without changing its representation."""
+        import numpy as np
+
+        base = np.asarray(baseline)
+        if (base.ndim != 2 or base.shape[1] != self.grid.points
+                or not np.isfinite(base).all() or (base < 0).any()
+                or (base > 1).any() or (np.diff(base, axis=1) < 0).any()):
+            raise ValueError("baseline must be finite, bounded and nondecreasing")
+        return base
+
+    def _raw(self, features, base):
+        """Stack baseline probabilities and numeric features, retaining missing cells."""
+        import numpy as np
+
+        extra = np.empty((len(base), 0)) if features is None else np.asarray(features, float)
+        if extra.ndim != 2 or extra.shape[0] != len(base):
+            raise ValueError("feature row shape differs from baseline")
+        return np.column_stack([base, extra])
+
+    def fit(self, features, baseline, outcomes, sample_weight=None):
+        """Fit on already admitted historical residual rows.
+
+        Parameters
+        ----------
+        features : array-like or None
+            Row-by-feature values; nonfinite cells are training-mean imputed.
+        baseline : array-like
+            Valid row-by-threshold CDF probabilities issued before the outcome.
+        outcomes : array-like or None
+            Finite realized values; ignored by the exact-null control.
+        sample_weight : array-like or None
+            Positive row weights. Their sum scales the ridge penalty.
+
+        Returns
+        -------
+        ResidualRidgeCDF
+            This fitted estimator with a finite JSON-serializable state.
+
+        Raises
+        ------
+        ValueError
+            Inputs have incompatible shapes, invalid probabilities or outcomes.
+        """
+        import numpy as np
+        from sklearn.linear_model import Ridge
+
+        base = self._baseline(baseline)
+        self.state = {"version": 1, "z_grid": self.grid.z.tolist(),
+                      "score_weights": self.grid.weights.tolist(), "alpha": self.alpha}
+        if self.alpha is None:
+            return self
+        raw = self._raw(features, base)
+        y = np.asarray(outcomes, float)
+        if not len(base) or y.shape != (len(base),) or not np.isfinite(y).all():
+            raise ValueError("outcomes must be finite and match nonempty baseline rows")
+        weights = np.ones(len(base)) if sample_weight is None else np.asarray(sample_weight, float)
+        if weights.shape != y.shape or not np.isfinite(weights).all() or not (weights > 0).all():
+            raise ValueError("sample weights must be finite, positive and match rows")
+        present = np.isfinite(raw)
+        counts = present.sum(axis=0)
+        mean = np.divide(np.where(present, raw, 0.).sum(axis=0), counts,
+                         out=np.zeros(raw.shape[1]), where=counts > 0)
+        filled = np.where(present, raw, mean)
+        scale = filled.std(axis=0)
+        active = (counts > 0) & (scale > 0)
+        scale = np.where(active, scale, 1.)
+        design = (filled - mean) / scale
+        design[:, ~active] = 0.
+        residual = self.grid.indicator(y) - base
+        model = Ridge(alpha=float(self.alpha) * weights.sum(), fit_intercept=True, solver="cholesky")
+        model.fit(design, residual, sample_weight=sample_weight)
+        self.state.update({"feature_count": raw.shape[1] - self.grid.points,
+                           "mean": mean.tolist(), "scale": scale.tolist(), "active": active.tolist(),
+                           "all_missing": (counts == 0).tolist(), "training_rows": len(base),
+                           "coef": model.coef_.tolist(), "intercept": model.intercept_.tolist()})
+        if not np.isfinite(model.coef_).all() or not np.isfinite(model.intercept_).all():
+            raise ValueError("nonfinite residual fit")
+        return self
+
+    @classmethod
+    def from_state(cls, state):
+        """Restore a finite fitted state without training or reading outcomes.
+
+        Parameters
+        ----------
+        state : dict
+            State produced by fit, after JSON serialization if desired.
+
+        Returns
+        -------
+        ResidualRidgeCDF
+            Restored fitted estimator.
+
+        Raises
+        ------
+        ValueError
+            State keys, version, shapes or numerical values are invalid.
+        """
+        import copy
+        import numpy as np
+
+        basic = {"version", "z_grid", "score_weights", "alpha"}
+        trained = {"feature_count", "mean", "scale", "active", "all_missing", "training_rows", "coef", "intercept"}
+        if not isinstance(state, dict) or not basic <= set(state) or type(state["version"]) is not int or state["version"] != 1:
+            raise ValueError("invalid residual state")
+        model = cls(state["z_grid"], state["score_weights"], state["alpha"])
+        if set(state) != basic | (trained if model.alpha is not None else set()):
+            raise ValueError("invalid residual state keys")
+        if model.alpha is not None:
+            count = state["feature_count"]
+            if type(count) is not int or count < 0 or type(state["training_rows"]) is not int or state["training_rows"] < 1:
+                raise ValueError("invalid residual state counts")
+            width = model.grid.points + count
+            for name in ["mean", "scale", "active", "all_missing"]:
+                if np.asarray(state[name]).shape != (width,):
+                    raise ValueError("invalid residual state preprocessing shape")
+            for name, shape in [("coef", (model.grid.points, width)), ("intercept", (model.grid.points,))]:
+                value = np.asarray(state[name], float)
+                if value.shape != shape or not np.isfinite(value).all():
+                    raise ValueError("invalid residual state parameter shape or value")
+            if (not np.isfinite(state["mean"]).all() or not np.isfinite(state["scale"]).all()
+                    or not (np.asarray(state["scale"]) > 0).all()
+                    or any(type(v) is not bool for name in ["active", "all_missing"] for v in state[name])):
+                raise ValueError("invalid residual state preprocessing values")
+        model.state = copy.deepcopy(state)
+        return model
+
+    def project(self, values):
+        """Project rows onto bounded monotone CDFs with the scoring weights.
+
+        Parameters
+        ----------
+        values : array-like
+            Finite unprojected row-by-threshold probabilities.
+
+        Returns
+        -------
+        numpy.ndarray
+            Weighted isotonic projections bounded to zero and one.
+        """
+        import numpy as np
+        from sklearn.isotonic import isotonic_regression
+
+        values = np.asarray(values, float)
+        if values.ndim != 2 or values.shape[1] != self.grid.points or not np.isfinite(values).all():
+            raise ValueError("invalid residual projection values")
+        result = np.clip(values, 0., 1.)
+        crossing = np.flatnonzero((np.diff(values, axis=1) < 0).any(axis=1))
+        for i in crossing:
+            result[i] = isotonic_regression(values[i], sample_weight=self.grid.quadratic_weights(),
+                                            y_min=0., y_max=1., increasing=True)
+        return result
+
+    def predict(self, features, baseline, *, details=False):
+        """Apply the frozen correction, or return a byte-identical null baseline.
+
+        Parameters
+        ----------
+        features : array-like or None
+            Numeric extra columns in their original training order.
+        baseline : array-like
+            Valid CDF probabilities for the prediction rows.
+
+        details : bool, optional
+            Also return additive row counts and weighted squared correction /
+            projection totals, suitable for aggregation over fixed batches.
+
+        Returns
+        -------
+        numpy.ndarray or tuple
+            Valid corrected probabilities, plus diagnostics when requested;
+            input dtype is preserved for null.
+
+        Raises
+        ------
+        ValueError
+            The estimator is unfitted or the baseline/feature shape is invalid.
+        """
+        import numpy as np
+
+        if self.state is None:
+            raise ValueError("residual estimator is not fitted")
+        base = self._baseline(baseline)
+        if self.alpha is None:
+            result = base.copy()
+            return (result, {"rows": len(base), "correction_squared": 0.,
+                             "projection_squared": 0., "repaired_rows": 0}) if details else result
+        raw = self._raw(features, base)
+        mean, scale = np.asarray(self.state["mean"]), np.asarray(self.state["scale"])
+        if raw.shape[1] != len(mean):
+            raise ValueError("prediction feature count differs from training")
+        design = (np.where(np.isfinite(raw), raw, mean) - mean) / scale
+        design[:, ~np.asarray(self.state["active"], bool)] = 0.
+        correction = design @ np.asarray(self.state["coef"]).T + self.state["intercept"]
+        raw = base + correction
+        result = self.project(raw)
+        if not details:
+            return result
+        weights = self.grid.quadratic_weights()
+        return result, {"rows": len(base),
+                        "correction_squared": float(((result - base) ** 2 @ weights).sum() / weights.sum()),
+                        "projection_squared": float(((result - raw) ** 2 @ weights).sum() / weights.sum()),
+                        "repaired_rows": int((result != raw).any(axis=1).sum())}
+
+
+class _ResidualRidgeMethod(_FeatureSourced, _Method):
+    """Apply a frozen-baseline ridge correction after explicit chronology checks."""
+
+    KIND = "residual_ridge"
+    _KEYS = ("base", "features", "feature_source", "alpha", "baseline_asof")
+    _REQUIRED = ("base", "alpha", "baseline_asof")
+    _DEFAULTS = {"features": []}
+
+    @classmethod
+    def _extra_problems(cls, spec, params, names):
+        problems = []
+        cls._name_problems(problems, "base", spec.get("base"), names)
+        features = spec["features"]
+        if not isinstance(features, list) or not all(_is_name(f) for f in features) or len(set(features)) != len(features):
+            problems.append("method.features must be distinct column names")
+        else:
+            cls._source_problems(problems, spec.get("feature_source"), params, "features", features, required=False)
+        if spec.get("alpha") is not None and not (number_ok(spec["alpha"]) and spec["alpha"] > 0):
+            problems.append("method.alpha must be positive or null")
+        if not _is_name(spec.get("baseline_asof")):
+            problems.append("method.baseline_asof must name a date column")
+        if any(c.get("name") == spec.get("base") and "pit_map" in c for c in params.get("components", [])):
+            problems.append("residual baseline must carry issued probabilities, not a whole-fold PIT map")
+        if any(not number_ok(v) or v <= 0 for v in params.get("score_weights", [])):
+            problems.append("residual projection requires positive score weights")
+        if spec.get("learn") == "rolling":
+            problems.append("residual_ridge supports fixed fold learning only")
+        if params.get("fallback") != spec.get("base"):
+            problems.append("residual fallback must equal its frozen baseline")
+        return problems
+
+    def source_columns(self):
+        """Return extra feature columns from a declared source."""
+        return self.spec["features"]
+
+    def needed_columns(self):
+        """Read the baseline's training cutoff and configured features/keys."""
+        return [self.spec["baseline_asof"], *(self.source_keys() if self.spec.get("feature_source")
+                                            else self.spec["features"])]
+
+    def prepare(self, panel):
+        """Refuse noncausal baselines before reading or fitting residual targets."""
+        super().prepare(panel)
+        asof = _Dates.day_numbers(panel.frame[self.spec["baseline_asof"]])
+        if (asof >= panel.date_days).any():
+            raise ValueError("baseline cutoff must precede each forecast date")
+
+    def used(self):
+        """Return the fixed baseline component."""
+        return [self.spec["base"]]
+
+    def _features(self, panel, rows):
+        """Return original numeric cells, including missing values."""
+        import numpy as np
+
+        return np.column_stack([panel.numeric(f)[rows] for f in self.spec["features"]]) if self.spec["features"] else None
+
+    def fit(self, panel, rows, fold, weights=None, tag=None):
+        """Fit only outcomes settled before the target validation period."""
+        reference = _LearningRule.first_validation_day(panel, fold)
+        if (panel.settle_days[rows] >= reference).any():
+            raise ValueError("residual training labels must settle before target forecasts")
+        model = ResidualRidgeCDF(self.grid.z, self.grid.weights, self.spec["alpha"])
+        model.fit(self._features(panel, rows), panel.cdf[self.spec["base"]][rows], panel.y[rows], weights)
+        return _Fitted(model.state, model)
+
+    def predict(self, panel, rows, fitted):
+        """Predict from the fixed baseline without refitting preprocessing."""
+        return fitted.model.predict(self._features(panel, rows), panel.cdf[self.spec["base"]][rows])
+
+
 #: The method kinds a document may name, kind -> class.
 METHOD_KINDS = {cls.KIND: cls for cls in (_PitMapMethod, _LinearPoolMethod, _BestComponentMethod, _BinaryGbmMethod,
-                                          _BetaPoolMethod, _QuantileAverageMethod, _LocationScaleMethod)}
+                                          _BetaPoolMethod, _QuantileAverageMethod, _LocationScaleMethod, _ResidualRidgeMethod)}
 
 
 # --------------------------------------------------------------------------------------- components
@@ -3043,6 +3356,17 @@ class GridCDFMethod(Node):
     _OPTIONAL = ("buckets", "periods")
     _COMPONENT_KEYS = ("name", "source", "pit_map", "pit_column", "path", "sha256", "keys")
     _EXTERNAL_KEYS = ("path", "sha256", "keys")
+
+    @staticmethod
+    def calibration_map(pit, knots):
+        """Reproduce the existing unweighted empirical-PIT map on admitted rows."""
+        import numpy as np
+
+        values = np.asarray(pit, float)
+        if (type(knots) is not int or knots < 2 or values.ndim != 1 or not len(values)
+                or not np.isfinite(values).all() or (values < 0).any() or (values > 1).any()):
+            raise ValueError("invalid PIT map observations or knots")
+        return _PitMap(knots).fit(values)
 
     @classmethod
     def validate_params(cls, params):

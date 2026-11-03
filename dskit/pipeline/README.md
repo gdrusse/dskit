@@ -389,6 +389,10 @@ a calendar block-bootstrap interval, hit rate, the Newey–West loss gap,
 Diebold–Mariano comparisons, `skill_vs_mean` and a BH family). None of them
 sizes, ranks or trades.
 
+ADR-0290 adds `ResidualRidgeCDF` / `residual_ridge` and
+`ResidualCDFStudy`: issued-baseline error correction, temporal feature selection,
+outcome-blind immutable forecasts and two-way paired research intervals.
+
 ADR-0269 adds `libs/cdf_research.py`: guarded price-only market proxies,
 immutable single-seed experiment plans, explicitly budgeted paired market scores,
 and frozen chronological pocket summaries. These are research building blocks;

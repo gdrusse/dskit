@@ -525,3 +525,158 @@ def test_pockets_never_count_empirical_fallback_as_market_evidence():
     assert out["records"][0]["rows"] == 11
     assert out["records"][0]["improvement_pct"]["market"] == 50.0
     assert out["summary"]["excluded_nonmarket"]["score"] == 1
+
+
+# ADR-0290: outcome-blind freeze, bounded temporal selection, paired evaluation.
+def residual_study_fixture(tmp_path):
+    import pandas as pd
+    import dskit.pipeline.libs.cdf_research as owner
+
+    assert hasattr(owner, "ResidualCDFStudy"), "bounded residual study owner is absent"
+    params = dict(
+        identity=["symbol", "date", "expiry"], date="date", end="expiry",
+        baseline_asof="asof", outcome="y", baseline=["b0", "b1", "b2"],
+        features=["signal", "noise"], families={"signal": ["signal"], "noise": ["noise"]},
+        alphas=[10., .01], z_grid=[-1., 0., 1.], score_weights=[1., 1., 1.],
+        tail_width=2., end_before="2023-01-01", output=str(tmp_path / "study"),
+        folds=[dict(name="2022", start="2022-01-01", stop="2023-01-01",
+                    fit_start="2018-01-01", exclusions=[["2021-07-01", "2022-01-01"]],
+                    inner=[["2020-10-01", "2021-01-01"],
+                           ["2021-01-01", "2021-04-01"],
+                           ["2021-04-01", "2021-07-01"]])],
+        provenance={"source": "1" * 64, "code": "2" * 64},
+    )
+    rows = []
+    for year, month in [(2019, 1), (2020, 10), (2021, 1), (2021, 4), (2021, 10), (2022, 1)]:
+        for i in range(12):
+            rows.append(dict(symbol="AB"[i % 2], date=f"{year}-{month:02d}-{i+1:02d}",
+                             expiry=f"{year}-{month:02d}-{i+14:02d}", asof=f"{year-1}-12-31",
+                             signal=float(i % 2), noise=float(i % 3), y=-.5 if i % 2 else .5,
+                             b0=.1, b1=.5, b2=.9))
+    all_rows = pd.DataFrame(rows)
+    history = all_rows[all_rows.date < "2022-01-01"].copy()
+    forecasts = all_rows[all_rows.date >= "2022-01-01"].drop(columns="y").copy()
+    outcomes = all_rows[all_rows.date >= "2022-01-01"][["symbol", "date", "expiry", "y"]].copy()
+    return owner.ResidualCDFStudy(params), history, forecasts, outcomes
+
+
+def test_residual_study_inventory_ties_and_training_only_monitor_exclusion(tmp_path):
+    study, history, forecast, _ = residual_study_fixture(tmp_path)
+    assert len(study.specifications()) == 6  # F0, two singles, three family masks
+    assert len(study.candidates()) == 13  # plus exact null
+    assert study.choose([1., 1., 2.]) == 0
+    assert study.choose([1., 1.-1e-14, 2.]) == 1  # strict minimum, no 1SE rule
+    frozen = study.freeze(history, forecast)
+    receipt = frozen["folds"]["2022"]
+    assert receipt["training_rows"] == 48
+    assert len(receipt["inner_losses"]) == 13
+    assert len(receipt["models"]) == 7  # null and one inner-selected penalty per specification
+    assert receipt["selected"] != "null"
+    assert all(len(m["prediction_sha256"]) == 64 for m in receipt["models"].values())
+    with pytest.raises((ValueError, IntegrityError)):
+        study.freeze(history, forecast)
+
+
+@pytest.mark.parametrize("fault", ["outcome", "duplicate", "future_base", "sealed_label"])
+def test_residual_study_refuses_bad_forecast_inputs(tmp_path, fault):
+    study, history, forecast, _ = residual_study_fixture(tmp_path)
+    if fault == "outcome":
+        forecast["y"] = 0.
+    elif fault == "duplicate":
+        forecast = __import__("pandas").concat([forecast, forecast.iloc[:1]])
+    elif fault == "future_base":
+        forecast.loc[forecast.index[0], "asof"] = "2022-01-01"
+    else:
+        forecast.loc[forecast.index[0], "expiry"] = "2023-01-01"
+    with pytest.raises(ValueError):
+        study.freeze(history, forecast)
+    assert not (tmp_path / "study" / "freeze").exists()
+
+
+def test_residual_study_does_not_load_outcomes_until_all_predictions_verify(tmp_path):
+    study, history, forecast, outcomes = residual_study_fixture(tmp_path)
+    study.freeze(history, forecast)
+    altered = forecast.copy()
+    altered.loc[altered.index[0], "signal"] += 1
+    calls = []
+    def load():
+        calls.append(1)
+        return outcomes
+    with pytest.raises((ValueError, IntegrityError)):
+        study.evaluate(altered, load)
+    assert not calls
+    result = study.evaluate(forecast, load)
+    assert calls == [1]
+    assert result["rows"] == len(forecast)
+    assert result["mean_losses"]["selected"] < result["mean_losses"]["null"]
+    assert result["paired"]["selected_vs_null"]["mean_improvement"] > 0
+    assert result["diagnostics"]["null"]["full_crps"] > 0
+    # A completed evaluation cannot consume another outcome callback.
+    with pytest.raises((ValueError, IntegrityError)):
+        study.evaluate(forecast, load)
+    assert calls == [1]
+
+
+def test_residual_study_corrupt_freeze_refuses_before_label_read(tmp_path):
+    study, history, forecast, _ = residual_study_fixture(tmp_path)
+    study.freeze(history, forecast)
+    path = tmp_path / "study" / "freeze" / "models.json"
+    path.write_text(path.read_text() + " ")
+    with pytest.raises(IntegrityError):
+        study.evaluate(forecast, lambda: pytest.fail("outcomes read before integrity gate"))
+
+
+def test_residual_study_two_way_variance_and_full_crps_match_hand_calculation(tmp_path):
+    study, _, _, _ = residual_study_fixture(tmp_path)
+    # 2x2 independent clusters: centered sums [2,-2] and [3,-3].
+    delta = np.array([3., 0., 1., -2.])
+    paired = study.paired(delta, ["a", "a", "b", "b"], ["x", "y", "x", "y"])
+    centered = delta-delta.mean()
+    expected = 2*(2**2+(-2)**2)/16 + 2*(3**2+(-3)**2)/16 - 4/3*(centered@centered)/16
+    assert paired["variance"] == pytest.approx(expected)
+    assert paired["clusters"] == [2, 2, 4]
+    with pytest.raises(ValueError, match="clusters"):
+        study.paired([1., 2.], ["a", "a"], ["x", "y"])
+    # Grid + tails gives exactly Uniform(-3,3); CRPS at zero is width/12.
+    score = study.distribution_scores(np.array([[1/3, .5, 2/3]]), np.array([0.]))
+    assert score["full_crps"][0] == pytest.approx(.5, abs=1e-12)
+    score = study.distribution_scores(np.array([[1/3, .5, 2/3]]), np.array([4.]))
+    assert score["full_crps"][0] == pytest.approx(3., abs=1e-12)
+
+
+def test_residual_study_baseline_ledger_uses_own_earlier_maps(tmp_path):
+    import pandas as pd
+    study, history, forecasts, _ = residual_study_fixture(tmp_path)
+    assert hasattr(study, "issue_baselines"), "historical issue-time ledger is absent"
+    early = history.iloc[:4].copy()
+    early["pit"] = [.1, .2, .3, .4]
+    early["asof"] = "2018-01-01"
+    later = history[history.date >= "2021-01-01"].iloc[:4].copy()
+    later["pit"] = [.6, .7, .8, .9]
+    queries = pd.concat([history[history.date.str.startswith("2020")].drop(columns="y"), forecasts])
+    blocks = [dict(name="early", start="2020-01-01", stop="2021-01-01", expected=None),
+              dict(name="late", start="2022-01-01", stop="2023-01-01", expected=[0., 0., 1.])]
+    issued, receipts = study.issue_baselines(queries, {"early": early, "late": later}, blocks,
+                                             raw_columns=["b0", "b1", "b2"], pit_column="pit", knots=3)
+    assert issued.loc[issued.date < "2021", "b1"].eq(1.).all()
+    assert issued.loc[issued.date > "2021", "b1"].eq(0.).all()
+    assert receipts["early"]["learning_rows"] == 4
+    later["expiry"] = "2022-01-01"
+    with pytest.raises(ValueError, match="availability"):
+        study.issue_baselines(queries, {"early": early, "late": later}, blocks,
+                             raw_columns=["b0", "b1", "b2"], pit_column="pit", knots=3)
+
+
+def test_residual_study_warmup_does_not_enter_pooled_diagnostics(tmp_path):
+    study, history, forecast, outcomes = residual_study_fixture(tmp_path)
+    import pandas as pd
+    warm = history[history.date.str.startswith("2021-10")].copy()
+    study.params["folds"].insert(0, dict(name="warmup", start="2021-10-01", stop="2022-01-01",
+                                        fit_start="2018-01-01", exclusions=[], inner=[], ranked=False))
+    all_forecasts = pd.concat([warm.drop(columns="y"), forecast], ignore_index=True)
+    all_y = pd.concat([warm[["symbol", "date", "expiry", "y"]], outcomes], ignore_index=True)
+    study.freeze(history, all_forecasts)
+    result = study.evaluate(all_forecasts, lambda: all_y)
+    assert result["rows"] == 12
+    assert sum(result["diagnostics"]["null"]["pit_histogram"]) == 12
+    assert set(result["warmup_unranked"]) == {"warmup"}

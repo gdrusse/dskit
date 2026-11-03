@@ -23,6 +23,7 @@ __all__ = [
     "ConditionalScorePockets",
     "CDFReferenceScores",
     "PairedForecastScores",
+    "ResidualCDFStudy",
 ]
 
 
@@ -962,3 +963,620 @@ class PairedForecastScores(_ResearchNode):
                 "pairing": "exact_no_dropped_identities",
             },
         }
+
+
+class ResidualCDFStudy:
+    """Select fixed-baseline residual heads on earlier blocks, then freeze.
+
+    Parameters
+    ----------
+    params : dict
+        Explicit identity/clock/column mappings, ordered features and families,
+        penalties, chronological folds, immutable provenance pins and output.
+        Input frames must come from bounded, pinned onboarding readers. This
+        owner never acquires data or treats settlement as proven availability.
+
+    Examples
+    --------
+    Separate learning and outcome loading::
+
+        study = ResidualCDFStudy(params)
+        study.freeze(history, forecasts_without_outcomes)
+        report = study.evaluate(forecasts_without_outcomes, load_paired_outcomes)
+    """
+
+    _PARAMS = ("identity", "date", "end", "baseline_asof", "outcome", "baseline",
+               "features", "families", "alphas", "z_grid", "score_weights",
+               "tail_width", "end_before", "output", "folds", "provenance",
+               "batch_rows", "clusters", "comparators", "groups", "periods", "pit_series")
+    _DEFAULTS = {"batch_rows": 4096, "clusters": None, "comparators": {},
+                 "groups": [], "periods": {}, "pit_series": []}
+
+    def __init__(self, params):
+        from dskit.pipeline.libs.cdf_grid_methods import ResidualRidgeCDF
+
+        self.params = copy.deepcopy({**self._DEFAULTS, **params})
+        p = self.params
+        if set(p) != set(self._PARAMS):
+            raise ValueError("unknown or missing residual study parameters")
+        self.estimator = ResidualRidgeCDF(p["z_grid"], p["score_weights"], None)
+        for key in ("identity", "baseline", "features"):
+            values = p[key]
+            if (not isinstance(values, list) or len(set(values)) != len(values)
+                    or any(not isinstance(v, str) or not v for v in values)):
+                raise ValueError("invalid ordered column inventory: " + key)
+        if (not p["identity"] or p["date"] not in p["identity"]
+                or len(p["baseline"]) != len(p["z_grid"])
+                or set(p["baseline"]) & set(p["features"])
+                or p["outcome"] in set(p["baseline"] + p["features"] + p["identity"])):
+            raise ValueError("invalid baseline, outcome or identity mappings")
+        if (not p["families"] or any(not isinstance(k, str) or not k for k in p["families"])
+                or any(not isinstance(v, list) or not v for v in p["families"].values())):
+            raise ValueError("nonempty named feature families required")
+        members = [f for group in p["families"].values() for f in group]
+        if len(set(members)) != len(members) or set(members) != set(p["features"]):
+            raise ValueError("families must partition the feature inventory")
+        if (not isinstance(p["alphas"], list) or not p["alphas"]
+                or not all(_positive(v) for v in p["alphas"])
+                or len(set(p["alphas"])) != len(p["alphas"])):
+            raise ValueError("distinct positive ordered penalties required")
+        if not _positive(p["tail_width"]) or type(p["batch_rows"]) is not int or p["batch_rows"] < 1:
+            raise ValueError("invalid tail width or batch rows")
+        _date(p["end_before"])
+        if (not isinstance(p["provenance"], dict) or not p["provenance"]
+                or any(not isinstance(v, str) or len(v) != 64
+                       or set(v) - set("0123456789abcdef") or v == "0" * 64
+                       for v in p["provenance"].values())):
+            raise ValueError("nonzero immutable provenance SHA256 pins required")
+        if p["clusters"] is None:
+            p["clusters"] = [p["end"], p["identity"][0]]
+        if (not isinstance(p["clusters"], list) or len(p["clusters"]) != 2
+                or len(set(p["clusters"])) != 2):
+            raise ValueError("two distinct cluster columns required")
+        for name, columns in p["comparators"].items():
+            if name in {"null", "selected", *self.specifications()} or len(columns) != len(p["baseline"]):
+                raise ValueError("invalid comparator name or grid")
+        for bounds in p["periods"].values():
+            if len(bounds) != 2 or _date(bounds[0]) >= _date(bounds[1]):
+                raise ValueError("invalid period bounds")
+        self._validate_folds()
+        self.output = Path(p["output"])
+
+    def _validate_folds(self):
+        """Require disjoint outer intervals and strictly earlier inner blocks."""
+        p = self.params
+        if not p["folds"] or len({f["name"] for f in p["folds"]}) != len(p["folds"]):
+            raise ValueError("distinct nonempty fold inventory required")
+        prior_stop = None
+        for fold in p["folds"]:
+            required = {"name", "fit_start", "start", "stop", "inner", "exclusions"}
+            if set(fold) - required - {"ranked"} or required - set(fold):
+                raise ValueError("invalid fold fields")
+            if (not isinstance(fold["name"], str) or not fold["name"]
+                    or not _date(fold["fit_start"]) < _date(fold["start"]) < _date(fold["stop"]) <= p["end_before"]
+                    or (prior_stop is not None and prior_stop > fold["start"])
+                    or type(fold.get("ranked", True)) is not bool):
+                raise ValueError("invalid or overlapping chronological folds")
+            prior_stop = fold["stop"]
+            last = fold["fit_start"]
+            if fold.get("ranked", True) and not fold["inner"]:
+                raise ValueError("ranked folds require inner validation")
+            for start, stop in fold["inner"]:
+                if not last <= _date(start) < _date(stop) <= fold["start"]:
+                    raise ValueError("inner blocks must be disjoint and earlier than outer forecasts")
+                last = stop
+            for start, stop in fold["exclusions"]:
+                if not fold["fit_start"] <= _date(start) < _date(stop) <= fold["start"]:
+                    raise ValueError("invalid monitoring exclusion")
+
+    def issue_baselines(self, forecasts, learning, blocks, *, raw_columns, pit_column, knots):
+        """Apply each block's own strictly earlier PIT map and retain its lineage.
+
+        ``learning`` maps block names to exact calibration identity/clock/PIT
+        frames. A block may bind ``expected`` knot values from a saved recipe;
+        any difference refuses. No new outcome or score is read here.
+        """
+        import numpy as np
+        import pandas as pd
+        from dskit.pipeline.libs.cdf_grid_methods import GridCDFMethod
+
+        p, result, receipts = self.params, forecasts.copy(), {}
+        if (result.empty or result[p["identity"]].isna().any().any()
+                or result.duplicated(p["identity"]).any() or len(raw_columns) != len(p["baseline"])):
+            raise ValueError("invalid baseline ledger identities or raw grid")
+        for column in (p["date"], p["end"]):
+            result[column] = pd.to_datetime(result[column], errors="raise").dt.strftime("%Y-%m-%d")
+        if result[[p["date"], p["end"]]].isna().any().any() or not (
+                (result[p["date"]] < result[p["end"]]) & (result[p["end"]] < p["end_before"])).all():
+            raise ValueError("baseline ledger reaches temporal boundary")
+        self.estimator.fit(None, result[raw_columns].to_numpy(), None)
+        assigned = np.zeros(len(result), int)
+        if set(learning) != {block["name"] for block in blocks} or len(learning) != len(blocks):
+            raise ValueError("one calibration batch required per distinct baseline block")
+        raw = result[raw_columns].to_numpy(float)
+        for block in blocks:
+            if set(block) != {"name", "start", "stop", "expected"}:
+                raise ValueError("invalid baseline block declaration")
+            if not _date(block["start"]) < _date(block["stop"]) <= p["end_before"]:
+                raise ValueError("invalid baseline block bounds")
+            batch = learning[block["name"]].copy()
+            if (batch.empty or batch[p["identity"]].isna().any().any()
+                    or batch.duplicated(p["identity"]).any()):
+                raise ValueError("invalid calibration identities")
+            for column in (p["date"], p["end"]):
+                batch[column] = pd.to_datetime(batch[column], errors="raise").dt.strftime("%Y-%m-%d")
+            if not ((batch[p["date"]] < batch[p["end"]]) & (batch[p["end"]] < block["start"])).all():
+                raise ValueError("calibration availability must precede issued baseline")
+            g = GridCDFMethod.calibration_map(batch[pit_column], knots)
+            if block["expected"] is not None and not np.array_equal(g, np.asarray(block["expected"], float)):
+                raise ValueError("saved calibration map does not reproduce exactly")
+            mask = result[p["date"]].between(block["start"], block["stop"], inclusive="left").to_numpy()
+            assigned += mask
+            result.loc[mask, p["baseline"]] = np.interp(raw[mask], np.linspace(0, 1, knots), g)
+            result.loc[mask, p["baseline_asof"]] = batch[p["end"]].max()
+            receipts[block["name"]] = {"start": block["start"], "stop": block["stop"],
+                "learning_rows": len(batch), "max_available_assumed": batch[p["end"]].max(),
+                "map": g.tolist(), "knots": knots,
+                "learning_sha256": self._frame_hash(batch.sort_values(p["identity"]),
+                                                     list(dict.fromkeys(p["identity"] + [p["end"], pit_column])))}
+        if not (assigned == 1).all():
+            raise ValueError("every baseline row must belong to exactly one issue-time map")
+        return result, receipts
+
+    def specifications(self):
+        """Return F0-only, ordered singles, then complete-family bitmasks."""
+        p = self.params
+        specs = {"f0_only": []}
+        specs.update({f"feature_{i:03d}": [f] for i, f in enumerate(p["features"])})
+        families = list(p["families"].values())
+        for mask in range(1, 2 ** len(families)):
+            chosen = {f for i, family in enumerate(families) if mask & (1 << i) for f in family}
+            specs[f"families_{mask:02d}"] = [f for f in p["features"] if f in chosen]
+        return specs
+
+    def candidates(self):
+        """Return the exact tie order, including the zero-correction control."""
+        return [{"spec": "null", "alpha": None, "features": []}] + [
+            {"spec": name, "alpha": alpha, "features": features}
+            for name, features in self.specifications().items() for alpha in self.params["alphas"]]
+
+    @staticmethod
+    def choose(losses):
+        """Choose the strict finite minimum, breaking exact ties by inventory order."""
+        import numpy as np
+
+        values = np.asarray(losses, float)
+        if values.ndim != 1 or not len(values) or not np.isfinite(values).all():
+            raise ValueError("selection losses must all be finite")
+        return int(np.argmin(values))
+
+    @staticmethod
+    def _digest(values):
+        """Hash normalized numerical predictions independently of array strides."""
+        import hashlib
+        import numpy as np
+
+        return hashlib.sha256(np.asarray(values, dtype="<f8").tobytes(order="C")).hexdigest()
+
+    @staticmethod
+    def _frame_hash(frame, columns):
+        """Bind ordered identities, features and clocks with explicit column names."""
+        import hashlib
+        import pandas as pd
+
+        h = hashlib.sha256(_json(columns))
+        h.update(pd.util.hash_pandas_object(frame[columns], index=False).values.tobytes())
+        return h.hexdigest()
+
+    def _frame(self, frame, *, outcomes):
+        """Validate complete causal rows; predictions must not carry outcomes."""
+        import numpy as np
+        import pandas as pd
+
+        p = self.params
+        data = frame.copy()
+        required = list(dict.fromkeys(p["identity"] + [p["date"], p["end"], p["baseline_asof"]]
+                                      + p["baseline"] + p["features"]))
+        if outcomes:
+            required += [p["outcome"]]
+        elif p["outcome"] in data:
+            raise ValueError("prediction-only frame must omit the outcome column")
+        if set(required) - set(data) or data.empty:
+            raise ValueError("missing or empty study columns")
+        if data[p["identity"]].isna().any().any() or data.duplicated(p["identity"]).any():
+            raise ValueError("duplicate or missing forecast identity")
+        for name in (p["date"], p["end"], p["baseline_asof"]):
+            if data[name].isna().any():
+                raise ValueError("missing study clock")
+            data[name] = pd.to_datetime(data[name], errors="raise").dt.strftime("%Y-%m-%d")
+        if (not (data[p["baseline_asof"]] < data[p["date"]]).all()
+                or not (data[p["date"]] < data[p["end"]]).all()
+                or not (data[p["end"]] < p["end_before"]).all()):
+            raise ValueError("baseline or outcome chronology violation")
+        self.estimator.fit(None, data[p["baseline"]].to_numpy(), None)
+        for name in p["features"]:
+            data[name] = pd.to_numeric(data[name], errors="raise")
+        if data.duplicated(p["identity"]).any():
+            raise ValueError("forecast identities collide after clock normalization")
+        if not outcomes:
+            metadata = p["clusters"] + p["pit_series"] + [c for group in p["groups"] for c in group]
+            if set(metadata) - set(data) or data[metadata].isna().any().any():
+                raise ValueError("missing comparison metadata")
+            for columns in p["comparators"].values():
+                self.estimator.fit(None, data[columns].to_numpy(), None)
+        if outcomes and not np.isfinite(data[p["outcome"]].to_numpy(float)).all():
+            raise ValueError("nonfinite historical outcome")
+        return data.sort_values(p["identity"]).reset_index(drop=True)
+
+    def _history(self, history, fold, cutoff):
+        """Admit only earlier settled rows outside the original monitor bands."""
+        p = self.params
+        mask = ((history[p["date"]] >= fold["fit_start"])
+                & (history[p["date"]] < cutoff) & (history[p["end"]] < cutoff))
+        for start, stop in fold["exclusions"]:
+            mask &= ~((history[p["date"]] < stop) & (history[p["end"]] >= start))
+        result = history.loc[mask]
+        if result.empty:
+            raise ValueError("empty admitted history")
+        return result
+
+    def _fit(self, rows, candidate):
+        """Fit one declared setting on its already checked training subset."""
+        from dskit.pipeline.libs.cdf_grid_methods import ResidualRidgeCDF
+
+        p = self.params
+        model = ResidualRidgeCDF(p["z_grid"], p["score_weights"], candidate["alpha"])
+        x = rows[candidate["features"]].to_numpy(float)
+        return model.fit(x, rows[p["baseline"]].to_numpy(), rows[p["outcome"]].to_numpy(float))
+
+    def _predict(self, frame, model, features, *, details=False):
+        """Use a fixed batch shape for both freeze and verified regeneration."""
+        import numpy as np
+
+        p = self.params
+        chunks, totals = [], {"rows": 0, "correction_squared": 0., "projection_squared": 0., "repaired_rows": 0}
+        for start in range(0, len(frame), p["batch_rows"]):
+            rows = frame.iloc[start:start + p["batch_rows"]]
+            prediction = model.predict(rows[features].to_numpy(float), rows[p["baseline"]].to_numpy(), details=details)
+            if details:
+                prediction, stats = prediction
+                for key, value in stats.items():
+                    totals[key] += value
+            chunks.append(prediction)
+        result = np.concatenate(chunks)
+        return (result, totals) if details else result
+
+    def _inner(self, history, fold, progress):
+        """Score every declared setting on expanding earlier validation blocks."""
+        import numpy as np
+
+        p, candidates = self.params, self.candidates()
+        totals, count, blocks = np.zeros(len(candidates)), 0, []
+        for start, stop in fold["inner"]:
+            train = self._history(history, fold, start)
+            valid = self._history(history, fold, stop)
+            valid = valid[valid[p["date"]] >= start]
+            if valid.empty:
+                raise ValueError("empty inner validation after settlement and monitor filters")
+            losses = []
+            for candidate in candidates:
+                model = self._fit(train, candidate)
+                pred = self._predict(valid, model, candidate["features"])
+                losses.append(float(model.grid.score(pred, valid[p["outcome"]].to_numpy()).sum()))
+            totals += losses
+            count += len(valid)
+            blocks.append({"start": start, "stop": stop, "training_rows": len(train),
+                           "validation_rows": len(valid), "loss_sums": losses,
+                           "training_identity": self._frame_hash(train, p["identity"]),
+                           "validation_identity": self._frame_hash(valid, p["identity"])})
+            if progress:
+                progress({"fold": fold["name"], "inner": start, "candidates": len(candidates)})
+        return (totals / count).tolist(), blocks
+
+    def freeze(self, history, forecasts, progress=None):
+        """Fit all outer procedures and atomically freeze outcome-blind predictions.
+
+        Inputs must be bounded upstream; history may include earlier outer-year
+        labels needed by later expanding fits, but never a label at or after the
+        latest outer training cutoff. Forecasts contain no outcome column.
+        Repeated calls refuse rather than silently reuse partial computations.
+        """
+        from dskit.pipeline.libs.cdf_experiment import AtomicFitStore, IntegrityError
+
+        p = self.params
+        store = AtomicFitStore(self.output / "freeze", p)
+        if store.path.exists() or (self.output / "fit-claim.json").exists():
+            raise IntegrityError("residual study already claimed or frozen")
+        history, forecasts = self._frame(history, outcomes=True), self._frame(forecasts, outcomes=False)
+        if not (history[p["end"]] < max(f["start"] for f in p["folds"])).all():
+            raise ValueError("history includes outcomes beyond the last training boundary")
+        assigned = sum(((forecasts[p["date"]] >= f["start"]) & (forecasts[p["date"]] < f["stop"])).astype(int)
+                       for f in p["folds"])
+        if not (assigned == 1).all():
+            raise ValueError("every forecast must belong to exactly one outer fold")
+        self.output.mkdir(parents=True, exist_ok=True)
+        with (self.output / "fit-claim.json").open("x") as claim:
+            claim.write(_json({"configuration": value_hash(p)}).decode())
+        candidates, book = self.candidates(), {"config_hash": value_hash(p), "folds": {}}
+        book["history_hash"] = self._frame_hash(history, list(history.columns))
+        book["forecast_hash"] = self._frame_hash(forecasts, list(forecasts.columns))
+        book["specifications"], book["candidates"] = self.specifications(), candidates
+        for fold in p["folds"]:
+            train = self._history(history, fold, fold["start"])
+            future = forecasts[(forecasts[p["date"]] >= fold["start"])
+                               & (forecasts[p["date"]] < fold["stop"])]
+            if future.empty or not (future[p["end"]] < fold["stop"]).all():
+                raise ValueError("empty outer fold or labels reaching its boundary")
+            ranked = fold.get("ranked", True)
+            if ranked:
+                losses, blocks = self._inner(history, fold, progress)
+                selected = candidates[self.choose(losses)]["spec"]
+                choices = {"null": candidates[0]}
+                for name in self.specifications():
+                    indices = [0] + [i for i, c in enumerate(candidates) if c["spec"] == name]
+                    chosen = indices[self.choose([losses[i] for i in indices])]
+                    choices[name] = candidates[chosen]
+            else:
+                losses, blocks, selected = [], [], "null"
+                full = list(self.specifications())[-1]
+                choices = {"null": candidates[0], full: {"spec": full, "features": p["features"],
+                                                         "alpha": p["alphas"][0]}}
+            receipt = {"ranked": ranked, "training_rows": len(train), "forecast_rows": len(future),
+                       "training_identity": self._frame_hash(train, p["identity"]),
+                       "max_training_end": train[p["end"]].max(), "inner_losses": losses,
+                       "inner_blocks": blocks, "selected": selected, "models": {}}
+            for name, candidate in choices.items():
+                model = self._fit(train, candidate)
+                pred = self._predict(future, model, candidate["features"])
+                receipt["models"][name] = {"candidate": candidate, "state": model.state,
+                                           "prediction_sha256": self._digest(pred)}
+            book["folds"][fold["name"]] = receipt
+            if progress:
+                progress({"fold": fold["name"], "frozen_models": len(choices), "selected": selected})
+        store.publish({"models.json": _json(book)})
+        return book
+
+    @staticmethod
+    def paired(improvement, first, second):
+        """Two-way cluster interval for paired mean improvement, positive is better."""
+        import numpy as np
+        import pandas as pd
+        from scipy.stats import t
+
+        d = np.asarray(improvement, float)
+        groups = pd.DataFrame({"first": first, "second": second})
+        if d.ndim != 1 or not len(d) or len(groups) != len(d) or not np.isfinite(d).all() or groups.isna().any().any():
+            raise ValueError("invalid paired rows or clusters")
+        centered, variances, counts = d - d.mean(), [], []
+        for key in (groups["first"], groups["second"], pd.MultiIndex.from_frame(groups)):
+            codes, unique = pd.factorize(key)
+            count = len(unique)
+            if count < 2:
+                raise ValueError("paired intervals require at least two clusters per dimension")
+            sums = np.bincount(codes, weights=centered)
+            variances.append(float(count / (count - 1) * (sums @ sums) / len(d) ** 2))
+            counts.append(count)
+        variance = variances[0] + variances[1] - variances[2]
+        radius = float(t.ppf(.975, min(counts[:2]) - 1) * np.sqrt(variance)) if variance > 0 else None
+        mean = float(d.mean())
+        return {"rows": len(d), "mean_improvement": mean, "variance": variance, "clusters": counts,
+                "ci95": [mean - radius, mean + radius] if radius is not None else None,
+                "status": "defined" if radius is not None else "nonpositive_variance",
+                "rule": "first + second - intersection; G/(G-1); Student-t(min(G)-1); pointwise"}
+
+    def distribution_scores(self, probabilities, outcomes):
+        """Score the declared finite-tail GridCurve through public curve/scorer APIs."""
+        import numpy as np
+        from dskit.pipeline.libs.predictive_cdf import GridCurve, DecisionRegionScores
+
+        p = self.params
+        cdf, y = np.asarray(probabilities, float), np.asarray(outcomes, float)
+        self.estimator.fit(None, cdf, None)
+        if y.shape != (len(cdf),) or not np.isfinite(y).all():
+            raise ValueError("invalid score outcomes")
+        z = np.asarray(p["z_grid"])
+        left, right = z[0] - p["tail_width"], z[-1] + p["tail_width"]
+        x = np.broadcast_to(np.r_[left, z, right], (len(y), len(z) + 2))
+        curve = GridCurve(x, np.column_stack([np.zeros(len(y)), cdf, np.ones(len(y))]))
+        full = np.maximum(left - y, 0.) + np.maximum(y - right, 0.)
+        # The public exact segment scorer separates wings at zero; each call
+        # has one uniform interval, so multiplying its length removes density.
+        cuts = [left, *([0.] if left < 0 < right else []), right]
+        for lo, hi in zip(cuts, cuts[1:]):
+            context = [{"identity": [str(i)], "thresholds": [lo, hi], "weights": [.5, .5],
+                        "intervals": [[lo, hi]]} for i in range(len(y))]
+            full += DecisionRegionScores(context).wing_score(curve, y)["decision_wing_twcrps"] * (hi - lo)
+        return {"twcrps": self.estimator.grid.score(cdf, y),
+                "grid_crps": self.estimator.grid.score(cdf, y, np.ones(len(z))),
+                "full_crps": full, "pit": curve.cdf(y[:, None])[:, 0]}
+
+    def _diagnostic(self, rows, prediction):
+        """Collect exact distribution scores and threshold reliability totals."""
+        import numpy as np
+
+        p = self.params
+        y = rows[p["outcome"]].to_numpy(float)
+        pieces = [self.distribution_scores(prediction[a:a + p["batch_rows"]], y[a:a + p["batch_rows"]])
+                  for a in range(0, len(rows), p["batch_rows"])]
+        stats = {k: np.concatenate([part[k] for part in pieces]) for k in pieces[0]}
+        truth = self.estimator.grid.indicator(y)
+        stats.update(rows=len(y), cdf_sum=prediction.sum(axis=0), frequency_sum=truth.sum(axis=0),
+                     brier_sum=((prediction - truth) ** 2).sum(axis=0))
+        return stats
+
+    def _summarize_diagnostics(self, diagnostics, combined):
+        """Keep warmup separate and report overlapping-series tests descriptively."""
+        import numpy as np
+        from dskit.pipeline.distribution_scores import BerkowitzTest
+
+        result, p = {}, self.params
+        for name, parts in diagnostics.items():
+            count = sum(part["rows"] for part in parts)
+            entry = {k: float(np.concatenate([part[k] for part in parts]).mean())
+                     for k in ("twcrps", "grid_crps", "full_crps")}
+            for key in ("cdf_sum", "frequency_sum", "brier_sum"):
+                entry[key.replace("_sum", "_mean")] = (sum(part[key] for part in parts) / count).tolist()
+            pit = np.concatenate([part["pit"] for part in parts])
+            entry["pit_histogram"] = np.histogram(pit, bins=np.linspace(0, 1, 11))[0].tolist()
+            entry["pit_zero_or_one"] = int(((pit == 0) | (pit == 1)).sum())
+            entry["pit_below_005"] = float((pit < .05).mean())
+            entry["pit_above_095"] = float((pit > .95).mean())
+            series = combined.copy(deep=False).assign(pit=pit)
+            grouped = series.groupby(p["pit_series"], sort=True) if p["pit_series"] else [("all", series)]
+            tests = []
+            for key, group in grouped:
+                ordered = group.sort_values([p["date"], *[c for c in p["identity"] if c != p["date"]]])
+                # Endpoint clipping is explicit and affects only the normal test.
+                values = np.clip(ordered.pit.to_numpy(), np.finfo(float).eps, 1 - np.finfo(float).eps)
+                tests.append({"series": str(key), "rows": len(values), **BerkowitzTest().evaluate(values.tolist())})
+            entry["berkowitz"] = {"endpoint_clip": float(np.finfo(float).eps), "series": tests,
+                "interpretation": "descriptive AR(1) diagnostic; overlapping horizons invalidate iid confirmation"}
+            result[name] = entry
+        return result
+
+    def _verified_forecasts(self, forecasts):
+        """Verify every fitted state and prediction before allowing outcome access."""
+        import json
+        from dskit.pipeline.libs.cdf_experiment import AtomicFitStore, IntegrityError
+        from dskit.pipeline.libs.cdf_grid_methods import ResidualRidgeCDF
+
+        store = AtomicFitStore(self.output / "freeze", self.params)
+        store.verify()
+        book = json.loads((store.path / "models.json").read_text())
+        frame = self._frame(forecasts, outcomes=False)
+        if self._frame_hash(frame, list(frame.columns)) != book["forecast_hash"]:
+            raise IntegrityError("forecast input hash mismatch")
+        for fold in self.params["folds"]:
+            rows = frame[(frame[self.params["date"]] >= fold["start"])
+                         & (frame[self.params["date"]] < fold["stop"])]
+            for saved in book["folds"][fold["name"]]["models"].values():
+                model = ResidualRidgeCDF.from_state(saved["state"])
+                prediction = self._predict(rows, model, saved["candidate"]["features"])
+                if self._digest(prediction) != saved["prediction_sha256"]:
+                    raise IntegrityError("regenerated prediction hash mismatch")
+        return book, frame
+
+    def evaluate(self, forecasts, load_outcomes, progress=None):
+        """Verify the complete freeze, then call the outcome loader exactly once.
+
+        Publish paired row losses and descriptive summaries. Warmup folds remain
+        separate and cannot enter pooled ranks or continuation comparisons.
+        This method does not confer promotion or trade-execution authority.
+        """
+        import io
+        import numpy as np
+        import pandas as pd
+        from dskit.pipeline.libs.cdf_experiment import AtomicFitStore, CDFExperiment, IntegrityError
+        from dskit.pipeline.libs.cdf_grid_methods import ResidualRidgeCDF
+
+        p = self.params
+        store = AtomicFitStore(self.output / "evaluation", p)
+        if store.path.exists() or (self.output / "evaluation-claim.json").exists():
+            raise IntegrityError("evaluation already claimed or published")
+        book, frame = self._verified_forecasts(forecasts)
+        with (self.output / "evaluation-claim.json").open("x") as claim:
+            claim.write(_json({"freeze": AtomicFitStore.file_hash(self.output / "freeze" / "complete.json")}).decode())
+        outcomes = load_outcomes().copy()
+        for name in (p["date"], p["end"]):
+            outcomes[name] = pd.to_datetime(outcomes[name], errors="raise").dt.strftime("%Y-%m-%d")
+        CDFExperiment.check_pairing(frame, outcomes, p["identity"])
+        outcomes = outcomes.sort_values(p["identity"]).reset_index(drop=True)
+        if not np.isfinite(outcomes[p["outcome"]].to_numpy(float)).all():
+            raise ValueError("nonfinite evaluation outcome")
+        if p["end"] not in p["identity"] and not outcomes[p["end"]].equals(frame[p["end"]]):
+            raise ValueError("evaluation outcome clock mismatch")
+        frame[p["outcome"]] = outcomes[p["outcome"]].to_numpy(float)
+        loss_frames, saved_forecasts, diagnostics, warmup, corrections = [], [], {}, {}, {}
+        for fold in p["folds"]:
+            rows = frame[(frame[p["date"]] >= fold["start"]) & (frame[p["date"]] < fold["stop"])]
+            receipt = book["folds"][fold["name"]]
+            meta = list(dict.fromkeys(p["identity"] + p["clusters"] + p["pit_series"] + [c for g in p["groups"] for c in g]))
+            losses = rows[meta].copy()
+            losses["fold"] = fold["name"]
+            predictions = rows[p["identity"]].copy()
+            chosen = receipt["selected"]
+            for name, saved in receipt["models"].items():
+                model = ResidualRidgeCDF.from_state(saved["state"])
+                pred, correction = self._predict(rows, model, saved["candidate"]["features"], details=True)
+                if receipt["ranked"]:
+                    corrections.setdefault(name, []).append(correction)
+                    if name == chosen:
+                        corrections.setdefault("selected", []).append(correction)
+                losses[name] = model.grid.score(pred, rows[p["outcome"]].to_numpy(float))
+                if name in {"null", "f0_only", chosen}:
+                    stats = self._diagnostic(rows, pred)
+                    if receipt["ranked"]:
+                        diagnostics.setdefault(name, []).append(stats)
+                    if name in {"null", "f0_only"}:
+                        for j, col in enumerate(p["baseline"]):
+                            predictions[name + "_" + col] = pred[:, j]
+                if name == chosen:
+                    losses["selected"] = losses[name]
+                    if receipt["ranked"]:
+                        diagnostics.setdefault("selected", []).append(stats)
+                    for j, col in enumerate(p["baseline"]):
+                        predictions["selected_" + col] = pred[:, j]
+            for name, columns in p["comparators"].items():
+                base = rows[columns].to_numpy(float)
+                self.estimator.fit(None, base, None)
+                losses[name] = self.estimator.grid.score(base, rows[p["outcome"]].to_numpy(float))
+                if receipt["ranked"]:
+                    diagnostics.setdefault(name, []).append(self._diagnostic(rows, base))
+            if receipt["ranked"]:
+                loss_frames.append(losses)
+                saved_forecasts.append(predictions)
+            else:
+                warmup[fold["name"]] = {name: float(losses[name].mean()) for name in receipt["models"]}
+            if progress:
+                progress({"fold": fold["name"], "scored": len(losses)})
+        combined = pd.concat(loss_frames, ignore_index=True)
+        names = ["null", *self.specifications(), "selected", *p["comparators"]]
+        means = {name: float(combined[name].mean()) for name in names}
+        pairs = {}
+        for name in names:
+            for control in ("null", "f0_only"):
+                if name != control:
+                    pairs[name + "_vs_" + control] = self.paired(
+                        combined[control] - combined[name], *(combined[c] for c in p["clusters"]))
+        full_name = list(self.specifications())[-1]
+        full_mask = 2 ** len(p["families"]) - 1
+        for i, family in enumerate(p["families"]):
+            less = full_mask ^ (1 << i)
+            reduced = f"families_{less:02d}" if less else "f0_only"
+            pairs["ablation_" + family] = self.paired(
+                combined[reduced] - combined[full_name], *(combined[c] for c in p["clusters"]))
+        by_fold = {key: {name: float(group[name].mean()) for name in names}
+                   for key, group in combined.groupby("fold", sort=False)}
+        # Only controls and the selected procedure have every ranked fold.
+        reported = {k: v for k, v in diagnostics.items() if sum(t["rows"] for t in v) == len(combined)}
+        diagnostic_means = self._summarize_diagnostics(reported, combined)
+        correction_summary = {}
+        for name, parts in corrections.items():
+            rows = sum(part["rows"] for part in parts)
+            correction_summary[name] = {
+                "weighted_rms_correction": math.sqrt(sum(t["correction_squared"] for t in parts) / rows),
+                "weighted_rms_projection": math.sqrt(sum(t["projection_squared"] for t in parts) / rows),
+                "fraction_repaired": sum(t["repaired_rows"] for t in parts) / rows}
+        slices = []
+        for name, (start, stop) in p["periods"].items():
+            cell = combined[combined[p["date"]].between(start, stop, inclusive="left")]
+            if not cell.empty:
+                slices.append({"by": ["period"], "cell": [name], "rows": len(cell),
+                               "mean_losses": {n: float(cell[n].mean()) for n in names}})
+        for group in p["groups"]:
+            for key, cell in combined.groupby(group, sort=True, dropna=False):
+                values = key if isinstance(key, tuple) else (key,)
+                slices.append({"by": group, "cell": [str(v) for v in values], "rows": len(cell),
+                               "mean_losses": {name: float(cell[name].mean()) for name in names}})
+        report = {"rows": len(combined), "mean_losses": means, "by_fold": by_fold,
+                  "paired": pairs, "diagnostics": diagnostic_means, "corrections": correction_summary,
+                  "warmup_unranked": warmup,
+                  "slices": slices, "candidate_count": len(self.candidates()),
+                  "config_hash": value_hash(p), "interpretation": "retrospective predictive comparison"}
+        files = {"report.json": _json(report)}
+        for name, data in (("losses.parquet", combined), ("selected-forecasts.parquet", pd.concat(saved_forecasts))):
+            buffer = io.BytesIO()
+            data.to_parquet(buffer, index=False)
+            files[name] = buffer.getvalue()
+        store.publish(files)
+        return report

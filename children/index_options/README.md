@@ -726,6 +726,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # rows/cells/curves/summary; no fit, no dskit change)
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
+                           # run-calibrated-market-error-study.json (ADR-0290; retrospective residual study),
                            # run-option-scenario-stress.json (synthetic what-if repricing),
                            # run-synthetic-distribution.json (ADR-0168 harness),
                            # run-synthetic-har/-lightgbm.json + run-distribution-zoo.json (ADR-0181),
