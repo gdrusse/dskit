@@ -1,5 +1,5 @@
 {
-  "notes": "Ownerrequested2019quarterlyMIO; this pins theQ4forecastcandidateonly. Q1\u2013Q3remainexplicitlyblockedbycorporate/registry/warmupgates. 2019predictiveoutcomesunranked. NoMIOexecutionuntilseparatewholequarter/exactprotocolreviews.",
+  "notes": "Owner-requested 2019 quarterly MIO. Parked Q4 forecast candidate only: all four quarters are blocked under current capabilities. Q1-Q3 overlap a disposed development packet; Q1/Q2 also have unsupported actions. Q4 has no LLY chain data throughout entry and settlement tail. No real 2019 fit, cache or MIO dispatch occurred. Warmup remains unranked.",
   "manifest": "/home/russell/data/index_options/quarterly-prediction-cache-20261104/2019-extension/execution-manifest.json",
   "manifest_sha256": "9e603da3fa54cb353ede4633e5af125f9b08614903ff5af5a384de80e0fb75df",
   "producer_review": "/home/russell/data/index_options/quarterly-prediction-cache-20261104/2019-extension/producer-review.json",
@@ -10,5 +10,8 @@
     "2019q3",
     "2019q4"
   ],
-  "forecast_candidate": "2019q4-s11"
+  "forecast_candidate": "2019q4-s11",
+  "capability_amendment": "/home/russell/data/index_options/quarterly-prediction-cache-20261104/2019-extension/design-review-amendment-01.json",
+  "capability_amendment_sha256": "bc72a32249c83e3a871f970f0a152bbbc0aac011c089f381adfe922d85e36184",
+  "execution_state": "blocked_no_dispatch"
 }

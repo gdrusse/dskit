@@ -1,43 +1,43 @@
 # RE-ENTRY - index_options
 
-Updated: 2026-11-04 by GPT-6. Blinded quarterly90 forecasts and bounded MIO execution are complete; economic and predictive results remain unopened.
+Updated: 2026-11-04 by GPT-6. Quarterly predictive comparison is open; MIO economics remain unopened. The 2019 extension is blocked, with no new MIO execution.
 
 ## Now
 
-- Original 90-input M53 remains the prediction baseline. Completed residual, feature, substitution and initialization/removal studies are recorded; no replacement or learned correction is promoted.
-- All 48 quarterly90 caches for 2020–2023 and seeds 11/29/47 passed structural verification;16 native seed 11 caches are prepared. 2019 remains unranked warmup trained on 2017–2018; maturity is strictly before each quarter and every learned state stays fixed within it.
-- Three frozen MIO policies completed for2020Q1 and2021Q1: six stored standard reports, full 67-day tails, independent accounts, fixed 115 admission and exact replay parity. All six accounting gates/report nodes and serial publication/review are attested; the shared registry is inactive at revision 41.
-- MIO coverage is 2/16 requested quarters. Fourteen whole quarters remain blocked by unsupported actions, unresolved resumption/split evidence, root gaps or the protected 2024 tail. No silent name/entry exclusions.
-- Forecast candidate 52ebd89a and MIO code 8a23c1da have closed independent reviews. Exact MIO execution lock and final structural delivery receipt are retained under the evidence root below. Two editorial nits remain; no blocking findings.
-- The RL sizing service remains inactive at paused_after_first_sizing_scan; no RL fit or evaluation completed in this work.
+- Original 90-input M53 remains the baseline. All 48 quarterly caches (2020–2023; seeds 11/29/47) and 16 primary native caches are retained. Quarterly states/weights are fixed; only mature prior labels teach them.
+- Owner-requested comparison: primary seed 11 improves weighted CRPS by 0.546% versus calibrated market (pointwise 95% CI 0.342%–0.750%), positive in all four years. Raw-market gain 0.718% has CI −0.213% to +1.650%; 2022 is worse. Full CRPS versus calibrated market improves 0.429%.
+- All 48 score shards passed independent verification: 450,563 identical events per seed, 110 symbols, 209 expiry clusters. Of 712,556 cached identities per seed, 261,993 lack market eligibility. No fitting, post-outcome selection, holdout access or MIO ranking.
+- Original MIO has 2 historical quarter executions and 6 stored accounting-attested reports, but only 1 currently admissible quarter of 16: 2021Q1. Its GME chain misses two isolated entry sessions; settlement tails are complete.
+- Correction: 2020Q1 support is withdrawn for LLY's persistent chain gap on 45 of 62 entry sessions. Retain its 3 reports as quarantined historical evidence. Original 14 never-executed blocks remain. Registry history is unchanged and inactive at revision 41.
+- Requested 2019 extension: 0/4 executed. Q1–Q3 overlap the disposed 2019 development packet; Q1/Q2 also have unsupported corporate actions, and Q1 lacks a pre-2019 OOS blend bank. Q4 lacks LLY on all 64 entry and 45 tail sessions.
+- Q4 producer contract passed two independent reviews (90 features, seed 11, pre-2019 monitor's 23 epochs, strictly prior-data weights), but no real fit/cache/MIO ran. No dispatch lock was issued. Existing raw acquisitions cannot fill the LLY gap; drafts predate its blocking amendment.
+- Combined request denominator is 20 quarters: 1 admissible, 2 historically executed. MIO policies remain fixed and unranked. The RL sizing service remains paused; this work did not fit or evaluate RL.
 
 ## Next
 
-- Keep forecast values, new predictive comparisons and MIO economic results unopened until the owner requests their review.
-- Further MIO coverage needs a separately reviewed accounting/capability change or exact evidence clearance; preserve whole-quarter gates and full tails.
-- Retain original M53 as baseline. New predictive hypotheses must address instability and be frozen before outcome review; previously rejected corrections are not reopened by this cache.
-- On RL resume, inspect its existing completed scan evidence before further sizing dispatch; do not reimport 2019.
+- Genuine bounded LLY source acquisition through onboarding is the first data-repair option. Preserve old source/cache pins and use a separately reviewed new version if recovered.
+- Q1–Q3 need an approved bounded disposed-development subinterval re-exposure design; Q1/Q2 need approved mixed/cash-deliverable accounting. Do not reset the registry or filter names to obtain runs.
+- Keep M53/seed 11 fixed. This repeatedly exposed retrospective comparison does not promote a recipe or prove tradability; original annual M53's older 0.690% result is a different study.
+- C: is constrained by the 874 GB nonsparse WSL disk. D: is a USB HDD with about 1.78 TB free. Most 63 GB DSKit cache objects are hardlinked to retained runs; deleting cache names frees about 7 MB. No storage changes or WSL shutdown were performed. See storage-audit.json.
 
 ## Blocked / owner decisions
 
-- A0002–A0005/A0007/A0008 remain binding. The owner authorized this separately named quarterly variant; Path is unchanged. COVID is retained.
-- 2024–2025 remains sealed and unexecuted here; no compatible feature-only panel was admitted. 2026 stays permanently sealed.
-- Settlement-date availability is a retrospective assumption; panel and corporate-action timing do not establish historical tradability or live production readiness.
-- Two of16 MIO quarters are complete; do not describe the other 14 as covered, zero-return, or excluded from the denominator.
+- A0002–A0005/A0007/A0008 remain binding; Path is unchanged. 2019 stays unranked warmup; COVID stays included. The owner opened only 2020–2023 predictive comparisons.
+- Protected 2024–2025 outcomes remain sealed; 2026 stays permanently sealed. Settlement-date availability is retrospective, not proof of historical input availability.
+- Registry revision 41 has no closed-result annotation verb: the 2020Q1 correction is additive evidence/current-status qualification, not history mutation.
+- Mac is online but no new task ran there. WSL completed the comparison; blocked MIO cannot be solved by additional compute. Windows system cleanup requires administrator access; compaction or relocation requires a planned WSL shutdown with other jobs accounted for.
 
 ## Read first
 
-- [Blinded quarterly90 cache and MIO](research/distribution-modeling/2026-11-04-blinded-quarterly90-cache-and-mio.md).
+- [Quarterly comparison and 2019 limits](research/distribution-modeling/2026-11-04-quarterly-m53-market-comparison-and-2019-mio.md).
+- [Prior blinded delivery with correction](research/distribution-modeling/2026-11-04-blinded-quarterly90-cache-and-mio.md).
 - [M53 initialization audit](research/distribution-modeling/2026-11-04-m53-initialization-study.md).
-- [Eight error corrections](research/distribution-modeling/2026-11-04-m53-error-memory-study.md).
-- [Frozen calibration check](research/distribution-modeling/2026-11-04-frozen-cdf-calibration-2020-2023.md).
 - [Locked Path](decisioning/path.csv).
 
 ## Do not
 
-- Inspect new forecast/economic results, rank MIO policies, open protected outcomes, or claim profitability without a later owner instruction.
-- Regenerate imported protocols, reset the shared registry, reimport 2019, alter frozen weights or silently filter corporate-action gaps.
-- Remove the pinned producer/execution checkouts or evidence needed to validate cached sources.
-- Stop another session's jobs or change reviewed code/test identities while retaining their approvals.
+- Open MIO economics or protected outcomes, rank 2019 warmup, select seeds by scores, alter frozen weights, or claim all-quarter MIO completion.
+- Dispatch parked 2019 generators; reset/reimport the registry; silently drop names or entry dates; fabricate missing LLY data; expand corporate accounting ad hoc.
+- Rewrite original closed receipts, delete pinned evidence, interrupt other sessions, or move/compact the live WSL disk.
 
-Evidence: `/home/russell/data/index_options/quarterly-prediction-cache-20261104`; see `delivery-verification.json`, `mio/execution-lock.json`, `release-review-reconciliation.json` and `request-status.json`.
+Evidence: `/home/russell/data/index_options/quarterly-prediction-cache-20261104`; comparison/evaluation-lock and result review, 2019 design amendment/recovery review, MIO coverage-correction review/disposition, and request-status. Forecast producer 52ebd89a and prior delivery c10d597b remain pinned.

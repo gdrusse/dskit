@@ -1,3 +1,5 @@
+> **Later correction, 2026-11-04:** The owner subsequently opened predictive comparison. A date-only audit also withdrew 2020Q1 MIO support because LLY lacks 45 entry sessions. Two quarters were executed, but only one currently passes the capability gate out of 16. The historical receipts and unopened MIO economics are preserved. See [comparison and coverage correction](2026-11-04-quarterly-m53-market-comparison-and-2019-mio.md).
+
 ## Question
 
 Which existing predictive recipe should produce reusable quarterly forecasts without opening a new performance evaluation, and how much of the requested quarterly MIO matrix can the existing accounting engine execute faithfully?
