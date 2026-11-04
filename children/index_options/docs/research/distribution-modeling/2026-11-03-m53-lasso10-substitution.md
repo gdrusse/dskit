@@ -1,0 +1,7 @@
+Question: does replacing M53's MLP with the original Lasso10 improve prediction?
+
+Finding: no observed improvement. On 449,498 matched 2020-2023 validation rows, rebuilt M53-Lasso10 twCRPS is 0.525915636 versus original M53 0.525580619 and calibrated market 0.529234127. Market-relative gains are 0.627% and 0.690%, respectively. Replacement gain versus original M53 is -0.063742% (expiry/symbol clustered 95% interval -0.149647% to +0.022163%); it trails in all four years. It remains above market on each annual point estimate, with annual intervals crossing zero in 2022 and 2023.
+
+The existing GridCDFMethod rebuilt all 90 historical blocks with unchanged quantile averaging, 21-day refits, dispersion groups, market calibration and other components. Original frozen annual Lasso10 models supplied the model component, with 100% row coverage and numerical parity to saved standalone scores. This is a retrospective research comparison, not promotion evidence. No MIO or 2024+ outcomes.
+
+Sources: /home/russell/data/index_options/mlp-learning-audit-20261103/m53-lasso10-study/{protocol.json,comparison-protocol.json,run-m53-lasso10.json,preflight.json,candidate-lock.json,comparison.json,paired-scores.parquet,analysis-verification.json,correctness-review.json,tests-review.json}. Execution: WSL2, 1,874 seconds, peak RSS 3,819 MiB; pipeline state ran, exit 0, method ok. Report: /home/russell/.cursor/projects/home-russell-dskit/canvases/M53-lasso10-comparison.canvas.tsx.
