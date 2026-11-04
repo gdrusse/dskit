@@ -1,0 +1,14 @@
+{
+  "notes": "Ownerrequested2019quarterlyMIO; this pins theQ4forecastcandidateonly. Q1\u2013Q3remainexplicitlyblockedbycorporate/registry/warmupgates. 2019predictiveoutcomesunranked. NoMIOexecutionuntilseparatewholequarter/exactprotocolreviews.",
+  "manifest": "/home/russell/data/index_options/quarterly-prediction-cache-20261104/2019-extension/execution-manifest.json",
+  "manifest_sha256": "9e603da3fa54cb353ede4633e5af125f9b08614903ff5af5a384de80e0fb75df",
+  "producer_review": "/home/russell/data/index_options/quarterly-prediction-cache-20261104/2019-extension/producer-review.json",
+  "producer_review_sha256": "a16b9cd87ede212c2bccf97f178f60d988890d6bab66d38be6714ee941e1019c",
+  "requested_quarters": [
+    "2019q1",
+    "2019q2",
+    "2019q3",
+    "2019q4"
+  ],
+  "forecast_candidate": "2019q4-s11"
+}
