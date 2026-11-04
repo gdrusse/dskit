@@ -1045,8 +1045,19 @@ class ResidualCDFStudy:
             raise ValueError("two distinct cluster columns required")
         self._validate_specs()
         for name, columns in p["comparators"].items():
-            if name in {"null", "selected", *self.specifications()} or len(columns) != len(p["baseline"]):
+            if (not isinstance(name, str) or not name.strip()
+                    or name in {"null", "selected", *self.specifications()}
+                    or len(columns) != len(p["baseline"])):
                 raise ValueError("invalid comparator name or grid")
+        metadata = {"fold", *p["identity"], *p["clusters"], *p["pit_series"],
+                    *(column for group in p["groups"] for column in group)}
+        outputs = {"null", "selected", *self.specifications(), *p["comparators"]}
+        if metadata & outputs:
+            raise ValueError("result names overlap evaluation metadata")
+        predicted = {name + "_" + column for name in ("null", "f0_only", "selected")
+                     for column in p["baseline"]}
+        if predicted & set(p["identity"]):
+            raise ValueError("saved forecast columns overlap row identity")
         for bounds in p["periods"].values():
             if len(bounds) != 2 or _date(bounds[0]) >= _date(bounds[1]):
                 raise ValueError("invalid period bounds")

@@ -910,3 +910,56 @@ def test_explicit_residual_specs_default_deny(tmp_path, fault):
         params["feature_specs"][0]["typo"] = 1
     with pytest.raises(ValueError):
         ResidualCDFStudy(params)
+
+
+@pytest.mark.parametrize("label", ["symbol", "date", "expiry", "fold", "cluster", "series", "group"])
+@pytest.mark.parametrize("entry", ["spec", "comparator"])
+def test_residual_study_output_labels_cannot_overwrite_metadata(tmp_path, label, entry):
+    from dskit.pipeline.libs.cdf_research import ResidualCDFStudy
+
+    study, _, _, _ = residual_study_fixture(tmp_path)
+    params = dict(study.params)
+    if label == "cluster":
+        params["clusters"] = ["expiry", label]
+    elif label == "series":
+        params["pit_series"] = [label]
+    elif label == "group":
+        params["groups"] = [[label]]
+    if entry == "spec":
+        params["feature_specs"] = [dict(name=label, features=["signal"])]
+    else:
+        params["comparators"] = {label: params["baseline"]}
+    with pytest.raises(ValueError, match="metadata"):
+        ResidualCDFStudy(params)
+    assert not (tmp_path / "study").exists()
+
+
+@pytest.mark.parametrize("label", ["null", "selected", "f0_only", "feature_000", "families_01"])
+def test_residual_study_legacy_labels_cannot_overwrite_group_metadata(tmp_path, label):
+    from dskit.pipeline.libs.cdf_research import ResidualCDFStudy
+
+    study, _, _, _ = residual_study_fixture(tmp_path)
+    with pytest.raises(ValueError, match="metadata"):
+        ResidualCDFStudy(dict(study.params, groups=[[label]]))
+    assert not (tmp_path / "study").exists()
+
+
+@pytest.mark.parametrize("prefix", ["null", "f0_only", "selected"])
+def test_residual_study_saved_forecasts_cannot_overwrite_identity(tmp_path, prefix):
+    from dskit.pipeline.libs.cdf_research import ResidualCDFStudy
+
+    study, _, _, _ = residual_study_fixture(tmp_path)
+    params = dict(study.params, identity=study.params["identity"] + [prefix + "_b0"])
+    with pytest.raises(ValueError, match="identity"):
+        ResidualCDFStudy(params)
+    assert not (tmp_path / "study").exists()
+
+
+@pytest.mark.parametrize("label", ["", "   ", 17])
+def test_residual_study_comparator_requires_nonblank_string_label(tmp_path, label):
+    from dskit.pipeline.libs.cdf_research import ResidualCDFStudy
+
+    study, _, _, _ = residual_study_fixture(tmp_path)
+    with pytest.raises(ValueError, match="comparator"):
+        ResidualCDFStudy(dict(study.params, comparators={label: study.params["baseline"]}))
+    assert not (tmp_path / "study").exists()
