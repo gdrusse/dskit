@@ -34,6 +34,18 @@ Additive Q4 market preparation retained all 115 names, but the date-only audit f
 
 Bounded existing-source recovery checked original and broad2019 pins and raw acquisition provenance. The broad2019 LLY archive is byte-identical; further projected raw acquisitions contain no missing-period rows. Recover genuine compatible history through onboarding before new source/forecast versions are proposed. Preserve original pins; data repair is not permission to overwrite the closed caches.
 
+### Fresh source recovery on WSL, independent verification on Mac
+
+The owner then requested work on both hosts. A separate memory-limited Theta terminal restored access to the configured provider. WSL used the existing public onboarding APIs in a fresh isolated store for LLY only, August 26, 2019 inclusive through March 9, 2020 exclusive. The pilot and seven batches requested all 140 weekdays (134 NYSE sessions). Original source cursors, market inputs, feature panels, forecasts and registry history were preserved.
+
+The fresh acquisition returned **4,084 records on 5 of 134 required sessions**: August 27–30 and September 3, 2019. All five dates precede Q4. The Mac independently checked payload/manifest hashes, schema, unique identities, dates and required quote fields through an encrypted RAM-only stream, returning its receipts to WSL. Every row has finite bid/ask and a positive underlying price; 3,529 have positive, noncrossed bid/ask as well. These are raw-data presence checks, not conversion or a new eligibility decision.
+
+**129 sessions remain unrecovered**, including all 64 Q4 entry sessions, all 45 Q4 settlement-tail sessions, and the affected 45 2020Q1 entry sessions. A separate March 6, 2020 plain-EOD diagnostic returned zero records. A bounded explicit March 20 expiration query for that date returned HTTP 472, no data. This establishes failure to recover the gap through the checked source/routes, not vendor-wide absence. No new fit, forecast, import or MIO ran, and no original support gate was relaxed.
+
+The initial pilot launcher failed before store creation because its root argument was a Path rather than a string; attempt 2 succeeded. The Mac's second verifier revision failed with a NameError before issuing a quality receipt; corrected revision 3 passed. All failures and corrected receipts are retained. The separate recovery terminal was stopped after completion; unrelated recorders were not interrupted. Host wall-clock adjustments were observed, so epoch differences are not reliable runtime estimates.
+
+Reproduction pins: pilot source version `6aefa7c03d63f480785fb7d2057dd230503bd099060ef7a7ec45a9ec7479fcd2`; bounded batch version `58a085394a09ab5ee3b4b4e7d507f6d5d70f62ce39e92357146670b8f2c56960`; acquisition `20261104T163340Z-backfill-999c3a35`; snapshot `45a8ddaced15d107a7a7af51b707ee4e4e6c8c0abd9fa989dd498ef22aba1161`; compressed payload SHA256 `0d7f1f2dfb77e29d67b3e922fa86b15dab792c7a3150a8b5255288e3616e756e`. Code remains `db29805e`; this follow-up changes evidence and documentation only.
+
 ### Correction to previously delivered MIO coverage
 
 New directly related evidence requires withdrawing the2020 Q1 full-cohort support claim: LLY is missing45 of 62 entry sessions, January 2–March 6. The original and prepared sources independently confirm the same gap. The completed run and its three accounting-attested reports are retained as historical execution evidence, but quarantined from admissible coverage. This does not assert an accounting error or actual LLY holdings; economics remain unopened.
@@ -44,9 +56,9 @@ Current original coverage is **2 executed,1 admissible of 16**: three admissible
 
 ### Compute and next bounded work
 
-All new preparation, scoring, logs and verified results stayed inWSL. The Mac was online but ran no task in this extension: the small sequential scoring run used the already compatible WSL runtime; MIO's shared registry requires serial lifecycle order and all 2019 quarters are blocked. Resource probes checked shared Windows/WSL RAM and physicalC: headroom before/after compute; no other session was interrupted.
+The initial preparation and predictive scoring ran in WSL. The follow-up split genuine source retrieval onto WSL and independent snapshot verification onto the Mac; all research data, logs and results stayed physically in WSL. No compatible pending model or MIO unit was eligible: the parked Q4 producer requires its pinned Linux/CUDA runtime, and MIO retains serial registry ordering and the data/protocol gates. Resource checks covered shared desktop RAM and both physical C: and WSL capacity. C: had about 5.4 GB free after recovery; WSL had about 200 GB. No compaction, storage relocation or unrelated-job interruption occurred.
 
-The next work is genuine LLY source recovery, an approved bounded2019 subinterval re-exposure design, and separately approved mixed/cash-deliverable accounting. Until those exist, do not dispatch the parked MIO drafts or claim2019 completion. Retain M53 and seed 11 for the frozen protocol; this comparison does not authorize tuning on target quarters.
+The next work is source/vendor repair for the 129 unrecovered LLY sessions, an approved bounded 2019 subinterval re-exposure design, and separately approved mixed/cash-deliverable accounting. Storage compaction is deferred housekeeping, not a prerequisite for using WSL; future dispatches must check both host and guest capacity. Until those exist, do not dispatch the parked MIO drafts or claim2019 completion. Retain M53 and seed 11 for the frozen protocol; this comparison does not authorize tuning on target quarters.
 
 ## Sources
 
@@ -54,6 +66,7 @@ The next work is genuine LLY source recovery, an approved bounded2019 subinterva
 - Evidence root: `/home/russell/data/index_options/quarterly-prediction-cache-20261104`.
 - `market-comparison/comparison.json` SHA25655340df9a2ea52518168fd87f7fffef88da42cbb5d675684574ff0d554f82324; `completion.json`, `evaluation-lock.json`, both pre-execution reviews and `result-integration-review.json`.
 - `2019-extension/design-review.json`, `design-review-amendment-01.json`, both producer reviews, retained raw-recovery evidence and `request-status.json`.
+- Fresh recovery: `2019-extension/lly-recovery-20261104/completion.json`, `source-transition.json`, `batch-status.json`, `mac-verification-v3.stdout.json`, diagnostic receipts and `acquisition-design-review-20261104.json`. All are below the evidence root.
 - `mio/coverage-correction-review.json`, date-only projection evidence and additive correction disposition. Original execution and support receipts remain unchanged.
 - [GE distribution notice](https://www.miaxglobal.com/alerts/2019/02/25/miax-options-and-miax-pearl-corporate-action-alert-general-electric-company-ge), [GE OCC44559](https://www.miaxglobal.com/sites/default/files/alert-files/GE_Distribution_44559.pdf), [FCEL reverse-split notice](https://www.miaxglobal.com/alerts/2019/05/08/miax-options-pearl-and-emerald-corporate-action-alert-fuelcell-energy-inc-fcel-1), [FCEL OCC45006](https://www.miaxglobal.com/sites/default/files/alert-files/FCEL_revsplit_45006.pdf).
 - [Prior blinded delivery](2026-11-04-blinded-quarterly90-cache-and-mio.md), [locked Path](../../decisioning/path.csv), and `/home/russell/.cursor/projects/home-russell-dskit/canvases/M53-quarterly-cache.canvas.tsx`.
