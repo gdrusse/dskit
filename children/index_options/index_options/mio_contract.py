@@ -265,6 +265,48 @@ class MIOStudyContract(StudyContract):
         return receipt
 
 
+
+    @staticmethod
+    def blinded_metadata(role, payload):
+        """Project only structural lineage fields from mixed producer records.
+
+        Parameters
+        ----------
+        role : str
+            Fit, epoch, completion, warmup, component or blend evidence role.
+        payload : dict
+            Original producer JSON or an already projected structural record.
+
+        Returns
+        -------
+        dict
+            Exact role-specific metadata, excluding learned values and losses.
+
+        Raises
+        ------
+        ValueError
+            Unknown role or missing required structural fields.
+        """
+        fields = {
+            "fit": ("band_counts", "band_dates", "features", "groups"),
+            "epoch": ("band_dates",),
+            "completed": ("checkpoint",),
+            "warmup": ("identity", "source", "role", "evaluation_computed", "map_cutoff"),
+            "component": ("identity", "groups", "label_cutoff", "evaluation_computed",
+                          "forecast_identity", "rows", "forecast_columns"),
+            "blend": ("identity", "params", "evaluation_computed", "label_cutoff", "forecast_identity"),
+        }
+        try:
+            result = {key: copy.deepcopy(payload[key]) for key in fields[role]}
+            if role == "completed":
+                result["settings"] = {key: copy.deepcopy(payload["settings"][key])
+                                      for key in ("seeds", "epochs")}
+            if role == "component":
+                result["calibration"] = {"label_cutoff": payload["calibration"]["label_cutoff"]}
+            return result
+        except (KeyError, TypeError) as error:
+            raise ValueError("invalid blinded structural metadata role or fields") from error
+
     @staticmethod
     def _blinded_contract(study, selection):
         """Resolve independently pinned cache metadata without reading payloads."""
@@ -281,7 +323,7 @@ class MIOStudyContract(StudyContract):
         source, receipt = MIOStudyContract._receipt_source(
             study, {k: selection[k] for k in ("policy", "receipt")})
         keys = {"schema", "job", "seed", "forecast_window", "manifest", "lock", "coverage",
-                "job_receipts", "metadata", "roles", "warmup", "panel", "stitched"}
+                "job_receipts", "metadata", "projections", "roles", "warmup", "panel", "stitched"}
         if (not isinstance(receipt, dict) or set(receipt) != keys
                 or receipt["schema"] != "blinded-quarterly-mio/v1"
                 or receipt["job"] != expected["job"] or receipt["seed"] != expected["seed"]
@@ -305,6 +347,16 @@ class MIOStudyContract(StudyContract):
             if original not in metadata:
                 raise ValueError("missing cache metadata ancestor")
             return ref(metadata[original], metadata=True, lines=lines)
+        used_projections = {}
+        def project(original, role):
+            record = ref(receipt["projections"][original], metadata=True)
+            if (set(record) != {"role", "source_sha256", "value"}
+                    or record["role"] != role
+                    or record["source_sha256"] != metadata[original]["sha256"]
+                    or record["value"] != MIOStudyContract.blinded_metadata(role, record["value"])):
+                raise ValueError("invalid independently pinned structural projection")
+            used_projections[original] = record
+            return record["value"]
         docs = {}
         for name in ("manifest", "lock", "coverage"):
             if receipt[name]["sha256"] != expected[name+"_sha256"]:
@@ -355,7 +407,7 @@ class MIOStudyContract(StudyContract):
         warm_record = meta(warmup+"/complete.json")
         warm_info = manifest["warmup"][str(job["seed"])]
         warm_identity = {"manifest": value_hash(warm_info), "role": "unranked_annual_2019_warmup"}
-        warm_receipt = meta(warmup+"/receipt.json")
+        warm_receipt = project(warmup+"/receipt.json", "warmup")
         if (metadata[warmup+"/receipt.json"]["sha256"] != warm_record["files"].get("receipt.json")
                 or warm_receipt["identity"] != warm_identity
                 or warm_receipt["source"] != warm_info
@@ -369,7 +421,7 @@ class MIOStudyContract(StudyContract):
         banks, resolved = [warmup], {}
         for current in prior:
             detail = MIOStudyContract._blinded_job(
-                current, receipt, manifest, expected, meta, ref, banks)
+                current, receipt, manifest, expected, meta, ref, project, banks)
             resolved[current["name"]] = detail
             for path, digest in detail["artifacts"].items():
                 directory = path.removesuffix("/complete.json")
@@ -396,11 +448,14 @@ class MIOStudyContract(StudyContract):
                     or any(source.pin["files"].get(prefix+"/"+name) != sha
                            for name, sha in record["files"].items())):
                 raise ValueError("store payload inventory is not onboarded exactly")
+        if set(receipt["projections"]) != set(used_projections):
+            raise ValueError("exact ancestor structural projections required")
         return {"source": source, "receipt": receipt, "job": job, "stores": stores,
-                "target": target, "manifest": manifest}
+                "target": target, "manifest": manifest, "resolved": resolved,
+                "projections": used_projections}
 
     @staticmethod
-    def _blinded_job(job, receipt, manifest, expected, meta, ref, banks):
+    def _blinded_job(job, receipt, manifest, expected, meta, ref, project, banks):
         """Bind one completed fit, component cache and fixed blend to its job."""
         required = {"schema_version", "manifest_sha256", "job", "elapsed_seconds", "attempts",
                     "artifacts", "host", "evaluation_computed"}
@@ -424,11 +479,10 @@ class MIOStudyContract(StudyContract):
                 or any(spec[k] != job[k] for k in ("start", "end_before", "fold"))):
             raise ValueError("causal frozen fit/request differs")
         epoch = job["epoch_pin"]
-        epoch_state, epoch_meta = meta(epoch["state"]), meta(epoch["metadata"])
+        epoch_meta = project(epoch["metadata"], "epoch")
+        ref(receipt["metadata"][epoch["state"]])
         if (receipt["metadata"][epoch["state"]]["sha256"] != epoch["state_sha256"]
                 or receipt["metadata"][epoch["metadata"]]["sha256"] != epoch["metadata_sha256"]
-                or epoch_state["settings"]["seeds"] != [job["seed"]]
-                or epoch_state["best_epochs"] != [cfg["training"]["epochs"]]
                 or epoch_meta["band_dates"][1]["settlement_date"][1] != epoch["monitor_settlement_max"]
                 or any(not MIOStudyContract._date(bounds[1]) < job["start"]
                        for band in epoch_meta["band_dates"][:2] for bounds in band.values())):
@@ -451,10 +505,10 @@ class MIOStudyContract(StudyContract):
             raise ValueError("fit and ordered bank ancestry differs")
         fit_record, done_record, component_record, blend_record = (
             meta(roles[k]+"/complete.json") for k in ("fit", "completed", "component", "blend"))
-        fit_meta = meta(roles["fit"]+"/metadata.json")
-        summary = meta(roles["completed"]+"/summary.json")
-        components = meta(roles["component"]+"/receipt.json")
-        blend = meta(roles["blend"]+"/receipt.json")
+        fit_meta = project(roles["fit"]+"/metadata.json", "fit")
+        summary = project(roles["completed"]+"/summary.json", "completed")
+        components = project(roles["component"]+"/receipt.json", "component")
+        blend = project(roles["blend"]+"/receipt.json", "blend")
         for role, filename in (("fit", "metadata.json"), ("completed", "summary.json"),
                                ("component", "receipt.json"), ("blend", "receipt.json")):
             record = meta(roles[role]+"/complete.json")
@@ -498,15 +552,11 @@ class MIOStudyContract(StudyContract):
                 or blend["evaluation_computed"] is not False or blend["label_cutoff"] != job["start"]
                 or blend["forecast_identity"] != components["forecast_identity"]):
             raise ValueError("fixed quarterly blend lineage differs")
-        fitted = meta(roles["blend"]+"/fit.json")
-        if (receipt["metadata"][roles["blend"]+"/fit.json"]["sha256"] != blend_record["files"].get("fit.json")
-                or fitted["method"] != manifest["blend_template"]["method"]
-                or list(fitted["folds"]) != [str(job["fold"])]
-                or fitted["folds"][str(job["fold"])]["learn"] != "fit_band"
-                or "state" not in fitted["folds"][str(job["fold"])]):
-            raise ValueError("one frozen quarterly blend state required")
+        ref(receipt["metadata"][roles["blend"]+"/fit.json"])
+        if receipt["metadata"][roles["blend"]+"/fit.json"]["sha256"] != blend_record["files"].get("fit.json"):
+            raise ValueError("frozen quarterly blend state pin differs")
         return {"config": cfg, "request": spec, "components": components, "blend_record": blend_record,
-                "artifacts": proof["artifacts"], "roles": roles}
+                "artifacts": proof["artifacts"], "roles": roles, "job": job}
 
     @staticmethod
     def verify_blinded_payloads(study, plan, permit):
@@ -546,6 +596,25 @@ class MIOStudyContract(StudyContract):
         for directory, digest in verified["stores"].items():
             relative = receipt["metadata"][directory+"/complete.json"]["file"]
             AtomicFitStore.verify_pinned(Path(source.file(relative)).parent, digest)
+        for original, projection in verified["projections"].items():
+            relative = receipt["metadata"][original]["file"]
+            raw = json.loads(Path(source.file(relative, verify=True)).read_text())
+            if MIOStudyContract.blinded_metadata(projection["role"], raw) != projection["value"]:
+                raise ValueError("structural projection differs from raw producer evidence")
+        for detail in verified["resolved"].values():
+            ancestor = detail["job"]
+            relative = receipt["metadata"][ancestor["epoch_pin"]["state"]]["file"]
+            epoch = json.loads(Path(source.file(relative, verify=True)).read_text())
+            if (epoch["settings"]["seeds"] != [ancestor["seed"]]
+                    or epoch["best_epochs"] != [detail["config"]["training"]["epochs"]]):
+                raise ValueError("epoch state differs from mature same-seed selection")
+            relative = receipt["metadata"][detail["roles"]["blend"]+"/fit.json"]["file"]
+            fitted = json.loads(Path(source.file(relative, verify=True)).read_text())
+            if (fitted["method"] != verified["manifest"]["blend_template"]["method"]
+                    or list(fitted["folds"]) != [str(ancestor["fold"])]
+                    or fitted["folds"][str(ancestor["fold"])]["learn"] != "fit_band"
+                    or "state" not in fitted["folds"][str(ancestor["fold"])]):
+                raise ValueError("one frozen quarterly blend state required")
         forecast_path = source.file(receipt["stitched"]["forecast"]["relpath"], verify=True)
         context_path = source.file(receipt["stitched"]["context"]["relpath"], verify=True)
         panel_path = source.file(receipt["panel"]["file"], verify=True)
@@ -605,6 +674,11 @@ class MIOStudyContract(StudyContract):
             relative = receipt["metadata"][directory+"/complete.json"]["file"]
             AtomicFitStore.verify_pinned(Path(source.file(relative)).parent, digest)
         MIOStudyContract.selection(study)
+        for detail in verified["resolved"].values():
+            relative = receipt["metadata"][detail["job"]["epoch_pin"]["state"]]["file"]
+            source.file(relative, verify=True)
+            relative = receipt["metadata"][detail["job"]["epoch_pin"]["metadata"]]["file"]
+            source.file(relative, verify=True)
         source.file(receipt["stitched"]["forecast"]["relpath"], verify=True)
         source.file(receipt["panel"]["file"], verify=True)
         source.file(receipt["stitched"]["context"]["relpath"], verify=True)

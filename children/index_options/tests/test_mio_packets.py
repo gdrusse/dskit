@@ -1961,10 +1961,25 @@ def _blinded_cache_study(tmp_path, monkeypatch, payload_fault=None):
     elif payload_fault == "missing_context":
         context = context.iloc[:0]
     context_pin = save("context.parquet", parquet(context))
+    from index_options.mio_contract import MIOStudyContract
+    projections = {}
+    project_roles = {warm+"/receipt.json": "warmup"}
+    for name, current in roles.items():
+        project_roles.update({current["fit"]+"/metadata.json": "fit",
+                              current["completed"]+"/summary.json": "completed",
+                              current["component"]+"/receipt.json": "component",
+                              current["blend"]+"/receipt.json": "blend",
+                              "/"+name+"/epoch-meta.json": "epoch"})
+    for original, role in project_roles.items():
+        ref = metadata[original]
+        raw = json.loads((archive/ref["file"]).read_text())
+        projections[original] = save("projections"+original, {
+            "role": role, "source_sha256": ref["sha256"],
+            "value": MIOStudyContract.blinded_metadata(role, raw)})
     receipt = {"schema": "blinded-quarterly-mio/v1", "job": job["name"], "seed": 11,
                "forecast_window": {"start": job["start"], "end_before": job["end_before"]},
                "manifest": mpin, "lock": lock, "coverage": coverage, "job_receipts": receipts,
-               "metadata": metadata, "roles": roles, "warmup": warm, "panel": panel,
+               "metadata": metadata, "projections": projections, "roles": roles, "warmup": warm, "panel": panel,
                "stitched": {"forecast": {"relpath": forecast_file, "sha256": pin["files"][forecast_file]},
                             "context": {"relpath": context_pin["file"], "sha256": context_pin["sha256"]}}}
     receipt_pin = save("receipt.json", receipt)
@@ -2135,3 +2150,71 @@ def test_blinded_gate_is_shared_by_intake_and_authenticated_facade(study, tmp_pa
         MIOPacketStudy.validate_authenticated_intake(
             study, plan, permit, bad, outputs["bounded_inputs"], None)
     assert len(calls) == 2
+
+
+def test_blinded_selection_never_reads_mixed_state_records(tmp_path, monkeypatch):
+    import index_options.mio_contract as contract
+    study, archive, receipt, _ = _blinded_cache_study(tmp_path, monkeypatch)
+    forbidden = {receipt["metadata"][original]["file"] for original in receipt["projections"]}
+    forbidden |= {item["file"] for original, item in receipt["metadata"].items()
+                  if original.endswith("/epoch-state.json") or original.endswith("/blend/fit.json")}
+    source_type = contract.PinnedPayloadSource
+    original = source_type.file
+    calls = []
+    def traced(self, relative, *, verify=False):
+        calls.append((relative, verify))
+        assert not (relative in forbidden and verify), relative
+        return original(self, relative, verify=verify)
+    monkeypatch.setattr(source_type, "file", traced)
+    original_open = Path.open
+    protected_paths = {archive/relative for relative in forbidden}
+    def no_state_open(path, *args, **kwargs):
+        assert path not in protected_paths, str(path)
+        return original_open(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", no_state_open)
+    contract.MIOStudyContract.selection(study)
+    assert calls and forbidden
+
+
+@pytest.mark.parametrize("role", ["warmup", "fit", "epoch", "completed", "component", "blend"])
+def test_blinded_false_structural_projection_refuses_after_claim(tmp_path, monkeypatch, role):
+    import index_options.mio_contract as contract
+    study, archive, receipt, save = _blinded_cache_study(tmp_path, monkeypatch)
+    key = next(key for key, ref in receipt["projections"].items()
+               if json.loads((archive/ref["file"]).read_text())["role"] == role)
+    ref = receipt["projections"][key]
+    projection = json.loads((archive/ref["file"]).read_text())
+    # Keep the structural projection plausible and its independent wrapper pinned,
+    # while disagreeing with the original immutable producer payload.
+    if role == "fit":
+        projection["value"]["band_counts"][0] += 1
+    elif role == "epoch":
+        projection["value"]["band_dates"][0]["quote_date"][0] = "2017-01-04"
+    elif role == "warmup":
+        projection["value"]["map_cutoff"] = "2018-12-31"
+    elif role == "completed":
+        projection["value"]["settings"]["epochs"] += 1
+    elif role == "component":
+        projection["value"]["rows"] += 1
+    else:
+        projection["value"]["params"]["source"] = "different-scratch"
+    receipt["projections"][key] = save(ref["file"], projection)
+    study["domain"]["predictive"]["receipt"].update(save("receipt.json", receipt))
+    monkeypatch.setattr(StudyContract, "verify_plan", staticmethod(lambda s, p: p))
+    monkeypatch.setattr(ExposureRegistry, "__init__", lambda self, spec: None)
+    monkeypatch.setattr(ExposureRegistry, "verify", lambda *a: None)
+    with pytest.raises(ValueError):
+        contract.MIOStudyContract.verify_blinded_payloads(study, {}, {})
+
+
+def test_blinded_structural_projection_rejects_learned_extra_fields(tmp_path, monkeypatch):
+    from index_options.mio_contract import MIOStudyContract
+    study, archive, receipt, save = _blinded_cache_study(tmp_path, monkeypatch)
+    key = "/q3/fit/metadata.json"
+    ref = receipt["projections"][key]
+    projection = json.loads((archive/ref["file"]).read_text())
+    projection["value"]["medians"] = [1., 2.]
+    receipt["projections"][key] = save(ref["file"], projection)
+    study["domain"]["predictive"]["receipt"].update(save("receipt.json", receipt))
+    with pytest.raises(ValueError, match="structural projection"):
+        MIOStudyContract.selection(study)
