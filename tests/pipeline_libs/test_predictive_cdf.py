@@ -6600,3 +6600,13 @@ def test_monitor_restores_modes_and_preserves_inference(monkeypatch, kind, mode,
     if mode == "eval":
         np.testing.assert_array_equal(model.curve(x).cdf([-.5, 0., .5]), before)
         np.testing.assert_array_equal(model.curve(x).cdf([-.5, 0., .5]), before)
+
+
+
+def test_raw_proxy_public_query_preserves_declared_quantiles_and_refuses_disorder():
+    from dskit.pipeline.libs.predictive_cdf import OptionImpliedTransportCDF
+    owner = OptionImpliedTransportCDF([3, 1], [.1, .9], 4, [5], 6, tail_width=2.)
+    curve = owner.proxy_curve([[-1., 2.]])
+    np.testing.assert_array_equal(curve.cdf([-3., -1., 2., 4.]), [[0., .1, .9, 1.]])
+    with pytest.raises(ValueError, match="quantiles"):
+        owner.proxy_curve([[2., -1.]])

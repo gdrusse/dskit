@@ -1132,3 +1132,78 @@ def test_chronology_uses_configured_validation_boundary_without_rows(
     with pytest.raises(IntegrityError, match="chronological purge boundary"):
         exp._bands(frame, exp.study.plan.calendar(frame), fold, config["arms"]["base"])
 
+
+
+@pytest.fixture
+def forecast_experiment(experiment_config):
+    import pandas as pd
+    from dskit.pipeline.libs.cdf_experiment import AtomicFitStore, CDFExperiment
+    cfg = experiment_config
+    cfg["date_upper_exclusive"] = cfg["end_upper_exclusive"] = "2001-02-01"
+    cfg["refit_full_train"] = True
+    frame = pd.read_parquet(cfg["panel"])
+    frame["q10"], frame["q90"], frame["market_ok"] = -1., 1., 1
+    frame.loc[frame.quote_date == "2001-02-03", "settlement_date"] = "2001-04-01"
+    frame.to_parquet(cfg["panel"], index=False)
+    cfg["panel_sha256"] = AtomicFitStore.file_hash(cfg["panel"])
+    spec = {"fold": 1, "arm": "base", "candidate": cfg["candidates"][0]["name"],
+            "start": "2001-02-01", "end_before": "2001-03-01", "output": cfg["output"]+"-forecasts",
+            "z_grid": [-2., 0., 2.], "grid_labels": ["m2", "0", "p2"], "batch_rows": 2,
+            "proxy": {"columns": ["q10", "q90"], "probabilities": [.1, .9],
+                      "eligible": "market_ok", "units": "z", "tail_width": 4.},
+            "calibration": {"max_rows": 100, "knots": 11}}
+    return CDFExperiment(cfg), spec
+
+
+def test_public_forecast_projects_features_preserves_tail_and_never_scores(forecast_experiment, monkeypatch):
+    import pandas as pd
+    from pathlib import Path
+    from dskit.pipeline.libs.parquet import DateBoundedParquet
+    from dskit.pipeline.libs.predictive_cdf import ChronologicalCDFStudy
+    exp, spec = forecast_experiment
+    def forbidden(*args, **kwargs):
+        raise AssertionError("forecast scoring or repeat fit invoked")
+    monkeypatch.setattr(ChronologicalCDFStudy, "scores", forbidden)
+    exp.run("pooled")
+    monkeypatch.setattr(TorchCDF, "fit", forbidden)
+    read = DateBoundedParquet.read
+    projections = []
+    def checked_read(reader):
+        if reader.bounds.get("quote_date", {}).get("start") == spec["start"]:
+            assert "terminal_return" not in reader.columns
+            projections.append(list(reader.columns))
+        else:
+            assert reader.bounds["quote_date"]["end_before"] <= spec["start"]
+            assert reader.bounds["settlement_date"]["end_before"] <= spec["start"]
+        return read(reader)
+    monkeypatch.setattr(DateBoundedParquet, "read", checked_read)
+    result = exp.forecast(spec)
+    assert len(projections) == 1
+    out = pd.read_parquet(Path(spec["output"])/"forecasts.parquet")
+    assert len(out) == 6
+    assert (out.settlement_date == "2001-04-01").sum() == 2
+    assert not {"terminal_return", "y", "pit", "model_crps"} & set(out)
+    assert np.isfinite(out.filter(regex="_cdf_").to_numpy()).all()
+    assert result["rows"] == 6
+    before = (Path(spec["output"])/"complete.json").read_bytes()
+    assert exp.forecast(spec)["rows"] == 6
+    assert (Path(spec["output"])/"complete.json").read_bytes() == before
+    assert not list(Path(exp.config["output"]).rglob("scores.parquet"))
+
+
+@pytest.mark.parametrize("change", ["early", "late", "holdout", "outcome_feature", "missing_fit"])
+def test_public_forecast_refuses_invalid_boundary_or_identity(forecast_experiment, change):
+    from pathlib import Path
+    from dskit.pipeline.libs.cdf_experiment import IntegrityError
+    exp, spec = forecast_experiment
+    if change == "early":
+        spec["start"] = "2001-01-31"
+    elif change == "late":
+        spec["start"] = "2001-02-02"
+    elif change == "holdout":
+        spec["end_before"] = "2002-01-02"
+    elif change == "outcome_feature":
+        spec["proxy"]["columns"][0] = "terminal_return"
+    with pytest.raises((ValueError, IntegrityError)):
+        exp.forecast(spec)
+    assert not Path(spec["output"]).exists()

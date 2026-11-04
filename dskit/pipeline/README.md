@@ -416,6 +416,13 @@ projection into an atomic run-local SQLite row index, with unique normalized
 keys, ordered partition iteration, read-only lookup, and digest checks at open
 and study boundaries. No historical config is silently upgraded.
 
+ADR-0292 adds `CDFExperiment.forecast(spec)`: restore a pinned historical fit,
+project only target features, and cache component CDFs without evaluation.
+`GridCDFMethod` accepts `forecast_only=True` with `label_cutoff`: one fixed
+fit-band state, unavailable-label refusal, target-date coverage independent of
+settlement, and no evaluation tables. Historical component states stay causal.
+
+
 
 `libs/predictive_cdf.py` (ADR-0189/0191) supplies offline conditional CDF
 estimators: empirical, monotone boosted CDF, LightGBM quantiles, a

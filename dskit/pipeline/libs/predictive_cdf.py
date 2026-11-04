@@ -1885,6 +1885,34 @@ class OptionImpliedTransportCDF(CDFEstimator):
             raise ValueError("transport conditions must be finite")
         self.fallback._validate_x(x)
 
+    def proxy_curve(self, quantiles):
+        """Build the raw proxy curve without fitting or consulting outcomes.
+
+        Parameters
+        ----------
+        quantiles : array-like
+            Finite ordered quantiles, one column per declared probability.
+
+        Returns
+        -------
+        GridCurve
+            Raw standardized proxy with the declared linear tails.
+
+        Raises
+        ------
+        ValueError
+            Quantiles are nonfinite, unordered or have the wrong width.
+        """
+        import numpy as np
+
+        q = np.asarray(quantiles, dtype=float)
+        if (q.ndim != 2 or q.shape[1] != len(self.probabilities)
+                or not np.isfinite(q).all() or (np.diff(q, axis=1) < 0).any()):
+            raise ValueError("invalid proxy quantiles")
+        x = np.zeros((len(q), max(self.proxy_indices) + 1))
+        x[:, self.proxy_indices] = q
+        return self._proxy(x)
+
     def _proxy(self, x):
         import numpy as np
         q = np.asarray(x, dtype=float)[:, self.proxy_indices]

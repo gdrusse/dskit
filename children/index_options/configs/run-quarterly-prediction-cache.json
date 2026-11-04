@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "recipe": "m53-quarterly90-v1",
+  "manifest": "/home/russell/data/index_options/quarterly-prediction-cache-20261104/execution-manifest.json",
+  "manifest_sha256": "a2ff7a35f37d7e7b6f6ced075739f6b1f73b2be260b583450a4a2b093d1be6cd",
+  "runner": "/home/russell/data/index_options/quarterly-prediction-cache-20261104/run-cache.py",
+  "runner_sha256": "4658942834863dd19b1e95fbaa76d80601da93ed7b89da57615116df7b71e1da",
+  "notes": "Owner requested blinded forecast caching.48 quarterly refits2020-2023 across fixed seeds11/29/47; primary11; original2019 annual OOS warmup reused. No new performance inspection, COVID retained, holdout closed. WSL-owned artifacts. Execution requires matching closed independent review lock."
+}

@@ -600,6 +600,240 @@ class CDFExperiment:
                 "reason": str(error), "candidate": candidate["name"], "groups": groups})})
             return "skipped"
 
+    def _forecast_spec(self, spec):
+        """Validate the feature-only request before reading data or creating output."""
+        import numpy as np
+        from dskit.pipeline.libs.parquet import DateBoundedParquet
+
+        keys = {"fold", "arm", "candidate", "start", "end_before", "output", "z_grid",
+                "grid_labels", "batch_rows", "proxy", "calibration"}
+        if set(spec) != keys or spec["fold"] not in self.study.plan.ids():
+            raise ValueError("invalid forecast request")
+        if (spec["arm"] not in self.config["arms"] or spec["candidate"] not in
+                [c["name"] for c in self.config["candidates"]]):
+            raise ValueError("unknown forecast arm/candidate")
+        window = self.study.plan.folds[spec["fold"]]
+        holdout = self.config["study"]["fold_table"]["holdout_start"]
+        if (spec["start"] != window["val_start"] or spec["end_before"] > holdout
+                or self.config["date_upper_exclusive"] > spec["start"]
+                or self.config["end_upper_exclusive"] > spec["start"]
+                or DateBoundedParquet.problems({"date": {
+                    "start": spec["start"], "end_before": spec["end_before"]}})):
+            raise IntegrityError("forecast bounds violate fit cutoff or holdout")
+        grid = np.asarray(spec["z_grid"], float)
+        if (grid.ndim != 1 or len(grid) < 2 or not np.isfinite(grid).all()
+                or (np.diff(grid) <= 0).any() or len(spec["grid_labels"]) != len(grid)
+                or len(set(spec["grid_labels"])) != len(grid)
+                or not all(isinstance(v, str) and v for v in spec["grid_labels"])
+                or type(spec["batch_rows"]) is not int or spec["batch_rows"] < 1):
+            raise ValueError("invalid forecast grid/batch")
+        proxy, cal = spec["proxy"], spec["calibration"]
+        if (set(proxy) != {"columns", "probabilities", "eligible", "units", "tail_width"}
+                or proxy["units"] not in ("z", "log_return")
+                or len(proxy["columns"]) != len(proxy["probabilities"])
+                or len(set(proxy["columns"])) != len(proxy["columns"])
+                or set(cal) != {"max_rows", "knots"}
+                or any(type(cal[k]) is not int or cal[k] < 2 for k in cal)):
+            raise ValueError("invalid forecast proxy/calibration")
+        s = self.config["study"]
+        arm = self.config["arms"][spec["arm"]]
+        columns = list(dict.fromkeys([*s["identity"], s["date"], s["end"], s["group"],
+            s["reference"], s["horizon"], *arm["features"], *arm["observed_columns"],
+            *proxy["columns"], proxy["eligible"]]))
+        if s["target"] in columns:
+            raise IntegrityError("forecast feature projection contains the outcome")
+        return columns
+
+    def _forecast_fit(self, spec):
+        """Restore exactly the completed pooled fit identified by the historical bands."""
+        frame = self.load_panel()
+        arm = self.config["arms"][spec["arm"]]
+        bands, groups, _ = self._bands(frame, self.study.plan.calendar(frame), spec["fold"], arm)
+        if not groups or not bands[2].empty:
+            raise IntegrityError("forecast restoration needs admitted fit-only history")
+        keys = self.config["study"]["identity"]
+        identity = {"experiment": self.identity, "regime": "pooled", "arm": spec["arm"],
+                    "model": spec["candidate"], "fold": spec["fold"], "groups": groups,
+                    "band_identities": [value_hash(b[keys].values.tolist()) for b in bands]}
+        root = self.output/"pooled"/spec["arm"]/spec["candidate"]/str(spec["fold"])/"pooled"
+        record = AtomicFitStore(root/"fit", identity).verify()
+        AtomicFitStore(root/"completed", identity).verify()
+        summary = json.loads((root/"completed/summary.json").read_text())
+        metadata = json.loads((root/"fit/metadata.json").read_text())
+        if (summary["checkpoint"] != value_hash(record) or metadata["features"] != arm["features"]
+                or metadata["groups"] != groups):
+            raise IntegrityError("forecast fit metadata/identity mismatch")
+        return bands[0], groups, metadata, root, record
+
+    @staticmethod
+    def _forecast_proxy(frame, proxy, reference):
+        """Return raw eligible proxy rows and their outcome-free curve."""
+        import numpy as np
+        from dskit.pipeline.libs.predictive_cdf import OptionImpliedTransportCDF
+
+        flag = frame[proxy["eligible"]].to_numpy(float)
+        if not np.isin(flag, (0, 1)).all():
+            raise IntegrityError("forecast proxy eligibility must be binary")
+        active = flag == 1
+        q = frame.loc[active, proxy["columns"]].to_numpy(float)
+        if proxy["units"] == "log_return":
+            q = q / frame.loc[active, reference].to_numpy(float)[:, None]
+        n = len(proxy["columns"])
+        owner = OptionImpliedTransportCDF(list(range(n)), proxy["probabilities"],
+            n, [n+1], n+2, tail_width=proxy["tail_width"])
+        return active, owner.proxy_curve(q) if active.any() else None
+
+    def _forecast_calibration(self, fit, spec):
+        """Fit only the raw-market calibration from deterministic mature training rows."""
+        import math
+        import numpy as np
+        from dskit.pipeline.libs.parquet import DateBoundedParquet
+        from dskit.pipeline.libs.cdf_grid_methods import GridCDFMethod
+
+        s, proxy = self.config["study"], spec["proxy"]
+        columns = list(dict.fromkeys([*s["identity"], s["date"], s["end"], s["target"],
+                     s["reference"], *proxy["columns"], proxy["eligible"]]))
+        history = DateBoundedParquet(self.config["panel"], columns,
+            {s["date"]: {"end_before": spec["start"]},
+             s["end"]: {"end_before": spec["start"]}}).read().to_pandas()
+        stride = max(1, math.ceil(len(fit)/spec["calibration"]["max_rows"]))
+        sampled = fit[s["identity"]].iloc[::stride].merge(history, on=s["identity"],
+                                                       how="left", validate="one_to_one")
+        self.check_pairing(fit.iloc[::stride], sampled, s["identity"])
+        active, curve = self._forecast_proxy(sampled, proxy, s["reference"])
+        if curve is None:
+            raise IntegrityError("no mature calibration proxy rows")
+        y = (sampled.loc[active, s["target"]]/sampled.loc[active, s["reference"]]).to_numpy(float)
+        pit = np.clip(curve.cdf(y[:, None])[:, 0], 0., 1.)
+        mapping = GridCDFMethod.calibration_map(pit, spec["calibration"]["knots"])
+        return mapping, {"rows": int(active.sum()), "sample_stride": stride,
+                         "sample_identity": value_hash(sampled[s["identity"]].values.tolist()),
+                         "label_cutoff": spec["start"], "mapping": mapping.tolist()}
+
+    def _forecast_components(self, target, fit, groups, metadata, model, spec, mapping):
+        """Query fixed neural, empirical and market states in bounded batches."""
+        import numpy as np
+        import pandas as pd
+        from dskit.pipeline.libs.cdf_grid_methods import GridCDFMethod
+
+        s, arm = self.config["study"], self.config["arms"][spec["arm"]]
+        params = dict(s["models"][s["reference_model"]]["params"], horizon_index=0, reference_index=1)
+        if "condition_indices" in params:
+            raise ValueError("forecast baseline needs explicit mapped conditions")
+        pooled_x = np.column_stack([fit[s["horizon"]].to_numpy(float), np.ones(len(fit))])
+        y = (fit[s["target"]]/fit[s["reference"]]).to_numpy(float)
+        pooled = HorizonEmpiricalCDF(**params).fit(pooled_x, y, None, None)
+        baselines = {}
+        for group in groups:
+            f = fit[fit[s["group"]] == group]
+            x = f[[s["horizon"], s["reference"]]].to_numpy(float)
+            baselines[group] = (HorizonEmpiricalCDF(**params).fit(x,
+                (f[s["target"]]/f[s["reference"]]).to_numpy(float), None, None), x[:, 0])
+        parts = []
+        for start in range(0, len(target), spec["batch_rows"]):
+            rows = target.iloc[start:start+spec["batch_rows"]]
+            arrays, _ = self._arrays((rows,), arm, groups, "pooled", metadata["medians"])
+            curve = model.curve(arrays[0])
+            z = spec["z_grid"]
+            cdfs = {"model": np.clip(curve.cdf(z), 0., 1.)}
+            x = np.column_stack([rows[s["horizon"]].to_numpy(float), np.ones(len(rows))])
+            conditioned, _, _ = self._nearest_fitted_horizons(pooled_x[:, 0], x)
+            cdfs["pooled"] = pooled.curve(conditioned).cdf(z)
+            cdfs["baseline"] = np.full_like(cdfs["model"], np.nan)
+            for group in rows[s["group"]].unique():
+                select = (rows[s["group"]] == group).to_numpy()
+                baseline, horizons = baselines[group]
+                x = rows.loc[select, [s["horizon"], s["reference"]]].to_numpy(float)
+                conditioned, _, _ = self._nearest_fitted_horizons(horizons, x)
+                cdfs["baseline"][select] = baseline.curve(conditioned).cdf(z)
+            active, market = self._forecast_proxy(rows, spec["proxy"], s["reference"])
+            cdfs["market"] = np.full_like(cdfs["model"], np.nan)
+            cdfs["market_cal"] = np.full_like(cdfs["model"], np.nan)
+            sd = np.full(len(rows), np.nan)
+            if market is not None:
+                cdfs["market"][active] = market.cdf(z)
+                cdfs["market_cal"][active] = GridCDFMethod.apply_calibration_map(cdfs["market"][active], mapping)
+                sd[active] = market.moments()[1]
+            keep = list(dict.fromkeys([*s["identity"], s["date"], s["end"], s["group"], s["horizon"], s["reference"]]))
+            out = rows[keep].reset_index(drop=True)
+            values = {"market_eligible": active, "market_sd_z": sd}
+            for name, cdf in cdfs.items():
+                for index, label in enumerate(spec["grid_labels"]):
+                    values[name+"_cdf_"+label] = cdf[:, index]
+            for index in range(curve.weights.shape[1]):
+                for name in ("weights", "means", "scales"):
+                    values[name+str(index)] = getattr(curve, name)[:, index]
+            parts.append(pd.concat([out, pd.DataFrame(values)], axis=1))
+        return pd.concat(parts, ignore_index=True)
+
+    def forecast(self, spec):
+        """Cache outcome-free component forecasts from one verified historical fit.
+
+        Parameters
+        ----------
+        spec : dict
+            Fold/arm/candidate, calendar start and exclusive end, output directory,
+            grid/labels, batch size, raw proxy declaration and mature calibration settings.
+            The start equals the fold boundary; both training read bounds precede it.
+
+        Returns
+        -------
+        dict
+            Structural completion receipt and source/checkpoint lineage. No forecast scores.
+
+        Raises
+        ------
+        IntegrityError
+            A checkpoint, identity, maturity boundary, forecast input or immutable output is invalid.
+        ValueError
+            Request settings are unsupported. Protected inference is deliberately unsupported.
+        """
+        import fcntl
+        import numpy as np
+        from dskit.pipeline.libs.parquet import DateBoundedParquet
+
+        columns = self._forecast_spec(spec)
+        self._verify_provenance()
+        fit, groups, metadata, root, record = self._forecast_fit(spec)
+        identity = {"experiment": self.identity, "request": spec, "checkpoint": value_hash(record)}
+        store = AtomicFitStore(spec["output"], identity)
+        store.path.parent.mkdir(parents=True, exist_ok=True)
+        with (store.path.parent/(store.path.name+".lock")).open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if store.path.exists():
+                store.verify()
+                return json.loads((store.path/"receipt.json").read_text())
+            s = self.config["study"]
+            target = DateBoundedParquet(self.config["panel"], columns,
+                {s["date"]: {"start": spec["start"], "end_before": spec["end_before"]}}).read().to_pandas()
+            target = target[target[s["group"]].isin(groups)].sort_values(s["identity"])
+            arm = self.config["arms"][spec["arm"]]
+            if arm["observed_columns"]:
+                target = target[target[arm["observed_columns"]].notna().any(axis=1)]
+            self.check_pairing(target, target, s["identity"])
+            if (target.empty or not np.isfinite(target[[s["reference"], s["horizon"]]].to_numpy(float)).all()
+                    or (target[s["reference"]] <= 0).any() or (target[s["horizon"]] <= 0).any()
+                    or (target[s["end"]] < target[s["date"]]).any()):
+                raise IntegrityError("invalid or empty forecast target")
+            mapping, calibration = self._forecast_calibration(fit, spec)
+            model = TorchCDF.load_checkpoint(root/"fit/model")
+            forecasts = self._forecast_components(target, fit, groups, metadata, model, spec, mapping)
+            self.check_pairing(target, forecasts, s["identity"])
+            for name in ("model", "baseline", "pooled", "market", "market_cal"):
+                values = forecasts[[name+"_cdf_"+label for label in spec["grid_labels"]]].to_numpy(float)
+                active = forecasts["market_eligible"].to_numpy(bool) if name.startswith("market") else np.ones(len(values), bool)
+                if (not np.isfinite(values[active]).all() or (values[active] < 0).any()
+                        or (values[active] > 1).any() or (np.diff(values[active], axis=1) < -1e-12).any()):
+                    raise IntegrityError("invalid component forecast probabilities")
+            receipt = {"rows": len(forecasts), "identity": identity, "features": metadata["features"],
+                       "groups": groups, "calibration": calibration, "forecast_columns": list(forecasts),
+                       "forecast_identity": value_hash(forecasts[s["identity"]].values.tolist()),
+                       "label_cutoff": spec["start"], "evaluation_computed": False}
+            buffer = io.BytesIO()
+            forecasts.to_parquet(buffer, index=False, compression="zstd")
+            store.publish({"forecasts.parquet": buffer.getvalue(), "receipt.json": self.json_bytes(receipt)})
+            return receipt
+
     def run(self, regime, worker=0, workers=1, limit=None):
         """Execute one stable worker partition, verifying completed artifacts on retry."""
         import fcntl

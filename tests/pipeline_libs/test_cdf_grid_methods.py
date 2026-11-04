@@ -3750,3 +3750,96 @@ def test_residual_null_facade_ignores_unused_feature_values_and_io(tmp_path, sou
     run(params)
     actual = joined(read_out(params)[0], df)
     assert np.array_equal(cdf_columns(actual), cdfs(actual, "mkt"))
+
+
+@pytest.fixture
+def blind_frame():
+    df = pool_frame(np.random.default_rng(912), folds=(1,), n_fit=40, n_val=8)
+    fit = df.band == "fit"
+    df.loc[fit, "quote_date"] = pd.Timestamp("2020-03-01")
+    df.loc[fit, "settlement_date"] = pd.Timestamp("2020-03-31")
+    df.loc[~fit, "quote_date"] = pd.Timestamp("2020-06-30")
+    df.loc[~fit, "settlement_date"] = pd.Timestamp("2020-07-20")
+    df.loc[~fit, "y"] = np.nan
+    return df
+
+
+def test_forecast_only_keeps_crossing_targets_without_evaluation(tmp_path, blind_frame, monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("evaluation was invoked")
+    monkeypatch.setattr(cgm._Tables, "__init__", forbidden)
+    p = params_for(tmp_path, blind_frame, pool_method(), forecast_only=True,
+                   label_cutoff="2020-04-01", end_before="2020-07-01")
+    run(p)
+    forecasts, fit, summary = read_out(p)
+    assert len(forecasts) == 8 and forecasts.fitted.all()
+    assert set(forecasts.row_id) == set(blind_frame.loc[blind_frame.band == "val", "row_id"])
+    assert fit["folds"]["1"]["learning_rows"] == 40
+    assert "y" not in forecasts and "market_eligible" not in forecasts
+    assert summary["tables"] == []
+    assert not (tmp_path / "out/tables").exists()
+
+
+@pytest.mark.parametrize("poison", ["target", "settlement", "pit", "external_pit"])
+def test_forecast_only_refuses_unavailable_labels_before_fit(tmp_path, blind_frame, monkeypatch, poison):
+    df = blind_frame.copy()
+    target = df.band == "val"
+    components = [{"name": "market", "source": "mkt"}, {"name": "model", "source": "mdl"}]
+    if poison == "target":
+        df.loc[target, "y"] = 0.
+    elif poison == "settlement":
+        df.loc[df.index[0], "settlement_date"] = pd.Timestamp("2020-04-01")
+    else:
+        df["leaked_pit"] = .5
+        components[0]["pit_column"] = "leaked_pit"
+        if poison == "external_pit":
+            ext = write_source(tmp_path, df, "external.parquet")
+            components[0].update(path=str(ext), sha256=sha(ext), keys=COLUMNS["identity"])
+    p = params_for(tmp_path, df, pool_method(), components=components, forecast_only=True,
+                   label_cutoff="2020-04-01", end_before="2020-07-01")
+    def forbidden(*args, **kwargs):
+        raise AssertionError("fit or component construction preceded refusal")
+    monkeypatch.setattr(cgm._Components, "build", forbidden)
+    with pytest.raises(ValueError, match="unavailable"):
+        run(p)
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("extra", [
+    {"forecast_only": True}, {"label_cutoff": "2020-04-01"},
+    {"forecast_only": 1, "label_cutoff": "2020-04-01"},
+    {"forecast_only": True, "label_cutoff": "2031-01-01"},
+])
+def test_forecast_only_configuration_refuses_incomplete_bounds(tmp_path, blind_frame, extra):
+    p = params_for(tmp_path, blind_frame, pool_method(), **extra)
+    assert GridCDFMethod.validate_params(p)
+
+
+@pytest.mark.parametrize("change", ["features", "target_count"])
+def test_forecast_only_weights_ignore_current_quarter_changes(tmp_path, blind_frame, change):
+    p = params_for(tmp_path, blind_frame, pool_method(), forecast_only=True,
+                   label_cutoff="2020-04-01", end_before="2020-07-01")
+    run(p)
+    _, first, _ = read_out(p)
+    changed = blind_frame.copy()
+    if change == "features":
+        changed.loc[changed.band == "val", [c for c in changed if "_cdf_" in c]] = .5
+    else:
+        changed = changed.drop(changed[changed.band == "val"].index[:3])
+    second_dir = tmp_path / "second"
+    second_dir.mkdir()
+    p = params_for(second_dir, changed, pool_method(), forecast_only=True,
+                   label_cutoff="2020-04-01", end_before="2020-07-01")
+    run(p)
+    _, second, _ = read_out(p)
+    assert first["folds"]["1"]["state"] == second["folds"]["1"]["state"]
+
+
+def test_public_calibration_application_matches_empirical_interpolation():
+    pit = np.array([.1, .2, .4, .8])
+    mapping = GridCDFMethod.calibration_map(pit, 5)
+    cdf = np.array([[0., .3, .9, 1.]])
+    expected = np.interp(cdf, [0., .25, .5, .75, 1.], [0., .5, .75, .75, 1.])
+    np.testing.assert_array_equal(GridCDFMethod.apply_calibration_map(cdf, mapping), expected)
+    with pytest.raises(ValueError):
+        GridCDFMethod.apply_calibration_map(cdf, [0., 1., .5])

@@ -3305,6 +3305,13 @@ class GridCDFMethod(Node):
         a strike zone); optional ``buckets`` (derived bucketed columns,
         ``{name: {column, edges: [[lo, hi], ...]}}``) and ``periods`` (``{name: [start, end]}``).
 
+    With ``forecast_only=True`` and ``label_cutoff`` (exclusive calendar cutoff),
+    only quote dates are bounded by ``end_before``: targets settling later remain.
+    The method must use ``fit_band``. Fit rows precede the cutoff in both clocks;
+    validation rows start at the cutoff and carry NaN outcomes and declared PITs.
+    No evaluation tables are constructed, and only validation forecasts are saved.
+    Historical components must already preserve their own as-of learned states.
+
     The kinds and their keys (all take ``learn`` and ``half_life_days``; ``min_rows`` counts rows):
     ``pit_map`` (``component``, ``knots``, ``min_rows``, ``by?``); ``linear_pool`` (``components``,
     ``min_rows``, ``by?``, ``quantile_by?``, ``per_threshold?``, ``shrink_rows?``, where ``shrink_rows``
@@ -3367,8 +3374,8 @@ class GridCDFMethod(Node):
     outputs = ("summary",)
     _PARAMS = ("source", "source_sha256", "output", "end_before", "columns", "z_grid", "grid_labels",
                "score_weights", "pit_tail", "components", "fallback", "method", "comparators", "ranked_folds",
-               "tables", "buckets", "periods")
-    _OPTIONAL = ("buckets", "periods")
+               "tables", "buckets", "periods", "forecast_only", "label_cutoff")
+    _OPTIONAL = ("buckets", "periods", "forecast_only", "label_cutoff")
     _COMPONENT_KEYS = ("name", "source", "pit_map", "pit_column", "path", "sha256", "keys")
     _EXTERNAL_KEYS = ("path", "sha256", "keys")
 
@@ -3382,6 +3389,36 @@ class GridCDFMethod(Node):
                 or not np.isfinite(values).all() or (values < 0).any() or (values > 1).any()):
             raise ValueError("invalid PIT map observations or knots")
         return _PitMap(knots).fit(values)
+
+    @staticmethod
+    def apply_calibration_map(cdf, mapping):
+        """Apply a previously fitted empirical PIT map without outcomes.
+
+        Parameters
+        ----------
+        cdf : numpy.ndarray
+            Finite cumulative probabilities.
+        mapping : array-like
+            Nondecreasing probabilities at equally spaced knots from zero to one.
+
+        Returns
+        -------
+        numpy.ndarray
+            Mapped cumulative probabilities, with the input shape.
+
+        Raises
+        ------
+        ValueError
+            Either array violates the probability contract.
+        """
+        import numpy as np
+
+        values, g = np.asarray(cdf, float), np.asarray(mapping, float)
+        if (g.ndim != 1 or len(g) < 2 or not np.isfinite(g).all()
+                or (np.diff(g) < 0).any() or (g < 0).any() or (g > 1).any()
+                or not np.isfinite(values).all() or (values < 0).any() or (values > 1).any()):
+            raise ValueError("invalid calibration map or probabilities")
+        return _PitMap(len(g)).apply(values, g)
 
     @classmethod
     def validate_params(cls, params):
@@ -3411,6 +3448,16 @@ class GridCDFMethod(Node):
         cls._derived_problems(problems, params)
         cls._table_problems(problems, params.get("tables"), params.get("z_grid"), bool(params.get("periods")))
         cls._method_problems(problems, params, names)
+        if "forecast_only" in params or "label_cutoff" in params:
+            cutoff = _Dates.parse(params.get("label_cutoff"))
+            end = _Dates.parse(params.get("end_before"))
+            if (params.get("forecast_only") is not True or cutoff is None
+                    or end is None or cutoff >= end):
+                problems.append("forecast_only requires true and label_cutoff < end_before")
+            if params.get("tables"):
+                problems.append("forecast_only refuses evaluation tables")
+            if params.get("method", {}).get("learn") != "fit_band":
+                problems.append("forecast_only requires one frozen fit_band state per fold")
         return problems
 
     @classmethod
@@ -3656,8 +3703,9 @@ class GridCDFMethod(Node):
         roles = p["columns"]
         frame_columns = self._needed_columns(method)
         frame_columns += [c for c in components.pit_columns() if c not in frame_columns]
+        date_columns = [roles["date"]] if p.get("forecast_only") else [roles["date"], roles["settlement"]]
         table = _Source.read(p["source"], list(dict.fromkeys([*frame_columns, *components.source_columns()])),
-                             [roles["date"], roles["settlement"]], p["end_before"])
+                             date_columns, p["end_before"])
         raw = components.internal_matrices(table)
         return _Panel(table.select(frame_columns).to_pandas(date_as_object=False), p, grid), raw
 
@@ -3670,11 +3718,15 @@ class GridCDFMethod(Node):
         components = _Components(p["components"], grid)
         panel, raw = self._load(method, components, grid)
         external_record = components.attach_external(panel, raw, p["end_before"])
+        if p.get("forecast_only"):
+            self._check_blinded(panel)
         component_record = components.build(panel, raw)
         method.prepare(panel)
         cdf, fitted, folds = self._forecast(panel, method)
-        tables = _Tables(panel, grid, p, {"method": cdf, **{c: panel.cdf[c] for c in p["comparators"]}})
-        names = self._write_tables(work, tables)
+        names = []
+        if not p.get("forecast_only"):
+            tables = _Tables(panel, grid, p, {"method": cdf, **{c: panel.cdf[c] for c in p["comparators"]}})
+            names = self._write_tables(work, tables)
         self._write_forecasts(work / "forecasts.parquet", panel, grid, cdf, fitted)
         for record in folds.values():
             for name, text in record.pop("artifacts").items():
@@ -3694,6 +3746,22 @@ class GridCDFMethod(Node):
                    "wall_seconds": round(time.monotonic() - started, 3)}
         self._write_json(work / "summary.json", summary)
         return summary
+
+    def _check_blinded(self, panel):
+        """Refuse unavailable actuals/PIT and ambiguous training/target bands before fitting."""
+        import numpy as np
+
+        cutoff = _Dates.epoch_days(self.params["label_cutoff"])
+        unavailable = (panel.date_days >= cutoff) | (panel.settle_days >= cutoff)
+        labels = [panel.y, *(panel.declared_pit(s["name"]) for s in self.params["components"])]
+        if any(v is not None and not np.isnan(v[unavailable]).all() for v in labels):
+            raise ValueError("forecast_only found unavailable outcomes or PIT")
+        if (np.any(panel.is_fit & unavailable)
+                or np.any(panel.is_val & (panel.date_days < cutoff))
+                or np.any(~(panel.is_fit | panel.is_val))):
+            raise ValueError("forecast_only found unavailable or ambiguous band rows")
+        if not panel.is_val.any():
+            raise ValueError("forecast_only needs target rows")
 
     def _forecast(self, panel, method):
         """Fit the method per fold and block and return ``(cdf, fitted flags, per-fold record)``."""
@@ -3784,6 +3852,8 @@ class GridCDFMethod(Node):
         out = pd.concat([panel.frame[keep].reset_index(drop=True),
                          pd.DataFrame(cdf, columns=[f"method_cdf_{label}" for label in grid.labels]),
                          pd.DataFrame({"fitted": fitted})], axis=1)
+        if self.params.get("forecast_only"):
+            out = out.loc[panel.is_val].reset_index(drop=True)
         out.to_parquet(path, index=False)
 
     @staticmethod
