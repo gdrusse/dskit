@@ -3843,3 +3843,10 @@ def test_public_calibration_application_matches_empirical_interpolation():
     np.testing.assert_array_equal(GridCDFMethod.apply_calibration_map(cdf, mapping), expected)
     with pytest.raises(ValueError):
         GridCDFMethod.apply_calibration_map(cdf, [0., 1., .5])
+
+
+def test_forecast_only_refuses_dynamic_component_calibration(tmp_path, blind_frame):
+    p = params_for(tmp_path, blind_frame, pool_method(), forecast_only=True,
+                   label_cutoff="2020-04-01", end_before="2020-07-01")
+    p["components"][0]["pit_map"] = {"knots": 5}
+    assert any("historical calibration" in e for e in GridCDFMethod.validate_params(p))

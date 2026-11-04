@@ -3310,7 +3310,8 @@ class GridCDFMethod(Node):
     The method must use ``fit_band``. Fit rows precede the cutoff in both clocks;
     validation rows start at the cutoff and carry NaN outcomes and declared PITs.
     No evaluation tables are constructed, and only validation forecasts are saved.
-    Historical components must already preserve their own as-of learned states.
+    Historical components must preserve their own as-of learned states; dynamic
+    component ``pit_map`` is refused.
 
     The kinds and their keys (all take ``learn`` and ``half_life_days``; ``min_rows`` counts rows):
     ``pit_map`` (``component``, ``knots``, ``min_rows``, ``by?``); ``linear_pool`` (``components``,
@@ -3456,6 +3457,8 @@ class GridCDFMethod(Node):
                 problems.append("forecast_only requires true and label_cutoff < end_before")
             if params.get("tables"):
                 problems.append("forecast_only refuses evaluation tables")
+            if any("pit_map" in item for item in params.get("components", []) if isinstance(item, dict)):
+                problems.append("forecast_only requires precomputed historical calibration")
             if params.get("method", {}).get("learn") != "fit_band":
                 problems.append("forecast_only requires one frozen fit_band state per fold")
         return problems
