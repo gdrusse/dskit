@@ -1,35 +1,40 @@
 # RE-ENTRY - index_options
 
-Updated: 2026-11-03 by GPT-5. The ten-method M53 search is closed: a narrow `rn_median` signal won F3/F4 but reversed in F5, so no correction is accepted.
+Updated: 2026-11-03 by GPT-5. Standalone prediction, M53 composition, distribution-shape, and calibration studies are closed: M53 remains unchanged and no correction is accepted.
 
 ## Now
 
-- Ten causal M53 correction methods—five direct segmentation designs, two conditional-scale heads, one conditional normal-mixture head, PCA, and a two-step forward ridge—are fully ranked with exact nulls. Evidence: research/distribution-modeling/2026-11-03-m53-ten-method-causal-search.md.
-- The only forward-selection lead was `rn_median + chain_log_curvature25`: +0.1268% F3/2021 and +0.3535% F4/2022, but -0.1493% F5/2023. Its one-feature prefix repeats the annual reversal. This is not stable learned lift or a promotion candidate.
-- Earlier residual-head, PCA, and coarse-regime screens remain superseded context, not model candidates. No source forecast, panel, decision-path row, or sealed 2024–2025 holdout changed.
-- The RL sizing service is inactive; its plan reports paused_after_first_sizing_scan. No RL fit or evaluation has completed.
+- The historical ten-feature Lasso was the strongest standalone learner, ahead of the MLP and matched LightGBM, but ten was selected retrospectively. Nested and rolling selectors did not converge to a stable feature count or identity; Ridge and the bounded Bayesian blend did not establish a stronger standalone model.
+- Replacing M53's MLP with Lasso10 did not improve the full blend. A bounded stable-combination search and an Astra complementarity review found no reliable replacement weighting. Original M53 remains the prediction baseline.
+- PCA, five direct segmentations, two conditional-scale segments, a conditional mixture, and forward Ridge produced nulls, train/monitor divergence, or annual reversals. These families are closed unless a materially different preregistered hypothesis is proposed.
+- The 2017–2019 outcome distribution is heavy-tailed and negatively skewed; Student-t was the best of three simple descriptive families across all eight DTE bands. M53 is a flexible CDF blend and is not restricted to that family.
+- A global 21-knot calibration map learned before 2020 added no demonstrated benefit on 449,498 matched 2020–2023 forecasts: primary score -0.0356% versus M53, 0/4 winning years and 0/8 winning DTE bands. Both final independent lenses passed with zero findings. No core, config, source forecast, Path, MIO, or production behavior changed.
+- The RL sizing service remains inactive at paused_after_first_sizing_scan; no RL fit or evaluation completed.
 
 ## Next
 
-- Do not extend direct M53 location heads, PCA, or the tested coarse segmentation/shape operators. Any new proposal needs a distinct preregistered correction target/operator and annual F3–F5 sign-consistent evidence before promotion discussion.
-- On RL resume, inspect its completed scan evidence and then review/close the claim before dispatching remaining sizing configurations serially.
-- Queue: /home/russell/data/index_options/rl-full-universe-20261102/logs/dimensions-plan.json and the first assignment. The 2019 training import is already done; do not reimport it.
+- Retain unchanged M53 for prediction research; do not add the static calibration map, Lasso10 substitution, PCA, or tested coarse segments.
+- If calibration is revisited, generate genuinely causal earlier out-of-sample forecasts from 2017 onward and preregister a time-stability test. Do not use in-sample historical predictions as evidence.
+- Any new standalone learner needs a distinct hypothesis and frozen validation procedure that addresses feature and forecast instability before protected-window discussion.
+- On RL resume, inspect its completed scan evidence before dispatching remaining sizing configurations serially; do not reimport 2019.
 
 ## Blocked / owner decisions
 
-- A0002–A0005 and A0008 remain binding. This is exploratory evidence only; M53 is unchanged and no learned correction is promoted.
-- Full-universe action exploration and storage remain practical risks. The 128-step smoke is infrastructure evidence only; no learning or profit conclusion is supported.
-- Preserve all 212 names, three methods, seeds 11/29/47, saved forecasts without rescoring, completed-MIO reuse, Q2-Q4 baseline matches and Q4 eligibility-v2.
+- A0002–A0005 and A0008 remain binding. The 2020–2023 results were previously inspected development evidence, not fresh confirmation; 2024–2025 and 2026 remain sealed.
+- No empirical selector proved the historical ten-feature choice optimal. Small standalone gains and unstable annual signs remain the central limitation.
+- No learned M53 correction or standalone replacement is promoted. Matching a pooled CDF does not establish conditional calibration.
+- Full-universe RL action exploration and storage remain practical risks; the 128-step smoke is infrastructure evidence only.
 
 ## Read first
 
-- [Ten-method causal search](research/distribution-modeling/2026-11-03-m53-ten-method-causal-search.md).
-- [Prior residual-head screen](research/distribution-modeling/2026-11-03-m53-causal-forward-selection.md).
+- [Frozen calibration check, 2020–2023](research/distribution-modeling/2026-11-04-frozen-cdf-calibration-2020-2023.md).
+- [Distribution shape by DTE](research/distribution-modeling/2026-11-04-dte-distribution-audit.md).
+- [Stable M53 combination](research/distribution-modeling/2026-11-03-m53-stable-combination.md).
+- [Lasso/Ridge stability and timing](research/distribution-modeling/2026-11-03-ridge-lasso-stability-timing.md).
 - [Decisioning path](decisioning/path.csv).
-- [Dimensions ADR and review lock](../../../docs/architecture/decision-log.md).
 
 ## Do not
 
-- Stop another session's active job, extend the rejected M53 correction search, or treat a screen-log message as a completed cohort.
-- Reimport 2019 data, rescore forecasts, open protected windows, fit/evaluate before stated gates, or claim profitability.
-- Change reviewed source/test blobs, the locked path, or another session's worktree.
+- Extend the rejected static calibration, direct M53 heads, PCA, or tested segmentation families without a distinct approved protocol.
+- Open protected 2024–2025 or 2026 outcomes, reinterpret reused development years as confirmation, or claim profitability.
+- Reimport 2019, rescore frozen source forecasts, change the locked Path, stop another session's job, or modify reviewed source/test blobs.
