@@ -225,6 +225,11 @@ class MIOStudyContract(StudyContract):
         selection = d["predictive"]
         if not isinstance(selection, dict):
             raise ValueError("predictive selection object required")
+        if selection.get("policy") == "owner_selected_blinded_cache":
+            try:
+                return MIOStudyContract._blinded_contract(study, selection)
+            except (KeyError, TypeError, AttributeError, IndexError) as error:
+                raise ValueError("malformed blinded cache evidence") from error
         if selection.get("policy") == "owner_selected_pinned_forecasts":
             return MIOStudyContract._pinned_selection(study, selection)
         if selection.get("policy") == "owner_selected_saved_zoo_outputs":
@@ -258,6 +263,354 @@ class MIOStudyContract(StudyContract):
                 "method", producer["resolved"]["document_hash"]):
             raise ValueError("predictive producer no longer verifies")
         return receipt
+
+
+    @staticmethod
+    def _blinded_contract(study, selection):
+        """Resolve independently pinned cache metadata without reading payloads."""
+        from pathlib import Path
+
+        expected_keys = {"manifest_sha256", "lock_sha256", "coverage_sha256", "job", "seed"}
+        if (set(selection) != {"policy", "receipt", "expected"}
+                or not isinstance(selection["expected"], dict)
+                or set(selection["expected"]) != expected_keys):
+            raise ValueError("explicit blinded producer authority required")
+        expected = selection["expected"]
+        if type(expected["seed"]) is not int or expected["seed"] < 0:
+            raise ValueError("integer primary cache seed required")
+        source, receipt = MIOStudyContract._receipt_source(
+            study, {k: selection[k] for k in ("policy", "receipt")})
+        keys = {"schema", "job", "seed", "forecast_window", "manifest", "lock", "coverage",
+                "job_receipts", "metadata", "roles", "warmup", "panel", "stitched"}
+        if (not isinstance(receipt, dict) or set(receipt) != keys
+                or receipt["schema"] != "blinded-quarterly-mio/v1"
+                or receipt["job"] != expected["job"] or receipt["seed"] != expected["seed"]
+                or type(receipt["seed"]) is not int):
+            raise ValueError("invalid blinded cache receipt")
+        def ref(item, metadata=False, lines=False):
+            if (not isinstance(item, dict) or set(item) != {"file", "sha256"}
+                    or source.pin["files"].get(item["file"]) != item["sha256"]):
+                raise ValueError("cache evidence differs from onboarding pin")
+            if not metadata:
+                return source.file(item["file"])
+            if not isinstance(item["file"], str) or not item["file"].endswith(
+                    ".jsonl" if lines else ".json"):
+                raise ValueError("metadata reference must name JSON evidence")
+            text = Path(source.file(item["file"], verify=True)).read_text()
+            return [json.loads(line) for line in text.splitlines() if line.strip()] if lines else json.loads(text)
+        metadata = receipt["metadata"]
+        if not isinstance(metadata, dict):
+            raise ValueError("cache metadata bindings required")
+        def meta(original, lines=False):
+            if original not in metadata:
+                raise ValueError("missing cache metadata ancestor")
+            return ref(metadata[original], metadata=True, lines=lines)
+        docs = {}
+        for name in ("manifest", "lock", "coverage"):
+            if receipt[name]["sha256"] != expected[name+"_sha256"]:
+                raise ValueError("independent producer authority differs")
+            docs[name] = ref(receipt[name], metadata=True)
+        manifest, lock, coverage = (docs[k] for k in ("manifest", "lock", "coverage"))
+        if (lock.get("status") != "closed" or lock.get("open_findings") != []
+                or lock.get("manifest_sha256") != expected["manifest_sha256"]
+                or len(lock.get("reviews", {})) != 2
+                or coverage.get("manifest_sha256") != expected["manifest_sha256"]
+                or any(coverage.get(k) is not False for k in
+                       ("evaluation_computed", "evaluation_values_inspected", "protected_reads"))):
+            raise ValueError("closed blinded producer verification required")
+        jobs = manifest.get("jobs")
+        if (not isinstance(jobs, list) or not jobs or any(not isinstance(j, dict) for j in jobs)
+                or len({j["name"] for j in jobs}) != len(jobs)
+                or expected["seed"] != manifest["primary_seed"]):
+            raise ValueError("unique frozen primary cache jobs required")
+        records = coverage.get("records", [])
+        if (coverage.get("jobs") != len(jobs) or len(records) != len(jobs)
+                or {x["job"] for x in records} != {j["name"] for j in jobs}
+                or any(any(x.get(k) is not True for k in
+                           ("ancestry_verified", "outcomes_absent", "cdf_valid", "one_quarter_state"))
+                       or x.get("evaluation_computed") is not False for x in records)):
+            raise ValueError("all forecast caches must land before MIO")
+        selected = [j for j in jobs if j["name"] == expected["job"]]
+        if len(selected) != 1:
+            raise ValueError("selected frozen cache job missing")
+        job = selected[0]
+        packet, bridge = MIOStudyContract.packet(study), study["domain"]["params"]["bridge"]
+        window = {"start": job["start"], "end_before": job["end_before"]}
+        for day in window.values():
+            MIOStudyContract._date(day)
+        if (receipt["forecast_window"] != window
+                or any(packet[k] != v or bridge[k] != v for k, v in window.items())
+                or type(job["fold"]) is not int or job["fold"] < 1
+                or type(bridge["fold"]) is not int or bridge["fold"] != job["fold"]
+                or type(job["seed"]) is not int or job["seed"] != expected["seed"]
+                or not window["start"] < window["end_before"] <= bridge["protected_end_before"]):
+            raise ValueError("cache quarter, fold or seed differs")
+        prior = [j for j in jobs if j["seed"] == job["seed"] and j["start"] <= job["start"]]
+        if (prior != sorted(prior, key=lambda j: j["start"])
+                or len({j["start"] for j in prior}) != len(prior)
+                or set(receipt["roles"]) != {j["name"] for j in prior}
+                or set(receipt["job_receipts"]) != {j["name"] for j in prior}):
+            raise ValueError("exact ordered same-seed cache ancestry required")
+        warmup = receipt["warmup"]
+        warm_record = meta(warmup+"/complete.json")
+        warm_info = manifest["warmup"][str(job["seed"])]
+        warm_identity = {"manifest": value_hash(warm_info), "role": "unranked_annual_2019_warmup"}
+        warm_receipt = meta(warmup+"/receipt.json")
+        if (metadata[warmup+"/receipt.json"]["sha256"] != warm_record["files"].get("receipt.json")
+                or warm_receipt["identity"] != warm_identity
+                or warm_receipt["source"] != warm_info
+                or warm_receipt["role"] != "unranked_annual_2019_warmup"
+                or warm_receipt["evaluation_computed"] is not False
+                or not MIOStudyContract._date(warm_receipt["map_cutoff"]) < job["start"]):
+            raise ValueError("warmup producer or calibration maturity differs")
+        if warm_record.get("identity") != value_hash(warm_identity):
+            raise ValueError("original unranked warmup identity differs")
+        stores = {warmup: metadata[warmup+"/complete.json"]["sha256"]}
+        banks, resolved = [warmup], {}
+        for current in prior:
+            detail = MIOStudyContract._blinded_job(
+                current, receipt, manifest, expected, meta, ref, banks)
+            resolved[current["name"]] = detail
+            for path, digest in detail["artifacts"].items():
+                directory = path.removesuffix("/complete.json")
+                if directory in stores and stores[directory] != digest:
+                    raise ValueError("ancestor manifest has conflicting pins")
+                stores[directory] = digest
+            banks.append(receipt["roles"][current["name"]]["component"])
+        target = resolved[job["name"]]
+        if any(bridge[k] != target["request"][k]
+               or bridge[k] != manifest["blend_template"][k] for k in ("z_grid", "grid_labels")):
+            raise ValueError("MIO probability grid differs from the cached predictor")
+        MIOStudyContract._stitched_sources(study, source, receipt)
+        if (receipt["stitched"]["forecast"]["sha256"]
+                != target["blend_record"]["files"].get("forecasts.parquet")
+                or receipt["panel"]["sha256"] != target["config"]["panel_sha256"]):
+            raise ValueError("prepared sources differ from verified cache ancestry")
+        ref(receipt["panel"])
+        for directory, digest in stores.items():
+            record = meta(directory+"/complete.json")
+            if metadata[directory+"/complete.json"]["sha256"] != digest:
+                raise ValueError("store manifest differs from job attestation")
+            prefix = str(Path(metadata[directory+"/complete.json"]["file"]).parent)
+            if (set(record) != {"identity", "files"} or not isinstance(record["files"], dict)
+                    or any(source.pin["files"].get(prefix+"/"+name) != sha
+                           for name, sha in record["files"].items())):
+                raise ValueError("store payload inventory is not onboarded exactly")
+        return {"source": source, "receipt": receipt, "job": job, "stores": stores,
+                "target": target, "manifest": manifest}
+
+    @staticmethod
+    def _blinded_job(job, receipt, manifest, expected, meta, ref, banks):
+        """Bind one completed fit, component cache and fixed blend to its job."""
+        required = {"schema_version", "manifest_sha256", "job", "elapsed_seconds", "attempts",
+                    "artifacts", "host", "evaluation_computed"}
+        proof = ref(receipt["job_receipts"][job["name"]], metadata=True)
+        if (set(proof) != required or proof["schema_version"] != 1 or proof["job"] != job
+                or proof["manifest_sha256"] != expected["manifest_sha256"]
+                or proof["evaluation_computed"] is not False or proof["host"] != "WSL2"):
+            raise ValueError("completed cache job evidence differs")
+        cfg, spec = meta(job["fit_config"]), meta(job["forecast_config"])
+        if (receipt["metadata"][job["fit_config"]]["sha256"] != job["fit_config_sha256"]
+                or receipt["metadata"][job["forecast_config"]]["sha256"] != job["forecast_config_sha256"]
+                or cfg["date_upper_exclusive"] != job["start"]
+                or cfg["end_upper_exclusive"] != job["start"]
+                or cfg.get("refit_full_train") is not True or cfg["training"]["patience"] is not None
+                or type(job["seed"]) is not int or type(job["fold"]) is not int
+                or type(spec["fold"]) is not int or type(cfg["training"]["epochs"]) is not int
+                or any(type(s) is not int for s in cfg["training"]["seeds"])
+                or cfg["training"]["seeds"] != [job["seed"]]
+                or cfg["training"]["epochs"] != job["epoch_pin"]["epochs"]
+                or not job["epoch_pin"]["monitor_settlement_max"] < job["start"]
+                or any(spec[k] != job[k] for k in ("start", "end_before", "fold"))):
+            raise ValueError("causal frozen fit/request differs")
+        epoch = job["epoch_pin"]
+        epoch_state, epoch_meta = meta(epoch["state"]), meta(epoch["metadata"])
+        if (receipt["metadata"][epoch["state"]]["sha256"] != epoch["state_sha256"]
+                or receipt["metadata"][epoch["metadata"]]["sha256"] != epoch["metadata_sha256"]
+                or epoch_state["settings"]["seeds"] != [job["seed"]]
+                or epoch_state["best_epochs"] != [cfg["training"]["epochs"]]
+                or epoch_meta["band_dates"][1]["settlement_date"][1] != epoch["monitor_settlement_max"]
+                or any(not MIOStudyContract._date(bounds[1]) < job["start"]
+                       for band in epoch_meta["band_dates"][:2] for bounds in band.values())):
+            raise ValueError("epoch selection is not mature same-seed evidence")
+        fold_spec = cfg["study"]["fold_table"]
+        folds = meta(fold_spec["path"], lines=True)
+        if (receipt["metadata"][fold_spec["path"]]["sha256"] != fold_spec["sha256"]
+                or len(folds) != 1 or type(folds[0]["fold"]) is not int
+                or folds[0]["fold"] != job["fold"] or folds[0]["role"] != "scored"
+                or folds[0]["val_start"] != job["start"]
+                or (date.fromisoformat(folds[0]["train_end"])+timedelta(days=1)).isoformat() != job["start"]
+                or (date.fromisoformat(folds[0]["val_end"])+timedelta(days=1)).isoformat() != job["end_before"]):
+            raise ValueError("quarterly fold maturity differs")
+        roles = receipt["roles"][job["name"]]
+        if (set(roles) != {"fit", "completed", "component", "blend"}
+                or len(set(roles.values())) != 4 or roles["component"] != spec["output"]):
+            raise ValueError("exact artifact roles required")
+        artifacts = {p+"/complete.json" for p in [*roles.values(), *banks]}
+        if set(proof["artifacts"]) != artifacts:
+            raise ValueError("fit and ordered bank ancestry differs")
+        fit_record, done_record, component_record, blend_record = (
+            meta(roles[k]+"/complete.json") for k in ("fit", "completed", "component", "blend"))
+        fit_meta = meta(roles["fit"]+"/metadata.json")
+        summary = meta(roles["completed"]+"/summary.json")
+        components = meta(roles["component"]+"/receipt.json")
+        blend = meta(roles["blend"]+"/receipt.json")
+        for role, filename in (("fit", "metadata.json"), ("completed", "summary.json"),
+                               ("component", "receipt.json"), ("blend", "receipt.json")):
+            record = meta(roles[role]+"/complete.json")
+            if receipt["metadata"][roles[role]+"/"+filename]["sha256"] != record["files"].get(filename):
+                raise ValueError("artifact metadata is not bound by its manifest")
+        checkpoint = value_hash(fit_record)
+        component_identity = {"experiment": value_hash(cfg), "request": spec, "checkpoint": checkpoint}
+        if (done_record["identity"] != fit_record["identity"] or summary["checkpoint"] != checkpoint
+                or summary["settings"]["seeds"] != [job["seed"]]
+                or summary["settings"]["epochs"] != cfg["training"]["epochs"]
+                or fit_meta["features"] != cfg["arms"][spec["arm"]]["features"]
+                or fit_meta["groups"] != components["groups"]
+                or components["identity"] != component_identity
+                or component_record["identity"] != value_hash(component_identity)
+                or components["label_cutoff"] != job["start"]
+                or components["calibration"]["label_cutoff"] != job["start"]
+                or components["evaluation_computed"] is not False):
+            raise ValueError("neural/component checkpoint lineage differs")
+        counts, dates = fit_meta["band_counts"], fit_meta["band_dates"]
+        if (len(counts) != 3 or len(dates) != 3 or any(type(n) is not int for n in counts)
+                or counts[0] < 1 or counts[1] < 1 or counts[2] != 0
+                or dates[2] != {"quote_date": [None, None], "settlement_date": [None, None]}):
+            raise ValueError("blinded fit must have no target validation labels")
+        for band in dates[:2]:
+            if set(band) != {"quote_date", "settlement_date"}:
+                raise ValueError("actual historical date evidence required")
+            for bounds in band.values():
+                if (len(bounds) != 2 or not folds[0]["train_start"]
+                        <= MIOStudyContract._date(bounds[0]) <= MIOStudyContract._date(bounds[1]) < job["start"]):
+                    raise ValueError("historical origin or settlement crosses quarter")
+        identity = {"job": job, "bank": {p: receipt["metadata"][p+"/complete.json"]["sha256"] for p in banks},
+                    "target": proof["artifacts"][roles["component"]+"/complete.json"],
+                    "blend_template": value_hash(manifest["blend_template"]), "label_cutoff": job["start"]}
+        params = blend["params"]
+        variable = {"source", "source_sha256", "output", "end_before", "forecast_only", "label_cutoff", "ranked_folds"}
+        if (blend_record["identity"] != value_hash(identity) or blend["identity"] != identity
+                or {k: v for k, v in params.items() if k not in variable} != manifest["blend_template"]
+                or params["method"]["learn"] != "fit_band" or params["tables"] != []
+                or params["forecast_only"] is not True or params["label_cutoff"] != job["start"]
+                or params["end_before"] != job["end_before"] or params["ranked_folds"] != [job["fold"]]
+                or blend["evaluation_computed"] is not False or blend["label_cutoff"] != job["start"]
+                or blend["forecast_identity"] != components["forecast_identity"]):
+            raise ValueError("fixed quarterly blend lineage differs")
+        fitted = meta(roles["blend"]+"/fit.json")
+        if (receipt["metadata"][roles["blend"]+"/fit.json"]["sha256"] != blend_record["files"].get("fit.json")
+                or fitted["method"] != manifest["blend_template"]["method"]
+                or list(fitted["folds"]) != [str(job["fold"])]
+                or fitted["folds"][str(job["fold"])]["learn"] != "fit_band"
+                or "state" not in fitted["folds"][str(job["fold"])]):
+            raise ValueError("one frozen quarterly blend state required")
+        return {"config": cfg, "request": spec, "components": components, "blend_record": blend_record,
+                "artifacts": proof["artifacts"], "roles": roles}
+
+    @staticmethod
+    def verify_blinded_payloads(study, plan, permit):
+        """Verify blinded forecast payloads after authenticating an active claim.
+
+        Parameters
+        ----------
+        study, plan, permit : dict
+            Frozen study declaration, its verified plan and active registry permit.
+
+        Returns
+        -------
+        dict or None
+            Structural identity receipt, or None for unchanged legacy policies.
+
+        Raises
+        ------
+        ValueError
+            Authority, pinned ancestry, schema or feature projection differs.
+        """
+        selection = study["domain"].get("predictive")
+        if not isinstance(selection, dict) or selection.get("policy") != "owner_selected_blinded_cache":
+            return None
+        from dskit.pipeline.libs.cdf_experiment import AtomicFitStore, CDFExperiment
+        from dskit.pipeline.libs.parquet import DateBoundedParquet
+        import numpy as np
+        import pandas as pd
+        import pyarrow.parquet as pq
+
+        from pathlib import Path
+        from dskit.pipeline.study_protocol import ExposureRegistry
+
+        current = StudyContract.verify_plan(study, plan)
+        ExposureRegistry(study["registry"]).verify(current, permit)
+        verified = MIOStudyContract.selection(study)
+        source, receipt, job = (verified[k] for k in ("source", "receipt", "job"))
+        for directory, digest in verified["stores"].items():
+            relative = receipt["metadata"][directory+"/complete.json"]["file"]
+            AtomicFitStore.verify_pinned(Path(source.file(relative)).parent, digest)
+        forecast_path = source.file(receipt["stitched"]["forecast"]["relpath"], verify=True)
+        context_path = source.file(receipt["stitched"]["context"]["relpath"], verify=True)
+        panel_path = source.file(receipt["panel"]["file"], verify=True)
+        keys = ["symbol", "quote_date", "expiry"]
+        identity = keys+["fold", "band"]
+        cdf_columns = ["method_cdf_"+label for label in study["domain"]["params"]["bridge"]["grid_labels"]]
+        if (set(pq.read_schema(forecast_path).names) != set(identity+cdf_columns+["fitted"])
+                or set(pq.read_schema(context_path).names)
+                != set(identity+["spot", "reference_scale", "settlement_date"])):
+            raise ValueError("blinded forecast/context schema differs")
+        forecasts, contexts = pd.read_parquet(forecast_path), pd.read_parquet(context_path)
+        CDFExperiment.check_pairing(forecasts, contexts, identity)
+        if (forecasts.empty or not forecasts["fold"].eq(job["fold"]).all()
+                or not forecasts["band"].eq("val").all()
+                or not forecasts["quote_date"].between(job["start"], job["end_before"], inclusive="left").all()
+                or forecasts["fitted"].dtype != bool):
+            raise ValueError("quarterly forecast identities or fitted flags differ")
+        probabilities = forecasts[cdf_columns].to_numpy(float)
+        if (not np.isfinite(probabilities).all() or (probabilities < 0).any()
+                or (probabilities > 1).any() or (np.diff(probabilities, axis=1) < -1e-12).any()):
+            raise ValueError("invalid blinded CDF values")
+        columns = keys+["spot", "reference_scale", "settlement_date"]
+        raw = DateBoundedParquet(panel_path, columns,
+            {"quote_date": {"start": job["start"], "end_before": job["end_before"]}}).read().to_pandas()
+        CDFExperiment.check_pairing(raw, raw, keys)
+        projected = forecasts[identity].merge(raw, on=keys, how="left", validate="one_to_one")
+        for frame in (projected, contexts):
+            frame.sort_values(identity, inplace=True)
+            frame.reset_index(drop=True, inplace=True)
+        if not projected[contexts.columns].equals(contexts):
+            raise ValueError("context is not the exact outcome-free source projection")
+        component = verified["target"]["roles"]["component"]
+        component_path = Path(source.file(receipt["metadata"][component+"/complete.json"]["file"])).parent
+        component_schema = pq.read_schema(component_path/"forecasts.parquet").names
+        if (component_schema != verified["target"]["components"]["forecast_columns"]
+                or any(c in {"y", "actual", "terminal_return", "outcome"}
+                       or any(t in c for t in ("_pit", "_crps", "_brier", "realized"))
+                       for c in component_schema)):
+            raise ValueError("component cache contains unapproved evaluation fields")
+        component_keys = pd.read_parquet(component_path/"forecasts.parquet", columns=keys)
+        CDFExperiment.check_pairing(component_keys, forecasts, keys)
+        evidence = verified["target"]["components"]
+        if (len(forecasts) != evidence["rows"]
+                or value_hash(forecasts[keys].values.tolist()) != evidence["forecast_identity"]):
+            raise ValueError("forecast identity inventory differs from verified producer")
+        numbers = contexts[["spot", "reference_scale"]].to_numpy(float)
+        if not np.isfinite(numbers).all() or (numbers <= 0).any():
+            raise ValueError("invalid forecast context scales")
+        for column in ("quote_date", "expiry", "settlement_date"):
+            for day in contexts[column].unique():
+                MIOStudyContract._date(day)
+        cfg = verified["target"]["config"]
+        if not set(study["domain"]["params"]["symbols"]) <= set(cfg["tickers"]):
+            raise ValueError("requested universe exceeds predictor support")
+        # Verify again after payload decoding to detect persistent input mutation.
+        for directory, digest in verified["stores"].items():
+            relative = receipt["metadata"][directory+"/complete.json"]["file"]
+            AtomicFitStore.verify_pinned(Path(source.file(relative)).parent, digest)
+        MIOStudyContract.selection(study)
+        source.file(receipt["stitched"]["forecast"]["relpath"], verify=True)
+        source.file(receipt["panel"]["file"], verify=True)
+        source.file(receipt["stitched"]["context"]["relpath"], verify=True)
+        return {"job": job["name"], "seed": job["seed"], "rows": len(forecasts),
+                "evaluation_computed": False}
+
 
     @staticmethod
     def _owner_selected_selection(study, selection):

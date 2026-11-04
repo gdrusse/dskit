@@ -2467,8 +2467,8 @@ class MIOPacketStudy(StudyNode):
         Rebuild the current study contract (including source, code and dependency
         pins), verify the permit against the active registry claim, bind provenance
         to that claim, then apply the same split/index checks as the MIO runner.
-        This is metadata validation only; quote-index owners still verify bytes
-        when opened for reads.
+        Blinded cache payloads verify after the active claim; quote-index owners
+        also verify bytes when opened for reads.
         """
         from dskit.pipeline.base import value_hash
         from dskit.pipeline.study_protocol import ExposureRegistry, StudyContract
@@ -2482,6 +2482,8 @@ class MIOPacketStudy(StudyNode):
                 or provenance["source_pins_sha256"] != value_hash(plan["source_pins"])
                 or provenance["read_bounds"] != plan["read_bounds"]):
             raise ValueError("unverified bounded intake")
+        from .mio_contract import MIOStudyContract
+        MIOStudyContract.verify_blinded_payloads(study, plan, permit)
         domain = study["domain"]
         if "corporate_actions" in domain["sources"] and (
                 provenance.get("adjustments_sha256") != value_hash(bounded_inputs.get("adjustments"))

@@ -737,6 +737,7 @@ class MIOPacketInputs(StudyNode):
         plan, registry = self.plan(), self.registry()
         permit = inputs["permit"]
         registry.verify(plan, permit)
+        MIOStudyContract.verify_blinded_payloads(self.params["study"], plan, permit)
         if not plan["runnable"]:
             raise ValueError("unbound packet")
         d = self.params["study"]["domain"]

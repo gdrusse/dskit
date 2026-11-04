@@ -1787,3 +1787,351 @@ def test_policy_packet_train_attested_eval_replay_and_close(study, tmp_path, mon
         with pytest.raises(ValueError, match="published and reviewed"):
             direct_node.run_train(abandoned_ctx, {})
     assert reached == []
+
+
+def test_blinded_payload_gate_keeps_legacy_synthetic_contract(study):
+    from index_options.mio_contract import MIOStudyContract
+    verify = getattr(MIOStudyContract, "verify_blinded_payloads", None)
+    assert callable(verify), "post-claim blinded payload verifier is missing"
+    assert verify(study, None, None) is None
+
+def _blinded_cache_study(tmp_path, monkeypatch, payload_fault=None):
+    """Small persisted two-quarter ancestry; no training or market outcomes."""
+    import hashlib
+    import io
+    import pandas as pd
+    import index_options.mio_contract as contract
+    from dskit.pipeline.libs.cdf_experiment import AtomicFitStore
+
+    archive = tmp_path/"blinded"
+    archive.mkdir()
+    pin = {"root": "fixture", "source": "blind", "stream": "files", "snapshot": "one",
+           "manifest_sha256": "a"*64, "files": {}}
+    metadata = {}
+
+    def save(name, value):
+        path = archive/name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = value if isinstance(value, bytes) else json.dumps(value).encode()
+        path.write_bytes(data)
+        pin["files"][name] = hashlib.sha256(data).hexdigest()
+        return {"file": name, "sha256": pin["files"][name]}
+
+    def evidence(original, value, lines=False):
+        name = "evidence"+original
+        item = save(name, (json.dumps(value)+"\n").encode() if lines else value)
+        metadata[original] = item
+        return item
+
+    def parquet(frame):
+        buffer = io.BytesIO()
+        frame.to_parquet(buffer, index=False)
+        return buffer.getvalue()
+
+    def publish(original, identity, files):
+        directory = "stores"+original
+        store = AtomicFitStore(archive/directory, identity)
+        record = store.publish({k: v if isinstance(v, bytes) else json.dumps(v).encode()
+                                for k, v in files.items()})
+        for path in store.path.rglob("*"):
+            if path.is_file():
+                rel = path.relative_to(archive).as_posix()
+                pin["files"][rel] = AtomicFitStore.file_hash(path)
+                if path.suffix == ".json":
+                    metadata[original+"/"+path.relative_to(store.path).as_posix()] = {
+                        "file": rel, "sha256": pin["files"][rel]}
+        return record
+
+    labels, grid = ["low", "mid", "high"], [-3., 0., 3.]
+    keys = ["symbol", "quote_date", "expiry"]
+    template = {"method": {"by": "disp", "components": ["model", "market_cal", "pooled", "baseline"],
+                           "kind": "quantile_average", "learn": "fit_band", "levels": 199,
+                           "max_learning_rows": 100000, "min_rows": 5000},
+                "tables": [], "grid_labels": labels, "z_grid": grid, "fallback": "model"}
+    warm_info = {"source": "/original/annual.parquet", "sha256": "b"*64}
+    warm = "/warmup/11"
+    warm_identity = {"manifest": value_hash(warm_info), "role": "unranked_annual_2019_warmup"}
+    publish(warm, warm_identity, {"forecasts.parquet": parquet(pd.DataFrame({
+        "symbol": ["X"], "quote_date": ["2019-12-01"], "expiry": ["2019-12-06"]})),
+        "receipt.json": {"identity": warm_identity, "source": warm_info,
+                         "role": "unranked_annual_2019_warmup", "evaluation_computed": False,
+                         "map_cutoff": "2019-01-01"}})
+    jobs, roles, receipts, bank = [], {}, {}, [warm]
+    panel_rows = [{"symbol": "X", "quote_date": start, "expiry": expiry, "spot": 100.,
+                   "reference_scale": .2, "settlement_date": expiry}
+                  for start, expiry in [("2020-01-02", "2020-04-03"), ("2020-04-01", "2020-07-03")]]
+    panel = save("panel.parquet", parquet(pd.DataFrame(panel_rows)))
+    for number, (start, end) in enumerate([("2020-01-01", "2020-04-01"), ("2020-04-01", "2020-07-01")], 2):
+        from datetime import date, timedelta
+        name = "q"+str(number)
+        fold_path, cfg_path, spec_path = "/"+name+"/fold.jsonl", "/"+name+"/fit.json", "/"+name+"/request.json"
+        fold = {"fold": number, "role": "scored", "train_start": "2017-01-03",
+                "train_end": (date.fromisoformat(start)-timedelta(days=1)).isoformat(),
+                "val_start": start, "val_end": (date.fromisoformat(end)-timedelta(days=1)).isoformat()}
+        fpin = evidence(fold_path, fold, lines=True)
+        cfg = {"date_upper_exclusive": start, "end_upper_exclusive": start, "refit_full_train": True,
+               "training": {"patience": None, "seeds": [11], "epochs": 2},
+               "study": {"fold_table": {"path": fold_path, "sha256": fpin["sha256"]}},
+               "arms": {"features": {"features": ["a", "b"]}}, "tickers": ["X"],
+               "panel_sha256": panel["sha256"]}
+        cfg_pin = evidence(cfg_path, cfg)
+        current = {role: "/"+name+"/"+role for role in ("fit", "completed", "component", "blend")}
+        spec = {"start": start, "end_before": end, "fold": number, "arm": "features",
+                "output": current["component"], "z_grid": grid, "grid_labels": labels}
+        spec_pin = evidence(spec_path, spec)
+        job = {"name": name, "seed": 11, "start": start, "end_before": end, "fold": number,
+               "fit_config": cfg_path, "fit_config_sha256": cfg_pin["sha256"],
+               "forecast_config": spec_path, "forecast_config_sha256": spec_pin["sha256"],
+               "epoch_pin": {"epochs": 2, "monitor_settlement_max": "2019-12-27"}}
+        epoch_dates = {"quote_date": ["2017-01-03", "2019-12-26"],
+                       "settlement_date": ["2017-01-06", "2019-12-27"]}
+        ep_state = evidence("/"+name+"/epoch-state.json",
+                            {"settings": {"seeds": [11]}, "best_epochs": [2]})
+        ep_meta = evidence("/"+name+"/epoch-meta.json", {"band_dates": [epoch_dates, epoch_dates]})
+        job["epoch_pin"].update(state="/"+name+"/epoch-state.json", state_sha256=ep_state["sha256"],
+                                metadata="/"+name+"/epoch-meta.json", metadata_sha256=ep_meta["sha256"])
+        jobs.append(job)
+        roles[name] = current
+        dates = {"quote_date": ["2017-01-03", "2019-12-26"],
+                 "settlement_date": ["2017-01-06", "2019-12-27"]}
+        fit_meta = {"band_counts": [10, 2, 0], "band_dates": [
+            dates, dates, {"quote_date": [None, None], "settlement_date": [None, None]}],
+            "features": ["a", "b"], "groups": ["X"]}
+        fit_identity = {"job": job, "kind": "trained"}
+        fit_record = publish(current["fit"], fit_identity, {"metadata.json": fit_meta, "weights.bin": b"weights"})
+        checkpoint = value_hash(fit_record)
+        publish(current["completed"], fit_identity,
+                {"summary.json": {"checkpoint": checkpoint, "settings": cfg["training"]}})
+        frame = pd.DataFrame([panel_rows[number-2]])
+        if payload_fault == "component_outcome" and number == 3:
+            frame["actual"] = .42
+        component_identity = {"experiment": value_hash(cfg), "request": spec, "checkpoint": checkpoint}
+        component_meta = {"identity": component_identity, "groups": ["X"], "label_cutoff": start,
+                          "calibration": {"label_cutoff": start}, "evaluation_computed": False,
+                          "forecast_identity": value_hash(frame[keys].values.tolist()), "rows": len(frame),
+                          "forecast_columns": list(frame)}
+        publish(current["component"], component_identity,
+                {"receipt.json": component_meta, "forecasts.parquet": parquet(frame)})
+        blend_identity = {"job": job, "bank": {p: metadata[p+"/complete.json"]["sha256"] for p in bank},
+                          "target": metadata[current["component"]+"/complete.json"]["sha256"],
+                          "blend_template": value_hash(template), "label_cutoff": start}
+        params = {**template, "source": "scratch", "source_sha256": "c"*64, "output": "scratch-out",
+                  "end_before": end, "forecast_only": True, "label_cutoff": start, "ranked_folds": [number]}
+        forecast = frame[keys].assign(fold=number, band="val", method_cdf_low=.1, method_cdf_mid=.5,
+                                      method_cdf_high=.9, fitted=True)
+        if number == 3 and payload_fault:
+            if payload_fault == "cdf":
+                forecast["method_cdf_mid"] = .99
+            elif payload_fault == "forecast_outcome":
+                forecast["actual"] = .42
+            elif payload_fault == "flag":
+                forecast["fitted"] = 1
+            elif payload_fault == "fold":
+                forecast["fold"] = 2
+        blend_meta = {"identity": blend_identity, "params": params, "evaluation_computed": False,
+                      "label_cutoff": start, "forecast_identity": component_meta["forecast_identity"]}
+        publish(current["blend"], blend_identity, {"receipt.json": blend_meta,
+                "forecasts.parquet": parquet(forecast), "fit.json": {"method": template["method"],
+                "folds": {str(number): {"learn": "fit_band", "state": {}}}}})
+        receipts[name] = {"schema_version": 1, "job": job, "elapsed_seconds": 1., "attempts": [],
+                          "artifacts": {p+"/complete.json": metadata[p+"/complete.json"]["sha256"]
+                                        for p in [*current.values(), *bank]},
+                          "host": "WSL2", "evaluation_computed": False}
+        bank.append(current["component"])
+    manifest = {"jobs": jobs, "seeds": [11], "primary_seed": 11, "warmup": {"11": warm_info},
+                "blend_template": template}
+    mpin = save("manifest.json", manifest)
+    lock = save("lock.json", {"status": "closed", "open_findings": [], "manifest_sha256": mpin["sha256"],
+                              "reviews": {"correctness": "d"*64, "integration": "e"*64}})
+    records = [{"job": j["name"], "ancestry_verified": True, "outcomes_absent": True,
+                "cdf_valid": True, "one_quarter_state": True, "evaluation_computed": False} for j in jobs]
+    coverage = save("coverage.json", {"manifest_sha256": mpin["sha256"], "jobs": len(jobs),
+        "records": records, "evaluation_computed": False, "evaluation_values_inspected": False,
+        "protected_reads": False})
+    for name, proof in receipts.items():
+        proof["manifest_sha256"] = mpin["sha256"]
+        receipts[name] = save("receipts/"+name+".json", proof)
+    job = jobs[-1]
+    forecast_file = "stores"+roles[job["name"]]["blend"]+"/forecasts.parquet"
+    context = pd.DataFrame([panel_rows[-1]]).assign(fold=job["fold"], band="val")
+    if payload_fault == "projection":
+        context["spot"] = 101.
+    elif payload_fault == "context_outcome":
+        context["actual"] = .42
+    elif payload_fault == "missing_context":
+        context = context.iloc[:0]
+    context_pin = save("context.parquet", parquet(context))
+    receipt = {"schema": "blinded-quarterly-mio/v1", "job": job["name"], "seed": 11,
+               "forecast_window": {"start": job["start"], "end_before": job["end_before"]},
+               "manifest": mpin, "lock": lock, "coverage": coverage, "job_receipts": receipts,
+               "metadata": metadata, "roles": roles, "warmup": warm, "panel": panel,
+               "stitched": {"forecast": {"relpath": forecast_file, "sha256": pin["files"][forecast_file]},
+                            "context": {"relpath": context_pin["file"], "sha256": context_pin["sha256"]}}}
+    receipt_pin = save("receipt.json", receipt)
+    study = {"packets": [{"id": "q", "start": job["start"], "end_before": job["end_before"]}],
+             "selected_packet": "q", "registry": {},
+             "domain": {"synthetic": False, "params": {"symbols": ["X"], "bridge": {
+                 "fold": job["fold"], "start": job["start"], "end_before": job["end_before"],
+                 "protected_end_before": "2024-01-01", "grid_labels": labels, "z_grid": grid}},
+                 "sources": {role: {"pin": pin, "files": {"shared": receipt["stitched"][key]["relpath"]}}
+                             for role, key in (("forecasts", "forecast"), ("contexts", "context"))}}}
+    study["domain"]["predictive"] = {"policy": "owner_selected_blinded_cache",
+        "receipt": {"source": pin, **receipt_pin}, "expected": {
+            "manifest_sha256": mpin["sha256"], "lock_sha256": lock["sha256"],
+            "coverage_sha256": coverage["sha256"], "job": job["name"], "seed": 11}}
+
+    class Source:
+        def __init__(self, source_pin):
+            self.pin = source_pin
+
+        def file(self, relative, *, verify=False):
+            path = archive/relative
+            if verify and AtomicFitStore.file_hash(path) != self.pin["files"][relative]:
+                raise ValueError("payload drift")
+            return path
+
+    monkeypatch.setattr(contract, "PinnedPayloadSource", Source)
+    return study, archive, receipt, save
+
+
+def test_blinded_cache_metadata_and_postclaim_payloads(tmp_path, monkeypatch):
+    from index_options.mio_contract import MIOStudyContract
+    from dskit.pipeline.libs.cdf_experiment import AtomicFitStore
+    study, archive, receipt, _ = _blinded_cache_study(tmp_path, monkeypatch)
+    # Selection must not hash raw payloads or perform model inference.
+    original = AtomicFitStore.verify_pinned
+    monkeypatch.setattr(AtomicFitStore, "verify_pinned", lambda *a: pytest.fail("preclaim payload read"))
+    verified = MIOStudyContract.selection(study)
+    assert verified["job"]["name"] == "q3"
+    monkeypatch.setattr(AtomicFitStore, "verify_pinned", original)
+    monkeypatch.setattr(StudyContract, "verify_plan", staticmethod(lambda s, p: p))
+    monkeypatch.setattr(ExposureRegistry, "__init__", lambda self, spec: None)
+    calls = []
+    monkeypatch.setattr(ExposureRegistry, "verify", lambda self, p, permit: calls.append(permit))
+    assert MIOStudyContract.verify_blinded_payloads(study, {}, "active") == {
+        "job": "q3", "seed": 11, "rows": 1, "evaluation_computed": False}
+    assert calls == ["active"]
+    # Crossing-quarter expiry is preserved by structural verification.
+    import pandas as pd
+    assert pd.read_parquet(archive/receipt["stitched"]["forecast"]["relpath"]).expiry.tolist() == ["2020-07-03"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("seed", True), ("seed", 29), ("job", "q2"), ("manifest_sha256", "0"*64),
+    ("lock_sha256", "0"*64), ("coverage_sha256", "0"*64)])
+def test_blinded_cache_independent_authority_refuses(tmp_path, monkeypatch, field, value):
+    from index_options.mio_contract import MIOStudyContract
+    study, _, _, _ = _blinded_cache_study(tmp_path, monkeypatch)
+    study["domain"]["predictive"]["expected"][field] = value
+    with pytest.raises(ValueError):
+        MIOStudyContract.selection(study)
+
+
+@pytest.mark.parametrize("change", ["quarter", "fold_bool", "grid", "unknown", "missing_bank",
+                                   "partial_coverage", "training_cutoff", "seed_mix"])
+def test_blinded_cache_metadata_counterexamples(tmp_path, monkeypatch, change):
+    from index_options.mio_contract import MIOStudyContract
+    study, archive, receipt, save = _blinded_cache_study(tmp_path, monkeypatch)
+    if change in {"quarter", "fold_bool", "grid"}:
+        key, val = {"quarter": ("start", "2020-04-02"), "fold_bool": ("fold", True),
+                    "grid": ("z_grid", [-4., 0., 4.])}[change]
+        study["domain"]["params"]["bridge"][key] = val
+    elif change == "unknown":
+        receipt["unknown"] = True
+    elif change == "missing_bank":
+        del receipt["roles"]["q2"]
+    elif change == "partial_coverage":
+        proof = json.loads((archive/"coverage.json").read_text())
+        proof["records"] = proof["records"][:1]
+        proof["jobs"] = 1
+        receipt["coverage"] = save("coverage.json", proof)
+        study["domain"]["predictive"]["expected"]["coverage_sha256"] = receipt["coverage"]["sha256"]
+    else:
+        path = receipt["metadata"]["/q3/fit.json"]["file"]
+        cfg = json.loads((archive/path).read_text())
+        cfg["date_upper_exclusive" if change == "training_cutoff" else "training"] = (
+            "2020-04-02" if change == "training_cutoff" else {"seeds": [29], "epochs": 2, "patience": None})
+        receipt["metadata"]["/q3/fit.json"] = save(path, cfg)
+    reference = save("receipt.json", receipt)
+    study["domain"]["predictive"]["receipt"].update(reference)
+    with pytest.raises(ValueError):
+        MIOStudyContract.selection(study)
+
+
+@pytest.mark.parametrize("change", ["weights", "missing", "extra", "context", "actual", "forecast"])
+def test_blinded_cache_postclaim_corruption_refuses(tmp_path, monkeypatch, change):
+    import pandas as pd
+    from index_options.mio_contract import MIOStudyContract
+    from dskit.pipeline.libs.cdf_experiment import IntegrityError
+    study, archive, receipt, _ = _blinded_cache_study(tmp_path, monkeypatch)
+    monkeypatch.setattr(StudyContract, "verify_plan", staticmethod(lambda s, p: p))
+    monkeypatch.setattr(ExposureRegistry, "__init__", lambda self, spec: None)
+    monkeypatch.setattr(ExposureRegistry, "verify", lambda *a: None)
+    if change in {"weights", "missing", "extra"}:
+        target = archive/"stores/q2/fit/weights.bin"
+        if change == "missing":
+            target.unlink()
+        elif change == "extra":
+            (target.parent/"extra").write_text("extra")
+        else:
+            target.write_bytes(b"changed")
+    else:
+        relative = receipt["stitched"]["forecast" if change == "forecast" else "context"]["relpath"]
+        path = archive/relative
+        frame = pd.read_parquet(path)
+        frame["actual" if change == "actual" else "spot" if change == "context" else "method_cdf_low"] = 123.
+        frame.to_parquet(path, index=False)
+    with pytest.raises((ValueError, IntegrityError)):
+        MIOStudyContract.verify_blinded_payloads(study, {}, {})
+
+
+def test_blinded_cache_bad_permit_precedes_payload_reads(tmp_path, monkeypatch):
+    from index_options.mio_contract import MIOStudyContract
+    from dskit.pipeline.libs.cdf_experiment import AtomicFitStore
+    study, _, _, _ = _blinded_cache_study(tmp_path, monkeypatch)
+    monkeypatch.setattr(StudyContract, "verify_plan", staticmethod(lambda s, p: p))
+    monkeypatch.setattr(ExposureRegistry, "__init__", lambda self, spec: None)
+    def refused(*args):
+        raise ValueError("inactive claim")
+    monkeypatch.setattr(ExposureRegistry, "verify", refused)
+    monkeypatch.setattr(AtomicFitStore, "verify_pinned", lambda *a: pytest.fail("payload read before claim"))
+    with pytest.raises(ValueError, match="inactive claim"):
+        MIOStudyContract.verify_blinded_payloads(study, {}, {})
+
+@pytest.mark.parametrize("fault", ["cdf", "forecast_outcome", "component_outcome", "flag", "fold",
+                                  "projection", "context_outcome", "missing_context"])
+def test_blinded_cache_rehashed_invalid_payloads_refuse(tmp_path, monkeypatch, fault):
+    """Valid hashes cannot excuse an invalid schema or fabricated context."""
+    from index_options.mio_contract import MIOStudyContract
+    from dskit.pipeline.libs.cdf_experiment import IntegrityError
+    study, _, _, _ = _blinded_cache_study(tmp_path, monkeypatch, payload_fault=fault)
+    MIOStudyContract.selection(study)
+    monkeypatch.setattr(StudyContract, "verify_plan", staticmethod(lambda s, p: p))
+    monkeypatch.setattr(ExposureRegistry, "__init__", lambda self, spec: None)
+    monkeypatch.setattr(ExposureRegistry, "verify", lambda *a: None)
+    with pytest.raises((ValueError, IntegrityError)):
+        MIOStudyContract.verify_blinded_payloads(study, {}, {})
+
+
+def test_blinded_gate_is_shared_by_intake_and_authenticated_facade(study, tmp_path, monkeypatch):
+    from index_options.mio_contract import MIOStudyContract
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path/"cache"))
+    registry, plan, permit = _open(study)
+    calls = []
+    def verified(config, current, authority):
+        assert registry.verify(current, authority)["status"] == "claimed_exposed"
+        calls.append(authority["id"])
+    monkeypatch.setattr(MIOStudyContract, "verify_blinded_payloads", staticmethod(verified))
+    ctx = NodeContext(name="intake", asof="2019-02-09", run_dir=str(tmp_path/"run"))
+    outputs = MIOPacketInputs("intake", {"study": study}).run(ctx, {"permit": permit})
+    assert calls == [permit["id"]]
+    MIOPacketStudy.validate_authenticated_intake(
+        study, plan, permit, outputs["provenance"], outputs["bounded_inputs"],
+        str(tmp_path/"run/artifacts/mio-quotes"))
+    assert calls == [permit["id"], permit["id"]]
+    bad = copy.deepcopy(outputs["provenance"])
+    bad["inputs_sha256"] = "0"*64
+    with pytest.raises(ValueError, match="unverified bounded intake"):
+        MIOPacketStudy.validate_authenticated_intake(
+            study, plan, permit, bad, outputs["bounded_inputs"], None)
+    assert len(calls) == 2

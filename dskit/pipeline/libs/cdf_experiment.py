@@ -40,32 +40,76 @@ class AtomicFitStore:
         with Path(path).open("rb") as stream:
             return hashlib.file_digest(stream, "sha256").hexdigest()
 
+    def _verify_record(self, record):
+        """Validate one captured manifest and the payloads it names."""
+        if (not isinstance(record, dict) or set(record) != {"identity", "files"}
+                or not isinstance(record["files"], dict)
+                or record["identity"] != self.identity
+                or not isinstance(record["identity"], str) or len(record["identity"]) != 64
+                or any(c not in "0123456789abcdef" for c in record["identity"])):
+            raise IntegrityError("checkpoint manifest schema/identity mismatch")
+        for name, digest in record["files"].items():
+            if (not isinstance(name, str) or Path(name).is_absolute()
+                    or ".." in Path(name).parts or name == "complete.json"
+                    or not isinstance(digest, str) or len(digest) != 64
+                    or any(c not in "0123456789abcdef" for c in digest)):
+                raise IntegrityError("checkpoint file manifest is malformed")
+        files = {str(p.relative_to(self.path)) for p in self.path.rglob("*")
+                 if p.is_file() and p != self.path/"complete.json"}
+        if files != set(record["files"]):
+            raise IntegrityError("checkpoint file inventory mismatch")
+        if any(self.file_hash(self.path/name) != digest
+               for name, digest in record["files"].items()):
+            raise IntegrityError("checkpoint content hash mismatch")
+        return record
+
     def verify(self):
         """Treat every missing/malformed persisted manifest as an integrity error."""
         try:
-            record = json.loads((self.path/"complete.json").read_text())
-            if (not isinstance(record, dict) or set(record) != {"identity", "files"}
-                    or not isinstance(record["files"], dict)
-                    or record["identity"] != self.identity):
-                raise IntegrityError("checkpoint manifest schema/identity mismatch")
-            for name, digest in record["files"].items():
-                if (not isinstance(name, str) or Path(name).is_absolute()
-                        or ".." in Path(name).parts or name == "complete.json"
-                        or not isinstance(digest, str) or len(digest) != 64
-                        or any(c not in "0123456789abcdef" for c in digest)):
-                    raise IntegrityError("checkpoint file manifest is malformed")
-            files = {str(p.relative_to(self.path)) for p in self.path.rglob("*")
-                     if p.is_file() and p != self.path/"complete.json"}
-            if files != set(record["files"]):
-                raise IntegrityError("checkpoint file inventory mismatch")
-            if any(self.file_hash(self.path/name) != digest
-                   for name, digest in record["files"].items()):
-                raise IntegrityError("checkpoint content hash mismatch")
-            return record
+            record = json.loads((self.path/"complete.json").read_bytes())
+            return self._verify_record(record)
         except IntegrityError:
             raise
         except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
             raise IntegrityError("unreadable checkpoint manifest/payload: "+str(self.path)) from error
+
+    @classmethod
+    def verify_pinned(cls, path, manifest_sha256):
+        """Verify an artifact against an independently trusted manifest digest.
+
+        Parameters
+        ----------
+        path : str or pathlib.Path
+            Immutable artifact directory.
+        manifest_sha256 : str
+            Expected complete-manifest SHA-256 from separate trusted evidence.
+
+        Returns
+        -------
+        dict
+            Captured manifest whose exact inventory and payloads were verified.
+
+        Raises
+        ------
+        IntegrityError
+            The independent pin, captured schema, inventory or payload differs.
+        """
+        try:
+            manifest = Path(path)/"complete.json"
+            captured = manifest.read_bytes()
+            if hashlib.sha256(captured).hexdigest() != manifest_sha256:
+                raise IntegrityError("independent checkpoint manifest pin differs")
+            record = json.loads(captured)
+            store = cls(path, None)
+            store.identity = record.get("identity") if isinstance(record, dict) else None
+            result = store._verify_record(record)
+            if cls.file_hash(manifest) != manifest_sha256:
+                raise IntegrityError("checkpoint manifest changed during verification")
+            return result
+        except IntegrityError:
+            raise
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
+            raise IntegrityError("unreadable independently pinned checkpoint: "+str(path)) from error
 
     def publish(self, files):
         """Atomically publish named byte payloads with an immutable manifest."""

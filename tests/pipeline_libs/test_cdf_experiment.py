@@ -1207,3 +1207,77 @@ def test_public_forecast_refuses_invalid_boundary_or_identity(forecast_experimen
     with pytest.raises((ValueError, IntegrityError)):
         exp.forecast(spec)
     assert not Path(spec["output"]).exists()
+
+
+def test_atomic_store_independently_pinned_manifest(tmp_path):
+    from dskit.pipeline.libs.cdf_experiment import AtomicFitStore, IntegrityError
+    store = AtomicFitStore(tmp_path / "pinned", {"recipe": "first"})
+    store.publish({"payload.bin": b"original"})
+    digest = AtomicFitStore.file_hash(store.path / "complete.json")
+    verify = getattr(AtomicFitStore, "verify_pinned", None)
+    assert callable(verify), "independent manifest verification is missing"
+    assert verify(store.path, digest) == store.verify()
+    (store.path / "payload.bin").write_bytes(b"changed")
+    with pytest.raises(IntegrityError):
+        verify(store.path, digest)
+
+
+def test_atomic_pinned_manifest_cannot_select_replacement_inventory(tmp_path):
+    from dskit.pipeline.libs.cdf_experiment import AtomicFitStore, IntegrityError
+    import json
+    store = AtomicFitStore(tmp_path / "pinned", {"recipe": "first"})
+    store.publish({"payload.bin": b"original"})
+    digest = AtomicFitStore.file_hash(store.path / "complete.json")
+    verify = getattr(AtomicFitStore, "verify_pinned", None)
+    assert callable(verify), "independent manifest verification is missing"
+    (store.path / "payload.bin").write_bytes(b"replacement")
+    record = json.loads((store.path / "complete.json").read_text())
+    record["files"]["payload.bin"] = AtomicFitStore.file_hash(store.path / "payload.bin")
+    (store.path / "complete.json").write_text(json.dumps(record))
+    with pytest.raises(IntegrityError):
+        verify(store.path, digest)
+
+def test_atomic_pinned_verifier_uses_captured_record(tmp_path, monkeypatch):
+    """Swapping a manifest during payload verification cannot select new hashes."""
+    import json
+    from dskit.pipeline.libs.cdf_experiment import AtomicFitStore, IntegrityError
+    store = AtomicFitStore(tmp_path/"captured", {"run": "one"})
+    store.publish({"payload": b"original"})
+    manifest = store.path/"complete.json"
+    original = manifest.read_bytes()
+    digest = store.file_hash(manifest)
+    captured_read = type(manifest).read_bytes
+    def swap_after_read(path):
+        raw = captured_read(path)
+        if path == manifest:
+            (store.path/"payload").write_bytes(b"replacement")
+            replacement = json.loads(raw)
+            replacement["files"]["payload"] = store.file_hash(store.path/"payload")
+            manifest.write_text(json.dumps(replacement))
+        return raw
+    monkeypatch.setattr(type(manifest), "read_bytes", swap_after_read)
+    with pytest.raises(IntegrityError, match="content hash"):
+        AtomicFitStore.verify_pinned(store.path, digest)
+    manifest.write_bytes(original)
+
+
+@pytest.mark.parametrize("case", ["unknown", "identity", "missing", "extra", "wrong_pin"])
+def test_atomic_pinned_manifest_refusals(tmp_path, case):
+    import json
+    from dskit.pipeline.libs.cdf_experiment import AtomicFitStore, IntegrityError
+    store = AtomicFitStore(tmp_path/"pinned", {"run": "one"})
+    store.publish({"payload": b"original"})
+    manifest = store.path/"complete.json"
+    record = json.loads(manifest.read_bytes())
+    if case == "unknown":
+        record["other"] = 1
+    elif case == "identity":
+        record["identity"] = True
+    elif case == "missing":
+        (store.path/"payload").unlink()
+    elif case == "extra":
+        (store.path/"extra").write_bytes(b"extra")
+    manifest.write_text(json.dumps(record))
+    digest = "0"*64 if case == "wrong_pin" else store.file_hash(manifest)
+    with pytest.raises(IntegrityError):
+        AtomicFitStore.verify_pinned(store.path, digest)
