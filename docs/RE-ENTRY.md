@@ -7,7 +7,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 | Lane | Note | State (one line, dated) |
 |---|---|---|
 | dskit core | "Core" below | 2026-10-29: machine hook names the host at session start; ADR-0284 two-host dispatch built, parked unmerged on `docs/adr-two-host-runner` (4 Majors, path mapping) |
-| index_options | children/index_options/docs/RE-ENTRY.md | 2026-11-03: standalone prediction and calibration audit closed; no stable correction or replacement found, M53 unchanged; RL sizing remains paused |
+| index_options | children/index_options/docs/RE-ENTRY.md | 2026-11-04: 48 blinded quarterly90 caches verified; three MIO policies stored for2/16 quarters,14 explicit gaps; results unopened; RL sizing paused |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-19: historical 600-entry audit complete; method24 two-cell Kalshi recommendation beat market scores in later W4/W5; retrospective; protected tests closed; two final reviews passed |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
 | statistical_arbitrage | `children/statistical_arbitrage/docs/RE-ENTRY.md` | 2026-10-21: prediction-only studies ADR-0272..0275: ATM-spread reversion; best now the pooled-scaled blend on the vol-scaled label (ATM 20d R²oos 0.25→0.27, the most robust pass); Theta Greeks/flow/market features add nothing; skew none; no edge claim |

@@ -1,40 +1,43 @@
 # RE-ENTRY - index_options
 
-Updated: 2026-11-03 by GPT-5. Standalone prediction, M53 composition, distribution-shape, and calibration studies are closed: M53 remains unchanged and no correction is accepted.
+Updated: 2026-11-04 by GPT-6. Blinded quarterly90 forecasts and bounded MIO execution are complete; economic and predictive results remain unopened.
 
 ## Now
 
-- The historical ten-feature Lasso was the strongest standalone learner, ahead of the MLP and matched LightGBM, but ten was selected retrospectively. Nested and rolling selectors did not converge to a stable feature count or identity; Ridge and the bounded Bayesian blend did not establish a stronger standalone model.
-- Replacing M53's MLP with Lasso10 did not improve the full blend. A bounded stable-combination search and an Astra complementarity review found no reliable replacement weighting. Original M53 remains the prediction baseline.
-- PCA, five direct segmentations, two conditional-scale segments, a conditional mixture, and forward Ridge produced nulls, train/monitor divergence, or annual reversals. These families are closed unless a materially different preregistered hypothesis is proposed.
-- The 2017–2019 outcome distribution is heavy-tailed and negatively skewed; Student-t was the best of three simple descriptive families across all eight DTE bands. M53 is a flexible CDF blend and is not restricted to that family.
-- A global 21-knot calibration map learned before 2020 added no demonstrated benefit on 449,498 matched 2020–2023 forecasts: primary score -0.0356% versus M53, 0/4 winning years and 0/8 winning DTE bands. Both final independent lenses passed with zero findings. No core, config, source forecast, Path, MIO, or production behavior changed.
-- The RL sizing service remains inactive at paused_after_first_sizing_scan; no RL fit or evaluation completed.
+- Original 90-input M53 remains the prediction baseline. Completed residual, feature, substitution and initialization/removal studies are recorded; no replacement or learned correction is promoted.
+- All 48 quarterly90 caches for 2020–2023 and seeds 11/29/47 passed structural verification;16 native seed 11 caches are prepared. 2019 remains unranked warmup trained on 2017–2018; maturity is strictly before each quarter and every learned state stays fixed within it.
+- Three frozen MIO policies completed for2020Q1 and2021Q1: six stored standard reports, full 67-day tails, independent accounts, fixed 115 admission and exact replay parity. All six accounting gates/report nodes and serial publication/review are attested; the shared registry is inactive at revision 41.
+- MIO coverage is 2/16 requested quarters. Fourteen whole quarters remain blocked by unsupported actions, unresolved resumption/split evidence, root gaps or the protected 2024 tail. No silent name/entry exclusions.
+- Forecast candidate 52ebd89a and MIO code 8a23c1da have closed independent reviews. Exact MIO execution lock and final structural delivery receipt are retained under the evidence root below. Two editorial nits remain; no blocking findings.
+- The RL sizing service remains inactive at paused_after_first_sizing_scan; no RL fit or evaluation completed in this work.
 
 ## Next
 
-- Retain unchanged M53 for prediction research; do not add the static calibration map, Lasso10 substitution, PCA, or tested coarse segments.
-- If calibration is revisited, generate genuinely causal earlier out-of-sample forecasts from 2017 onward and preregister a time-stability test. Do not use in-sample historical predictions as evidence.
-- Any new standalone learner needs a distinct hypothesis and frozen validation procedure that addresses feature and forecast instability before protected-window discussion.
-- On RL resume, inspect its completed scan evidence before dispatching remaining sizing configurations serially; do not reimport 2019.
+- Keep forecast values, new predictive comparisons and MIO economic results unopened until the owner requests their review.
+- Further MIO coverage needs a separately reviewed accounting/capability change or exact evidence clearance; preserve whole-quarter gates and full tails.
+- Retain original M53 as baseline. New predictive hypotheses must address instability and be frozen before outcome review; previously rejected corrections are not reopened by this cache.
+- On RL resume, inspect its existing completed scan evidence before further sizing dispatch; do not reimport 2019.
 
 ## Blocked / owner decisions
 
-- A0002–A0005 and A0008 remain binding. The 2020–2023 results were previously inspected development evidence, not fresh confirmation; 2024–2025 and 2026 remain sealed.
-- No empirical selector proved the historical ten-feature choice optimal. Small standalone gains and unstable annual signs remain the central limitation.
-- No learned M53 correction or standalone replacement is promoted. Matching a pooled CDF does not establish conditional calibration.
-- Full-universe RL action exploration and storage remain practical risks; the 128-step smoke is infrastructure evidence only.
+- A0002–A0005/A0007/A0008 remain binding. The owner authorized this separately named quarterly variant; Path is unchanged. COVID is retained.
+- 2024–2025 remains sealed and unexecuted here; no compatible feature-only panel was admitted. 2026 stays permanently sealed.
+- Settlement-date availability is a retrospective assumption; panel and corporate-action timing do not establish historical tradability or live production readiness.
+- Two of16 MIO quarters are complete; do not describe the other 14 as covered, zero-return, or excluded from the denominator.
 
 ## Read first
 
-- [Frozen calibration check, 2020–2023](research/distribution-modeling/2026-11-04-frozen-cdf-calibration-2020-2023.md).
-- [Distribution shape by DTE](research/distribution-modeling/2026-11-04-dte-distribution-audit.md).
-- [Stable M53 combination](research/distribution-modeling/2026-11-03-m53-stable-combination.md).
-- [Lasso/Ridge stability and timing](research/distribution-modeling/2026-11-03-ridge-lasso-stability-timing.md).
-- [Decisioning path](decisioning/path.csv).
+- [Blinded quarterly90 cache and MIO](research/distribution-modeling/2026-11-04-blinded-quarterly90-cache-and-mio.md).
+- [M53 initialization audit](research/distribution-modeling/2026-11-04-m53-initialization-study.md).
+- [Eight error corrections](research/distribution-modeling/2026-11-04-m53-error-memory-study.md).
+- [Frozen calibration check](research/distribution-modeling/2026-11-04-frozen-cdf-calibration-2020-2023.md).
+- [Locked Path](decisioning/path.csv).
 
 ## Do not
 
-- Extend the rejected static calibration, direct M53 heads, PCA, or tested segmentation families without a distinct approved protocol.
-- Open protected 2024–2025 or 2026 outcomes, reinterpret reused development years as confirmation, or claim profitability.
-- Reimport 2019, rescore frozen source forecasts, change the locked Path, stop another session's job, or modify reviewed source/test blobs.
+- Inspect new forecast/economic results, rank MIO policies, open protected outcomes, or claim profitability without a later owner instruction.
+- Regenerate imported protocols, reset the shared registry, reimport 2019, alter frozen weights or silently filter corporate-action gaps.
+- Remove the pinned producer/execution checkouts or evidence needed to validate cached sources.
+- Stop another session's jobs or change reviewed code/test identities while retaining their approvals.
+
+Evidence: `/home/russell/data/index_options/quarterly-prediction-cache-20261104`; see `delivery-verification.json`, `mio/execution-lock.json`, `release-review-reconciliation.json` and `request-status.json`.
