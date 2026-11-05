@@ -35871,3 +35871,5 @@ ADR-0290 amendment (Russell approved 2026-11-03): "Proceed with the stated assum
 **Enforcement.** `CDFExperiment` gains the optional key `tickers_sha256` (absent: identity unchanged), refused on any other inventory; `index_options.ticker_lock` refuses any other list in a fit, forecast or MIO document. Written and run overnight on the owner order; no separate ADR wait.
 
 **Why.** The M53 lock was chosen on a 118-name pilot list (68 ranked on volume ending 2026-10-02, cut at LLY) that was never revisited, while other work used 212 or 400+ names. The population history is in the lock file. Limits: survival bias remains, and R6 is agent judgement (212 without it).
+
+**ADR-0295 amendment (2026-11-05): `TorchCDF.fixed_location`.** Optional setting (absent from identity unless true): component means become the head's own biases, so the network sets only weights and scales. Graduates the recipe-test `fixed_loc` arm so candidate 8 of the owner-ordered full-span zoo runs from a config. No default behaviour changes.

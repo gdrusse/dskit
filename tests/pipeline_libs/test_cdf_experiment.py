@@ -92,6 +92,32 @@ def test_admission_and_forecast_pairing():
         CDFExperiment.check_pairing(frame, frame.iloc[:2], ["day"])
 
 
+def test_fixed_location_means_ignore_inputs_and_survive_a_checkpoint(tmp_path):
+    from dskit.pipeline.libs.predictive_cdf import TorchCDF
+    m = model("hf", fixed_location=True)
+    rng = np.random.default_rng(7)
+    x = rng.normal(size=(16, 24))
+    y = rng.normal(size=16)
+    def context(n, prefix):
+        return [{"identity": [prefix+str(i)], "thresholds": [-2.5, -.5, .5, 2.5],
+                 "weights": [.25]*4, "intervals": [[-2.5, -.5], [.5, 2.5]]}
+                for i in range(n)]
+    m.fit_decision_context(context(16, "f"), context(4, "c"))
+    m.fit(x, y, x[:4], y[:4])
+    means = m.curve(x[:4]).means
+    np.testing.assert_allclose(means, means[:1].repeat(4, axis=0), atol=1e-6)
+    assert m._checkpoint_settings()["fixed_location"] is True
+    m.save_checkpoint(tmp_path / "fit")
+    restored = TorchCDF.load_checkpoint(tmp_path / "fit")
+    assert restored.fixed_location is True
+    np.testing.assert_allclose(m.curve(x[:4]).cdf([-.5, .5]), restored.curve(x[:4]).cdf([-.5, .5]),
+                               atol=1e-7, rtol=1e-6)
+
+
+def test_fixed_location_is_absent_from_settings_by_default():
+    assert "fixed_location" not in model("hf")._equivalence_settings()
+
+
 @pytest.mark.parametrize("backend", ["hf", "nf"])
 def test_external_fit_checkpoint_roundtrip(tmp_path, backend):
     from dskit.pipeline.libs.predictive_cdf import TorchCDF

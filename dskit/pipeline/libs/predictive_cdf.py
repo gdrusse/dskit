@@ -4832,9 +4832,12 @@ class TorchCDF(_CompositeLossCDF, MixtureMLPCDF):
     _ENCODERS = {"mlp": _CDFMLPEncoder, "gru": _CDFGRUEncoder, "lstm": _CDFLSTMEncoder,
                  "cnn": _CDFCNNEncoder, "external": _CDFExternalEncoder}
 
-    def __init__(self, encoder, losses, family=None, **settings):
+    def __init__(self, encoder, losses, family=None, fixed_location=False, **settings):
         import copy
         super().__init__(**settings)
+        if type(fixed_location) is not bool or (fixed_location and self.head_features):
+            raise ValueError("fixed_location must be a bool and refuses head features")
+        self.fixed_location = fixed_location
         if self.left_cdf_weight:
             raise ValueError("TorchCDF refuses left_cdf_weight: it trains on composite losses")
         self._refuse_head_inputs()
@@ -4852,6 +4855,16 @@ class TorchCDF(_CompositeLossCDF, MixtureMLPCDF):
     def _checkpoint_settings(self):
         return {**self._equivalence_settings(), "encoder": self.encoder_config,
                 "losses": self.loss_config}
+
+    def _forward(self, model, x, heads):
+        """Decode the mixture; ``fixed_location`` replaces the means by the head's own biases.
+
+        The network then sets only weights and scales: component means do not depend on the input.
+        """
+        logw, mu, sigma = super()._forward(model, x, heads)
+        if self.fixed_location:
+            mu = model.head[-1].bias[self.components:2*self.components][None, :].expand(len(x), -1)
+        return logw, mu, sigma
 
     def validate_encoder(self, features):
         """Check a sequence encoder; MLP has no sequence and is refused."""
@@ -4880,6 +4893,8 @@ class TorchCDF(_CompositeLossCDF, MixtureMLPCDF):
         settings = super()._equivalence_settings()
         if self.family_config is not None:
             settings["family"] = self.family_config
+        if self.fixed_location:
+            settings["fixed_location"] = True
         return settings
 
     def _build_module(self, features):
