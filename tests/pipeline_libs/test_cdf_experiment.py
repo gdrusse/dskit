@@ -199,6 +199,19 @@ def test_pooled_crash_after_first_shard_resumes_checkpoint_without_refit(experim
     exp.run("pooled")  # A fully complete retry validates and retains both shards.
 
 
+def test_tickers_sha256_refuses_any_other_inventory(experiment_config):
+    import hashlib
+    import json
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    tickers = experiment_config["tickers"]
+    wire = json.dumps(sorted(tickers), separators=(",", ":")).encode()
+    experiment_config["tickers_sha256"] = hashlib.sha256(wire).hexdigest()
+    CDFExperiment(experiment_config)
+    experiment_config["tickers"] = tickers[:-1]+["OTHER"]
+    with pytest.raises(ValueError, match="tickers_sha256"):
+        CDFExperiment(experiment_config)
+
+
 def test_holdout_predicate_refused_before_panel_read(experiment_config):
     from dskit.pipeline.libs.cdf_experiment import CDFExperiment, IntegrityError
     experiment_config["date_upper_exclusive"] = "2003-01-01"

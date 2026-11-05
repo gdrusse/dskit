@@ -35863,3 +35863,11 @@ ADR-0290 amendment (Russell approved 2026-11-03): "Proceed with the stated assum
 **Superseded text.** `technical-design` and `docs/plans/mio-json/study.json` still describe yearly cadence in places. Path outranks them.
 
 **Open.** Universe survivorship (names ranked on 2026 data; no owner ruling), exact-recipe caches and their score not yet produced, unopened MIO built on the earlier seed 11 forecasts, and the deferred sentinel clip (its own ADR first). Commit 82383397 carries the ambient Codex author; its trailer names the true model, and this correction is authored correctly rather than rewriting pushed history. Evidence: [the lock note](../../children/index_options/docs/research/distribution-modeling/2026-11-05-m53-predictive-lock.md).
+
+## ADR-0295 - One locked ticker list for index_options (owner ordered, 2026-11-05)
+
+**Decision.** Owner, 2026-11-04: "make sure to mark this in the future and lock the ticker list so that this does not happen again", and "Only full-span tickers". `children/index_options/configs/locked-ticker-list.json` holds 166 names, rule, exclusions and SHA-256 `8eae0a07...`. Path A0009 records it (row authorized by the owner instruction in the rerun PLAN.md).
+
+**Enforcement.** `CDFExperiment` gains the optional key `tickers_sha256` (absent: identity unchanged), refused on any other inventory; `index_options.ticker_lock` refuses any other list in a fit, forecast or MIO document. Written and run overnight on the owner order; no separate ADR wait.
+
+**Why.** The M53 lock was chosen on a 118-name pilot list (68 ranked on volume ending 2026-10-02, cut at LLY) that was never revisited, while other work used 212 or 400+ names. The population history is in the lock file. Limits: survival bias remains, and R6 is agent judgement (212 without it).

@@ -142,7 +142,7 @@ class CDFExperiment:
     KEYS = {"study", "panel", "panel_sha256", "output", "tickers", "arms",
             "candidates", "training", "capacity", "source_hashes", "dependencies",
             "date_upper_exclusive", "end_upper_exclusive"}
-    OPTIONAL_KEYS = {"refit_full_train"}
+    OPTIONAL_KEYS = {"refit_full_train", "tickers_sha256"}
     ARM_KEYS = {"features", "sequence_indices", "context_indices", "observed_columns",
                 "min_fit", "min_cal", "min_disjoint"}
     CANDIDATE_KEYS = {"name", "adapters", "skip_reason"}
@@ -155,6 +155,10 @@ class CDFExperiment:
             raise ValueError("invalid experiment keys")
         if config.get("refit_full_train") and config["training"].get("patience") is not None:
             raise ValueError("full training refit requires patience=None; select epochs in a prior fit")
+        if "tickers_sha256" in config:
+            wire = json.dumps(sorted(config["tickers"]), separators=(",", ":")).encode()
+            if hashlib.sha256(wire).hexdigest() != config["tickers_sha256"]:
+                raise ValueError("ticker inventory does not match tickers_sha256")
         self.config = copy.deepcopy(config)
         self.study = ChronologicalCDFStudy(config["study"])
         self.output = Path(config["output"])
