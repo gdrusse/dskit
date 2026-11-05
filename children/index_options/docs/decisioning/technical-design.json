@@ -6482,8 +6482,8 @@
     {
       "id": "path",
       "path": "children/index_options/docs/decisioning/path.csv",
-      "sha256": "1ea4c8bab3c413d65f4763cadf2532bcc13621809f412f225b6fdd7397fe17c3",
-      "role": "Owner decisions; A0008 retains yearly cadence and now selects the best model-zoo output under the 2026-10-27 owner correction."
+      "sha256": "04a7cc0440e0a8349d750bbaa3c3417eb12f1faa390c67804468b6596c71f248",
+      "role": "Owner decisions; A0004 and A0008 are quarterly and A0008 names the locked recipe (ADR-0294). Older cadence text in this document is superseded by Path."
     },
     {
       "id": "folds",

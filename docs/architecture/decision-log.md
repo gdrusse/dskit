@@ -35854,6 +35854,12 @@ ADR-0290 amendment (Russell approved 2026-11-03): "Proceed with the stated assum
 
 **Decision.** Owner: "lock it in if you agree with the analysis. make sure it is recorded." Path A0008 now names the recipe: four-component M53 with causal quarterly weights, 90-input MLP at fixed epoch 1 with no per-fit selection, and the quantile average of seeds 11/29/47 in the model slot. No code changes.
 
-**Why.** Pre-registered tests found no input or location change that passes in the blend. Fixed epoch 1 is not worse and removes a noise-driven pick. Post-exposure development only; the holdout stays sealed.
+**Why.** Neither market arm tested in the blend passed (seed 11, old warmup bank). Fixed epoch 1 is not worse on seed 11 and removes a noise-driven pick. The exact locked combination has never been scored. Post-exposure development only; the holdout stays sealed.
 
-**Open.** Universe survivorship (names ranked on 2026 data), exact-recipe caches not yet produced, unopened MIO built on the earlier seed 11 forecasts, and the deferred sentinel clip (its own ADR first). Evidence: [the lock note](../../children/index_options/docs/research/distribution-modeling/2026-11-05-m53-predictive-lock.md).
+**Authority for the Path edits.** Owner 2026-11-04: "for the path mismatch, change that - we are retraining quartlery." After skeptic review the owner chose "Quarterly everywhere" for A0004's promotion and holdout rungs, and "Refit warmup at epoch 1" for A0008, with those edits authorized in the question. This replaces ADR-0292's statement that A0003/A0004/A0008 remain unchanged. A0008's "best output from the model zoo" sentence now names this lock as that selection. The clause on the surviving universe was removed from A0008 because the owner had not ruled on it. Averaging before the blend is an implementation choice, not an owner ruling.
+
+**MIO exception on the record.** The 17 quarterly MIO runs used a linked registry, approved by the owner's "yes" (18:41Z) and "run 2019q2 and q3 first"; ADR-0293 said to reuse the shared coverage-v2 registry. Evidence sits under the quarterly cache.
+
+**Superseded text.** `technical-design` and `docs/plans/mio-json/study.json` still describe yearly cadence in places. Path outranks them.
+
+**Open.** Universe survivorship (names ranked on 2026 data; no owner ruling), exact-recipe caches and their score not yet produced, unopened MIO built on the earlier seed 11 forecasts, and the deferred sentinel clip (its own ADR first). Commit 82383397 carries the ambient Codex author; its trailer names the true model, and this correction is authored correctly rather than rewriting pushed history. Evidence: [the lock note](../../children/index_options/docs/research/distribution-modeling/2026-11-05-m53-predictive-lock.md).
