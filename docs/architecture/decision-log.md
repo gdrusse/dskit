@@ -35849,3 +35849,11 @@ ADR-0290 amendment (Russell approved 2026-11-03): "Proceed with the stated assum
 **Execution and closure.** Existing JSON protocol and report owners remain authoritative. Reuse the shared coverage-v2 registry; mutate claims serially and retain failed exposures. Mac is eligible only for verified independent work over an encrypted WSL-backed mount; capacity alone is insufficient. No market MIO before focused tests and two fresh final review lenses close the exact candidate. Original forecast checkout remains immutable while its queue runs.
 
 **ADR-0293 boundary correction (QM-C1).** Raw producer JSON can mix structural evidence with learned values: fit/epoch metadata, completed summaries, warmup mappings and component calibration receipts are not metadata-only inputs. Preparation publishes exact domain-owned structural projections, pinned independently with each raw-source digest. Selection reads those projections and configuration/complete manifests only. Both authenticated consumers verify projection equality against raw artifacts after the permit, then inspect epoch and blend states. No preclaim model-state parsing; positive projection, false-projection and direct file-open traces cover the entire family.
+
+## ADR-0294 - Lock the quarterly M53 predictive recipe (owner approved, 2026-11-04)
+
+**Decision.** Owner: "lock it in if you agree with the analysis. make sure it is recorded." Path A0008 now names the recipe: four-component M53 with causal quarterly weights, 90-input MLP at fixed epoch 1 with no per-fit selection, and the quantile average of seeds 11/29/47 in the model slot. No code changes.
+
+**Why.** Pre-registered tests found no input or location change that passes in the blend. Fixed epoch 1 is not worse and removes a noise-driven pick. Post-exposure development only; the holdout stays sealed.
+
+**Open.** Universe survivorship (names ranked on 2026 data), exact-recipe caches not yet produced, unopened MIO built on the earlier seed 11 forecasts, and the deferred sentinel clip (its own ADR first). Evidence: [the lock note](../../children/index_options/docs/research/distribution-modeling/2026-11-05-m53-predictive-lock.md).
