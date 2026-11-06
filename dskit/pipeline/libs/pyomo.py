@@ -3632,6 +3632,35 @@ class MeanAbsoluteDeviation(DeviationCharge):
         return lower, cost, rows
 
 
+class _PointDeviation(DeviationCharge):
+    """The absolute deviation of a book at a few outcome points, about a centre the caller already subtracted.
+
+    ``D = sum_k w_k |v_k|``: ``v`` holds the book's deviation from its (exact) mean at each point, ``w`` the points'
+    masses. Unlike :class:`MeanAbsoluteDeviation` it centres nothing (no mean variable and no equality row), so a few
+    points stand for a large grid without a mean of their own: one nonnegative ``t_k`` per positive-mass point with
+    ``t_k >= +-v_k``, so ``2K`` rows. It is not a ``risk_charge`` measure (no ``measure`` name): the utility
+    dispersion charge builds it (:meth:`TransportPortfolioSolve._charge_plan`).
+    """
+
+    def deviation(self, losses):
+        """Return ``sum_k w_k |v_k|`` (see :class:`DeviationCharge`)."""
+        import numpy as np
+
+        values = np.asarray(losses, dtype=float)
+        if values.shape != self.masses.shape or not np.isfinite(values).all():
+            raise ValueError("invalid deviation losses")
+        return float(np.dot(self.masses, np.abs(values)))
+
+    def epigraph(self):
+        """Return one nonnegative ``t_k`` per point and the two rows ``+-v_k <= t_k``."""
+        support = [k for k, w in enumerate(self.masses) if w > 0]
+        rows = []
+        for t, k in enumerate(support):
+            rows.append(("ub", {k: 1.}, {t: -1.}))
+            rows.append(("ub", {k: -1.}, {t: -1.}))
+        return [0.]*len(support), [float(self.masses[k]) for k in support], rows
+
+
 #: Every deviation a ``risk_charge`` declaration may name, by measure.
 _DEVIATION_CHARGES = {cls.measure: cls for cls in (MeanAbsoluteDeviation,)}
 
@@ -3867,11 +3896,16 @@ class TransportPortfolioSolve(PyomoSolve):
         expected profit under its nominal masses plus the scenario's own
         declared profit terms, held at or above ``wealth_lo`` by a hard
         bound; the charge is ``gamma x S^2 / (2 w0)`` per name, the
-        second-order utility cost of its books' own dispersion, with
-        ``S = sum_g sqrt(d_g) x reserve_g`` over the name's groups (the
-        ``aggregate`` key) and ``d_g`` each group's own variance of profit
-        per reserve squared (:meth:`_book_dispersion`; no constant;
-        :meth:`_charge_plan`, :class:`_ChargeLines`). It needs radius 0 and no
+        second-order utility cost of its books' own dispersion, charged on
+        the book the solve chooses: ``S = 1.25 x sum_g MAD_g`` over the name's
+        groups (the ``aggregate`` key), ``MAD_g`` the mean absolute deviation
+        of the group's book profit from its mean read at a few outcome points
+        (``CHARGE_POINTS``, 5: the group's grid atoms at the cumulative-mass
+        levels ``(k + 1/2) / 5``; ``1.25`` is a normal's sd over its MAD),
+        held by epigraph variables ``t_k >= +-(dev_k . x)`` (2K rows over
+        the group's items; :meth:`_charge_plan`, :class:`_ChargeLines`). It
+        approximates the book's MAD by a five-point quadrature and its sd by
+        1.25 MAD, so it understates the sd of a bet with a rare loss. It needs radius 0 and no
         risk charge; the selection then carries a ``utility`` block
         (envelope and exact utility, the charges, envelope error, knot
         count, every scenario's wealth) and ``value`` is the envelope
@@ -4133,94 +4167,55 @@ class TransportPortfolioSolve(PyomoSolve):
         return _TangentEnvelope(utility["w0"], utility["gamma"], utility["wealth_lo"],
                                 utility["w0"]+highest, utility["n_tangents"], utility["core"])
 
-    @staticmethod
-    def _book_dispersion(group):
-        """Return one group's own dispersion: its book's variance of profit per unit reserve squared.
-
-        The reference book is the group's own best book per unit of reserve:
-        the LP that maximizes expected profit (``credit - masses . losses``)
-        with the reserve rows bounded by the reserve of the full-capacity
-        position, the capacities, the linear rows and the exclusive pairs
-        (``x_a / cap_a + x_b / cap_b <= 1``). Its profit on each outcome of
-        the group's grid, ``credit . x - losses[s] . x``, gives the masses-weighted
-        variance, divided by the book's reserve squared (the maximum of the
-        reserve rows and zero): scale free, so the book's size drops out.
-        A group with no positive expected profit, or no reserve, gets zero
-        (no book of it would be sized for its own sake).
-        """
-        import numpy as np
-        from scipy.optimize import linprog
-
-        credit = np.asarray(group["credit"], dtype=float)
-        profit = credit-np.asarray(group["losses"], dtype=float)
-        masses = np.asarray(group["masses"], dtype=float)
-        edge = masses @ profit
-        capacity = np.asarray(group["capacity"], dtype=float)
-        reserve_rows = np.asarray(group["reserve_rows"], dtype=float)
-        full = float(max(0., (reserve_rows @ capacity).max()))
-        if full <= 0. or not (edge > 0).any():
-            return 0.
-        rows, rhs = [reserve_rows], [np.full(len(reserve_rows), full)]
-        for row in group["linear_rows"]:
-            rows.append(np.asarray([row["coefficients"]], dtype=float))
-            rhs.append(np.asarray([float(row["upper"])]))
-        for a, b in group["exclusive"]:
-            pair = np.zeros((1, len(credit)))
-            pair[0, a], pair[0, b] = 1./capacity[a], 1./capacity[b]
-            rows.append(pair)
-            rhs.append(np.ones(1))
-        result = linprog(-edge, A_ub=np.vstack(rows), b_ub=np.concatenate(rhs),
-                         bounds=[(0., float(c)) for c in capacity], method="highs")
-        if not result.success:
-            raise ValueError(f"group dispersion LP failed: {result.message}")
-        book = np.maximum(result.x, 0.)
-        reserve = float(max(0., (reserve_rows @ book).max()))
-        if float(edge @ book) <= 1e-9*max(1., full) or reserve <= 1e-9*full:
-            return 0.
-        outcome = profit @ book
-        variance = float(masses @ (outcome-masses @ outcome)**2)
-        return variance/reserve**2
+    #: Outcome points of a group's dispersion charge (:meth:`_charge_plan`).
+    CHARGE_POINTS = 5
+    #: A normal's standard deviation over its mean absolute deviation, ``sqrt(pi / 2)`` to two places: ``S = 1.25 x MAD``.
+    SD_PER_MAD = 1.25
 
     @classmethod
-    def _charge_plan(cls, groups, caps, utility):
-        """Return the name-level dispersion charge: coefficients, members and tangent lines.
+    def _charge_plan(cls, groups, utility, points=None):
+        """Return the name-level dispersion charge: each group's outcome points, its deviation charge and the tangent lines.
 
-        A group's own risk is its book's variance of profit,
-        ``dispersion_g x reserve_g^2`` (:meth:`_book_dispersion`, from the
-        group's own grid, no constant). The groups of one ``aggregate`` key
-        (one name, several expiries) move together, so they are charged on
-        the name's total, not one by one: with ``S_a = sum_g sqrt(dispersion_g)
-        x reserve_g`` the charge is ``gamma x S_a^2 / (2 w0)``, the variance
-        of perfectly correlated books and the reserve-weighted form the
-        sparse rows allow. A name charged on the sum cannot cut its charge
-        by splitting its reserve across expiries. ``S_a``'s ceiling is the
-        most it can reach under the caps (the sum of each group's smallest cap
-        weighted by its coefficient, tightened by any cap that covers all of
-        the name); a name with no finite ceiling carries no charge lines.
-        Returns ``{"dispersion": [per group], "coefficient": {index: sqrt},
+        A group's dispersion is the mean absolute deviation (MAD) of the profit of the book the solve chooses,
+        read at ``points`` outcomes (default :attr:`CHARGE_POINTS`) and no reference book. The points are the
+        group's grid atoms at the cumulative-mass levels ``(k + 1/2) / points`` (quantiles of its own masses; an
+        atom reaches a level within 1e-12, so a level the masses hit exactly is not left to rounding; pure
+        arithmetic: no LP, no solver, the same on every host), an atom hit by several levels counted once with
+        their summed weight ``w``. At a point the book's deviation is ``(profit_k - expected profit) . x``,
+        linear in the actions about the group's exact mean, and the group's ``MAD_g`` is ``sum_k w_k |dev_k . x|``
+        (:class:`_PointDeviation`: ``attach`` in the model, ``charge`` in the audit), priced at ``SD_PER_MAD``
+        (1.25, a normal's sd over its MAD) so a group contributes ``S_g = 1.25 x MAD_g``. This is a few-point
+        quadrature of the MAD: it reads the spread the points see and misses what lies between them (a rare
+        tail the levels skip, mass the points lump), so it can fall either side of the exact MAD. The groups of
+        one ``aggregate`` key (one name, several expiries) move together: with ``S_a = sum_g S_g`` the charge is
+        ``gamma x S_a^2 / (2 w0)``, the variance of perfectly correlated books, so a name cannot cut its charge
+        by splitting across expiries. Its tangent lines run to the ceiling ``S_a`` cannot pass,
+        ``sum_g 1.25 x sum_j capacity_j x (item j's own deviation per contract at the points)`` (the triangle
+        inequality). A group whose points never deviate carries no charge.
+        Returns ``{"rows": {index: points x items deviation array}, "charge": {index: _PointDeviation},
         "members": {key: [index]}, "lines": {key: _ChargeLines}}``.
         """
-        lookup = {g["id"]: i for i, g in enumerate(groups)}
-        dispersion = [cls._book_dispersion(g) for g in groups]
-        coefficient = {i: math.sqrt(d) for i, d in enumerate(dispersion) if d > 0}
-        members = {}
-        for g in groups:
-            i = lookup[g["id"]]
-            if i in coefficient:
-                members.setdefault(utility["aggregate"][g["id"]], []).append(i)
-        smallest = {i: float("inf") for i in range(len(groups))}
-        for cap in caps:
-            for key in cap["groups"]:
-                smallest[lookup[key]] = min(smallest[lookup[key]], float(cap["upper"]))
+        import numpy as np
+
+        points = cls.CHARGE_POINTS if points is None else points
+        rows, charge, members, ceiling = {}, {}, {}, {}
+        levels = (np.arange(points)+.5)/points
+        for i, g in enumerate(groups):
+            masses = np.asarray(g["masses"], dtype=float)
+            profit = np.asarray(g["credit"], dtype=float)-np.asarray(g["losses"], dtype=float)
+            atoms, counts = np.unique(
+                np.minimum(np.searchsorted(np.cumsum(masses/masses.sum()), levels-1e-12), len(masses)-1), return_counts=True)
+            deviation = profit[atoms]-masses @ profit/masses.sum()
+            own = (counts/points) @ np.abs(deviation)   # each item's own absolute deviation per contract
+            if own.max() <= 1e-9*max(1., float(np.abs(profit).max())):
+                continue
+            rows[i], charge[i] = deviation, _PointDeviation(counts/points, cls.SD_PER_MAD)
+            members.setdefault(utility["aggregate"][g["id"]], []).append(i)
+            ceiling[i] = cls.SD_PER_MAD*float(own @ np.asarray(g["capacity"], dtype=float))
         slope = utility["gamma"]/(2.*utility["w0"])
-        lines = {}
-        for name, indices in members.items():
-            ceiling = sum(coefficient[i]*smallest[i] for i in indices)
-            wide = [float(cap["upper"]) for cap in caps if {groups[i]["id"] for i in indices} <= set(cap["groups"])]
-            if wide:
-                ceiling = min(ceiling, max(coefficient[i] for i in indices)*min(wide))
-            lines[name] = _ChargeLines(slope, ceiling, utility["n_tangents"])
-        return {"dispersion": dispersion, "coefficient": coefficient, "members": members, "lines": lines}
+        lines = {name: _ChargeLines(slope, sum(ceiling[i] for i in indices), utility["n_tangents"])
+                 for name, indices in members.items()}
+        return {"rows": rows, "charge": charge, "members": members, "lines": lines}
 
     @staticmethod
     def _group_lp_bound(group):
@@ -4378,15 +4373,16 @@ class TransportPortfolioSolve(PyomoSolve):
                         for scenario in self._utility["joint"] if key in scenario["terms"])
         return rows
 
-    def _attach_utility(self, m, groups, caps, active):
+    def _attach_utility(self, m, groups, active):
         """Add the scenario wealths, the tangent rows, the charges and the W0-scaled expected utility to ``m``.
 
         ``mean`` is the active groups' expected profit, written once; one
         ``W[s]`` and ``U[s]`` per scenario, ``W[s] = w0 + mean + terms . x``,
         bounded to the wealth the scenario can reach (so ``wealth_lo`` is a
         hard cut) with only the tangents that can be the least line in that
-        range. One ``charge[i]`` per active group above its lines in
-        ``reserve[i]``. The objective is ``w0`` times the expected envelope
+        range. Each active group with a dispersion adds the epigraph rows of its deviation charge
+        (``dispersion_i``: 2K+1 rows over its own items and K+1 auxiliaries); one ``charge[a]`` per
+        name above the tangent lines of its summed dispersion. The objective is ``w0`` times the expected envelope
         less the charges, so its units are dollars to first order and the gap
         policies keep their meaning. Rows grow with the scenarios and the
         groups, never with the groups' grid points.
@@ -4397,10 +4393,9 @@ class TransportPortfolioSolve(PyomoSolve):
         expected = self._expected_profit(groups)
         scenarios = self._utility_scenarios(groups, utility)
         envelope = self._utility_envelope(groups, utility, expected, scenarios)
-        plan = self._charge_plan(groups, caps, utility)
-        # A name with a finite ceiling and an active member: one aggregate reserve, n_tangents sparse lines.
-        names = sorted(name for name, indices in plan["members"].items()
-                       if len(plan["lines"][name].lines) > 1 and set(indices) & set(active))
+        plan = self._charge_plan(groups, utility)
+        # A name with an active member: one summed dispersion, n_tangents sparse lines.
+        names = sorted(name for name, indices in plan["members"].items() if set(indices) & set(active))
         bounds = {}
         for s, (_id, _weight, terms) in enumerate(scenarios):
             lo, hi = self._scenario_range(expected, terms, groups, active)
@@ -4409,7 +4404,7 @@ class TransportPortfolioSolve(PyomoSolve):
         m.W = Var(list(bounds), domain=Reals, bounds=lambda m, s: bounds[s])
         m.U = Var(list(bounds), domain=Reals)
         m.charge = Var(names, domain=NonNegativeReals)
-        # An aggregate reserve variable only for a name with more than one active group.
+        # An aggregate dispersion variable only for a name with more than one active group.
         m.total = Var([n for n in names if len([i for i in plan["members"][n] if i in active]) > 1],
                       domain=NonNegativeReals)
         m.wealth = ConstraintList()
@@ -4423,16 +4418,22 @@ class TransportPortfolioSolve(PyomoSolve):
                 for j, c in enumerate(row) if c != 0))
             for j in envelope.live(*bounds[s]):
                 m.tangent.add(m.U[s] <= float(envelope.intercept[j])+float(envelope.slope[j])*m.W[s])
+        spread = {}
+        for i in active:
+            if i in plan["rows"]:
+                # The charge on the chosen book: |cell_k . x - mean| at the group's K cells, S_g = 1.25 x their MAD.
+                cells = [sum(float(c)*m.x[i, j] for j, c in enumerate(row) if c != 0) for row in plan["rows"][i]]
+                spread[i] = plan["charge"][i].attach(m, cells, f"dispersion_{i}").cost
         for name in names:
             live = [i for i in plan["members"][name] if i in active]
             if len(live) == 1:
-                # One group: its lines read the reserve directly, no aggregate variable or equality row.
-                total, scale = m.reserve[live[0]], plan["coefficient"][live[0]]
+                # One group: its lines read its dispersion directly, no aggregate variable or equality row.
+                total = spread[live[0]]
             else:
-                m.charges.add(m.total[name] == sum(plan["coefficient"][i]*m.reserve[i] for i in live))
-                total, scale = m.total[name], 1.
+                m.charges.add(m.total[name] == sum(spread[i] for i in live))
+                total = m.total[name]
             for slope, intercept in plan["lines"][name].lines:
-                m.charges.add(m.charge[name] >= slope*scale*total+intercept)
+                m.charges.add(m.charge[name] >= slope*total+intercept)
         m.profit = Expression(expr=utility["w0"]*sum(weight*m.U[s] for s, (_id, weight, _t) in enumerate(scenarios))
                               - sum(m.charge[name] for name in names))
 
@@ -4515,7 +4516,7 @@ class TransportPortfolioSolve(PyomoSolve):
         if utility is None:
             m.profit = Expression(expr=sum(values))
         else:
-            self._attach_utility(m, groups, caps, list(active))
+            self._attach_utility(m, groups, list(active))
         m.objective = Objective(expr=m.profit, sense=maximize)
         for variable in m.component_data_objects(Var):
             # Cash: nothing held, and every scenario wealth at w0.
@@ -5118,7 +5119,7 @@ class TransportActionScore:
             self.expected = solve._expected_profit(self.groups)
             self.scenarios = solve._utility_scenarios(self.groups, self.utility)
             self.envelope = solve._utility_envelope(self.groups, self.utility, self.expected, self.scenarios)
-            self.charge_plan = solve._charge_plan(self.groups, self.caps, self.utility)
+            self.charge_plan = solve._charge_plan(self.groups, self.utility)
         self.program_identity = hashlib.sha256(json.dumps(
             identity, sort_keys=True, separators=(",", ":"), allow_nan=False
         ).encode("utf-8")).hexdigest()
@@ -5185,20 +5186,21 @@ class TransportActionScore:
             wealth.append(self.utility["w0"]+mean+sum(float(np.dot(row, quantities[i])) for i, row in terms.items()))
         return names, wealth
 
-    def _utility_components(self, quantities, reserves):
+    def _utility_components(self, quantities):
         """Value the quantities under the tangent envelope and the charge lines (what the program maximizes), and exactly."""
         import numpy as np
 
         names, wealth = self._wealth(quantities)
         weights = np.asarray([weight for _name, weight, _terms in self.scenarios], dtype=float)
         plan = self.charge_plan
-        totals = {name: sum(plan["coefficient"][i]*reserves[i] for i in indices)
-                  for name, indices in sorted(plan["members"].items())}
+        spread = {i: float(plan["charge"][i].charge(plan["rows"][i] @ np.asarray(quantities[i], dtype=float)))
+                  for i in plan["rows"]}   # S_g of the book chosen, not of a reference book
+        totals = {name: sum(spread[i] for i in indices) for name, indices in sorted(plan["members"].items())}
         charges = [plan["lines"][name].value(total) for name, total in totals.items()]
         exact_charges = [plan["lines"][name].exact(total) for name, total in totals.items()]
         envelope = float(self.utility["w0"]*np.dot(weights, self.envelope.value(wealth)))
         return {"envelope": envelope, "charges": charges, "value": envelope-sum(charges),
-                "charge_names": list(totals), "dispersion": list(plan["dispersion"]),
+                "charge_names": list(totals), "dispersion": [spread.get(i, 0.) for i in range(len(self.groups))],
                 "exact": float(self.utility["w0"]*np.dot(weights, self.envelope.exact(wealth))-sum(exact_charges)),
                 "exact_charges": exact_charges,
                 "envelope_error": self.envelope.error, "core_error": self.envelope.core_error,
@@ -5259,7 +5261,7 @@ class TransportActionScore:
         if self.utility is not None:
             # The objective is the W0-scaled expected envelope utility less the charges; the dollar group values
             # stay beside it.
-            result["utility"] = self._utility_components(quantities, reserves)
+            result["utility"] = self._utility_components(quantities)
             result["value"] = result["utility"]["value"]
         return result
 
