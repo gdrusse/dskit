@@ -5026,80 +5026,83 @@ def test_derived_refuses_a_non_finite_number_anywhere_in_the_file(field):
         _foreign(program, params, **{field: float("nan")})
 
 
-# --- the utility objective: fractional Kelly over scenario wealth (ADR-0299) ------------------------------------------
+# --- the utility objective: fractional Kelly over joint scenario wealth (ADR-0299) ------------------------------------
 
-def _bet_group(key="g", p=.9, credit=100., loss=500., capacity=400):
-    """One short contract: keeps ``credit`` with probability ``p``, loses ``loss`` otherwise."""
+def _bet_group(key="g", p=.85, credit=100., loss=500., capacity=400):
+    """One short contract: keeps ``credit`` with probability ``p``, loses ``loss`` otherwise; reserve is the net loss.
+
+    At p .85 the mean is 25 a contract and the full-Kelly stake sits well inside the 25 contracts the cash rule allows.
+    """
     return {"id": key, "grid": [0., 1.], "masses": [p, 1.-p], "radius": 0., "scale": 1.,
             "credit": [credit], "losses": [[0.], [loss]], "capacity": [capacity], "exclusive": [],
             "reserve_rows": [[loss-credit]], "linear_rows": []}
 
 
-def _kelly_program(groups, fraction=1., w0=10000., n_tangents=64, wealth_lo=None, marginal=1., joint=(), core=2.):
+QUIET = {"id": "market:0", "weight": 1., "terms": {}}
+#: A binary loss of probability .15 has variance .1275 of its net loss squared: the honest dispersion of ``_bet_group``.
+BINARY_DISPERSION = .1275
+
+
+def _kelly_program(groups, fraction=1., w0=10000., n_tangents=64, wealth_lo=None, dispersion=BINARY_DISPERSION,
+                   joint=None, core=2.):
     return {"groups": groups, "caps": [{"groups": [g["id"] for g in groups], "upper": w0}],
             "utility": {"w0": w0, "gamma": 1./fraction, "n_tangents": n_tangents, "core": core,
-                        "wealth_lo": w0*.01 if wealth_lo is None else wealth_lo,
-                        "marginal_weight": marginal, "joint": list(joint)}}
+                        "wealth_lo": w0*.01 if wealth_lo is None else wealth_lo, "dispersion": dispersion,
+                        "joint": [QUIET] if joint is None else list(joint)}}
 
 
 def _kelly_params():
-    return {"absolute_gap": 1e-7, "relative_gap": 0., "parity_tolerance": 1e-5,
+    """The study's parity tolerance (1e-3): the charge lines' intercepts reach c x ceiling^2, so HiGHS's scaled row
+    tolerance leaves the charge variable up to about 1e-4 under its lines."""
+    return {"absolute_gap": 1e-3, "relative_gap": 0., "parity_tolerance": 1e-3,
             "solver_options": {"mip_abs_gap": 1e-9, "mip_rel_gap": 0., "threads": 1}}
 
 
-def _exact_log_growth(q, p=.9, credit=100., loss=500., w0=10000.):
-    import math
-    return w0*(p*math.log((w0+credit*q)/w0)+(1-p)*math.log((w0+credit*q-loss*q)/w0))
+def _exact_objective(q, gamma, p=.85, credit=100., loss=500., w0=10000., dispersion=BINARY_DISPERSION):
+    """The objective by hand: w0 times the CRRA utility of the expected wealth less the exact dispersion charge."""
+    from dskit.pipeline.libs.pyomo import tangent_utility
+
+    mean = p*credit-(1.-p)*(loss-credit)
+    return w0*tangent_utility([w0+mean*q], w0, gamma)[0][0]-gamma*dispersion*(loss-credit)**2*q*q/(2.*w0)
 
 
 def test_full_kelly_log_utility_picks_the_hand_computed_stake():
-    """p .9, +100 or -400 per contract on 10,000: the closed-form stake is 12.5, so 12 or 13, whichever the exact log prefers."""
-    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+    """+100 / -400 at .85 on 10,000: the stake maximizes the hand-written objective; the scorer values it as the model does."""
+    from dskit.pipeline.libs.pyomo import TransportActionScore, TransportPortfolioSolve
 
-    selection = TransportPortfolioSolve("kelly", _kelly_params()).run(None, _kelly_program([_bet_group()]))["selection"]
+    program = _kelly_program([_bet_group()])
+    selection = TransportPortfolioSolve("kelly", _kelly_params()).run(None, program)["selection"]
     q = selection["quantities"][0][0]
-    closed_form = 10000.*(.9*100.-.1*400.)/(100.*400.)
-    assert closed_form == pytest.approx(12.5)
-    best = max(range(25), key=_exact_log_growth)   # 25 contracts is ruin in the losing branch
-    assert q == best and q in (12, 13)
-    assert selection["utility"]["exact"] == pytest.approx(_exact_log_growth(q))
-    assert selection["utility"]["envelope"] >= selection["utility"]["exact"], "the envelope lies above the utility"
-    assert selection["utility"]["envelope"]-selection["utility"]["exact"] <= selection["utility"]["envelope_error"]*10000.
-    assert selection["value"] == selection["utility"]["envelope"]
-    assert selection["group_values"] == pytest.approx([q*(100.-.1*500.)]), "the dollar expectation stays beside it"
+    exact = max(range(100), key=lambda n: _exact_objective(n, 1.))
+    mean_variance = 25.*10000./(1.*BINARY_DISPERSION*400.**2)   # mu w0 / (gamma dispersion R^2), the small-stake stake
+    assert abs(q-exact) <= 1 and abs(exact-mean_variance) <= 3, (q, exact, mean_variance)
+    scorer = TransportActionScore(program, {"parity_tolerance": 1e-8})
+    assert q == max(range(100), key=lambda n: scorer.value([[n]])["value"]), "the model maximizes the scorer's value"
+    assert selection["utility"]["exact"] == pytest.approx(_exact_objective(q, 1.))
+    assert selection["utility"]["envelope"]-sum(selection["utility"]["charges"]) == selection["value"]
+    assert selection["utility"]["charges"][0] <= selection["utility"]["exact_charges"][0], "the lines undercount the square"
+    assert selection["group_values"] == pytest.approx([q*25.]), "the dollar expectation stays beside it"
+    assert selection["utility"]["wealth"] == {"market:0": pytest.approx(10000.+25.*q)}
+    assert q*400. < 10000., "the cash rule does not bind"
 
 
-def _exact_crra_growth(q, gamma, p=.9, credit=100., loss=500., w0=10000.):
-    from dskit.pipeline.libs.pyomo import tangent_utility
-    wealth = [w0+credit*q, w0+credit*q-loss*q]
-    u = tangent_utility(wealth, w0, gamma)[0]
-    return w0*(p*u[0]+(1-p)*u[1])
-
-
-@pytest.mark.parametrize("n_tangents", [64, 256])
-def test_the_kelly_fraction_orders_the_position(n_tangents):
-    """A quarter Kelly takes no more than a half, which takes no more than full, each near its exact CRRA optimum.
-
-    With 64 knots the envelope may land one contract off the exact integer
-    optimum (the accuracy a coarse envelope costs); with 256 it is exact.
-    """
+def test_the_kelly_fraction_sizes_the_position_in_proportion():
+    """A quarter Kelly takes about a quarter of full Kelly's stake, a half about half: each the exact argmax within one."""
     from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
 
-    fractions, sizes, exact = (.25, .5, 1.), [], []
-    for f in fractions:
+    sizes = {}
+    for fraction in (.25, .5, 1.):
         selection = TransportPortfolioSolve("kelly", _kelly_params()).run(
-            None, _kelly_program([_bet_group()], fraction=f, n_tangents=n_tangents))["selection"]
-        sizes.append(selection["quantities"][0][0])
-        exact.append(max(range(25), key=lambda q: _exact_crra_growth(q, 1./f)))
-        assert selection["utility"]["core_error"] <= selection["utility"]["envelope_error"]
-    assert sizes == sorted(sizes) and sizes[0] < sizes[-1]
-    assert exact == [4, 7, 12], "the exact integer optima: 1/gamma times full Kelly holds only to first order"
-    slack = 1 if n_tangents == 64 else 0
-    assert all(abs(size-best) <= slack for size, best in zip(sizes, exact))
+            None, _kelly_program([_bet_group()], fraction=fraction))["selection"]
+        sizes[fraction] = selection["quantities"][0][0]
+        exact = max(range(100), key=lambda n: _exact_objective(n, 1./fraction))
+        assert abs(sizes[fraction]-exact) <= 1, (fraction, sizes[fraction], exact)
+    assert sizes[.25] < sizes[.5] < sizes[1.]
+    assert .2 <= sizes[.25]/sizes[1.] <= .35 and .4 <= sizes[.5]/sizes[1.] <= .65, sizes
 
 
 def test_a_losing_book_takes_zero_under_the_utility():
-    """Credit below the expected loss: no stake raises the expected utility, so the selection is cash."""
+    """Credit below the expected loss: the expected wealth falls and the charge grows, so the selection is cash."""
     from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
 
     losing = _bet_group(p=.5, credit=100., loss=500.)
@@ -5109,15 +5112,17 @@ def test_a_losing_book_takes_zero_under_the_utility():
 
 
 def test_the_wealth_floor_is_a_hard_cut_and_the_scorer_refuses_a_breach():
-    """A near-sure bet would go past the floor; the solve keeps every scenario at or above it, and the audit refuses below it."""
+    """A nearly sure bet with a rare crash would go past the floor; the solve stops at it, and the audit refuses below it."""
     from dskit.pipeline.libs.pyomo import TransportActionScore, TransportPortfolioSolve
 
-    sure = _bet_group(p=.999, credit=100., loss=500., capacity=400)
-    program = _kelly_program([sure], wealth_lo=5000.)
+    sure = {**_bet_group(p=1., credit=100., loss=500., capacity=400), "masses": [1., 0.]}
+    crash = {"id": "market:-0.3", "weight": .001, "terms": {"g": [-400.]}}
+    program = _kelly_program([sure], wealth_lo=5000., dispersion=0.,
+                             joint=[{**QUIET, "weight": .999}, crash])
     selection = TransportPortfolioSolve("kelly", _kelly_params()).run(None, program)["selection"]
     q = selection["quantities"][0][0]
-    assert 10000.-400.*q >= 5000. and 10000.-400.*(q+1) < 5000., "the floor binds exactly"
-    assert selection["utility"]["wealth_min"] >= 5000.
+    assert q == 16 and 10000.-300.*q >= 5000. > 10000.-300.*(q+1), "the floor binds exactly"
+    assert selection["utility"]["wealth_min"] == pytest.approx(10000.-300.*q)
     scorer = TransportActionScore(program, {"parity_tolerance": 1e-8})
     assert scorer.check_feasible([[q]])["feasible"]
     verdict = scorer.check_feasible([[q+1]])
@@ -5144,36 +5149,54 @@ def test_the_tangent_envelope_overestimates_by_at_most_its_stated_error(n):
     assert set(inside) <= set(live)
 
 
+def test_the_charge_lines_sit_under_the_square_and_touch_it_at_the_knots():
+    import numpy as np
+    from dskit.pipeline.libs.pyomo import _ChargeLines
+
+    lines = _ChargeLines(2e-6, 10000., 32)
+    assert lines.value(0.) == 0. and lines.exact(0.) == 0.
+    knots = [-(b/a) for a, b in lines.lines[1:]]   # a knot k has line 2ck r - ck^2: zero at r = k/2
+    assert len(lines.lines) == 33 and min(knots) == pytest.approx(10000.*2**-15.5/2) and max(knots) == 5000.
+    r = np.linspace(0., 10000., 4001)
+    under = np.array([lines.exact(x)-lines.value(x) for x in r])
+    assert under.min() >= -1e-9, "never above the square"
+    reach = r >= 10000.*2**-15.5
+    assert (under[reach] <= .03*np.array([lines.exact(x) for x in r[reach]])+1e-9).all(), "within 3% from the lowest knot up"
+    assert all(lines.value(2*k) == pytest.approx(lines.exact(2*k)) for k in knots), "touching at the knots"
+    assert _ChargeLines(2e-6, float("inf"), 32).lines == [(0., 0.)] and _ChargeLines(2e-6, 0., 32).lines == [(0., 0.)]
+
+
 def test_a_joint_scenario_shrinks_correlated_books_together():
-    """Two bets whose losses coincide in one joint scenario are sized smaller than two with the same marginals and no joint loss."""
+    """Two bets that lose together in one joint scenario are each sized smaller than when only one of them is in it."""
     from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
 
     a, b = _bet_group("a"), _bet_group("b")
-    quiet = _kelly_program([a, b], fraction=.5)
-    independent = TransportPortfolioSolve("kelly", _kelly_params()).run(None, quiet)["selection"]
-    crash = {"id": "market:-0.1", "weight": .05, "terms": {"a": [-400.], "b": [-400.]}}
-    joint = _kelly_program([a, b], fraction=.5, marginal=.95, joint=[crash])
-    together = TransportPortfolioSolve("kelly", _kelly_params()).run(None, joint)["selection"]
-    assert independent["quantities"][0] == independent["quantities"][1] == [7], "each book alone: the exact CRRA optimum"
-    q_a, q_b = together["quantities"][0][0], together["quantities"][1][0]
-    assert q_a == q_b == 3, "symmetric books stay symmetric, both well under the quiet optimum of 7"
-    assert together["utility"]["joint_wealth"]["market:-0.1"] == pytest.approx(10000.-400.*(q_a+q_b))
+    quiet = TransportPortfolioSolve("kelly", _kelly_params()).run(None, _kelly_program([a, b], fraction=.5))["selection"]
+    crash = {"id": "market:-0.1", "weight": .05, "terms": {"a": [-250.], "b": [-250.]}}
+    scenarios = [{**QUIET, "weight": .95}, crash]
+    together = TransportPortfolioSolve("kelly", _kelly_params()).run(
+        None, _kelly_program([a, b], fraction=.5, joint=scenarios))["selection"]
     only_a = TransportPortfolioSolve("kelly", _kelly_params()).run(None, _kelly_program(
-        [a, b], fraction=.5, marginal=.95, joint=[{**crash, "terms": {"a": [-400.]}}]))["selection"]
-    assert only_a["quantities"] == [[4], [7]], \
-        "a book the crash does not reach keeps its quiet size; the exposed one shrinks less when it is alone in the crash"
+        [a, b], fraction=.5, joint=[scenarios[0], {**crash, "terms": {"a": [-250.]}}]))["selection"]
+    q_quiet = quiet["quantities"][0][0]
+    assert quiet["quantities"][1][0] == q_quiet > 0
+    (q_a, q_b), (q_a_only, q_b_only) = (q[0] for q in together["quantities"]), (q[0] for q in only_a["quantities"])
+    assert q_a == q_b < q_a_only < q_quiet, "the shared crash shrinks a more than a crash of its own"
+    assert q_b_only == q_quiet, "a book the crash does not reach keeps its quiet size"
+    assert together["utility"]["wealth"]["market:-0.1"] == pytest.approx(10000.+25.*(q_a+q_b)-250.*(q_a+q_b))
 
 
-@pytest.mark.parametrize("screen", ["none"])   # lp refuses a utility program (test_the_lp_group_screen_refuses_a_utility_program)
+@pytest.mark.parametrize("screen", ["none", "lp"])
 def test_derived_and_recorded_price_utility_actions_as_this_host_does(screen):
-    """A foreign action file is re-valued by the same envelope; the recorded route replays it; a floor breach refuses."""
+    """A foreign action file is re-valued by the same envelope and charges; the recorded route replays it; a floor breach refuses."""
     from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportActionScore, TransportPortfolioSolve
 
     params = {**_kelly_params(), "group_screen": screen}
-    crash = {"id": "m", "weight": .1, "terms": {"a": [-400.], "b": [-400.]}}
-    program = _kelly_program([_bet_group("a"), _bet_group("b", p=.5)], fraction=.5, marginal=.9, joint=[crash])
+    crash = {"id": "m", "weight": .03, "terms": {"a": [-400.], "b": [-400.]}}
+    program = _kelly_program([_bet_group("a"), _bet_group("b", p=.5)], fraction=.5,
+                             joint=[{**QUIET, "weight": .97}, crash])
     derived, solved = _foreign(program, params)
-    assert derived["selection"]["quantities"] == solved["quantities"]
+    assert derived["selection"]["quantities"] == solved["quantities"] and solved["quantities"][0][0] > 0
     assert derived["selection"]["value"] == solved["value"]
     assert derived["selection"]["utility"] == solved["utility"]
     scored = TransportActionScore(program, {"parity_tolerance": 1e-5}).evaluate(solved["quantities"])
@@ -5204,13 +5227,17 @@ def test_derived_and_recorded_price_utility_actions_as_this_host_does(screen):
     lambda u: u.update(core=float("inf")),
     lambda u: u.update(wealth_lo=0.),
     lambda u: u.update(wealth_lo=10000.),
-    lambda u: u.update(marginal_weight=.5),
-    lambda u: u.update(marginal_weight=1.5),
-    lambda u: u.update(joint=[{"id": "m", "weight": .5, "terms": {"g": [1.]}}]),
-    lambda u: u.update(marginal_weight=.5, joint=[{"id": "m", "weight": .5, "terms": {"x": [1.]}}]),
-    lambda u: u.update(marginal_weight=.5, joint=[{"id": "m", "weight": .5, "terms": {"g": [1., 1.]}}]),
-    lambda u: u.update(marginal_weight=.5, joint=[{"id": "", "weight": .5, "terms": {"g": [1.]}}]),
-    lambda u: u.update(marginal_weight=.5, joint=[{"id": "m", "weight": .5, "terms": {"g": [1.]}, "upper": 1.}]),
+    lambda u: u.update(dispersion=-.1),
+    lambda u: u.update(dispersion=float("nan")),
+    lambda u: u.update(joint=[]),
+    lambda u: u.update(joint=[{**QUIET, "weight": .5}]),
+    lambda u: u.update(joint=[{**QUIET, "weight": .5}, {"id": "m", "weight": .5, "terms": {"x": [1.]}}]),
+    lambda u: u.update(joint=[{**QUIET, "weight": .5}, {"id": "m", "weight": .5, "terms": {"g": [1., 1.]}}]),
+    lambda u: u.update(joint=[{**QUIET, "weight": .5}, {"id": "", "weight": .5, "terms": {"g": [1.]}}]),
+    lambda u: u.update(joint=[{**QUIET, "weight": .5}, {**QUIET, "weight": .5}]),
+    lambda u: u.update(joint=[{**QUIET, "terms": None}]),
+    lambda u: u.update(joint=[{"id": "m", "weight": 1., "terms": {"g": [1.]}, "upper": 1.}]),
+    lambda u: u.update(marginal_weight=1.),
     lambda u: u.update(extra=1),
     lambda u: u.pop("joint"),
 ])
@@ -5242,13 +5269,55 @@ def test_a_program_without_the_utility_block_is_scored_and_solved_as_before():
 
     program = {"groups": [_bet_group(capacity=4)], "caps": [{"groups": ["g"], "upper": 10000.}]}
     scored = TransportActionScore(program, {}).value([[2]])
-    assert "utility" not in scored and scored["value"] == pytest.approx(2*(100.-50.))
+    assert "utility" not in scored and scored["value"] == pytest.approx(2*(100.-.15*500.))
     selection = TransportPortfolioSolve("plain", _kelly_params()).run(None, program)["selection"]
     assert "utility" not in selection and selection["quantities"] == [[4]]
 
 
-def _synthetic_option_week(groups=150, strikes=11, seed=7):
-    """A week shaped like index_options' (ADR-0299 sizing): one group per name, long and short puts and calls per strike."""
+def test_the_lp_screen_is_allowed_under_a_utility_and_drops_only_standalone_losers():
+    """With ``lp`` a losing book is screened out before the utility sees it, as with joint rows: a hedge it would have
+    bought is lost (the documented restriction); a winner's stake is unchanged by the screen."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    crash = {"id": "m", "weight": .05, "terms": {"a": [-400.], "hedge": [600.]}}
+    hedge = {**_bet_group("hedge", p=.5, credit=-20., loss=0., capacity=50), "reserve_rows": [[20.]]}
+    program = _kelly_program([_bet_group("a"), hedge], fraction=.5, joint=[{**QUIET, "weight": .95}, crash])
+    plain = TransportPortfolioSolve("none", {**_kelly_params(), "group_screen": "none"}).run(None, program)["selection"]
+    screened = TransportPortfolioSolve("lp", {**_kelly_params(), "group_screen": "lp"}).run(None, program)["selection"]
+    assert plain["quantities"][1][0] > 0, "unscreened, the losing hedge is bought for the crash"
+    assert screened["quantities"][1][0] == 0 and screened["certificates"][0]["variables"] < plain["certificates"][0]["variables"]
+    assert screened["value"] <= plain["value"], "a restriction, never a gain"
+    no_hedge = _kelly_program([_bet_group("a")], fraction=.5, joint=[{**QUIET, "weight": .95}, {**crash, "terms": {"a": [-400.]}}])
+    for screen in ("none", "lp"):
+        assert TransportPortfolioSolve(screen, {**_kelly_params(), "group_screen": screen}).run(
+            None, no_hedge)["selection"]["quantities"] == [screened["quantities"][0]]
+
+
+def test_a_weak_edge_week_is_not_certified_as_cash_under_a_relative_gap():
+    """At a 100-dollar absolute gap a 60-dollar objective certifies cash; at 1 dollar plus 1% the stake is found."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    weak = _bet_group(p=.82, credit=100., loss=500., capacity=30)   # mean 10 a contract
+    program = _kelly_program([weak], fraction=.25)
+    loose = {"absolute_gap": 100., "relative_gap": 0., "parity_tolerance": 1e-3, "timeout_policy": "return",
+             "solver_options": {"threads": 1, "mip_abs_gap": 100., "mip_rel_gap": 0.}}
+    tight = {**loose, "absolute_gap": 1., "relative_gap": .01, "solver_options": {"threads": 1, "mip_abs_gap": 1., "mip_rel_gap": .01}}
+    exact = max(range(31), key=lambda n: _exact_objective(n, 4., p=.82))
+    found = TransportPortfolioSolve("tight", tight).run(None, program)["selection"]
+    assert abs(found["quantities"][0][0]-exact) <= 1 and 0 < found["value"] < 100.
+    at_loose = TransportPortfolioSolve("loose", loose).run(None, program)["selection"]
+    assert at_loose["gap"] <= 100. and at_loose["value"] <= found["value"]
+    for fraction in (.25, .5):
+        a = TransportPortfolioSolve("f", tight).run(None, _kelly_program([weak], fraction=fraction))["selection"]
+        b = TransportPortfolioSolve("f", tight).run(None, _kelly_program([weak], fraction=fraction*2))["selection"]
+        assert a["quantities"][0][0] < b["quantities"][0][0], "the fractions stay separated under the tight gap"
+
+
+def _synthetic_option_week(groups=150, strikes=11, seed=7, pairs=False, edge=1.3):
+    """A week shaped like index_options': one group per name, long and short puts and calls per strike, a 13-point grid.
+
+    With ``pairs`` consecutive groups are twins with the same data (the bench gives one of each twin pair no beta).
+    """
     import math
     import numpy as np
 
@@ -5258,9 +5327,12 @@ def _synthetic_option_week(groups=150, strikes=11, seed=7):
     masses = (masses/masses.sum()).tolist()
     out = []
     for g in range(groups):
+        if pairs and g % 2:
+            out.append({**out[-1], "id": f"g{g}"})
+            continue
         spot, scale, mult = 100.*math.exp(rng.normal(0., .3)), .05*math.exp(rng.normal(0., .3)), 100.
         grid = [spot*math.exp(v*scale) for v in z]
-        implied = [spot*math.exp(v*scale*1.3) for v in z]   # the market prices a wider law than the forecast: an edge for shorts
+        implied = [spot*math.exp(v*scale*edge) for v in z]   # the market prices a wider law than the forecast: an edge for shorts
         items = []
         for k in np.linspace(.8, 1.2, strikes):
             strike = round(spot*k, 2)
@@ -5282,12 +5354,40 @@ def _synthetic_option_week(groups=150, strikes=11, seed=7):
                     "losses": losses, "capacity": [10]*len(items), "exclusive": list(physical.values()),
                     "reserve_rows": reserves,
                     "linear_rows": [{"coefficients": [-i["sign"] if i["right"] == "call" else 0. for i in items],
-                                     "upper": 0.}]})
+                                     "upper": 0.}], "items": items})
     return out
 
 
+#: The bench's market-move grid and weights: sixteen moves and the quiet cell, shaped like a Student t over a month.
+BENCH_MOVES = {-.15: .006, -.125: .008, -.1: .014, -.075: .025, -.05: .05, -.035: .055, -.02: .07, -.01: .08,
+               .01: .08, .02: .07, .035: .055, .05: .05, .075: .025, .1: .014, .125: .008, .15: .006}
+
+
+def _bench_utility(groups, betas, w0, gamma, n_tangents, dispersion):
+    """The joint scenarios of a bench week: each move's profit deviation per contract, every name at beta times the move."""
+    import math
+
+    def loss_at(item, spot):
+        return -item["sign"]*100.*max((item["strike"]-spot) if item["right"] == "put" else (spot-item["strike"]), 0.)
+    joint = [{"id": "market:0", "weight": 1.-sum(BENCH_MOVES.values()), "terms": {}}]
+    for move, weight in BENCH_MOVES.items():
+        terms = {}
+        for g, beta in zip(groups, betas):
+            if beta:
+                shocked = g["scale"]*(1.+beta*move)
+                terms[g["id"]] = [loss_at(i, g["scale"])-loss_at(i, shocked) for i in g["items"]]
+        joint.append({"id": f"market:{move}", "weight": weight, "terms": terms})
+    return {"w0": w0, "gamma": gamma, "n_tangents": n_tangents, "core": 2., "wealth_lo": .01*w0,
+            "dispersion": dispersion, "joint": joint}
+
+
 def test_kelly_sizing_on_a_realistic_synthetic_week():
-    """Model size and time of one Kelly week at index_options' scale; set DSKIT_KELLY_BENCH=<groups> to run it."""
+    """Model size, time and the f ordering of one Kelly week at index_options' scale; set DSKIT_KELLY_BENCH=<groups>.
+
+    DSKIT_KELLY_ITEMS (strikes per group, items are 4x), DSKIT_KELLY_TANGENTS, DSKIT_KELLY_FRACTIONS (comma list),
+    DSKIT_KELLY_SCREEN (none or lp), DSKIT_KELLY_DOLLAR=1 to time the dollar objective on the same week first,
+    DSKIT_KELLY_EDGE (the market's implied scale over the forecast's, 1.1: a 10% edge for shorts).
+    """
     import os
     import time
     import numpy as np
@@ -5295,51 +5395,61 @@ def test_kelly_sizing_on_a_realistic_synthetic_week():
 
     if not os.environ.get("DSKIT_KELLY_BENCH"):
         pytest.skip("set DSKIT_KELLY_BENCH=<groups> to run the sizing benchmark")
-    groups = _synthetic_option_week(int(os.environ["DSKIT_KELLY_BENCH"]))
-    n_tangents = int(os.environ.get("DSKIT_KELLY_TANGENTS", "64"))
+    edge = float(os.environ.get("DSKIT_KELLY_EDGE", "1.1"))
+    groups = _synthetic_option_week(int(os.environ["DSKIT_KELLY_BENCH"]), int(os.environ.get("DSKIT_KELLY_ITEMS", "11")),
+                                    pairs=True, edge=edge)
+    n_tangents = int(os.environ.get("DSKIT_KELLY_TANGENTS", "32"))
     w0, rng = 10000., np.random.default_rng(1)
-    betas = rng.normal(1., .3, len(groups))
-    joint, weights = [], {-.1: .02, -.05: .08, .05: .08, .1: .02}
-    for move, weight in weights.items():
-        terms = {}
-        for g, beta in zip(groups, betas):
-            shocked = g["scale"]*(1.+beta*move)
-            # the group's loss at the shocked spot: interpolate on its own grid (a stand-in for the child's exact rule)
-            k = int(np.clip(np.searchsorted(g["grid"], shocked), 1, len(g["grid"])-1))
-            terms[g["id"]] = [c-l for c, l in zip(g["credit"], g["losses"][k])]
-        joint.append({"id": f"market:{move}", "weight": weight, "terms": terms})
-    program = {"groups": groups, "caps": [{"groups": [g["id"] for g in groups], "upper": w0}],
-               "utility": {"w0": w0, "gamma": 4., "n_tangents": n_tangents, "core": 2., "wealth_lo": .01*w0,
-                           "marginal_weight": 1.-sum(weights.values()), "joint": joint}}
-    gap = float(os.environ.get("DSKIT_KELLY_GAP", "50"))   # the real study: absolute_gap 50, timeout_policy return
-    params = {"absolute_gap": gap, "relative_gap": 0., "parity_tolerance": 1e-3, "timeout_policy": "return",
-              "solver_options": {"threads": 1, "time_limit": 900, "mip_abs_gap": gap, "mip_rel_gap": 0.},
+    betas = [0. if g % 2 == 0 else float(rng.normal(1.1, .2)) for g in range(len(groups))]   # even twins: no market
+    params = {"absolute_gap": 1., "relative_gap": .01, "parity_tolerance": 1e-3, "timeout_policy": "return",
+              "solver_options": {"threads": 1, "time_limit": 900, "mip_abs_gap": 1., "mip_rel_gap": .01},
               "group_screen": os.environ.get("DSKIT_KELLY_SCREEN", "none")}
-    node = TransportPortfolioSolve("bench", params)
-    start = time.perf_counter()
-    model = node.build_model(program, params)
-    built = time.perf_counter()-start
-    start = time.perf_counter()
-    selection = node.run(None, program)["selection"]
-    solved = time.perf_counter()-start
-    timed_out = "timeout" in selection
-    if timed_out:
-        selection = selection["candidate"] or {}
-    certificate = selection.get("certificates", [{}])[0] if not timed_out else {"seconds": float("nan"), "variables": -1, "constraints": -1, "termination": "maxTimeLimit"}
-    held = sum(1 for q in selection.get("quantities", []) if any(q))
-    print(f"\nKELLY BENCH groups={len(groups)} items/group={len(groups[0]['capacity'])} tangents={n_tangents}: "
-          f"build {built:.1f}s, run (screen+build+solve+audit) {solved:.1f}s, solver {certificate['seconds']:.1f}s, "
-          f"variables={certificate['variables']} constraints={certificate['constraints']} "
-          f"tangent rows={len(model.tangent)} scenarios={len(model.W)} termination={certificate['termination']} "
-          f"gap={selection['gap']:.4f} books={held} contracts={sum(sum(q) for q in selection['quantities'])} "
-          f"value={selection['value']:.2f} exact={selection['utility']['exact']:.2f} "
-          f"core_error={selection['utility']['core_error']:.2e} envelope_error={selection['utility']['envelope_error']:.2e} "
-          f"wealth_min={selection['utility']['wealth_min']:.0f} reserved={sum(selection['reserves']):.0f} of cash {w0:.0f}")
-    assert not timed_out, "the week did not certify within the time limit"
-    assert selection["utility"]["wealth_min"] >= .01*w0
+    plain = [{k: v for k, v in g.items() if k != "items"} for g in groups]
+    caps = [{"groups": [g["id"] for g in groups], "upper": .95*w0}]
+    lines = []
+    if os.environ.get("DSKIT_KELLY_DOLLAR"):
+        start = time.perf_counter()
+        dollar = TransportPortfolioSolve("dollar", params).run(None, {"groups": plain, "caps": caps})["selection"]
+        lines.append(f"dollar objective: run {time.perf_counter()-start:.1f}s "
+                     f"{'TIMEOUT' if 'timeout' in dollar else 'optimal'} contracts="
+                     f"{sum(sum(q) for q in (dollar.get('candidate') or dollar)['quantities'])}")
+    fractions = os.environ.get("DSKIT_KELLY_FRACTIONS", ".25,.5,1")
+    for fraction in (float(f) for f in fractions.split(",") if fractions != "none"):
+        program = {"groups": plain, "caps": caps,
+                   "utility": _bench_utility(groups, betas, w0, 1./fraction, n_tangents, .1)}
+        node = TransportPortfolioSolve("bench", params)
+        start = time.perf_counter()
+        model = node.build_model(program, params)
+        built = time.perf_counter()-start
+        rows = sum(1 for _ in model.component_data_objects(__import__("pyomo.environ", fromlist=["Constraint"]).Constraint, active=True))
+        start = time.perf_counter()
+        selection = node.run(None, program)["selection"]
+        solved = time.perf_counter()-start
+        timed_out = "timeout" in selection
+        chosen = (selection["candidate"] or {}) if timed_out else selection
+        certificate = (selection["certificates"] if timed_out else chosen["certificates"])[0]
+        quantities = chosen.get("quantities", [[0]*len(g["capacity"]) for g in groups])
+        stakes = [sum(q) for q in quantities]
+        independent, market = stakes[0::2], stakes[1::2]
+        reserves = chosen.get("reserves", [0.]*len(groups))
+        reserve = sum(reserves)
+        lines.append(
+            f"f={fraction}: build {built:.1f}s run {solved:.1f}s solver {certificate['seconds']:.1f}s rows={rows} "
+            f"variables={certificate['variables']} {'TIMEOUT' if timed_out else certificate['termination']} "
+            f"objective={chosen.get('value', float('nan')):.1f} bound={chosen.get('bound') or float('nan'):.1f} "
+            f"gap={chosen.get('gap') or float('nan'):.2f} books={sum(1 for s in stakes if s)} contracts={sum(stakes)} "
+            f"reserve={reserve:.0f} of cap {caps[0]['upper']:.0f} ({reserve/caps[0]['upper']:.0%}) "
+            f"independent twins {sum(independent)} contracts, reserve {sum(reserves[0::2]):.0f} vs market twins {sum(market)} contracts, "
+            f"reserve {sum(reserves[1::2]):.0f} (twin pairs where the market twin reserves less: "
+            f"{sum(a > b for a, b in zip(reserves[0::2], reserves[1::2]))}, more: {sum(a < b for a, b in zip(reserves[0::2], reserves[1::2]))}) "
+            f"wealth_min={chosen.get('utility', {}).get('wealth_min', float('nan')):.0f} "
+            f"exact={chosen.get('utility', {}).get('exact', float('nan')):.1f}")
+    import resource
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1048576.
+    print("\nKELLY BENCH groups=%d items/group=%d tangents=%d screen=%s edge=%.2f peak_rss=%.2fGB\n  " % (
+        len(groups), len(groups[0]["capacity"]), n_tangents, params["group_screen"], edge, peak)+"\n  ".join(lines))
+    assert not any("TIMEOUT" in line for line in lines), "a week did not certify within the time limit"
 
-
-# --- review fixes to the utility objective (ADR-0299 amendment) ------------------------------------------------------
 
 def _costly_pair_group(key="g"):
     """Items 0 and 1 are a long/short pair at one strike whose round trip costs 2 (holding both only wastes cash);
@@ -5428,24 +5538,6 @@ def test_price_duals_converts_an_appsi_error_only_for_a_utility_program(monkeypa
         else:
             with pytest.raises(RuntimeError, match="infeasible"):
                 node._price_duals(model)
-
-
-@pytest.mark.parametrize("screen,refused", [("lp", True), ("none", False)])
-def test_the_lp_group_screen_refuses_a_utility_program(screen, refused):
-    """The LP screen reads dollar expectations and drops a losing book that hedges a move: a utility program may not use it."""
-    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
-
-    params = {**_kelly_params(), "group_screen": screen}
-    node = TransportPortfolioSolve("screen", params)
-    program = _kelly_program([_bet_group(capacity=4)])
-    if refused:
-        with pytest.raises(ValueError, match="group_screen"):
-            node.run(None, program)
-    else:
-        assert node.run(None, program)["selection"]["quantities"] == [[4]]
-    plain = {"groups": [_bet_group(capacity=4)], "caps": [{"groups": ["g"], "upper": 10000.}]}
-    assert TransportPortfolioSolve("screen", params).run(None, plain)["selection"]["quantities"] == [[4]]
-
 
 def test_the_core_error_matches_gamma_delta_squared_over_eight_only_for_log_utility():
     """``gamma delta^2 / 8`` per log-wealth spacing is the log-utility error; CRRA with gamma > 1 is worse, not uniform.

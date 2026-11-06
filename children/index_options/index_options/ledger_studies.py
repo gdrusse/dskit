@@ -1340,29 +1340,38 @@ class WeeklyOptionPortfolioStudy:
         n_tangents (int >= 2), core (> 1, the band around the wealth that gets
         the finer tangent grid), wealth_floor (0 to 1, the share of that
         wealth no scenario's wealth may fall below: the one cut that keeps log
-        wealth finite), moves and beta_lookback (the shock's own rules) and
-        cash_buffer (0 to < 1, the share of funding the decision's cash row
-        leaves unused so the next session's reprice has room; the fill checks
-        the whole cash rule). Such a method must declare rho 0,
-        portfolio_fraction 1, name_fraction 1 and component_fraction null and
-        may not declare shock, risk_charge, radius_scale or
-        short_notional_fraction: the sizing caps are gone, and what remains
-        is the cash rule (new reserves within funding less open reserves),
-        the reserve rows, an optional reserve_per_contract floor and the
-        defined-loss structures. The weekly budget does not apply to it, and
-        the document's solver group_screen must be none. Wealth is the capital
-        not already committed (funding less open reserves), so overlapping
-        weeks do not stack. Each week the quiet regime values every candidate
-        on its own forecast grid (independent outcomes, additive growth) and
-        each move is a joint regime in which every name moves beta times the
-        move, its terms the shock's, weighted by the probability a Student t
-        (4 degrees of freedom, the basket's variance) puts on the move's cell
-        of the real line; the basket's trailing daily volatility
-        (beta_lookback sessions strictly before the decision) is scaled to the
-        week's mean candidate DTE. A week without enough strictly prior finite
-        history, or without positive uncommitted capital, does not trade
-        (kelly_risk_input). Open books enter through the cash rule and that
-        wealth only.
+        wealth finite), moves and beta_lookback (the shock's own rules, on a
+        finer grid of moves), cash_buffer (0 to < 1, the share of funding the
+        decision's cash row leaves unused so the next session's reprice has
+        room; the fill checks the whole cash rule), dispersion (>= 0, the
+        variance of a book's own profit as a share of its reserve squared,
+        charged at gamma x dispersion x reserve^2 / (2 x wealth): the cost of
+        a name's own risk, so concentration is not free) and gap (absolute
+        and relative: the document's solver absolute_gap, relative_gap,
+        mip_abs_gap and mip_rel_gap may be no looser, since the objective is
+        dollars of growth and a 50-dollar gap certifies a weak week as cash).
+        Such a method must declare rho 0, portfolio_fraction 1,
+        name_fraction 1 and component_fraction null and may not declare
+        shock, risk_charge, radius_scale or short_notional_fraction: the
+        sizing caps are gone, and what remains is the cash rule (new reserves
+        within funding less open reserves), the reserve rows, an optional
+        reserve_per_contract floor and the defined-loss structures. The
+        weekly budget does not apply to it. Wealth is the capital not already
+        committed (funding less open reserves), so overlapping weeks do not
+        stack. Each week's scenarios are the market moves and the quiet cell:
+        every scenario's wealth is that capital plus every candidate's
+        expected profit under its own forecast plus, in a move, every book's
+        profit against its no-move profit with every name moved beta times
+        the move (the shock's own terms), weighted by the probability a
+        Student t (4 degrees of freedom, the basket's variance) puts on the
+        move's cell of the real line; the basket's trailing daily volatility
+        (beta_lookback sessions strictly before the decision) is scaled to
+        the week's mean candidate DTE. A name whose window holds a nonfinite
+        bar is dropped from the basket and the week's candidates (recorded as
+        dropped). A week without enough strictly prior history, without a
+        name with finite history, or without positive uncommitted capital,
+        does not trade (kelly_risk_input). Open books enter through the cash
+        rule and that wealth only.
     inputs : dict
         Per-symbol forecasts, contexts, chain and bars, already bounded before
         materialization. No outcomes are passed to the optimizer.
@@ -1384,7 +1393,9 @@ class WeeklyOptionPortfolioStudy:
     _RADIUS_SCALE = "reference_scale"
     _CHARGE_KEYS = ("reserve_per_contract", "short_notional_fraction")
     _SHOCK_KEYS = {"moves", "loss_fraction", "beta_lookback"}
-    _KELLY_KEYS = {"fraction", "n_tangents", "core", "wealth_floor", "moves", "beta_lookback", "cash_buffer"}
+    _KELLY_KEYS = {"fraction", "n_tangents", "core", "wealth_floor", "moves", "beta_lookback", "cash_buffer",
+                   "dispersion", "gap"}
+    _KELLY_GAP_KEYS = {"absolute", "relative"}
     #: Degrees of freedom of the Student t that prices the market-move cells (ADR-0299): one fixed constant, the heavy
     #: tail a normal law lacks, the lowest with a finite variance to match the basket's.
     _KELLY_TAIL_DF = 4
@@ -1568,11 +1579,11 @@ class WeeklyOptionPortfolioStudy:
                              or not 0 < method["component_fraction"] <= 1))):
                 raise ValueError("invalid fixed method")
             ids.add(method["id"])
-        if (any("kelly" in method for method in p["methods"])
-                and p["solver"].get("group_screen", "none") != "none"):
-            # The LP screen reads dollar expectations and drops a losing book that hedges a move; a Kelly
-            # formulation therefore lives in its own document, whose screen is none.
-            raise ValueError("a kelly method needs the document's solver group_screen none")
+        for method in p["methods"]:
+            if "kelly" in method and not cls._gap_within(p["solver"], method["kelly"]["gap"]):
+                # The objective is dollars of growth: a 50-dollar gap certifies a weak week as cash and cannot tell
+                # a quarter Kelly from a half. The method states the gap it needs; a looser document refuses.
+                raise ValueError("the document's solver gaps exceed the kelly method's gap")
         for symbol in symbols:
             problems = _AllQuotedOptionContext.validate_params({**p["bridge"], "symbol": symbol})
             if problems:
@@ -1660,6 +1671,10 @@ class WeeklyOptionPortfolioStudy:
                 and number_ok(kelly["core"]) and kelly["core"] > 1
                 and number_ok(kelly["wealth_floor"]) and 0 < kelly["wealth_floor"] < 1
                 and number_ok(kelly["cash_buffer"]) and 0 <= kelly["cash_buffer"] < 1
+                and number_ok(kelly["dispersion"]) and kelly["dispersion"] >= 0
+                and isinstance(kelly["gap"], dict) and set(kelly["gap"]) == cls._KELLY_GAP_KEYS
+                and number_ok(kelly["gap"]["absolute"]) and kelly["gap"]["absolute"] > 0
+                and number_ok(kelly["gap"]["relative"]) and 0 <= kelly["gap"]["relative"] < 1
                 and cls._moves_valid(kelly["moves"], kelly["beta_lookback"])
                 and not any(key in method for key in cls._KELLY_EXCLUDES)
                 and number_ok(method["rho"]) and method["rho"] == 0
@@ -1675,6 +1690,15 @@ class WeeklyOptionPortfolioStudy:
     def _kelly(method):
         """Return the method's validated kelly policy, None when undeclared."""
         return method.get("kelly")
+
+    @staticmethod
+    def _gap_within(solver, gap):
+        """Return whether a document's certification gaps and HiGHS gaps are no looser than a kelly method's."""
+        options = solver.get("solver_options") or {}
+        return (number_ok(solver["absolute_gap"]) and solver["absolute_gap"] <= gap["absolute"]
+                and number_ok(solver["relative_gap"]) and solver["relative_gap"] <= gap["relative"]
+                and number_ok(options.get("mip_abs_gap", 0.)) and options.get("mip_abs_gap", 0.) <= gap["absolute"]
+                and number_ok(options.get("mip_rel_gap", 0.)) and options.get("mip_rel_gap", 0.) <= gap["relative"])
 
     @staticmethod
     def _risk_charge_valid(spec):
@@ -1748,21 +1772,23 @@ class WeeklyOptionPortfolioStudy:
         """
         return sum(m["dte"] for m in metadata)/len(metadata) if metadata else 0
 
-    def _move_weights(self, day, kelly, horizon_days):
+    def _move_weights(self, day, kelly, horizon_days, names=None):
         """Estimate each move's probability from the basket's trailing volatility, strictly before ``day``.
 
-        The equal-weight basket's daily log returns over ``beta_lookback``
-        sessions before ``day`` (the betas' own window) give a daily
-        volatility, scaled by the square root of the sessions in
-        ``horizon_days`` calendar days (the week's candidate-count-weighted
-        mean DTE, rounded; ``_mean_dte``). A Student t with
-        ``_KELLY_TAIL_DF`` degrees of freedom and that variance (scale
+        The equal-weight basket of ``names`` (every symbol when None; the
+        kelly week passes the names whose window is finite) and its daily
+        log returns over ``beta_lookback`` sessions before ``day`` (the
+        betas' own window) give a daily volatility, scaled by the square
+        root of the sessions in ``horizon_days`` calendar days (the week's
+        candidate-count-weighted mean DTE, rounded; ``_mean_dte``). A Student
+        t with ``_KELLY_TAIL_DF`` degrees of freedom and that variance (scale
         sigma / sqrt(df / (df - 2))) assigns each move the mass of its cell on
         the real line: the cells are the Voronoi cells of ``log(1+move)`` and
         ``0`` (the quiet regime). Fewer returns than correlation_min_pairs is
-        ``insufficient_history``; a nonfinite return (a NaN or non-positive
-        bar) is ``nonfinite_history``; a zero volatility gives the moves no
-        weight. Only those two statuses are refusals: neither is ``estimated``.
+        ``insufficient_history``; no name with a finite window, or a
+        nonfinite basket, is ``nonfinite_history``; a zero volatility gives
+        the moves no weight. Only those two statuses are refusals: neither is
+        ``estimated``.
         """
         import numpy as np
         from dskit.pipeline.stats import student_t_sf
@@ -1775,7 +1801,8 @@ class WeeklyOptionPortfolioStudy:
                   "status": "insufficient_history"}
         if count < self.params["correlation_min_pairs"]:
             return result
-        basket = np.mean([returns[s] for s in self.params["symbols"]], axis=0)
+        names = self.params["symbols"] if names is None else list(names)
+        basket = np.mean([returns[s] for s in names], axis=0) if names else np.array([math.nan])
         if not np.all(np.isfinite(basket)):
             result["status"] = "nonfinite_history"
             return result
@@ -1971,8 +1998,16 @@ class WeeklyOptionPortfolioStudy:
             return self._beta_cache[day, lookback]
         symbols = self.params["symbols"]
         returns, count = self._returns(day, lookback)
+        result = {"betas": self._fit_betas(returns, symbols, count), "observations": count}
+        self._beta_cache[day, lookback] = result
+        return result
+
+    def _fit_betas(self, returns, symbols, count):
+        """Fit each name's beta on the equal-weight basket of ``symbols``; all 1.0 when the window cannot fit them."""
+        import numpy as np
+
         betas = {s: 1. for s in symbols}
-        if count >= self.params["correlation_min_pairs"]:
+        if count >= self.params["correlation_min_pairs"] and symbols:
             market = np.mean([returns[s] for s in symbols], axis=0)
             variance = float(np.var(market))
             if variance > 0:
@@ -1980,9 +2015,22 @@ class WeeklyOptionPortfolioStudy:
                           for s in symbols}
                 if all(math.isfinite(b) for b in fitted.values()):
                     betas = fitted
-        result = {"betas": betas, "observations": count}
-        self._beta_cache[day, lookback] = result
-        return result
+        return betas
+
+    def _kelly_estimate(self, day, lookback):
+        """Return the betas of the names whose window is finite, the names dropped for a nonfinite bar, and the count.
+
+        A nonfinite return (a NaN or non-positive bar that reached the
+        window) drops that name from the basket and from the week's
+        candidates, visibly, instead of blanking the week.
+        """
+        import numpy as np
+
+        returns, count = self._returns(day, lookback)
+        finite = [s for s in self.params["symbols"] if np.all(np.isfinite(returns[s]))]
+        dropped = [s for s in self.params["symbols"] if s not in finite]
+        return {"betas": self._fit_betas(returns, finite, count), "observations": count,
+                "dropped": dropped, "names": finite}
 
     def _prepare(self, day):
         """Collect every eligible expiry and strike using only date-D rows."""
@@ -2483,17 +2531,23 @@ class WeeklyOptionPortfolioStudy:
                         else "within"}
                 kelly = self._kelly(method)
                 if kelly is not None:
-                    estimate = self._betas(day, kelly["beta_lookback"])
+                    estimate = self._kelly_estimate(day, kelly["beta_lookback"])
+                    # A name whose window holds a nonfinite bar is dropped, with its candidates, for this week.
+                    if estimate["dropped"]:
+                        kept = [i for i, m in enumerate(metadata) if m["symbol"] not in estimate["dropped"]]
+                        groups, metadata = [groups[i] for i in kept], [metadata[i] for i in kept]
                     # Wealth to size on is the capital not already committed: funding less every open book's reserve.
                     w0 = account.remaining(self.params["symbols"], 1.)
-                    weights = self._move_weights(day, kelly, self._mean_dte(metadata))
+                    weights = self._move_weights(day, kelly, self._mean_dte(metadata), estimate["names"])
                     record["kelly"] = {
                         "fraction": kelly["fraction"], "gamma": 1./kelly["fraction"], "w0": w0,
                         "funding": account.funding, "open_reserve": record["open_reserve"],
-                        "cash_buffer": kelly["cash_buffer"],
+                        "cash_buffer": kelly["cash_buffer"], "dispersion": kelly["dispersion"], "gap": dict(kelly["gap"]),
                         "wealth_lo": kelly["wealth_floor"]*w0,
-                        "betas": dict(estimate["betas"]), **weights,
-                        "status": weights["status"] if w0 > 0 else "nonpositive_capital"}
+                        "betas": dict(estimate["betas"]), "dropped": list(estimate["dropped"]),
+                        "candidates": len(metadata), **weights,
+                        "status": (weights["status"] if w0 > 0 else "nonpositive_capital")
+                        if metadata or not estimate["dropped"] else "no_candidate_with_history"}
                 if any(lim["upper"] < -1e-5 for lim in limits):
                     record["status"] = "existing_cap_breach_cash"
                 elif (self.clocks and (day == self.calendar[-1]
@@ -2501,10 +2555,10 @@ class WeeklyOptionPortfolioStudy:
                     record["status"] = "no_entry_fill_session"
                 elif "shock" in record and record["shock"]["status"] != "within":
                     record["status"] = ("shock_risk_input" if held is None else "shock_held_breach")
-                elif not groups or day == self.calendar[-1]:
-                    record["status"] = "no_eligible_candidates"
                 elif "kelly" in record and record["kelly"]["status"] != "estimated":
                     record["status"] = self._KELLY_RISK_INPUT
+                elif not groups or day == self.calendar[-1]:
+                    record["status"] = "no_eligible_candidates"
                 else:
                     mult = p["bridge"]["solver"]["multiplier"]
                     risk = self._risk_charge(method)
@@ -2522,18 +2576,22 @@ class WeeklyOptionPortfolioStudy:
                                                 mult, account.funding, held)
                         program["joint_rows"] = rows
                     if kelly is not None:
-                        # The shock's move terms, negated into profit, become joint wealth scenarios; a move
-                        # the history gives no weight is recorded but not modelled (its floor would be a cap).
-                        terms = self._move_terms(kelly["moves"], estimate["betas"], metadata, configured, mult)
+                        # The shock's move terms become joint wealth scenarios: each scenario's profit is the move's
+                        # terminal loss against the no-move loss (the credit cancels), beside the expected profit the
+                        # solver adds itself; a move the history gives no weight is recorded but not modelled (its
+                        # floor would be a cap). The quiet cell is the expectation alone.
+                        terms = self._move_terms([*kelly["moves"], 0.], estimate["betas"], metadata, configured, mult)
                         rows = [{"id": f"shock:{move}", "terms": terms[move], "upper": 0.} for move in kelly["moves"]]
+                        weights = record["kelly"]["weights"]
                         program["utility"] = {
                             "w0": record["kelly"]["w0"], "gamma": record["kelly"]["gamma"],
                             "n_tangents": kelly["n_tangents"], "core": kelly["core"],
-                            "wealth_lo": record["kelly"]["wealth_lo"],
-                            "marginal_weight": record["kelly"]["quiet"],
-                            "joint": [{"id": f"market:{move}", "weight": record["kelly"]["weights"][str(move)],
-                                       "terms": {key: [-v for v in row] for key, row in terms[move].items()}}
-                                      for move in kelly["moves"] if record["kelly"]["weights"][str(move)] > 0]}
+                            "wealth_lo": record["kelly"]["wealth_lo"], "dispersion": kelly["dispersion"],
+                            "joint": [{"id": "market:0", "weight": record["kelly"]["quiet"], "terms": {}}]
+                            + [{"id": f"market:{move}", "weight": weights[str(move)],
+                                "terms": {key: [base-shocked for base, shocked in zip(terms[0.][key], row)]
+                                          for key, row in terms[move].items()}}
+                               for move in kelly["moves"] if weights[str(move)] > 0]}
                     if policy:
                         from dskit.pipeline.libs.pyomo import TransportActionScore
 

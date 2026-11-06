@@ -302,8 +302,11 @@ foreign solve was refused. `StudyContract.check_dependencies` is the pin check `
 Wasserstein and optional MAD risk-charge terms used by `TransportPortfolioSolve`.
 A program's optional `utility` block (ADR-0299) makes both value a W0-scaled
 fractional-Kelly expected utility of scenario wealth instead (tangent envelope
-from `tangent_utility`; per-group own-outcome scenarios plus declared joint
-scenarios; a hard wealth floor; radius 0, no risk charge).
+from `tangent_utility`; every scenario's wealth is W0 plus every group's
+expected profit plus the scenario's declared profit terms; a hard wealth
+floor) less a `dispersion` charge of `gamma x dispersion x reserve^2 / (2 W0)`
+per group (radius 0, no risk charge). Rows grow with the scenarios and the
+groups, never with the grid points.
 It checks all shared constraints and enumerates a complete feasible catalogue,
 refusing a declared Cartesian-size limit before enumeration.
 `libs.sb3.FiniteDecisionEnv` supplies a reusable one-decision Gymnasium adapter:
