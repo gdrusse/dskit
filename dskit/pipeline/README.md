@@ -305,7 +305,12 @@ fractional-Kelly expected utility of scenario wealth instead (tangent envelope
 from `tangent_utility`; every scenario's wealth is W0 plus every group's
 expected profit plus the scenario's declared profit terms; a hard wealth
 floor) less a dispersion charge of `gamma x S_a^2 / (2 W0)` per name (`S_a` is the sum over the name's groups of the larger of 1.25 x the mean absolute deviation of the chosen book's payoff and the Cauchy-Schwarz lower bounds on its sd at each atom and over every lowest and highest set of atoms of the group's whole grid, by sparse epigraph rows, so each book is charged on its own outcomes; the `aggregate` key names the name; radius 0, no risk charge). Rows grow with the scenarios and the
-groups, never with the grid points.
+groups, never with the grid points. A utility program is solved by `utility_solve` `relax_fix` unless the
+document says `direct`: the LP relaxation first (its value bounds every integer point), an incumbent on the
+integer program reduced to the relaxation's support, then, when at most `UTILITY_CERTIFY_ACTIONS` actions stay free after every action that cannot beat the
+incumbent by its reduced cost is fixed at zero, a certification solve (a larger one is declined: the support
+incumbent stands under the relaxation's bound); the certificate's bound is the tightest of the relaxation, the
+solver's own and the fixed actions' reach, each valid for the whole program.
 It checks all shared constraints and enumerates a complete feasible catalogue,
 refusing a declared Cartesian-size limit before enumeration.
 `libs.sb3.FiniteDecisionEnv` supplies a reusable one-decision Gymnasium adapter:

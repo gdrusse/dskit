@@ -3920,6 +3920,8 @@ class TransportPortfolioSolve(PyomoSolve):
         still exists). The joint optimum is unchanged within
         parity_tolerance; only the model size and the certificate's
         variable/constraint counts shrink. Replay re-derives the screen.
+        Optional utility_solve, read for a utility program only, is
+        "relax_fix" (default) or "direct" (:attr:`UTILITY_SOLVES`).
         Inputs contain
         groups (id, grid, masses, radius, scale, credit, losses, capacity,
         exclusive, reserve_rows, linear_rows), caps (groups, upper) and
@@ -3990,7 +3992,23 @@ class TransportPortfolioSolve(PyomoSolve):
     outputs = ("selection",)
     _PARAMS = PyomoSolve._PARAMS + (
         "absolute_gap", "relative_gap", "parity_tolerance", "timeout_policy",
-        "group_screen")
+        "group_screen", "utility_solve")
+
+    #: How a utility program is solved (a dollar program ignores it): ``relax_fix`` (the default) solves the LP
+    #: relaxation first, finds an incumbent on the integer program reduced to that relaxation's support, then
+    #: certifies on the program with every action the relaxation's reduced costs rule out of any better solution
+    #: fixed at zero (exact, so the final bound holds for the whole program); ``direct`` hands HiGHS the whole
+    #: integer program, whose root probing on a hundred thousand interior integer variables never ends.
+    UTILITY_SOLVES = ("relax_fix", "direct")
+    #: Share of the time limit the incumbent search (the support-reduced program) may take before certification.
+    UTILITY_INCUMBENT_SHARE = .4
+    #: A relaxed action below this many contracts is outside the incumbent search's support.
+    UTILITY_SUPPORT_EPS = 1e-6
+    #: The most integer actions a certification solve is handed. HiGHS's root work on interior integer columns
+    #: (probing, which no option turns off) grows faster than their count and ignores the time limit: measured on
+    #: real 2021Q1 groups, 5,556 free actions ran 540 s against a 300 s cap and improved nothing. Above this the
+    #: strategy stops at the support incumbent and certifies against the relaxation alone.
+    UTILITY_CERTIFY_ACTIONS = 2000
 
     @classmethod
     def validate_params(cls, params):
@@ -4023,6 +4041,9 @@ class TransportPortfolioSolve(PyomoSolve):
         screen = params.get("group_screen", "none")
         if not isinstance(screen, str) or screen not in ("none", "lp"):
             problems.append("group_screen must be none or lp")
+        strategy = params.get("utility_solve", cls.UTILITY_SOLVES[0])
+        if not isinstance(strategy, str) or strategy not in cls.UTILITY_SOLVES:
+            problems.append("utility_solve must be one of "+", ".join(cls.UTILITY_SOLVES))
         return problems
 
     def _checked(self, inputs):
@@ -4579,9 +4600,18 @@ class TransportPortfolioSolve(PyomoSolve):
         return m
 
     def _solve(self, solver, model):
-        """Offer a feasible cash start to a capable backend."""
+        """Solve the model: a utility program by its declared strategy, a dollar program directly."""
+        if (getattr(self, "_utility", None) is not None
+                and self.params.get("utility_solve", self.UTILITY_SOLVES[0]) == "relax_fix"):
+            return self._solve_relax_fix(solver, model)
+        return self._solve_once(solver, model)
+
+    def _solve_once(self, solver, model, time_limit=None):
+        """Offer a feasible cash start to a capable backend; ``time_limit`` overrides the configured one for this call."""
         capability = getattr(solver, "warm_start_capable", None)
         warm = callable(capability) and capability()
+        if time_limit is not None:
+            solver.options["time_limit"] = max(1., float(time_limit))
         if self.params.get("timeout_policy", "raise") == "return":
             from pyomo.environ import Var
             options = {"warmstart": True} if warm else {}
@@ -4597,13 +4627,158 @@ class TransportPortfolioSolve(PyomoSolve):
             return solver.solve(model, warmstart=True)
         return super()._solve(solver, model)
 
+    def _relaxation(self, solver, model, time_limit):
+        """Solve the LP relaxation; return ``(value, {action: relaxed value}, {action: reduced cost})`` or None.
+
+        Integer domains are made continuous for the solve and restored after it, whatever happens. Reduced costs
+        come from HiGHS through an imported ``rc`` suffix.
+        """
+        from pyomo.common.collections import ComponentMap
+        from pyomo.environ import Reals, Suffix, Var, value
+
+        domains = ComponentMap()
+        for variable in model.component_data_objects(Var, active=True):
+            if variable.is_integer():
+                lower, upper = variable.bounds   # the domain's own bounds (a Binary's 0 and 1) made explicit
+                domains[variable] = variable.domain
+                variable.setlb(lower)
+                variable.setub(upper)
+                variable.domain = Reals
+        model.rc = Suffix(direction=Suffix.IMPORT)
+        try:
+            if time_limit is not None:
+                solver.options["time_limit"] = max(1., float(time_limit))
+            try:
+                results = solver.solve(model)
+            except RuntimeError:   # appsi raises when the relaxation has no solution to load
+                return None
+            if str(getattr(results.solver, "termination_condition", "")) != "optimal":
+                return None
+            bound = float(value(model.profit))
+            relaxed = {key: float(v.value or 0.) for key, v in model.x.items()}
+            costs = {key: float(model.rc.get(v, 0.) or 0.) for key, v in model.x.items()}
+        finally:
+            model.del_component(model.rc)
+            for variable, domain in domains.items():
+                variable.domain = domain
+        return bound, relaxed, costs
+
+    def _solve_relax_fix(self, solver, model):
+        """The utility strategy: relax, search the support for an incumbent, certify on the reduced-cost-fixed program.
+
+        Any action with no stake in the relaxed optimum is left out of the incumbent search (a restriction that
+        only serves to find a good integer point fast). For the certification every action whose reduced cost
+        rules it out of any solution better than the incumbent (``bound + rc_j < incumbent``, an LP fact that
+        every integer solution obeys) is fixed at zero: the fixed program holds every better solution, so its
+        own bound, and the relaxation's, hold for the whole program; ``model._transport_bound`` carries the
+        tighter of the two into the certificate. A relaxation that does not solve falls back to the direct
+        solve. Counts and seconds are logged; no value is.
+        """
+        from pyomo.environ import Var
+
+        model._transport_bound, model._transport_declined = None, False
+        budget = float(self.params.get("solver_options", {}).get("time_limit", 0) or 0)
+        clock = time.perf_counter()
+        remaining = lambda: None if not budget else max(1., budget-(time.perf_counter()-clock))
+        relaxed = self._relaxation(solver, model, remaining())
+        if relaxed is None:
+            self.log.info("utility relaxation did not solve; direct solve")
+            return self._solve_once(solver, model, remaining())
+        bound, stakes, costs = relaxed
+        lp_seconds = time.perf_counter()-clock
+        tolerance = max(self.params["parity_tolerance"], 1e-9)
+        capacity = {key: model.x[key].ub for key in model.x}
+        outside = [key for key, stake in stakes.items() if stake < self.UTILITY_SUPPORT_EPS]
+        for key in outside:
+            model.x[key].setub(0)
+        for variable in model.component_data_objects(Var, active=True):
+            if not variable.fixed:   # a cash start (every scenario wealth at w0); the relaxed point is no integer start
+                variable.set_value(self._utility["w0"] if variable.parent_component() is model.W else 0)
+        share = None if not budget else max(1., self.UTILITY_INCUMBENT_SHARE*budget)
+        result = self._solve_once(solver, model, None if share is None else min(share, remaining()))
+        search_seconds = time.perf_counter()-clock-lp_seconds
+        incumbent = None if getattr(model, "_transport_no_incumbent", False) else self._objective_value(model)
+        for key in outside:
+            model.x[key].setub(capacity[key])
+        if incumbent is not None:
+            allowance = max(self.params["absolute_gap"], self.params["relative_gap"]*abs(incumbent))
+            if bound-incumbent <= allowance:
+                # The support program's own bound covers only the support: the relaxation is the certificate.
+                model._transport_bound, model._transport_outside = bound, bound
+                self.log.info("utility solve: relaxation %.0fs, support %d of %d actions, incumbent certified "
+                              "against the relaxation in %.0fs, peak rss %.2f GB", lp_seconds,
+                              len(stakes)-len(outside), len(stakes), search_seconds, self._peak_rss())
+                return result
+        # Certification: a solution holding action j has value at most bound + rc_j (an LP fact every integer
+        # point obeys), so every action that cannot beat the incumbent is fixed at zero: the fixed program holds
+        # every better solution and its own bound covers them all (exact).
+        fixed = [] if incumbent is None else [key for key, cost in costs.items()
+                                              if stakes[key] < self.UTILITY_SUPPORT_EPS and bound+cost < incumbent-tolerance]
+        free = len(stakes)-len(fixed)
+        if free > self.UTILITY_CERTIFY_ACTIONS:
+            # Too many actions for HiGHS to certify in any time: the support incumbent stands, bounded by the
+            # relaxation (every outside action could reach it), and the certificate says the limit was reached.
+            model._transport_bound, model._transport_outside, model._transport_declined = bound, bound, True
+            self.log.info("utility solve: relaxation %.0fs, support %d of %d actions, incumbent search %.0fs, "
+                          "certification declined (%d free actions, limit %d); the relaxation is the bound, "
+                          "peak rss %.2f GB", lp_seconds, len(stakes)-len(outside), len(stakes), search_seconds,
+                          free, self.UTILITY_CERTIFY_ACTIONS, self._peak_rss())
+            return result
+        for key in fixed:
+            model.x[key].setub(0)
+        solver.options["mip_dual_bound"] = bound   # HiGHS stops at the gap against the bound it cannot improve on
+        try:
+            result = self._solve_once(solver, model, remaining())
+        finally:
+            del solver.options["mip_dual_bound"]
+            for key in fixed:
+                model.x[key].setub(capacity[key])
+        # Every solution outside the fixed program holds a fixed action j, so its value is at most bound + rc_j.
+        model._transport_bound = bound
+        model._transport_outside = max((bound+costs[key] for key in fixed), default=None)
+        self.log.info("utility solve: relaxation %.0fs, support %d of %d actions, incumbent search %.0fs, "
+                      "certification with %d actions fixed by reduced cost in %.0fs, peak rss %.2f GB",
+                      lp_seconds, len(stakes)-len(outside), len(stakes), search_seconds, len(fixed),
+                      time.perf_counter()-clock-lp_seconds-search_seconds, self._peak_rss())
+        return result
+
+    @staticmethod
+    def _peak_rss():
+        """This process's peak resident set in GB (0 where the platform does not report it)."""
+        try:
+            import resource
+            return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1048576.
+        except (ImportError, AttributeError):
+            return 0.
+
+    @staticmethod
+    def _objective_value(model):
+        """The model's profit at its loaded variable values, or None when it cannot be read."""
+        from pyomo.environ import value
+
+        profit = value(model.profit, exception=False)
+        return None if not number_ok(profit) else float(profit)
+
     @staticmethod
     def _build_solve_record(solver, model, results, name, seconds):
-        """Do not represent an unloaded warm start as a native incumbent."""
+        """Do not represent an unloaded warm start as a native incumbent; a relaxation bound tightens the record's."""
         from dataclasses import replace
         record = PyomoSolve._build_solve_record(solver, model, results, name, seconds)
         if getattr(model, "_transport_no_incumbent", False):
             record = replace(record, objective=None, gap=None, binding=())
+        relaxed = getattr(model, "_transport_bound", None)
+        if relaxed is not None and number_ok(relaxed):
+            # The solver's bound covers the program it saw, with the actions fixed by reduced cost; every solution
+            # outside it is bounded by the relaxation plus the largest fixed reduced cost (None: nothing fixed), so
+            # the whole program is bounded by the larger of the two, and by the relaxation itself.
+            outside = getattr(model, "_transport_outside", None)
+            own = record.bound if record.bound is not None and number_ok(record.bound) else relaxed
+            bound = min(relaxed, own if outside is None else max(own, outside))
+            record = replace(record, bound=bound, gap=SolveRecord._gap(record.objective, bound))
+            if getattr(model, "_transport_declined", False) and record.gap is not None:
+                # A declined certification is the strategy's own time limit: the record says so, the way a native
+                # limit would, so the timeout policy decides the week and nothing is misread as certified.
+                record = replace(record, termination="maxTimeLimit", status="aborted")
         return record
 
     def _timeout_reason(self, certificate, value):

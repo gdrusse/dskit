@@ -6107,3 +6107,124 @@ def test_the_core_error_matches_gamma_delta_squared_over_eight_only_for_log_util
     assert 1.5 < ratios[2., 20.] < 2.5 and .8 < ratios[2., 1.3] < 1.1
     assert 3. < ratios[4., 1.3] < 3.6 and 6. < ratios[4., 20.] < 7.
     assert ratios[4., 20.] > ratios[2., 20.] > ratios[1., 20.], "the error grows faster than gamma"
+
+
+# --- the utility solve strategy: relax, search the support, certify on the reduced-cost-fixed program (ADR-0299) ------
+
+def _strategy_params(strategy, **extra):
+    return {**_kelly_params(), "utility_solve": strategy, "timeout_policy": "return",
+            "solver_options": {"mip_abs_gap": 1e-9, "mip_rel_gap": 0., "threads": 1, "time_limit": 60}, **extra}
+
+
+def test_relax_fix_finds_the_direct_optimum_with_a_bound_valid_for_the_whole_program():
+    """Two bets and a losing hedge: the strategy's selection matches the direct solve and its bound covers it."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    crash = {"id": "m", "weight": .05, "terms": {"a": [-250.], "b": [-250.], "hedge": [600.]}}
+    hedge = {**_bet_group("hedge", p=.5, credit=-20., loss=0., capacity=50), "reserve_rows": [[20.]]}
+    program = _kelly_program([_bet_group("a"), _bet_group("b"), hedge], fraction=.5,
+                             joint=[{**QUIET, "weight": .95}, crash])
+    direct = TransportPortfolioSolve("direct", _strategy_params("direct")).run(None, program)["selection"]
+    fixed = TransportPortfolioSolve("relax", _strategy_params("relax_fix")).run(None, program)["selection"]
+    assert "timeout" not in direct and "timeout" not in fixed
+    assert fixed["quantities"] == direct["quantities"] and fixed["value"] == pytest.approx(direct["value"])
+    assert fixed["certificates"][0]["bound"] >= direct["value"]-1e-6, "the relaxation bound holds for every integer point"
+    assert fixed["certificates"][0]["bound"] <= direct["certificates"][0]["bound"]+1e-6, "and is no looser than HiGHS's own"
+    assert fixed["certificates"][0]["gap"] == pytest.approx(
+        abs(fixed["value"]-fixed["certificates"][0]["bound"])/abs(fixed["value"]))
+    assert fixed["certificates"][0]["variables"] == direct["certificates"][0]["variables"], "the model is the same model"
+    assert fixed["certificates"][0]["constraints"] == direct["certificates"][0]["constraints"]
+
+
+def test_relax_fix_reads_reduced_costs_with_the_sign_that_bounds_a_forced_action():
+    """For a relaxed action at zero, forcing one contract of it costs at most its reduced cost: the fixing rule's LP fact."""
+    from pyomo.environ import value
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    program = _kelly_program([_bet_group("a"), _bet_group("b", p=.5)], fraction=.5)
+    node = TransportPortfolioSolve("relax", _strategy_params("relax_fix"))
+    model = node.build_model(program, node.params)
+    solver = node._resolve_solver()
+    bound, stakes, costs = node._relaxation(solver, model, 60)
+    assert stakes[1, 0] == 0. and stakes[0, 0] > 0 and costs[1, 0] < 0, "the losing bet is out of the relaxed optimum"
+    assert model.x[0, 0].is_integer() and model.x[1, 0].is_integer(), "the domains are restored"
+    forced = node.build_model(program, node.params)
+    forced.x[1, 0].setlb(1)
+    forced_bound, _stakes, _costs = node._relaxation(node._resolve_solver(), forced, 60)
+    assert forced_bound <= bound+costs[1, 0]+1e-6, "one forced contract loses at least the reduced cost"
+
+
+def test_relax_fix_falls_back_to_the_direct_solve_when_the_relaxation_fails(monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    program = _kelly_program([_bet_group("a")], fraction=.5)
+    monkeypatch.setattr(TransportPortfolioSolve, "_relaxation", lambda self, solver, model, limit: None)
+    selection = TransportPortfolioSolve("relax", _strategy_params("relax_fix")).run(None, program)["selection"]
+    direct = TransportPortfolioSolve("direct", _strategy_params("direct")).run(None, program)["selection"]
+    assert selection["quantities"] == direct["quantities"]
+    assert selection["certificates"][0]["bound"] == pytest.approx(direct["certificates"][0]["bound"])
+
+
+def test_a_dollar_program_ignores_the_utility_solve_strategy_and_a_bad_one_refuses():
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    plain = {"groups": [_bet_group(capacity=4)], "caps": [{"groups": ["g"], "upper": 10000.}]}
+    for strategy in ("relax_fix", "direct"):
+        selection = TransportPortfolioSolve("plain", _strategy_params(strategy)).run(None, plain)["selection"]
+        assert selection["quantities"] == [[4]]
+    assert TransportPortfolioSolve.validate_params({**_kelly_params(), "utility_solve": "warm"})
+    assert not TransportPortfolioSolve.validate_params(_kelly_params()), "absent: the default strategy"
+
+
+def test_the_relax_fix_certificate_bound_is_the_tightest_valid_one():
+    """Nothing fixed: the solver's own bound (never above the relaxation); actions fixed: at least the relaxation
+    plus the largest fixed reduced cost, the value a solution holding one of them cannot exceed."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    class Model:
+        pass
+
+    def record(own, relaxed, outside):
+        model = Model()
+        model._transport_bound, model._transport_outside = relaxed, outside
+        base = TransportPortfolioSolve._build_solve_record
+        from dskit.pipeline.libs.pyomo import SolveRecord
+        fake = SolveRecord(solver="appsi_highs", status="ok", termination="optimal", objective=10., bound=own,
+                           gap=SolveRecord._gap(10., own), seconds=1., variables=1, constraints=1, binding=())
+        import dskit.pipeline.libs.pyomo as module
+        original = module.PyomoSolve._build_solve_record
+        module.PyomoSolve._build_solve_record = staticmethod(lambda *a: fake)
+        try:
+            return base(None, model, None, "appsi_highs", 1.)
+        finally:
+            module.PyomoSolve._build_solve_record = original
+    assert record(10.5, 12., None).bound == 10.5, "nothing fixed: the solver bounded the whole program"
+    assert record(13., 12., None).bound == 12., "never above the relaxation"
+    assert record(10.5, 12., 11.4).bound == 11.4, "a fixed action could reach 11.4: that is the bound"
+    assert record(10.5, 12., 10.2).bound == 10.5, "the fixed actions reach less than the solver's own bound"
+    assert record(10.5, 12., 10.2).gap == pytest.approx(.05)
+
+
+def test_a_certification_too_large_to_attempt_stops_at_the_support_incumbent_with_the_relaxation_bound(monkeypatch):
+    """Above the action limit the strategy declines the certification solve: the support incumbent is returned under the
+    relaxation's bound as a timeout envelope when that gap is uncertified, never as a certified optimum."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    crash = {"id": "m", "weight": .05, "terms": {"a": [-250.], "b": [-250.], "hedge": [600.]}}
+    hedge = {**_bet_group("hedge", p=.5, credit=-20., loss=0., capacity=50), "reserve_rows": [[20.]]}
+    program = _kelly_program([_bet_group("a"), _bet_group("b"), hedge], fraction=.5,
+                             joint=[{**QUIET, "weight": .95}, crash])
+    full = TransportPortfolioSolve("full", _strategy_params("relax_fix")).run(None, program)["selection"]
+    monkeypatch.setattr(TransportPortfolioSolve, "UTILITY_CERTIFY_ACTIONS", 0)
+    tight = _strategy_params("relax_fix", absolute_gap=1e-9, relative_gap=0.)
+    declined = TransportPortfolioSolve("declined", tight).run(None, program)["selection"]
+    assert "timeout" in declined and declined["timeout"] == "gap", "uncertified at a zero allowance: a gap timeout"
+    candidate = declined["candidate"]
+    assert declined["certificates"][0]["termination"] == "maxTimeLimit"
+    assert declined["certificates"][0]["status"] == "aborted"
+    assert candidate["bound"] >= full["value"]-1e-6, "the relaxation bounds the whole program"
+    assert candidate["value"] <= full["value"]+1e-6
+    loose = _strategy_params("relax_fix", absolute_gap=1e6)
+    certified = TransportPortfolioSolve("loose", loose).run(None, program)["selection"]
+    assert "timeout" not in certified, "within the allowance the support incumbent is certified against the relaxation"
+    assert certified["certificates"][0]["bound"] == pytest.approx(candidate["bound"])
