@@ -1486,7 +1486,7 @@ class MIOStudyContract(StudyContract):
         no_request_keys = {"row_type", "sequence_index", "cohort_id", "method_id", "decision_date",
                            "status", "candidate_count"}
         skip_statuses = {"existing_cap_breach_cash", "no_entry_fill_session", "shock_risk_input",
-                         "shock_held_breach", "no_eligible_candidates"}
+                         "shock_held_breach", "no_eligible_candidates", "kelly_risk_input"}
         seen, requests, no_requests = set(), [], []
         for index, (row, key) in enumerate(zip(rows, expected)):
             if not isinstance(key, list) or len(key) != 3 or not isinstance(row, dict):

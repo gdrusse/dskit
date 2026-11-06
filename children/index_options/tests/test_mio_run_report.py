@@ -455,3 +455,20 @@ def test_a_missing_saved_key_is_listed_not_a_bare_key_error():
     for needle in ("unfilled", "premium", "funding", "cash"):
         assert needle in text
     assert "missing" in text
+
+
+def test_a_kelly_risk_input_week_is_a_hold_when_declared_and_refused_when_not():
+    """A kelly method's week with no usable risk estimate saves status `kelly_risk_input` and no books (ADR-0299)."""
+    skipped = {"date": "2019-01-23", "status": "kelly_risk_input", "books": [], "funding": 12000.0,
+               "open_reserve": 0, "candidate_books": 3, "refusals": [],
+               "kelly": {"status": "insufficient_history"}}
+
+    def table():
+        result = _result()
+        result["result"]["decisions"] = [*result["result"]["decisions"], skipped]
+        return {"results": [result, _result(method=OTHER)]}
+    with pytest.raises(ValueError, match="kelly_risk_input"):
+        MioRunRows("rows", SHAPE).run(None, {"table": table()})
+    declared = {**SHAPE, "actions": {**SHAPE["actions"], "kelly_risk_input": "hold"}}
+    rows = MioRunRows("rows", declared).run(None, {"table": table()})
+    assert ("d-2019-01-23", "hold") in [(d["decision_id"], d["action"]) for d in rows["decisions"]]

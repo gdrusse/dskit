@@ -276,7 +276,8 @@ def test_mio_dimensions_node_closes_exact_cash_only_coverage(study, tmp_path, mo
                         "audit": tampered, "provenance": intake["provenance"]})
 
 
-def test_dimensions_contract_rejects_missing_reordered_and_fabricated_rows(study):
+@pytest.mark.parametrize("status", ["no_eligible_candidates", "kelly_risk_input"])
+def test_dimensions_contract_rejects_missing_reordered_and_fabricated_rows(study, status):
     from dskit.pipeline.base import value_hash
     from index_options.mio_contract import MIOStudyContract
 
@@ -284,7 +285,7 @@ def test_dimensions_contract_rejects_missing_reordered_and_fabricated_rows(study
     expected = [[None, method["id"], "2019-01-02"] for method in methods]
     rows = [{"row_type": "no_request", "sequence_index": i, "cohort_id": None,
              "method_id": method["id"], "decision_date": "2019-01-02",
-             "status": "no_eligible_candidates", "candidate_count": 0}
+             "status": status, "candidate_count": 0}
             for i, method in enumerate(methods)]
     provenance = {"plan_sha256": "a"*64, "inputs_sha256": "b"*64,
                   "source_pins_sha256": "c"*64}

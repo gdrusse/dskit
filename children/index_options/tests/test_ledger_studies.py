@@ -3420,7 +3420,8 @@ def test_chained_neighbours_make_one_component_so_component_fraction_becomes_a_p
 # --- the fractional-Kelly formulations (ADR-0299; owner ordered 2026-11-06) ------------------------------------------
 
 #: The shock's moves and lookback, the one cut that keeps log wealth finite, and the envelope's resolution.
-KELLY = {"n_tangents": 32, "core": 2., "wealth_floor": .01, "moves": SHOCK10["moves"], "beta_lookback": 60}   # 32: ADR-0299 sizing
+KELLY = {"n_tangents": 32, "core": 2., "wealth_floor": .01, "moves": SHOCK10["moves"], "beta_lookback": 60,
+         "cash_buffer": .05}   # 32: ADR-0299 sizing; 5%: the fill's slack on the cash row (ADR-0299 amendment)
 #: No sizing cap: the fractions are 1 (the cash rule), no component cap, no robustness radius, no short-notional floor.
 _KELLY_BASE = {"rho": 0., "portfolio_fraction": 1., "name_fraction": 1., "component_fraction": None}
 KELLY_FORMULATIONS = {
@@ -3473,6 +3474,10 @@ def test_the_two_kelly_formulations_validate_and_differ_only_in_the_fraction():
     lambda m: m["kelly"].update(moves=[-.1, 0.]),
     lambda m: m["kelly"].update(moves=[-.1, -.1]),
     lambda m: m["kelly"].update(beta_lookback=1),
+    lambda m: m["kelly"].update(cash_buffer=-.01),
+    lambda m: m["kelly"].update(cash_buffer=1.),
+    lambda m: m["kelly"].update(cash_buffer=None),
+    lambda m: m["kelly"].pop("cash_buffer"),
     lambda m: m["kelly"].update(loss_fraction=.1),
     lambda m: m["kelly"].pop("moves"),
     lambda m: m.update(kelly=None),
@@ -3514,7 +3519,7 @@ def test_a_kelly_method_hands_the_solver_a_utility_program_under_the_cash_rule_a
     assert statuses[1][1] in ("selected", "cash") and result["decisions"][1]["kelly"]["status"] == "estimated"
     assert seen, "the second week solves"
     program = seen[0]
-    assert [c["upper"] for c in program["caps"]] == [pytest.approx(result["decisions"][1]["funding"])]
+    assert [c["upper"] for c in program["caps"]] == [pytest.approx(.95*result["decisions"][1]["funding"])], "cash less the 5% buffer"
     assert len(program["caps"]) == 1 and "joint_rows" not in program
     utility = program["utility"]
     assert utility["gamma"] == 2. and utility["w0"] == result["decisions"][1]["funding"]
@@ -3615,3 +3620,175 @@ def test_a_market_move_reaches_correlated_names_more_than_an_independent_one(mon
     losses = week["kelly"]["losses"]
     assert set(losses) == {"-0.1", "-0.05", "0.05", "0.1"}
     assert week["selection"]["utility"]["joint_wealth"]["market:-0.1"] == pytest.approx(week["funding"]-losses["-0.1"])
+
+
+#: `_method` digests of two shock methods (decision `seconds` removed), computed from 69579ad3's code, before `_move_terms`
+#: was factored out of `_shock_rows` (ADR-0299): the refactor and every later kelly change leave a shock method byte-identical.
+SHOCK_BASELINES = {
+    "w1_010_shock10_lp": "5e6e63080d218b9f009320c578f2af5eef9a517517d0a87613314669176afeba",
+    "w1_010_shock05_book_lp": "259cd4049e3a86ab7c0f3069b27f100cc29967c179a5aeb2b0bd1642f01d04bc"}
+
+
+@pytest.mark.parametrize("name", sorted(SHOCK_BASELINES))
+def test_a_shock_method_is_byte_identical_to_the_code_before_the_kelly_refactor(name):
+    params, inputs = _weekly_portfolio_fixture()
+    params["methods"][0].update(FORMULATIONS[name], id="nominal")
+    params["methods"][0]["shock"] = {**params["methods"][0]["shock"], "beta_lookback": 2}
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert any("selection" in d for d in result["decisions"]), "the fixture trades under the shock"
+    assert _timeless_digest(result) == SHOCK_BASELINES[name]
+
+
+# --- review fixes (ADR-0299 amendment, 2026-11-06) ---------------------------------------------------------------------
+
+def _overlapping_kelly_world(buffer=.05):
+    """Two weeks whose fills are both allowed: week one's books are still open at week two's decision."""
+    params, data, series, days = _chain_world([2, 1])
+    params["clocks"]["entry_end_before"] = "2019-01-09"
+    method = {"id": "k", **KELLY_FORMULATIONS["kelly050_lp"]}
+    method["kelly"] = {**method["kelly"], "beta_lookback": 240, "cash_buffer": buffer}
+    params["methods"] = [method]
+    return params, data, method
+
+
+def test_a_kelly_week_sizes_on_capital_not_already_committed(monkeypatch):
+    """The second overlapping week takes materially less than the first: its Kelly wealth is funding less open reserves."""
+    seen = _spy_utility_programs(monkeypatch)
+    params, data, method = _overlapping_kelly_world()
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)
+    first, second = result["decisions"][:2]
+    assert first["status"] == "selected" and second["status"] in ("selected", "cash")
+    committed = second["open_reserve"]
+    assert committed == pytest.approx(sum(b["reserve"] for b in first["books"])) and committed > 0
+    one, two = seen[0], seen[1]
+    assert one["utility"]["w0"] == 10000. and one["utility"]["wealth_lo"] == pytest.approx(100.)
+    assert two["utility"]["w0"] == pytest.approx(10000.-committed), "uncommitted capital, not funding"
+    assert two["utility"]["wealth_lo"] == pytest.approx(.01*(10000.-committed)), "the floor reads the same wealth"
+    assert second["kelly"]["w0"] == two["utility"]["w0"]
+    stake = lambda d: sum(b["reserve"] for b in d.get("books", []))
+    assert stake(second) < .25*stake(first), "stakes no longer stack"
+    assert stake(first)+stake(second) <= .95*10000.+1e-6, "together within the cash row"
+
+
+def test_a_kelly_week_with_no_uncommitted_capital_does_not_trade(monkeypatch):
+    """Open reserves that leave nothing: no wealth to size on, so the week is `kelly_risk_input`, not a solve."""
+    from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+
+    seen = _spy_utility_programs(monkeypatch)
+    remaining = FundedOptionAccount.remaining
+    monkeypatch.setattr(FundedOptionAccount, "remaining",
+                        lambda self, members, fraction: 0. if self.open else remaining(self, members, fraction))
+    params, data, method = _overlapping_kelly_world()
+    first, second = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)["decisions"][:2]
+    assert first["status"] == "selected"
+    assert second["status"] == "kelly_risk_input" and second["kelly"]["status"] == "nonpositive_capital"
+    assert len(seen) == 1, "only the first week solved"
+
+
+def test_the_kelly_solve_holds_back_the_cash_buffer_but_the_fill_does_not(monkeypatch):
+    """The solve's cash row is (1 - buffer) of funding less open reserves; the fill-time limits are the whole cash rule."""
+    seen = _spy_utility_programs(monkeypatch)
+    params, data, method = _overlapping_kelly_world(buffer=.05)
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    result = study._method(method, None)
+    assert [c["upper"] for c in seen[0]["caps"]] == [pytest.approx(9500.)]
+    committed = result["decisions"][1]["open_reserve"]
+    assert [c["upper"] for c in seen[1]["caps"]] == [pytest.approx(9500.-committed)]
+    from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+    account = FundedOptionAccount(10000., 0., 14, "2019-01-02")
+    assert study._limits(account, method, {"groups": []})[0]["upper"] == 10000., "fill-time limits: no buffer"
+    assert study._limits(account, method, {"groups": []}, solve=True)[0]["upper"] == pytest.approx(9500.)
+    shock_method = {"id": "s", **FORMULATIONS["w1_010_shock10_lp"]}
+    assert study._limits(account, shock_method, {"groups": []}, solve=True) == study._limits(
+        account, shock_method, {"groups": []}), "a method without kelly has one set of limits"
+
+
+def _adverse_fill_world(buffer, bid_drop):
+    """The overlapping world with every fill-day put bid lowered by ``bid_drop`` (a worse reprice of the shorts)."""
+    params, data, method = _overlapping_kelly_world(buffer)
+    for name in data:
+        for row in data[name]["chain"]:
+            if row["date"] == "2019-01-03" and row["expiration"] == "2019-02-01" and row["strike"] == 100.:
+                row["bid"] -= bid_drop
+    return params, data, method
+
+
+def test_one_adverse_reprice_does_not_void_the_kelly_week():
+    """With cash the binding row, a worse fill reprice lifts the reserves past a cash row that was full: it voided the
+    week as `repriced_shared_cap`. A 5% buffer leaves the room; without it (buffer 0) the same reprice still rejects."""
+    outcomes = {}
+    for buffer in (0., .05):
+        params, data, method = _adverse_fill_world(buffer, bid_drop=.3)
+        result = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)
+        outcomes[buffer] = [r["reason"] for r in result["rejected"]]
+    assert outcomes[0.] == ["repriced_shared_cap"]*3, "buffer 0: the whole week is voided"
+    assert outcomes[.05] == [], "buffer .05: the books are all admitted"
+
+
+def test_a_kelly_method_needs_the_document_group_screen_none():
+    """The LP screen reads dollar expectations and drops a losing book that hedges a move."""
+    params, inputs = _weekly_portfolio_fixture()
+    params["methods"] = [{"id": "kelly025_lp", **KELLY_FORMULATIONS["kelly025_lp"]}]
+    for screen, refused in (("lp", True), ("none", False), (None, False)):
+        params["solver"] = {k: v for k, v in params["solver"].items() if k != "group_screen"}
+        if screen is not None:
+            params["solver"]["group_screen"] = screen
+        if refused:
+            with pytest.raises(ValueError, match="group_screen"):
+                ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+        else:
+            ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    plain, _ = _weekly_portfolio_fixture()
+    plain["solver"]["group_screen"] = "lp"
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(plain)   # a dollar document keeps its screen
+
+
+def _t4_cdf(x):
+    """The Student-t df 4 distribution function in closed form (independent of the code under test)."""
+    return .5+.375*(x/math.sqrt(1.+x*x/4.))*(1.-(x*x/12.)/(1.+x*x/4.))
+
+
+def test_move_weights_use_student_t_four_tails_at_the_estimated_volatility():
+    """Each move's cell mass is Student t df 4 with the basket's variance (scale = sigma / sqrt 2); the normal understates the tails."""
+    params, data, series, days = _chain_world([2, 1])
+    kelly = {**KELLY, "fraction": .5}
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    got = study._move_weights("2019-01-07", kelly, 30)
+    assert got["tail_df"] == 4
+    sigma = got["sigma_daily"]*math.sqrt(got["horizon_sessions"])
+    scale = sigma/math.sqrt(2.)
+    points = sorted({0., *(math.log1p(m) for m in kelly["moves"])})
+    edges = [-math.inf, *((a+b)/2. for a, b in zip(points, points[1:])), math.inf]
+    cdf = lambda e: 0. if e == -math.inf else 1. if e == math.inf else _t4_cdf(e/scale)
+    for move in kelly["moves"]:
+        k = points.index(math.log1p(move))
+        assert got["weights"][str(move)] == pytest.approx(cdf(edges[k+1])-cdf(edges[k]), abs=1e-9)
+    normal = lambda e: 0. if e == -math.inf else 1. if e == math.inf else .5*(1.+math.erf(e/(sigma*math.sqrt(2.))))
+    k = points.index(math.log1p(-.1))
+    assert got["weights"]["-0.1"] > normal(edges[k+1])-normal(edges[k]), "the fat tail puts more weight on the crash"
+
+
+def test_a_nonfinite_bar_is_a_refusal_not_an_estimate():
+    """A NaN close in the window must not give status `estimated` with NaN weights; the week does not trade."""
+    # The study refuses a NaN close at construction; a bar that went bad after it (or a zero) reaches the estimate.
+
+    params, data, series, days = _chain_world([2, 1])
+    kelly = {**KELLY, "fraction": .5}
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    study._bars[params["symbols"][0]]["2019-01-04"] = float("nan")
+    got = study._move_weights("2019-01-07", kelly, 30)
+    assert got["status"] == "nonfinite_history" and got["status"] != "estimated"
+    assert got["quiet"] == 1. and set(got["weights"].values()) == {0.}
+    assert got["sigma_daily"] is None
+
+
+def test_the_move_horizon_is_the_candidate_weighted_mean_dte_not_the_longest():
+    meta = [{"dte": 10}, {"dte": 10}, {"dte": 10}, {"dte": 40}]
+    assert ledger_studies.WeeklyOptionPortfolioStudy._mean_dte(meta) == 17.5
+    assert ledger_studies.WeeklyOptionPortfolioStudy._mean_dte([]) == 0
+    params, data, method = _overlapping_kelly_world()
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)
+    week = result["decisions"][0]
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    metadata = study._prepare(week["date"])[1]
+    assert week["kelly"]["horizon_days"] == ledger_studies.WeeklyOptionPortfolioStudy._mean_dte(metadata)

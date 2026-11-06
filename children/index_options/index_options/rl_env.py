@@ -1199,7 +1199,8 @@ class OptionStructuredEntryEnv(StructuredDecisionEnv):
                 raise ValueError("duplicate measured policy request date")
             by_date = {decision["date"]: decision for decision in decisions}
             skip_statuses = {"existing_cap_breach_cash", "no_entry_fill_session",
-                             "shock_risk_input", "shock_held_breach", "no_eligible_candidates"}
+                             "shock_risk_input", "shock_held_breach", "no_eligible_candidates",
+                             "kelly_risk_input"}
             for day in study.weeks:
                 decision = by_date[day]
                 if day in measured_dates:

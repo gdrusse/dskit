@@ -1336,26 +1336,33 @@ class WeeklyOptionPortfolioStudy:
         every result unchanged. Optional method key kelly (ADR-0299) replaces
         the dollar objective by a fractional-Kelly growth objective of account
         wealth: exactly fraction (0 to 1, the Kelly fraction; the solver's
-        gamma is its reciprocal), n_tangents (int >= 2), core (> 1, the band
-        around funding that gets the finer tangent grid), wealth_floor (0 to
-        1, the share of funding no scenario's wealth may fall below: the one
-        cut that keeps log wealth finite), moves and beta_lookback (the
-        shock's own rules). Such a method must declare rho 0,
+        gamma is its reciprocal, CRRA, roughly fraction times the Kelly stake),
+        n_tangents (int >= 2), core (> 1, the band around the wealth that gets
+        the finer tangent grid), wealth_floor (0 to 1, the share of that
+        wealth no scenario's wealth may fall below: the one cut that keeps log
+        wealth finite), moves and beta_lookback (the shock's own rules) and
+        cash_buffer (0 to < 1, the share of funding the decision's cash row
+        leaves unused so the next session's reprice has room; the fill checks
+        the whole cash rule). Such a method must declare rho 0,
         portfolio_fraction 1, name_fraction 1 and component_fraction null and
         may not declare shock, risk_charge, radius_scale or
         short_notional_fraction: the sizing caps are gone, and what remains
         is the cash rule (new reserves within funding less open reserves),
         the reserve rows, an optional reserve_per_contract floor and the
-        defined-loss structures. The weekly budget does not apply to it. Each
-        week the quiet regime values every candidate on its own forecast grid
-        (independent outcomes, additive growth) and each move is a joint
-        regime in which every name moves beta times the move, its terms the
-        shock's, weighted by the probability a normal law with the equal
-        weight basket's trailing daily volatility (beta_lookback sessions
-        strictly before the decision, scaled to the longest candidate
-        horizon) puts on the move's cell of the real line; a week without
-        enough strictly prior history, or without positive funding, does not
-        trade (kelly_risk_input). Open books enter through the cash rule only.
+        defined-loss structures. The weekly budget does not apply to it, and
+        the document's solver group_screen must be none. Wealth is the capital
+        not already committed (funding less open reserves), so overlapping
+        weeks do not stack. Each week the quiet regime values every candidate
+        on its own forecast grid (independent outcomes, additive growth) and
+        each move is a joint regime in which every name moves beta times the
+        move, its terms the shock's, weighted by the probability a Student t
+        (4 degrees of freedom, the basket's variance) puts on the move's cell
+        of the real line; the basket's trailing daily volatility
+        (beta_lookback sessions strictly before the decision) is scaled to the
+        week's mean candidate DTE. A week without enough strictly prior finite
+        history, or without positive uncommitted capital, does not trade
+        (kelly_risk_input). Open books enter through the cash rule and that
+        wealth only.
     inputs : dict
         Per-symbol forecasts, contexts, chain and bars, already bounded before
         materialization. No outcomes are passed to the optimizer.
@@ -1377,7 +1384,10 @@ class WeeklyOptionPortfolioStudy:
     _RADIUS_SCALE = "reference_scale"
     _CHARGE_KEYS = ("reserve_per_contract", "short_notional_fraction")
     _SHOCK_KEYS = {"moves", "loss_fraction", "beta_lookback"}
-    _KELLY_KEYS = {"fraction", "n_tangents", "core", "wealth_floor", "moves", "beta_lookback"}
+    _KELLY_KEYS = {"fraction", "n_tangents", "core", "wealth_floor", "moves", "beta_lookback", "cash_buffer"}
+    #: Degrees of freedom of the Student t that prices the market-move cells (ADR-0299): one fixed constant, the heavy
+    #: tail a normal law lacks, the lowest with a finite variance to match the basket's.
+    _KELLY_TAIL_DF = 4
     #: What a kelly method may not also declare: every sizing cap, and the dollar-objective controls.
     _KELLY_EXCLUDES = ("shock", "risk_charge", "radius_scale", "short_notional_fraction")
     _KELLY_RISK_INPUT = "kelly_risk_input"
@@ -1558,6 +1568,11 @@ class WeeklyOptionPortfolioStudy:
                              or not 0 < method["component_fraction"] <= 1))):
                 raise ValueError("invalid fixed method")
             ids.add(method["id"])
+        if (any("kelly" in method for method in p["methods"])
+                and p["solver"].get("group_screen", "none") != "none"):
+            # The LP screen reads dollar expectations and drops a losing book that hedges a move; a Kelly
+            # formulation therefore lives in its own document, whose screen is none.
+            raise ValueError("a kelly method needs the document's solver group_screen none")
         for symbol in symbols:
             problems = _AllQuotedOptionContext.validate_params({**p["bridge"], "symbol": symbol})
             if problems:
@@ -1644,6 +1659,7 @@ class WeeklyOptionPortfolioStudy:
                 and type(kelly["n_tangents"]) is int and kelly["n_tangents"] >= 2
                 and number_ok(kelly["core"]) and kelly["core"] > 1
                 and number_ok(kelly["wealth_floor"]) and 0 < kelly["wealth_floor"] < 1
+                and number_ok(kelly["cash_buffer"]) and 0 <= kelly["cash_buffer"] < 1
                 and cls._moves_valid(kelly["moves"], kelly["beta_lookback"])
                 and not any(key in method for key in cls._KELLY_EXCLUDES)
                 and number_ok(method["rho"]) and method["rho"] == 0
@@ -1723,38 +1739,62 @@ class WeeklyOptionPortfolioStudy:
         start = (date.fromisoformat(day)-timedelta(days=days)).isoformat()
         return max(1, sum(start < d <= day for d in self.history_calendar))
 
+    @staticmethod
+    def _mean_dte(metadata):
+        """Return the mean DTE of the week's candidates, each candidate counting once (0 for none).
+
+        The move horizon is this, not the longest candidate's: a week of mostly short books must not be
+        scaled to its one long expiry (60 days left the quiet regime 0.15 to 0.30 of the weight).
+        """
+        return sum(m["dte"] for m in metadata)/len(metadata) if metadata else 0
+
     def _move_weights(self, day, kelly, horizon_days):
         """Estimate each move's probability from the basket's trailing volatility, strictly before ``day``.
 
         The equal-weight basket's daily log returns over ``beta_lookback``
         sessions before ``day`` (the betas' own window) give a daily
-        volatility, scaled by the square root of the sessions in the longest
-        candidate horizon. A normal law with that scale assigns each move the
-        mass of its cell on the real line: the cells are the Voronoi cells of
-        ``log(1+move)`` and ``0`` (the quiet regime). Fewer returns than
-        correlation_min_pairs is ``insufficient_history``; a zero volatility
-        gives the moves no weight.
+        volatility, scaled by the square root of the sessions in
+        ``horizon_days`` calendar days (the week's candidate-count-weighted
+        mean DTE, rounded; ``_mean_dte``). A Student t with
+        ``_KELLY_TAIL_DF`` degrees of freedom and that variance (scale
+        sigma / sqrt(df / (df - 2))) assigns each move the mass of its cell on
+        the real line: the cells are the Voronoi cells of ``log(1+move)`` and
+        ``0`` (the quiet regime). Fewer returns than correlation_min_pairs is
+        ``insufficient_history``; a nonfinite return (a NaN or non-positive
+        bar) is ``nonfinite_history``; a zero volatility gives the moves no
+        weight. Only those two statuses are refusals: neither is ``estimated``.
         """
         import numpy as np
+        from dskit.pipeline.stats import student_t_sf
 
         returns, count = self._returns(day, kelly["beta_lookback"])
-        sessions = self._horizon_sessions(day, horizon_days)
+        sessions = self._horizon_sessions(day, int(round(horizon_days)))
         result = {"observations": count, "horizon_days": horizon_days, "horizon_sessions": sessions,
-                  "sigma_daily": None, "weights": {str(move): 0. for move in kelly["moves"]}, "quiet": 1.,
+                  "tail_df": self._KELLY_TAIL_DF, "sigma_daily": None,
+                  "weights": {str(move): 0. for move in kelly["moves"]}, "quiet": 1.,
                   "status": "insufficient_history"}
         if count < self.params["correlation_min_pairs"]:
             return result
-        daily = float(np.std(np.mean([returns[s] for s in self.params["symbols"]], axis=0)))
+        basket = np.mean([returns[s] for s in self.params["symbols"]], axis=0)
+        if not np.all(np.isfinite(basket)):
+            result["status"] = "nonfinite_history"
+            return result
+        daily = float(np.std(basket))
         sigma = daily*math.sqrt(sessions)
         result.update(sigma_daily=daily, status="estimated")
         if not math.isfinite(sigma) or sigma <= 0:
             return result
+        df = self._KELLY_TAIL_DF
+        scale = sigma/math.sqrt(df/(df-2.))
         points = sorted({0., *(math.log1p(move) for move in kelly["moves"])})
         edges = [-math.inf, *((a+b)/2. for a, b in zip(points, points[1:])), math.inf]
 
+        def upper_tail(edge):
+            return 1. if edge == -math.inf else 0. if edge == math.inf else student_t_sf(edge/scale, df)
+
         def cell(point):
             k = points.index(point)
-            return .5*(math.erf(edges[k+1]/(sigma*math.sqrt(2.)))-math.erf(edges[k]/(sigma*math.sqrt(2.))))
+            return upper_tail(edges[k])-upper_tail(edges[k+1])
         weights = {str(move): cell(math.log1p(move)) for move in kelly["moves"]}
         result.update(weights=weights, quiet=1.-sum(weights.values()))
         return result
@@ -2025,12 +2065,19 @@ class WeeklyOptionPortfolioStudy:
         context = self._contexts[meta["symbol"]][meta["decision_date"], meta["expiry"]]
         return group["scale"]*float(context["reference_scale"])
 
-    def _limits(self, account, method, components):
-        """Use one remaining-headroom policy at decision and next-session fill."""
+    def _limits(self, account, method, components, solve=False):
+        """Use one remaining-headroom policy at decision and next-session fill.
+
+        ``solve`` is the decision's program only: a kelly method then keeps ``cash_buffer`` of funding out of
+        the cash row, so the next session's reprice of the books has room before the fill's own (whole) limit.
+        """
         symbols = self.params["symbols"]
-        if self._kelly(method) is not None:
+        kelly = self._kelly(method)
+        if kelly is not None:
             # The cash rule alone: new reserves within funding less open reserves (the fractions are 1).
-            return [{"members": symbols, "upper": account.remaining(symbols, method["portfolio_fraction"])}]
+            held_back = kelly["cash_buffer"] if solve else 0.
+            return [{"members": symbols,
+                     "upper": account.remaining(symbols, method["portfolio_fraction"]-held_back)}]
         limits = [{"members": symbols, "upper": account.remaining(symbols, method["portfolio_fraction"])},
                   {"members": symbols, "upper": max(0., account.funding)*self.params["weekly_fraction"]}]
         limits.extend({"members": [s], "upper": account.remaining([s], method["name_fraction"])}
@@ -2437,12 +2484,16 @@ class WeeklyOptionPortfolioStudy:
                 kelly = self._kelly(method)
                 if kelly is not None:
                     estimate = self._betas(day, kelly["beta_lookback"])
-                    weights = self._move_weights(day, kelly, max((m["dte"] for m in metadata), default=0))
+                    # Wealth to size on is the capital not already committed: funding less every open book's reserve.
+                    w0 = account.remaining(self.params["symbols"], 1.)
+                    weights = self._move_weights(day, kelly, self._mean_dte(metadata))
                     record["kelly"] = {
-                        "fraction": kelly["fraction"], "gamma": 1./kelly["fraction"], "w0": account.funding,
-                        "wealth_lo": kelly["wealth_floor"]*account.funding,
+                        "fraction": kelly["fraction"], "gamma": 1./kelly["fraction"], "w0": w0,
+                        "funding": account.funding, "open_reserve": record["open_reserve"],
+                        "cash_buffer": kelly["cash_buffer"],
+                        "wealth_lo": kelly["wealth_floor"]*w0,
                         "betas": dict(estimate["betas"]), **weights,
-                        "status": weights["status"] if account.funding > 0 else "nonpositive_funding"}
+                        "status": weights["status"] if w0 > 0 else "nonpositive_capital"}
                 if any(lim["upper"] < -1e-5 for lim in limits):
                     record["status"] = "existing_cap_breach_cash"
                 elif (self.clocks and (day == self.calendar[-1]
@@ -2463,7 +2514,8 @@ class WeeklyOptionPortfolioStudy:
                                    **({} if risk is None else {"risk_charge": dict(risk)})}
                                   for g, meta in zip(groups, metadata)]
                     solver = TransportPortfolioSolve("portfolio", p["solver"])
-                    program = {"groups": configured, "caps": self._caps(limits, metadata)}
+                    program = {"groups": configured,
+                               "caps": self._caps(self._limits(account, method, components, solve=True), metadata)}
                     if shock is not None:
                         estimate = self._betas(day, shock["beta_lookback"])
                         rows = self._shock_rows(shock, estimate["betas"], metadata, configured,
@@ -2475,7 +2527,7 @@ class WeeklyOptionPortfolioStudy:
                         terms = self._move_terms(kelly["moves"], estimate["betas"], metadata, configured, mult)
                         rows = [{"id": f"shock:{move}", "terms": terms[move], "upper": 0.} for move in kelly["moves"]]
                         program["utility"] = {
-                            "w0": account.funding, "gamma": record["kelly"]["gamma"],
+                            "w0": record["kelly"]["w0"], "gamma": record["kelly"]["gamma"],
                             "n_tangents": kelly["n_tangents"], "core": kelly["core"],
                             "wealth_lo": record["kelly"]["wealth_lo"],
                             "marginal_weight": record["kelly"]["quiet"],

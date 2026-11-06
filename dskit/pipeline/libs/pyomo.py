@@ -176,8 +176,12 @@ def tangent_utility(wealth, w0, gamma):
 
     ``gamma <= 1`` is ``u(w) = ln(w / w0)`` (full-Kelly log utility);
     ``gamma > 1`` is the CRRA utility ``u(w) = ((w/w0)^(1-gamma) - 1) /
-    (1-gamma)``, whose growth-optimal stake is the fractional-Kelly stake
-    at fraction ``1/gamma``. Both are zero at ``w = w0``. This is the one
+    (1-gamma)``. That is CRRA with ``gamma = 1/f``, whose growth-optimal
+    stake is roughly ``f`` times the full-Kelly stake, and only to first
+    order: for +100 / -400 at probability .9 on 10,000 the integer CRRA
+    stakes at ``f`` .25 / .5 / 1 are 4 / 7 / 12 against ``f`` times the
+    12.5 Kelly stake = 3.1 / 6.25 / 12.5 (29% and 12% above at the small
+    fractions). Both are zero at ``w = w0``. This is the one
     home for the tangent-plane utility evaluator: :class:`ScenarioUtilitySolve`
     builds its objective's tangent rows from it, and ``pmquant.mio.utility_at``
     delegates to it under its own ``kelly_fraction`` parametrization
@@ -3714,6 +3718,16 @@ class _TangentEnvelope:
     in a range; ``error`` and ``core_error`` are the largest overestimate on
     ``[lo, hi]`` and on the core band, which a concave utility reaches only
     where two adjacent tangents cross.
+
+    Why this stands beside ``ScenarioUtilitySolve``'s knot builder rather than
+    sharing it: that one lays ``linspace(w_lo, w_hi, n)`` knots over one
+    account's reachable wealth, caches a per-scenario window around them and
+    owns the tick solver's parameters; this one needs geometric spacing (the
+    error is uniform in log wealth), a second knot set over the core band,
+    ``w0`` as a knot, ``live`` and the crossing-based error, for scenario
+    ranges that differ per group. The two share the one thing that is the
+    same, the utility itself (:func:`tangent_utility`); the knot placement is
+    not a few lines of common code.
     """
 
     def __init__(self, w0, gamma, lo, hi, n, core):
@@ -3816,7 +3830,8 @@ class TransportPortfolioSolve(PyomoSolve):
         Optional ``utility`` (see :meth:`_checked_utility`) replaces the
         dollar objective by ``w0`` times the expected tangent-envelope
         utility of scenario wealth (:func:`tangent_utility`, the one home;
-        ``gamma`` 1 is full Kelly, ``1/gamma`` the fraction): one scenario
+        ``gamma`` 1 is full Kelly; CRRA with ``gamma = 1/f`` sizes roughly
+        ``f`` times the Kelly stake, to first order only): one scenario
         per group and own grid point at ``marginal_weight`` (independent
         outcomes, additive growth) plus the declared joint scenarios, every
         scenario's wealth held at or above ``wealth_lo`` by a hard bound.
@@ -3881,7 +3896,12 @@ class TransportPortfolioSolve(PyomoSolve):
         defects = self.validate_params(self.params)
         if defects:
             raise ValueError("; ".join(defects))
-        return self._checked_program(inputs)
+        checked = self._checked_program(inputs)
+        if checked[5] is not None and self.params.get("group_screen", "none") != "none":
+            # The LP screen reads dollar expectations: it would drop a losing book that hedges a joint scenario.
+            raise ValueError("a utility program needs group_screen none: the lp screen reads dollar expectations "
+                             "and drops hedges")
+        return checked
 
     @classmethod
     def _checked_program(cls, inputs):
@@ -3992,7 +4012,8 @@ class TransportPortfolioSolve(PyomoSolve):
 
         ``w0`` is the account wealth the utility is taken relative to;
         ``gamma`` the relative risk aversion handed to :func:`tangent_utility`
-        (``1`` is log utility, full Kelly; ``1/gamma`` is the Kelly fraction);
+        (``1`` is log utility, full Kelly; ``gamma = 1/f`` sizes roughly
+        ``f`` times the Kelly stake, see :func:`tangent_utility`);
         ``n_tangents`` the knots of the envelope over the whole reachable
         range and again over the core band ``[w0/core, w0*core]`` (``core``
         above 1); ``wealth_lo`` the positive floor every scenario's wealth
@@ -4457,6 +4478,16 @@ class TransportPortfolioSolve(PyomoSolve):
             audited["utility"] = scored["utility"]
         return audited
 
+    def _model_cleanup_gain(self, cleanup):
+        """Return how far the cleanup moves ``model.profit``: its dollar gain, or nothing under a utility.
+
+        A dollar program's ``profit`` reads ``x`` and the cleanup's dollar gain is exactly its change. A
+        utility program's ``profit`` reads the ``U`` variables the solver left, which the cleanup does
+        not touch, so the model's own change is zero; the dollar gain is then no part of the
+        comparison and the audit (``model_over_audit``) values what the cleanup bought.
+        """
+        return 0. if self._utility is not None else cleanup["profit_gain"]
+
     def _program(self):
         """Return the checked program the built model stands for."""
         program = {"groups": self._groups, "caps": self._caps, "joint_rows": self._joint}
@@ -4643,7 +4674,11 @@ class TransportPortfolioSolve(PyomoSolve):
         name = self.params.get("solver", DEFAULT_SOLVER)
         try:
             results = self._resolve_solver().solve(model)
-        except RuntimeError as exc:  # appsi raises instead of returning when the fixed actions are infeasible
+        except RuntimeError as exc:
+            # appsi raises instead of returning when the fixed actions are infeasible. Only a utility program
+            # converts it (its foreign actions can breach the wealth floor); a dollar program keeps the raise.
+            if self._utility is None:
+                raise
             raise RecordedCheckRefusal("recorded actions could not be priced: infeasible",
                                        "dual_pricing", "pricing") from exc
         priced = SolveRecord.from_solve(model, results, name, 0.)
@@ -4742,7 +4777,7 @@ class TransportPortfolioSolve(PyomoSolve):
         tol = self.params["parity_tolerance"]
         if (audited["value"] < -tol
                 or selection["model_value"] > audited["value"]+tol
-                or abs(selection["model_value"]-certificate["objective"]-primary["profit_gain"]) > tol
+                or abs(selection["model_value"]-certificate["objective"]-self._model_cleanup_gain(primary)) > tol
                 or (not missing_bound and (certificate["bound"] < certificate["objective"]-tol
                     or certificate["bound"] < audited["value"]-tol))):
             raise ValueError("invalid recorded primary valuation")
@@ -4822,7 +4857,7 @@ class TransportPortfolioSolve(PyomoSolve):
         cleanup = chosen["canonicalization"]
         model_value = value(model.profit)
         misses = [("incumbent_negative", -chosen["value"]), ("model_over_audit", model_value-chosen["value"]),
-                  ("cleanup_gain", abs(model_value-first.objective-cleanup["profit_gain"]))]
+                  ("cleanup_gain", abs(model_value-first.objective-self._model_cleanup_gain(cleanup)))]
         if not missing_bound:
             misses.append(("bound_below_value", chosen["value"]-first.bound))
         self._refuse_over_tolerance("invalid primary dual/primal incumbent value", misses, tol)

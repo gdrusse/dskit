@@ -5164,7 +5164,7 @@ def test_a_joint_scenario_shrinks_correlated_books_together():
         "a book the crash does not reach keeps its quiet size; the exposed one shrinks less when it is alone in the crash"
 
 
-@pytest.mark.parametrize("screen", ["none", "lp"])
+@pytest.mark.parametrize("screen", ["none"])   # lp refuses a utility program (test_the_lp_group_screen_refuses_a_utility_program)
 def test_derived_and_recorded_price_utility_actions_as_this_host_does(screen):
     """A foreign action file is re-valued by the same envelope; the recorded route replays it; a floor breach refuses."""
     from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportActionScore, TransportPortfolioSolve
@@ -5334,6 +5334,135 @@ def test_kelly_sizing_on_a_realistic_synthetic_week():
           f"gap={selection['gap']:.4f} books={held} contracts={sum(sum(q) for q in selection['quantities'])} "
           f"value={selection['value']:.2f} exact={selection['utility']['exact']:.2f} "
           f"core_error={selection['utility']['core_error']:.2e} envelope_error={selection['utility']['envelope_error']:.2e} "
-          f"wealth_min={selection['utility']['wealth_min']:.0f}")
+          f"wealth_min={selection['utility']['wealth_min']:.0f} reserved={sum(selection['reserves']):.0f} of cash {w0:.0f}")
     assert not timed_out, "the week did not certify within the time limit"
     assert selection["utility"]["wealth_min"] >= .01*w0
+
+
+# --- review fixes to the utility objective (ADR-0299 amendment) ------------------------------------------------------
+
+def _costly_pair_group(key="g"):
+    """Items 0 and 1 are a long/short pair at one strike whose round trip costs 2 (holding both only wastes cash);
+    item 2 is a profitable short bet (+100 with probability .9, -400 otherwise)."""
+    return {"id": key, "grid": [0., 1.], "masses": [.9, .1], "radius": 0., "scale": 1., "credit": [80., -82., 100.],
+            "losses": [[0., 0., 0.], [500., -500., 500.]], "capacity": [50, 50, 30], "exclusive": [[0, 1]],
+            "reserve_rows": [[-80., 82., -100.], [420., -418., 400.]], "linear_rows": []}
+
+
+def _pair_incumbent(program, params):
+    """A real solve of ``program`` with the costly pair fixed at 3 and 1: a valid incumbent inside the solver's gap.
+
+    Its certificate carries the bound of the real unrestricted solve, as a solver stopped on its gap would.
+    """
+    from dskit.pipeline.libs.pyomo import SolveRecord, TransportPortfolioSolve
+
+    best = TransportPortfolioSolve("best", params).run(None, program)["selection"]
+    assert not all(best["quantities"][0][:2]), "the unrestricted optimum does not hold the pair"
+    node = TransportPortfolioSolve("pair", params)
+    model = node.build_model(program, params)
+    assert node._redundant == {(0, 0)}, "the pair is provably costly: cleaned, not constrained"
+    model.x[0, 0].fix(3)
+    model.x[0, 1].fix(1)
+    solver = node._resolve_solver()
+    results = node._solve(solver, model)
+    held = node._build_solve_record(solver, model, results, "appsi_highs", 0.)
+    bound = max(held.objective, best["model_value"])
+    node.solve_record = SolveRecord(**{**held.to_obj(), "bound": bound, "gap": SolveRecord._gap(held.objective, bound),
+                                       "binding": ()})
+    return node, model, results, best
+
+
+@pytest.mark.parametrize("fraction", [.25, 1.])
+def test_a_valid_utility_incumbent_holding_a_costly_pair_is_cleaned_not_refused(fraction):
+    """The pair is removed and the result accepted. A utility model's ``profit`` reads the stale ``U`` variables, so the
+    cleanup's dollar gain cannot equal its change; the check reads the model's own (none) and the audit values the rest."""
+    program = _kelly_program([_costly_pair_group()], fraction=fraction, n_tangents=32)
+    params = {**_kelly_params(), "absolute_gap": 1000., "solver_options": {"threads": 1, "mip_abs_gap": 1e-6}}
+    node, model, results, best = _pair_incumbent(program, params)
+    chosen = node.extract(model, results)["selection"]
+    cleanup = chosen["canonicalization"]["primary"]
+    assert cleanup["removed_contracts"] == 2 and cleanup["profit_gain"] == pytest.approx(2.)
+    assert cleanup["pairs"] == [{"group": "g", "pair": [0, 1], "matched_quantity": 1}]
+    assert chosen["primary_quantities"][0][:2] == [2, 0] == chosen["quantities"][0][:2]
+    assert chosen["utility"]["exact"] > 0 and chosen["value"] <= best["value"]+1e-6
+
+
+def test_a_utility_cleanup_is_replayed_by_the_recorded_route_and_a_forged_model_value_refuses():
+    """The recorded route keeps its gain check, read the same way: a forged ``model_value`` is refused."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    program = _kelly_program([_costly_pair_group()], fraction=.25, n_tangents=32)
+    params = {**_kelly_params(), "absolute_gap": 1000., "solver_options": {"threads": 1, "mip_abs_gap": 1e-6}}
+    node, model, results, best = _pair_incumbent(program, params)
+    selection = node.extract(model, results)["selection"]
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in selection["certificates"]]
+    claimed = {k: v for k, v in selection.items() if k != "certificates"}
+    assert TransportPortfolioSolve("replay", params)._recorded(program, claimed, certificates)["quantities"] \
+        == selection["quantities"]
+    forged = {**claimed, "model_value": claimed["model_value"]+1.}
+    with pytest.raises(ValueError, match="recorded primary valuation"):
+        TransportPortfolioSolve("replay", params)._recorded(program, forged, certificates)
+
+
+def _raising_solver(node, monkeypatch):
+    class Appsi:
+        def solve(self, model):
+            raise RuntimeError("appsi: the fixed actions are infeasible")
+    monkeypatch.setattr(node, "_resolve_solver", lambda: Appsi())
+
+
+def test_price_duals_converts_an_appsi_error_only_for_a_utility_program(monkeypatch):
+    """A utility program's foreign actions may be unpriceable: that is a typed refusal. A dollar program keeps the
+    solver's own RuntimeError, as before the utility objective existed."""
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
+
+    dollar = {"groups": [_bet_group(capacity=4)], "caps": [{"groups": ["g"], "upper": 10000.}]}
+    for program, converted in ((_kelly_program([_bet_group(capacity=4)]), True), (dollar, False)):
+        node = TransportPortfolioSolve("price", _kelly_params())
+        model = node.build_model(program, node.params)
+        _raising_solver(node, monkeypatch)
+        if converted:
+            with pytest.raises(RecordedCheckRefusal) as caught:
+                node._price_duals(model)
+            assert (caught.value.check, caught.value.category) == ("dual_pricing", "pricing")
+        else:
+            with pytest.raises(RuntimeError, match="infeasible"):
+                node._price_duals(model)
+
+
+@pytest.mark.parametrize("screen,refused", [("lp", True), ("none", False)])
+def test_the_lp_group_screen_refuses_a_utility_program(screen, refused):
+    """The LP screen reads dollar expectations and drops a losing book that hedges a move: a utility program may not use it."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params = {**_kelly_params(), "group_screen": screen}
+    node = TransportPortfolioSolve("screen", params)
+    program = _kelly_program([_bet_group(capacity=4)])
+    if refused:
+        with pytest.raises(ValueError, match="group_screen"):
+            node.run(None, program)
+    else:
+        assert node.run(None, program)["selection"]["quantities"] == [[4]]
+    plain = {"groups": [_bet_group(capacity=4)], "caps": [{"groups": ["g"], "upper": 10000.}]}
+    assert TransportPortfolioSolve("screen", params).run(None, plain)["selection"]["quantities"] == [[4]]
+
+
+def test_the_core_error_matches_gamma_delta_squared_over_eight_only_for_log_utility():
+    """``gamma delta^2 / 8`` per log-wealth spacing is the log-utility error; CRRA with gamma > 1 is worse, not uniform.
+
+    Measured (ADR-0299), 32 knots, core 2, on 10,000: gamma 1 equals the formula (at most 1.0x), gamma 2 is 0.9x to 1.9x
+    and gamma 4 is 3.3x to 6.5x it, by how far the range reaches above the core (1.3 to 20 w0).
+    """
+    import math
+    from dskit.pipeline.libs.pyomo import _TangentEnvelope
+
+    delta = 2.*math.log(2.)/31
+    ratios = {}
+    for gamma in (1., 2., 4.):
+        for reach in (1.3, 20.):
+            envelope = _TangentEnvelope(10000., gamma, 100., reach*10000., 32, 2.)
+            ratios[gamma, reach] = envelope.core_error/(gamma*delta*delta/8.)
+    assert ratios[1., 20.] == pytest.approx(1., abs=.02) and ratios[1., 1.3] < 1.
+    assert 1.5 < ratios[2., 20.] < 2.5 and .8 < ratios[2., 1.3] < 1.1
+    assert 3. < ratios[4., 1.3] < 3.6 and 6. < ratios[4., 20.] < 7.
+    assert ratios[4., 20.] > ratios[2., 20.] > ratios[1., 20.], "the error grows faster than gamma"
