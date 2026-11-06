@@ -1887,12 +1887,13 @@ class Coordinator:
             return
         primary, twin = self.queue.unit(self.parity_unit), self.queue.unit(self.twin_unit)
         ended = [u["unit_id"] for u in (primary, twin) if u["status"] in ("rejected", "superseded")]
-        if primary["status"] in self.SOLVED_STATES and not self._parity_file(primary, primary["attempt"]).exists():
+        if primary["status"] in self.SOLVED_STATES and self._primary_ended(primary):
             ended.append(primary["unit_id"])
         if ended:
             self._released = True
             self.reasons["parity"] = (f"no comparison: {', '.join(ended)} ended without a result; no verdict is written, "
-                                      "the Mac stays gated and the other units use WSL slots or the documents")
+                                      "the Mac stays gated and the other units use WSL slots or the documents. To use the "
+                                      "Mac again, restart with parity.unit naming a unit still pending with no leases")
             return
         unplaced = [u["unit_id"] for u in (primary, twin) if u["status"] == "pending"]
         if not unplaced:
@@ -2206,8 +2207,7 @@ class Coordinator:
             key = f"{unit['quarter']}/{unit['arm']}"
             if arm_rows[key]["status"] != "waiting":
                 continue  # a running arm's document settles its units; a closed or failed arm needs none
-            if unit["role"] == "parity" and (self.parity_state() != "pending"
-                                             or self.queue.unit(self.parity_unit)["status"] in ("rejected", "superseded")):
+            if unit["role"] == "parity" and (unit["unit_id"] != self.twin_unit or not self._comparison_possible()):
                 continue  # a twin only exists for a comparison that can still happen
             if (self._chain_blocker(key, arm_rows) or "").startswith(self.CHAIN_STOPPED):
                 continue
@@ -2390,9 +2390,18 @@ class Coordinator:
             self._start_document(arm)
 
     def _arm_units(self, arm):
-        """The units an arm's document waits for: its primaries, and the parity twin while that is open."""
+        """The units an arm's document waits for: its primaries, and the current twin while a comparison can happen."""
         return [u for u in self._units(quarter=arm["quarter"], arm=arm["arm"])
-                if u["role"] == "primary" or self.parity_state() == "pending"]
+                if u["role"] == "primary" or (u["unit_id"] == self.twin_unit and self._comparison_possible())]
+
+    def _primary_ended(self, primary):
+        """Return whether the parity unit ended with no result the comparison could read."""
+        return (primary["status"] in ("rejected", "superseded")
+                or (primary["status"] in self.SOLVED_STATES and not self._parity_file(primary, primary["attempt"]).exists()))
+
+    def _comparison_possible(self):
+        """Return whether a parity verdict is open and its Mac unit can still give one."""
+        return self.parity_state() == "pending" and not self._primary_ended(self.queue.unit(self.parity_unit))
 
     def _due_arms(self, arm_rows):
         """Waiting arms whose units are all settled and whose registry chain is clear: a document is due."""

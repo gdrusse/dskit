@@ -6,7 +6,7 @@ Updated: 2026-11-05 by Claude Opus 5.5. Full-span rerun: forecasts and scores do
 
 - **Model.** Zoo winner `fixed_loc`; recipe `b10d67deebb5`: lr 1e-4, dropout 0.11, weight decay 0.045, hidden 64, width 8, 6 epochs, seeds 11/29/47/53/71, linear pool (`quarterly/recipe.json`). 166 names, list hash 8eae0a07.
 - **Forecasts.** 17 quarters (2019Q4, 2020Q1-2023Q4) done, scored and pinned from `claude/quarterly-forecasts-20261105` (ADR-0298). `check` passes. 2020Q1 rerun under load gave identical hashes. Scores unopened; `table` not run. No 2024+ work (owner).
-- **MIO code.** `claude/mio-parallel-on-rerun-20261105` at the wrap commit (ADR-0297, A0010). Final reviews: zero Major or Critical; queue tests pass. Never run on the Mac or on real files through the queue.
+- **MIO code.** `claude/mio-parallel-on-rerun-20261105` at the wrap commit (ADR-0297, A0010). Review of this commit in progress; not cleared until both lenses are clean. Queue tests pass. Never run on the Mac or on real files through the queue.
 - **WSL MIO running.** `mio-wsl/jobs.json`, branch `claude/mio-wsl-run-20261105` c9eef46b: 4 formulations (w1_010_shock10_lp, w1_003_shock10_lp, w1_003_shock10_mad050_lp, nominal_lp) on 2019Q4, 2020Q1, 2021Q1, 2021Q2. Two running at wrap; two wait on the memory gate. Peak so far 4.2 GB against an 8 GB placeholder. Earlier documents took 3-5 h; here `run_root` is on D:, so maybe longer.
 - **Results location.** `run_root` is on `/mnt/d/full-span-rerun-20261105/mio-wsl/`. Copy closed results into WSL.
 

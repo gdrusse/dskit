@@ -1536,7 +1536,7 @@ def test_parity_units_that_end_without_a_result_write_no_verdict(tmp_path):
     for _ in range(10):
         c.tick()
         c.join_spawns()
-    assert c.queue.unit("q/a/m1")["status"] == "rejected", "attempts spent"
+    assert c.queue.unit("q/a/m1")["status"] == "solved_local", "attempts spent, then its document solved it"
     assert not (tmp_path / "q" / "parity.json").exists() and c.parity_state() == "pending"
     assert "no comparison" in c.reasons["parity"] and "no verdict" in c.reasons["parity"]
     assert c._released and not [s for s in wsl.spawned if s[0] == "q/a/m1@parity" and s[1] > 1]
@@ -3840,6 +3840,37 @@ def test_a_restart_after_the_mac_parity_unit_was_rejected_and_solved_locally_sta
     again._parity_watch()
     assert again.parity_state() == "pending", "no verdict without a real comparison"
     assert again._released and "no comparison" in again.reasons["parity"]
+
+
+def test_a_rejected_parity_unit_does_not_hold_its_arm_and_a_new_parity_unit_can_bring_the_mac_back(tmp_path):
+    """No comparison can happen once the primary ended: the document runs, no verdict, the Mac stays gated."""
+    plan = {"quarters": [{"id": q, "asof": "2026-01-01", "arms": [
+        {"id": "rules", "methods": ["m1", "m2"], "bundle_sha256": "b"*64, "plan_sha256": "p"*64, "spec": {},
+         "registry": "/r/reg"}]} for q in ("q1", "q2")]}
+    limits = {"unit_ram_gb": 8, "document_ram_gb": 8}
+    mac, wsl, docs = FakeHost("mac", 1), FakeHost("wsl", 2), Documents()
+    coordinator = Coordinator(tmp_path / "q", plan, [mac, wsl], docs, _probe(wsl=80.), limits, Clock(),
+                              parity={"unit": "q1/rules/m1"})
+    coordinator.tick()
+    unit = coordinator.queue.unit("q1/rules/m1")
+    coordinator._transition("q1/rules/m1", "rejected", unit["attempt"], note="attempts spent")
+    restarted = Coordinator(tmp_path / "q", plan, [FakeHost("mac", 1), FakeHost("wsl", 2)], docs, _probe(wsl=80.), limits,
+                            Clock(), parity={"unit": "q2/rules/m2"})
+    assert restarted._comparison_possible(), "a unit still pending with no leases can bring the Mac back"
+    assert "q1/rules/m1@parity" not in {u["unit_id"] for u in restarted._placeable(
+        {a["arm_key"]: a for a in restarted.queue.arms()})}, "the old twin is not placed for a comparison that cannot happen"
+    for _ in range(4):
+        coordinator.tick()
+        coordinator.join_spawns()
+        for leased in coordinator.queue.units(status="leased"):
+            if leased["host"] == "wsl" and leased["quarter"] == "q1":
+                wsl.finish(leased["unit_id"], leased["attempt"])
+    coordinator.join_documents()
+    coordinator.tick()
+    assert docs.calls, "the arm's document runs without the comparison"
+    assert coordinator.parity_state() == "pending", "no verdict without a real comparison"
+    assert "parity.unit" in coordinator.reasons["parity"], "the way out is named"
+    assert not [s for s in mac.spawned if s[0] != "q1/rules/m1"], "the Mac stays gated"
 
 
 def test_a_restart_with_the_parity_unit_still_leased_on_the_mac_is_accepted(tmp_path):

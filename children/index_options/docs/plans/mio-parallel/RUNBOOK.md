@@ -528,7 +528,9 @@ file count and byte total compared, then renamed), so an interrupted transfer is
   restarts with the coordinator), or one that ends without a result (attempts spent, ssh down), writes NOTHING and
   kills nothing. `status.json` says so (`waiting.parity`: "no verdict"), the Mac keeps its unit, and the OTHER
   units are released to WSL slots, or, with a Mac and `wsl_slots` 0, rejected so their documents solve locally. The arm
-  of the parity unit waits for the comparison. The twin needs only `unit_ram_gb`, not a document's room.
+  of the parity unit waits for the comparison while one can still happen; if the Mac's unit ends with no result, the arm's
+  document solves it, no verdict is written and the Mac stays gated until a restart names a new `parity.unit` still pending
+  with no leases. The twin needs only `unit_ram_gb`, not a document's room.
 
 ## Monitor (nothing here shows economics)
 
