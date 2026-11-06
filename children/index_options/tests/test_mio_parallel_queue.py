@@ -3873,6 +3873,29 @@ def test_a_rejected_parity_unit_does_not_hold_its_arm_and_a_new_parity_unit_can_
     assert not [s for s in mac.spawned if s[0] != "q1/rules/m1"], "the Mac stays gated"
 
 
+def test_a_dead_twin_lets_the_arm_run_and_no_verdict_is_written(tmp_path):
+    """The other half: a held Mac result with its WSL twin ended can never be compared, so it must not hold the arm."""
+    mac, wsl, docs = FakeHost("mac", 1), FakeHost("wsl", 2), Documents()
+    c = _coordinator(tmp_path, [mac, wsl], docs, plan=_parity_plan(), parity={"unit": "q/a/m1"}, probe=_probe(wsl=80.))
+    c.tick()
+    c.join_spawns()
+    mac.finish("q/a/m1", 1)
+    for _ in range(6):
+        for unit in c.queue.units(status="leased"):
+            if unit["host"] == "wsl" and unit["role"] == "parity":
+                wsl.dead.add((unit["unit_id"], unit["attempt"]))
+        c.tick()
+        c.join_spawns()
+        c.join_documents()
+        for unit in c.queue.units(status="leased"):
+            if unit["host"] == "wsl" and unit["role"] != "parity":
+                wsl.finish(unit["unit_id"], unit["attempt"])
+    assert docs.calls, "the arm's document runs"
+    assert c.queue.unit("q/a/m1")["status"] != "returned", "the held result does not wait for a comparison that cannot happen"
+    assert not (tmp_path / "q" / "parity.json").exists() and c.parity_state() == "pending", "no verdict"
+    assert "no comparison" in c.reasons["parity"]
+
+
 def test_a_restart_with_the_parity_unit_still_leased_on_the_mac_is_accepted(tmp_path):
     plan = _parity_plan()
     first = Coordinator(tmp_path / "q", plan, [FakeHost("mac", 1), FakeHost("wsl", 0)], Documents(), _probe(wsl=80.),

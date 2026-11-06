@@ -1891,6 +1891,9 @@ class Coordinator:
             ended.append(primary["unit_id"])
         if ended:
             self._released = True
+            if primary["status"] == "returned":  # its twin ended: nothing can compare this held result, so it must not hold the arm
+                self._transition(primary["unit_id"], "rejected", primary["attempt"],
+                                 note="no comparison: the parity twin ended without a result; the document solves this unit")
             self.reasons["parity"] = (f"no comparison: {', '.join(ended)} ended without a result; no verdict is written, "
                                       "the Mac stays gated and the other units use WSL slots or the documents. To use the "
                                       "Mac again, restart with parity.unit naming a unit still pending with no leases")
