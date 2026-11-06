@@ -5,17 +5,20 @@ Updated: 2026-11-05 by Claude Opus 5.5. Full-span rerun: forecasts and scores do
 ## Now
 
 - **Model.** Zoo winner `fixed_loc`; recipe `b10d67deebb5`: lr 1e-4, dropout 0.11, weight decay 0.045, hidden 64, width 8, 6 epochs, seeds 11/29/47/53/71, linear pool (`quarterly/recipe.json`). 166 names, list hash 8eae0a07.
-- **Forecasts.** 17 quarters (2019Q4, 2020Q1-2023Q4) done, scored and pinned from `claude/quarterly-forecasts-20261105` (ADR-0298). `check` passes. 2020Q1 rerun under load gave identical hashes. Scores unopened; `table` not run. Path A0008 now holds this recipe and supersedes M53. No 2024+ work (owner).
-- **MIO code.** `claude/mio-parallel-on-rerun-20261105` at the wrap commit (ADR-0297, A0010). Both final lenses clean on cae384c1 (zero Major or Critical), including all 108 parity state combinations with restarts; tests pass. Never run on the Mac or on real files through the queue.
-- **WSL MIO running.** `mio-wsl/jobs.json`, branch `claude/mio-wsl-run-20261105` c9eef46b: 4 formulations (w1_010_shock10_lp, w1_003_shock10_lp, w1_003_shock10_mad050_lp, nominal_lp) on 2019Q4, 2020Q1, 2021Q1, 2021Q2. Two running at wrap; two wait on the memory gate. Peak so far 4.2 GB against an 8 GB placeholder. Earlier documents took 3-5 h; here `run_root` is on D:, so maybe longer.
+- **Forecasts.** 17 quarters (2019Q4, 2020Q1-2023Q4) done, scored and pinned (ADR-0298, merged). `check` passes. 2020Q1 rerun under load gave identical hashes. Scores unopened; `table` not run. Path A0008 now holds this recipe and supersedes M53. No 2024+ work (owner).
+- **MIO code.** Merged to main (ADR-0297, A0010). Both final lenses clean on cae384c1 (zero Major or Critical), including all 108 parity state combinations with restarts; tests pass. Never run on the Mac or on real files through the queue.
+- **WSL MIO.** `mio-wsl/jobs.json`, branch `claude/mio-wsl-run-20261105` c9eef46b: 4 formulations (w1_010_shock10_lp, w1_003_shock10_lp, w1_003_shock10_mad050_lp, nominal_lp). 2019Q4 and 2020Q1 run to their finish; their scheduler was stopped on purpose, so its receipts stay `running`: judge by `result.json`. 2021Q1 and 2021Q2 never started and go to the queue instead. Peak memory 7.2 GB against an 8 GB placeholder.
 - **Results location.** `run_root` is on `/mnt/d/full-span-rerun-20261105/mio-wsl/`. Copy closed results into WSL.
 
 ## Next
 
-1. Keep `/home/russell/wt/mio-wsl-run-20261105` until solves close. Free C: by moving the WSL disk to D: (owner approved; no jobs running, backup first).
-2. Mac: rebuild its RAM disk (`fullspan-ram` is still attached), run the short check on a 1-2 week packet, then one real parity unit (RUNBOOK). Queue route: 5 remaining formulations, or all 9 for a single path.
-3. Owner reviews the 4 selection quarters, picks 3; run those on 2022-2023 unopened (A0010).
-4. Later: `quarterly_forecasts table`; 2024-2025 forecasts when the owner lifts the hold.
+Owner order, 2026-11-05:
+
+1. Confirm 2019Q4 and 2020Q1 closed (`mio-wsl/registries`, `result.json` under their `run_root`). Copy closed results from D: into WSL. Keep `/home/russell/wt/mio-wsl-run-20261105` until then. A document has no resume found: do not kill one mid-run.
+2. **Get more space on C first.** With no jobs running, `wsl --shutdown` and move or compact the WSL disk onto D: (owner approved; verified backup first). The WSL disk file grows on C:, which has 11 GB free.
+3. **Solve the remaining jobs on WSL and the Mac:** rebuild the Mac RAM disk (`fullspan-ram` is still attached), short worker check on a 1-2 week packet, then one real parity unit (RUNBOOK). Run 2021Q1 and 2021Q2 through the queue with all 9 formulations. For 2019Q4 and 2020Q1, the remaining 5 need an import (new code, review) or a queue re-solve of the 4 done.
+4. Owner reviews the 4 selection quarters, picks 3; run those on 2022-2023 unopened (A0010).
+5. Later: `quarterly_forecasts table`; 2024-2025 forecasts when the owner lifts the hold.
 
 ## Blocked / owner decisions
 
