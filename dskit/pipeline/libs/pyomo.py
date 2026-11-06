@@ -3644,7 +3644,7 @@ class _AtomDeviation(DeviationCharge):
     points, since every atom is one. The charge is ``price x D``.
 
     The epigraph keeps every row sparse: one free ``P_k`` per atom with ``P_k = L_k`` (the only rows over the
-    actions, and an out-of-the-money leg pays on part of the grid only), the free mean ``mu = sum p_k P_k``,
+    actions; an action that pays at only some atoms ties in only those), the free mean ``mu = sum p_k P_k``,
     ``t_k >= +-(P_k - mu)`` and the running sums ``lo_j >= lo_{j-1} + p_j t_j`` (and ``hi_j`` from the top), so a
     tail bound is two variables: about ``8`` rows of at most three auxiliaries per atom, none dense. It is not a
     ``risk_charge`` measure (no ``measure`` name): the utility dispersion charge builds it
@@ -4226,10 +4226,10 @@ class TransportPortfolioSolve(PyomoSolve):
         every lowest and every highest set of atoms (Cauchy-Schwarz), so a rare loss cannot fall between
         points and no direction of the actions has a zero charge unless its payoff is the same at every atom.
         The payoff is the book's terminal payoff ``-losses . x`` (the credit is the same at every atom and
-        cancels in a deviation, and an out-of-the-money leg pays on part of the grid only). The groups of one
-        ``aggregate`` key (one name, several expiries) move together: with ``S_a = sum_g M_g`` the charge is
-        ``gamma x S_a^2 / (2 w0)``, the variance of perfectly correlated books, so a name cannot cut its charge
-        by splitting across expiries. Its tangent lines run to the ceiling ``S_a`` cannot pass,
+        cancels in a deviation, and an action that pays at only some atoms ties in only those). The groups of
+        one ``aggregate`` key move together: with ``S_a = sum_g M_g`` the charge is
+        ``gamma x S_a^2 / (2 w0)``, the variance of perfectly correlated books, so a key cannot cut its charge
+        by splitting its book across groups. Its tangent lines run to the ceiling ``S_a`` cannot pass,
         ``sum_g sum_j capacity_j x (item j's own M per contract)`` (``M`` is a seminorm in the actions, so the
         triangle inequality bounds it). A group whose atoms never differ carries no charge.
         Returns ``{"rows": {index: atoms x items payoff array}, "charge": {index: _AtomDeviation},
@@ -4444,7 +4444,7 @@ class TransportPortfolioSolve(PyomoSolve):
         m.W = Var(list(bounds), domain=Reals, bounds=lambda m, s: bounds[s])
         m.U = Var(list(bounds), domain=Reals)
         m.charge = Var(names, domain=NonNegativeReals)
-        # An aggregate dispersion variable only for a name with more than one active group.
+        # An aggregate dispersion variable only for a key with more than one active group.
         m.total = Var([n for n in names if len([i for i in plan["members"][n] if i in active]) > 1],
                       domain=NonNegativeReals)
         m.wealth = ConstraintList()
@@ -5226,6 +5226,21 @@ class TransportActionScore:
             wealth.append(self.utility["w0"]+mean+sum(float(np.dot(row, quantities[i])) for i, row in terms.items()))
         return names, wealth
 
+    def _book_record(self, plan, exact_sd, totals):
+        """Return how the charge compares with the chosen book's exact sd (a record: nothing in the solve reads it).
+
+        ``sd`` and ``dispersion`` are the book's exact standard deviation and the charge's ``S`` combined the way the
+        charge combines them: the groups of one ``aggregate`` key add (perfectly correlated), the keys in quadrature.
+        ``ratio`` is ``sd / dispersion`` and ``effective_fraction`` the Kelly fraction the charge actually applies,
+        ``f x ratio^2`` with ``f = 1 / gamma``: the label ``f`` is nominal when the ratio is not one. A book with no
+        dispersion (cash) records no ratio.
+        """
+        sd = math.sqrt(sum(sum(exact_sd[i] for i in indices)**2 for indices in plan["members"].values()))
+        dispersion = math.sqrt(sum(total**2 for total in totals.values()))
+        ratio = sd/dispersion if dispersion > 0. else None
+        return {"sd": float(sd), "dispersion": float(dispersion), "ratio": ratio,
+                "effective_fraction": None if ratio is None else ratio**2/self.utility["gamma"]}
+
     def _utility_components(self, quantities):
         """Value the quantities under the tangent envelope and the charge lines (what the program maximizes), and exactly."""
         import numpy as np
@@ -5236,11 +5251,17 @@ class TransportActionScore:
         spread = {i: float(plan["charge"][i].charge(plan["rows"][i] @ np.asarray(quantities[i], dtype=float)))
                   for i in plan["rows"]}   # S_g of the book chosen, not of a reference book
         totals = {name: sum(spread[i] for i in indices) for name, indices in sorted(plan["members"].items())}
+        exact_sd = {}   # each group's exact sd of the book's payoff over its whole grid, for the record only
+        for i, rows in plan["rows"].items():
+            payoff, p = rows @ np.asarray(quantities[i], dtype=float), plan["charge"][i].masses
+            exact_sd[i] = float(np.sqrt(np.dot(p, (payoff-np.dot(p, payoff))**2)))
         charges = [plan["lines"][name].value(total) for name, total in totals.items()]
         exact_charges = [plan["lines"][name].exact(total) for name, total in totals.items()]
         envelope = float(self.utility["w0"]*np.dot(weights, self.envelope.value(wealth)))
         return {"envelope": envelope, "charges": charges, "value": envelope-sum(charges),
                 "charge_names": list(totals), "dispersion": [spread.get(i, 0.) for i in range(len(self.groups))],
+                "group_sd": [exact_sd.get(i, 0.) for i in range(len(self.groups))],
+                "book": self._book_record(plan, exact_sd, totals),
                 "exact": float(self.utility["w0"]*np.dot(weights, self.envelope.exact(wealth))-sum(exact_charges)),
                 "exact_charges": exact_charges,
                 "envelope_error": self.envelope.error, "core_error": self.envelope.core_error,

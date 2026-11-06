@@ -5370,43 +5370,117 @@ def _spread_on_law(law, delta, width, edge, capacity=2000):
 
 
 def _stake_ratio(group, fraction, w0=300000.):
-    """The solved stake of a one-item group over its exact CRRA stake, and the regret over the gain."""
+    """The solved stake of a one-item group, its exact CRRA stake, the regret over the gain and the recorded book."""
     from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
 
     params = _kelly_params()
     params["solver_options"] = {**params["solver_options"], "mip_feasibility_tolerance": 1e-9}
     gamma = 1./fraction
-    stake = TransportPortfolioSolve("kelly", params).run(
-        None, _kelly_program([group], fraction=fraction, w0=w0))["selection"]["quantities"][0][0]
+    selection = TransportPortfolioSolve("kelly", params).run(
+        None, _kelly_program([group], fraction=fraction, w0=w0))["selection"]
+    stake = selection["quantities"][0][0]
     exact = _exact_stake(group, gamma, w0)
     gain = _crra_gain(group, exact, gamma, w0)
-    return stake, exact, (gain-_crra_gain(group, stake, gamma, w0))/gain if gain > 0 else 0.
+    return stake, exact, (gain-_crra_gain(group, stake, gamma, w0))/gain if gain > 0 else 0., selection["utility"]["book"]
 
 
 STAKE_BAND = (.6, 1.6)
 
 
-def test_a_put_spread_is_sized_near_the_exact_crra_stake_on_seven_13_point_grids():
-    """The review's table: short put spreads at 5 to 15 delta, 2.5 to 5% wide, sold at 1.1x and 1.3x their expected
-    payout, on seven 13-point laws at f .25 and .5 (112 rows). Typical rows are inside [0.6, 1.6] x the exact CRRA
-    stake; none is below 0.6 or above 2.1. The stake runs above the exact one because the charge is a second-order
-    (variance) cost: M is 0.84 to 0.98 of the sd, and a negatively skewed bet at a large stake (the worst rows risk
-    most of the wealth, at the larger edge) loses more than its variance says."""
+def _put_pair_on_law(law, delta, width, edge, capacity=2000):
+    """A whole two-item book on a discretized law: the short put and the long put of ``_spread_on_law`` as separate
+    items the solve sizes freely (the long one bought at its expected payout, the short sold at ``edge`` times it)."""
+    import math
+    from scipy import stats
+
+    one = _spread_on_law(law, delta, width, edge, capacity)
+    points, span, _df, sigma = law
+    spots, masses = one["grid"], one["masses"]
+    short = 100.*math.exp(sigma*stats.norm.ppf(delta))
+    pay_short = [100.*max(short-s, 0.) for s in spots]
+    pay_long = [100.*max(short-100.*width-s, 0.) for s in spots]
+    credit = [edge*sum(p*v for p, v in zip(masses, pay_short)), -sum(p*v for p, v in zip(masses, pay_long))]
+    losses = [[a, -b] for a, b in zip(pay_short, pay_long)]
+    return {**one, "credit": credit, "losses": losses, "capacity": [capacity, capacity],
+            "reserve_rows": [[a-credit[0], -b-credit[1]] for a, b in zip(pay_short, pay_long)]}
+
+
+def _independent_book(group, quantities, gamma):
+    """The recorded book by hand, from the full grid in plain python: exact sd, the oracle's M, their ratio and f_eff."""
+    p = group["masses"]
+    pay = [-sum(r*q for r, q in zip(row, quantities)) for row in group["losses"]]
+    mean = sum(a*b for a, b in zip(p, pay))
+    sd = sum(a*(b-mean)**2 for a, b in zip(p, pay))**.5
+    dispersion = _point_spread(p, pay)
+    return sd, dispersion, sd/dispersion, (sd/dispersion)**2/gamma
+
+
+@pytest.mark.parametrize("fraction", [.25, .5])
+def test_the_recorded_book_pins_the_exact_sd_the_dispersion_and_the_effective_fraction(fraction):
+    """A whole book (both legs free) is solved, and the utility block's ``book`` is checked against an independent
+    computation from the full grid: sd, M, sd / M and the implied effective fraction f x (sd / M)^2. The labels
+    (.25, .5) are nominal: the second pins what the solve actually stakes."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    group = _put_pair_on_law(LAWS_13["normal +-3"], .10, .05, 1.3)
+    params = _kelly_params()
+    params["solver_options"] = {**params["solver_options"], "mip_feasibility_tolerance": 1e-9}
+    program = _kelly_program([group], fraction=fraction, w0=300000.)
+    selection = TransportPortfolioSolve("kelly", params).run(None, program)["selection"]
+    quantities = selection["quantities"][0]
+    assert sum(quantities) > 0, quantities
+    sd, dispersion, ratio, effective = _independent_book(group, quantities, 1./fraction)
+    book, utility = selection["utility"]["book"], selection["utility"]
+    assert utility["group_sd"] == pytest.approx([sd]) and utility["dispersion"] == pytest.approx([dispersion])
+    assert book["sd"] == pytest.approx(sd) and book["dispersion"] == pytest.approx(dispersion)
+    assert book["ratio"] == pytest.approx(ratio) and book["effective_fraction"] == pytest.approx(effective)
+    assert 1.0 <= book["effective_fraction"]/fraction <= 1.5, "M under the sd by 10-30%: the label understates the f staked"
+
+
+def test_the_recorded_book_adds_a_names_groups_and_squares_the_names():
+    """Within a name the groups' sds and dispersions add (perfect correlation, as the charge does); across names they add
+    in quadrature; a cash book records no ratio."""
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+
+    a, b = _loss_bet("a", .1), _loss_bet("b", .3)
+    sd_a, sd_b = 3.*(.1*.9)**.5*(a["credit"][0]+100.), 5.*(.3*.7)**.5*(b["credit"][0]+100.)
+    m_a, m_b = 3.*_spread_per_contract(a), 5.*_spread_per_contract(b)
+    for names, sd, m in (({"a": "n", "b": "n"}, sd_a+sd_b, m_a+m_b),
+                         ({"a": "x", "b": "y"}, (sd_a**2+sd_b**2)**.5, (m_a**2+m_b**2)**.5)):
+        scorer = TransportActionScore(_kelly_program([a, b], fraction=.5, aggregate=names), {"parity_tolerance": 1e-8})
+        book = scorer.value([[3], [5]])["utility"]["book"]
+        assert book["sd"] == pytest.approx(sd) and book["dispersion"] == pytest.approx(m)
+        assert book["ratio"] == pytest.approx(sd/m) and book["effective_fraction"] == pytest.approx(.5*(sd/m)**2)
+    cash = scorer.value([[0], [0]])["utility"]["book"]
+    assert cash == {"sd": 0., "dispersion": 0., "ratio": None, "effective_fraction": None}
+
+
+def test_the_put_spread_table_pins_the_measured_overshoot_of_the_stake():
+    """This test does NOT claim the stake is near the exact CRRA stake: it pins what was measured, so it fails if the
+    overshoot moves either way. Short put spreads at 5 to 15 delta, 2.5 to 5% wide, sold at 1.1x and 1.3x their
+    expected payout, on seven 13-point laws at f .25 and .5 (112 rows): the stake is never below the exact one (0.95x),
+    its median is 1.25 to 1.55x, at most 15% of rows exceed 1.6x and none 2.1x. The recorded ``book`` explains part of
+    it: ``effective_fraction`` is f x (sd / M)^2 with M 0.84 to 0.98 of the sd (so 1.04 to 1.42 f); the rest is the
+    third-order loss of a negatively skewed bet at a large stake (the worst rows risk half the wealth at the larger edge)."""
+    import statistics
+
     rows = []
     for law in sorted(LAWS_13):
         for delta, width in ((.10, .025), (.10, .05), (.05, .025), (.15, .05)):
             for edge in (1.1, 1.3):
                 group = _spread_on_law(LAWS_13[law], delta, width, edge)
                 for fraction in (.25, .5):
-                    stake, exact, regret = _stake_ratio(group, fraction)
-                    risked = stake*group["reserve_rows"][0][0]/300000.
-                    rows.append((stake/exact, law, delta, width, edge, fraction, regret, risked))
+                    stake, exact, regret, book = _stake_ratio(group, fraction)
+                    rows.append((stake/exact, law, delta, width, edge, fraction, regret, book["effective_fraction"]/fraction))
     ratios = [r[0] for r in rows]
-    inside = sum(STAKE_BAND[0] <= x <= STAKE_BAND[1] for x in ratios)/len(ratios)
-    print(f"{len(rows)} rows: stake/exact {min(ratios):.2f} to {max(ratios):.2f}, {inside:.0%} inside {STAKE_BAND}; "
-          f"worst {max(rows)}")
-    assert min(ratios) >= .6 and max(ratios) <= 2.1, (min(rows), max(rows))
-    assert inside >= .85, inside
+    over = sum(x > STAKE_BAND[1] for x in ratios)/len(ratios)
+    print(f"{len(rows)} rows: stake/exact {min(ratios):.2f} to {max(ratios):.2f}, median {statistics.median(ratios):.2f}, "
+          f"{over:.0%} above {STAKE_BAND[1]}; worst {max(rows)}; f_eff/f {min(r[-1] for r in rows):.2f} to "
+          f"{max(r[-1] for r in rows):.2f}")
+    assert min(ratios) >= .95 and max(ratios) <= 2.1, (min(rows), max(rows))
+    assert 1.25 <= statistics.median(ratios) <= 1.55, statistics.median(ratios)
+    assert over <= .15, over
+    assert all(1.0 <= r[-1] <= 1.5 for r in rows), (min(r[-1] for r in rows), max(r[-1] for r in rows))
 
 
 def test_a_put_spread_is_sized_near_the_exact_crra_stake_on_a_25_atom_grid():
@@ -5415,7 +5489,7 @@ def test_a_put_spread_is_sized_near_the_exact_crra_stake_on_a_25_atom_grid():
     for delta, width in ((.10, .025), (.10, .05), (.05, .025), (.15, .05)):
         for edge in (1.1, 1.3):
             group = _spread_on_law((25, 3., None, .04), delta, width, edge)
-            rows += [stake/exact for stake, exact, _ in (_stake_ratio(group, fraction) for fraction in (.25, .5))]
+            rows += [stake/exact for stake, exact, _, _ in (_stake_ratio(group, fraction) for fraction in (.25, .5))]
     print("25 atoms: stake/exact", round(min(rows), 2), "to", round(max(rows), 2))
     assert .6 <= min(rows) and max(rows) <= 2.1, rows
     assert sum(x <= 1.6 for x in rows) >= .85*len(rows)

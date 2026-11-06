@@ -472,3 +472,15 @@ def test_a_kelly_risk_input_week_is_a_hold_when_declared_and_refused_when_not():
     declared = {**SHAPE, "actions": {**SHAPE["actions"], "kelly_risk_input": "hold"}}
     rows = MioRunRows("rows", declared).run(None, {"table": table()})
     assert ("d-2019-01-23", "hold") in [(d["decision_id"], d["action"]) for d in rows["decisions"]]
+    # A kelly week that times out above the gap is `timeout_skipped`: the report document declares that too.
+    timed_out = {**skipped, "status": "timeout_skipped", "kelly": {"status": "estimated"}}
+
+    def table_timeout():
+        result = _result()
+        result["result"]["decisions"] = [*result["result"]["decisions"], timed_out]
+        return {"results": [result, _result(method=OTHER)]}
+    with pytest.raises(ValueError, match="timeout_skipped"):
+        MioRunRows("rows", declared).run(None, {"table": table_timeout()})
+    both = {**declared, "actions": {**declared["actions"], "timeout_skipped": "skip"}}
+    rows = MioRunRows("rows", both).run(None, {"table": table_timeout()})
+    assert ("d-2019-01-23", "skip") in [(d["decision_id"], d["action"]) for d in rows["decisions"]]

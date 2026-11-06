@@ -1599,7 +1599,7 @@ class WeeklyOptionPortfolioStudy:
                                  "undeclared or shorter than the method's, or its timeout_policy is not return, or "
                                  "solver_options mip_feasibility_tolerance is undeclared or above "
                                  f"{cls.KELLY_MIP_FEASIBILITY_TOLERANCE}, or parity_tolerance is below "
-                                 f"{cls.KELLY_PARITY_FLOOR}")
+                                 f"{cls.KELLY_PARITY_FLOOR}, or group_screen is not {cls.KELLY_GROUP_SCREEN}")
         for symbol in symbols:
             problems = _AllQuotedOptionContext.validate_params({**p["bridge"], "symbol": symbol})
             if problems:
@@ -1713,6 +1713,9 @@ class WeeklyOptionPortfolioStudy:
     KELLY_MIP_FEASIBILITY_TOLERANCE = 1e-9
     #: The least ``parity_tolerance`` a kelly document may declare (the charge lines leave HiGHS up to 1e-4 of slack).
     KELLY_PARITY_FLOOR = 1e-3
+    #: The group screen a kelly document must declare: the one real-size measurement (1,000 groups of 176 items) ran with
+    #: it, and without it every group enters the integer program (ADR-0299). Refused, not recommended.
+    KELLY_GROUP_SCREEN = "lp"
 
     @classmethod
     def _gap_within(cls, solver, kelly):
@@ -1723,8 +1726,9 @@ class WeeklyOptionPortfolioStudy:
         shorter than the method's; a week that times out above the gap is
         skipped and listed (``timeout_policy`` return), not raised; HiGHS's
         ``mip_feasibility_tolerance`` is declared at
-        :attr:`KELLY_MIP_FEASIBILITY_TOLERANCE` or tighter and the
-        ``parity_tolerance`` is at least :attr:`KELLY_PARITY_FLOOR`.
+        :attr:`KELLY_MIP_FEASIBILITY_TOLERANCE` or tighter, the
+        ``parity_tolerance`` is at least :attr:`KELLY_PARITY_FLOOR` and the
+        ``group_screen`` is :attr:`KELLY_GROUP_SCREEN`.
         """
         gap, options = kelly["gap"], solver.get("solver_options") or {}
         # Explicit, both HiGHS gaps too: an absent mip gap is HiGHS's own default (looser than a kelly method's).
@@ -1736,7 +1740,8 @@ class WeeklyOptionPortfolioStudy:
                 and number_ok(options.get("mip_rel_gap")) and options["mip_rel_gap"] <= gap["relative"]
                 and number_ok(options.get("mip_feasibility_tolerance"))
                 and options["mip_feasibility_tolerance"] <= cls.KELLY_MIP_FEASIBILITY_TOLERANCE
-                and number_ok(solver.get("parity_tolerance")) and solver["parity_tolerance"] >= cls.KELLY_PARITY_FLOOR)
+                and number_ok(solver.get("parity_tolerance")) and solver["parity_tolerance"] >= cls.KELLY_PARITY_FLOOR
+                and solver.get("group_screen") == cls.KELLY_GROUP_SCREEN)
 
     @staticmethod
     def _risk_charge_valid(spec):
@@ -2724,6 +2729,9 @@ class WeeklyOptionPortfolioStudy:
                         # The lp screen is a restriction: it drops candidate groups with no edge that could hedge.
                         # How many it dropped this week is a decision field, not only a log line.
                         record["kelly"]["screen"] = (None if policy else dict(solver.last_screen))
+                        # How the charge compares with the book it sized (exact sd, its dispersion, their ratio and the
+                        # fraction actually applied): the labelled fraction is nominal. A record only; None when no solve.
+                        record["kelly"]["book"] = None if timed_out else dict(selection["utility"]["book"])
                     if books:
                         pending = {"books": books, "components": components, "record": record}
                 decisions.append(record)
@@ -3189,6 +3197,9 @@ class MIOPacketCompare(StudyNode):
     """Publish descriptive complete-cohort metrics; never select an unset winner."""
 
     outputs = ("report",)
+    #: What a comparison row keeps of each kelly decision's ``kelly`` record (``book``: the exact sd, the charge, their
+    #: ratio and the fraction the charge applies, ADR-0299).
+    _KELLY_ROW_KEYS = ("status", "dropped", "candidates", "screen", "book")
 
     @staticmethod
     def _kelly_dropped(decisions):
@@ -3235,7 +3246,7 @@ class MIOPacketCompare(StudyNode):
                     row["decisions"] = [{k: v for k, v in decision.items() if k in {
                         "date", "status", "candidate_books", "candidate_contracts", "eligible_by_pair",
                         "eligible_by_symbol", "fitted", "fallback", "refusals", "cdf_noise_repaired"}}
-                        | ({"kelly": {k: decision["kelly"].get(k) for k in ("status", "dropped", "candidates", "screen")}}
+                        | ({"kelly": {k: decision["kelly"].get(k) for k in self._KELLY_ROW_KEYS}}
                            if "kelly" in decision else {}) for decision in result["decisions"]]
                     if any("kelly" in d for d in result["decisions"]):
                         row["kelly_dropped"] = self._kelly_dropped(result["decisions"])

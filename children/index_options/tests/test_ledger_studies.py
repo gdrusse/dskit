@@ -3435,11 +3435,13 @@ KELLY_FORMULATIONS = {
 def _for_kelly(params):
     """Declare what a kelly document must: the time limit the method asks for, the timeout policy that skips a week,
     HiGHS's MIP feasibility tolerance (its 1e-6 default leaves the charge variable up to ~0.006 under its lines at
-    300,000, above the parity tolerance) and a parity tolerance of at least 1e-3."""
+    300,000, above the parity tolerance), a parity tolerance of at least 1e-3 and the ``lp`` group screen (a real week's
+    program does not fit without it)."""
     params["solver"]["timeout_policy"] = "return"
     params["solver"]["solver_options"]["time_limit"] = 1500
     params["solver"]["solver_options"]["mip_feasibility_tolerance"] = 1e-9
     params["solver"]["parity_tolerance"] = 1e-3
+    params["solver"]["group_screen"] = "lp"
     return params
 
 
@@ -3685,10 +3687,13 @@ def test_centred_scenarios_give_every_book_a_zero_probability_weighted_deviation
     lambda s: s["solver_options"].update(mip_feasibility_tolerance=1e-6),
     lambda s: s["solver_options"].update(mip_feasibility_tolerance=float("nan")),
     lambda s: s.update(parity_tolerance=1e-4),
+    lambda s: s.update(group_screen="none"),
+    lambda s: s.pop("group_screen"),
 ])
 def test_a_kelly_document_declares_the_mip_feasibility_tolerance_and_a_parity_floor(change):
     """Without HiGHS's MIP feasibility tolerance at 1e-9 and a parity tolerance of 1e-3 or more, a 300,000 account's
-    week is refused as model_over_audit (the charge variable sits under its lines by the solver's slack)."""
+    week is refused as model_over_audit (the charge variable sits under its lines by the solver's slack); without the
+    ``lp`` group screen a real-size week does not fit in memory (ADR-0299)."""
     kelly = {"id": "kelly025_lp", **KELLY_FORMULATIONS["kelly025_lp"]}
     good, _ = _weekly_portfolio_fixture()
     good["methods"] = [kelly]
@@ -3755,6 +3760,23 @@ def test_a_kelly_week_records_how_many_groups_the_screen_dropped(monkeypatch):
     screen = week["kelly"]["screen"]
     assert set(screen) == {"rule", "candidates", "kept", "screened", "fallback"}
     assert screen["candidates"] == week["kelly"]["candidates"] and screen["kept"]+screen["screened"] == screen["candidates"]
+
+
+def test_a_kelly_week_records_the_books_sd_ratio_and_effective_fraction():
+    """Per week and method the decision records the chosen book's exact sd, the charge's dispersion, their ratio and the
+    fraction the charge actually applies (the label is nominal); a comparison row keeps it; a week with no solve has none."""
+    params, inputs = _kelly_fixture(fraction=.5)
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    solved = [d for d in result["decisions"] if d.get("status") == "selected"]
+    assert solved, "the fixture trades under Kelly"
+    for week in solved:
+        book = week["kelly"]["book"]
+        assert book == week["selection"]["utility"]["book"] and set(book) == {"sd", "dispersion", "ratio", "effective_fraction"}
+        assert book["effective_fraction"] == pytest.approx(week["kelly"]["fraction"]*book["ratio"]**2)
+        assert book["sd"] > 0 and book["dispersion"] > 0
+    assert set(ledger_studies.MIOPacketCompare._KELLY_ROW_KEYS) <= set(solved[0]["kelly"])
+    skipped = [d for d in result["decisions"] if d.get("status") == "kelly_risk_input"]
+    assert all("book" not in d["kelly"] for d in skipped), "no solve, no record"
 
 
 def test_a_comparison_row_lists_the_names_a_kelly_method_dropped_and_their_weeks():
@@ -3867,14 +3889,12 @@ def test_one_adverse_reprice_does_not_void_the_kelly_week():
 
 def test_a_kelly_method_refuses_a_document_whose_gaps_are_looser_than_its_own():
     """The objective is dollars of growth: a 50-dollar document gap would certify a weak week as cash. The method's
-    gap binds the document's certification and HiGHS gaps; the lp screen itself is allowed (a documented restriction)."""
+    gap binds the document's certification and HiGHS gaps; the lp screen is required (a documented restriction: the
+    screen is refused when `none`, in the tolerance test above)."""
     params, inputs = _weekly_portfolio_fixture()
     params["methods"] = [{"id": "kelly025_lp", **KELLY_FORMULATIONS["kelly025_lp"]}]
     _for_kelly(params)
     ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
-    for screen in ("lp", "none"):
-        params["solver"]["group_screen"] = screen
-        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
     for loose in ({"absolute_gap": 50.}, {"relative_gap": .06}, {"solver_options": {"mip_abs_gap": 50., "threads": 1, "time_limit": 1500}},
                   {"solver_options": {"mip_rel_gap": .06, "threads": 1, "time_limit": 1500, "mip_abs_gap": 1.}}):
         bad, _ = _weekly_portfolio_fixture()
