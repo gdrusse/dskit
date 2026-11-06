@@ -1320,3 +1320,50 @@ def test_atomic_pinned_manifest_refusals(tmp_path, case):
     digest = "0"*64 if case == "wrong_pin" else store.file_hash(manifest)
     with pytest.raises(IntegrityError):
         AtomicFitStore.verify_pinned(store.path, digest)
+
+
+def test_grid_method_public_quantile_average_and_score_are_the_grid_owners():
+    from dskit.pipeline.libs.cdf_grid_methods import GridCDFMethod, _Grid, _QuantileGrid
+    z = np.arange(-3, 3.01, .5)
+    weights = np.array([.25, 1, 1, 1, 1, 1, .25, 1, 1, 1, 1, 1, .25])
+    grid = _Grid(z, [str(v) for v in z], weights, 4.)
+    from scipy.stats import norm
+    one, two = norm.cdf(z - .5)[None, :], norm.cdf(z + .5)[None, :]
+    knots, levels, cdf = GridCDFMethod.quantile_average_rows(np.stack([one, two], axis=1), z, 4., 199)
+    inverse = _QuantileGrid(grid, 199)
+    np.testing.assert_array_equal(knots, (inverse.invert(one) + inverse.invert(two)) / 2)
+    np.testing.assert_array_equal(cdf, inverse.locate(knots)[1])
+    np.testing.assert_array_equal(levels, inverse.p)
+    np.testing.assert_allclose(cdf[0, 6], .5, atol=.01)            # symmetric seeds, median at zero
+    y = np.array([.2])
+    np.testing.assert_array_equal(GridCDFMethod.grid_score_rows(one, y, z, weights, 4.), grid.score(one, y))
+
+
+def test_the_telemetry_switch_leaves_weights_alone_and_removes_the_monitor_loss():
+    from dskit.pipeline.libs.predictive_cdf import MixtureMLPCDF
+    rng = np.random.default_rng(4)
+    x, y = rng.normal(size=(24, 3)), rng.normal(size=24)
+    on = MixtureMLPCDF(hidden=[2], epochs=2, seeds=[11], device="cpu", training_telemetry=True).fit(x, y, x[:4], y[:4])
+    off = MixtureMLPCDF(hidden=[2], epochs=2, seeds=[11], device="cpu", training_telemetry=False).fit(x, y, x[:4], y[:4])
+    np.testing.assert_array_equal(on.curve(x).cdf([0.]), off.curve(x).cdf([0.]))
+    assert off.training_diagnostics == [] and off.monitor_losses == []
+
+
+def test_experiment_refuses_nonboolean_optional_switches():
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    assert {"training_telemetry", "raise_fit_errors"} <= CDFExperiment.OPTIONAL_KEYS
+    for key in ("training_telemetry", "raise_fit_errors"):
+        with pytest.raises(ValueError, match="experiment keys"):
+            CDFExperiment({key: "yes"})
+
+
+def test_parameter_movement_is_known_without_telemetry(monkeypatch):
+    import torch
+    from dskit.pipeline.libs.predictive_cdf import MixtureMLPCDF
+    rng = np.random.default_rng(4)
+    x, y = rng.normal(size=(24, 3)), rng.normal(size=24)
+    settings = {"hidden": [2], "epochs": 1, "seeds": [11, 29], "device": "cpu", "training_telemetry": False}
+    moved = MixtureMLPCDF(**settings).fit(x, y, x[:4], y[:4])
+    assert moved.parameters_moved == [True, True] and moved.training_diagnostics == []
+    monkeypatch.setattr(torch.optim.AdamW, "step", lambda self, closure=None: None)
+    assert MixtureMLPCDF(**settings).fit(x, y, x[:4], y[:4]).parameters_moved == [False, False]

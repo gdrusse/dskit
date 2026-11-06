@@ -67,13 +67,16 @@ from index_options.cdf_study import _wanted_mask
 from index_options.datafiles import DataFiles, archive_relpath, entry_problems
 from index_options.theta_exact_expiry import _iso, quotes_valid
 
-__all__ = ["LISTED_SOURCES", "NO_LEARNING_BEST_EPOCH", "StrikeRegionScores"]
+__all__ = ["LISTED_SOURCES", "METRIC_SEAL", "NO_LEARNING_BEST_EPOCH", "StrikeRegionScores", "zlabel"]
 
 #: No node kind is registered: a document names ``index_options.strike_region_scores:StrikeRegionScores``.
 NODE_KINDS = ()
 
 #: The output layout version, written into ``summary.json``.
 SCHEMA_VERSION = 1
+#: Owner's ruling of 2026-11-05 (PLAN.md, full-span rerun; not a Path row): from this date forecasts are saved
+#: but no metric of any kind is computed.
+METRIC_SEAL = "2024-01-01"
 #: The scored forecasters and the paired differences (a, b) reported as ``score_a - score_b``.
 FORECASTERS = ("model", "baseline", "pooled", "market")
 PAIRS = (("model", "market"), ("model", "baseline"), ("market", "baseline"), ("model", "pooled"),
@@ -117,6 +120,11 @@ RULES = {
 def _zlabel(z):
     """Return the column label of one grid point: ``m`` or ``p`` and the magnitude (``m2.5``, ``p0``)."""
     return ("m" if z < 0 else "p") + format(abs(z), "g")
+
+
+def zlabel(z):
+    """Return the column label of a grid point, the public name of the one rule."""
+    return _zlabel(z)
 
 
 def _number(value):
@@ -965,6 +973,9 @@ class StrikeRegionScores(Node):
         partial. A process killed outright (power loss, SIGKILL) cannot clean up: it leaves the partial
         directory, and a rerun to the same name is refused until that directory is removed by hand.
         """
+        if self.params["end_before"] > METRIC_SEAL:
+            raise ValueError(f"{self.key}: end_before {self.params['end_before']} passes {METRIC_SEAL}: "
+                             "no metric is ever computed on a date from then on (owner, 2026-11-05)")
         started = time.monotonic()
         output = Path(self.params["output"])
         work = output.parent / f".{output.name}.partial"

@@ -1,0 +1,16 @@
+{
+ "notes": "ADR-0298 (proposed): extend the panel through 2025-11-28 with the through-2023 build's own documents. Work and final panel stay in WSL (2024+ outcome columns): the code refuses a Windows drive. Plan only after the WSL disk moved to D: while c_vhdx exists WSL writes count against the owner's C: floor.",
+ "docs_from": "/home/russell/data/index_options/full-span-rerun-20261105/panel-build/docs",
+ "old_root": "/dev/shm/full-span",
+ "work_root": "/home/russell/data/index_options/full-span-rerun-20261105/extension-20251128",
+ "final_wsl": "/home/russell/data/index_options/full-span-rerun-20261105/panel-extension",
+ "old_frame": "/home/russell/data/index_options/full-span-rerun-20261105/panel-build/panel/frame.parquet",
+ "old_frame_sha256": "3f60451c67a1e5547c0c0b528d14db64c43783039ee9987b681ce84cd07da488",
+ "python": "/home/russell/dskit/.venv/bin/python",
+ "repo": "/home/russell/wt/quarterly-forecasts-20261105",
+ "batches": 5,
+ "halt_file": "/home/russell/data/index_options/full-span-rerun-20261105/HALT",
+ "c_floor_gb": 3,
+ "c_vhdx": "/mnt/c/Users/russe/AppData/Local/wsl/{4e94a45d-1ad2-4053-b1ca-9500489e62b4}/ext4.vhdx",
+ "owner_name_exceptions": {}
+}

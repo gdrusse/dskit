@@ -3381,6 +3381,42 @@ class GridCDFMethod(Node):
     _EXTERNAL_KEYS = ("path", "sha256", "keys")
 
     @staticmethod
+    def quantile_average_rows(cdfs, z_grid, tail, levels):
+        """Equally average the quantile functions of grid CDFs, row by row, with no fitting.
+
+        Parameters
+        ----------
+        cdfs : numpy.ndarray
+            ``(rows, members, points)`` CDF values on ``z_grid``.
+        z_grid : array-like
+            The grid.
+        tail : float
+            Width of the closing tails, as ``pit_tail``.
+        levels : int
+            Interior quantile levels.
+
+        Returns
+        -------
+        tuple
+            The ``(rows, levels + 2)`` averaged quantile knots, their ``levels + 2`` probabilities and
+            the ``(rows, points)`` CDF of the average on the grid.
+        """
+        import numpy as np
+
+        z = np.asarray(z_grid, dtype=float)
+        inverse = _QuantileGrid(_Grid(z, [str(v) for v in z], np.ones(len(z)), tail), levels)
+        knots = np.mean([inverse.invert(cdfs[:, j]) for j in range(cdfs.shape[1])], axis=0)
+        return knots, inverse.p, inverse.locate(knots)[1]
+
+    @staticmethod
+    def grid_score_rows(cdf, y, z_grid, weights, tail):
+        """Return each row's grid threshold-weighted CRPS (the score ``GridCDFMethod`` learns and reports)."""
+        import numpy as np
+
+        z = np.asarray(z_grid, dtype=float)
+        return _Grid(z, [str(v) for v in z], np.asarray(weights, dtype=float), tail).score(cdf, y)
+
+    @staticmethod
     def calibration_map(pit, knots):
         """Reproduce the existing unweighted empirical-PIT map on admitted rows."""
         import numpy as np

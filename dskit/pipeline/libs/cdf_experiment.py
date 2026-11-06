@@ -142,7 +142,7 @@ class CDFExperiment:
     KEYS = {"study", "panel", "panel_sha256", "output", "tickers", "arms",
             "candidates", "training", "capacity", "source_hashes", "dependencies",
             "date_upper_exclusive", "end_upper_exclusive"}
-    OPTIONAL_KEYS = {"refit_full_train", "tickers_sha256"}
+    OPTIONAL_KEYS = {"refit_full_train", "tickers_sha256", "training_telemetry", "raise_fit_errors"}
     ARM_KEYS = {"features", "sequence_indices", "context_indices", "observed_columns",
                 "min_fit", "min_cal", "min_disjoint"}
     CANDIDATE_KEYS = {"name", "adapters", "skip_reason"}
@@ -151,7 +151,9 @@ class CDFExperiment:
 
     def __init__(self, config):
         if (set(config)-self.OPTIONAL_KEYS != self.KEYS
-                or type(config.get("refit_full_train", False)) is not bool):
+                or type(config.get("refit_full_train", False)) is not bool
+                or type(config.get("training_telemetry", True)) is not bool
+                or type(config.get("raise_fit_errors", False)) is not bool):
             raise ValueError("invalid experiment keys")
         if config.get("refit_full_train") and config["training"].get("patience") is not None:
             raise ValueError("full training refit requires patience=None; select epochs in a prior fit")
@@ -404,7 +406,8 @@ class CDFExperiment:
         params = copy.deepcopy(c["training"])
         params.update(encoder={"kind": "external", "adapter": adapter,
             "sequence_indices": arm["sequence_indices"], "context_indices": arm["context_indices"]},
-            hidden=[hidden], mask_constant_features=True, training_telemetry=True)
+            hidden=[hidden], mask_constant_features=True,
+            training_telemetry=c.get("training_telemetry", True))
         cap = c["capacity"][regime]
         params["max_parameters"] = min(cap["absolute"], int(nfit*cap["per_row"]))
         params["batch_size"] = min(c["capacity"][regime]["batch_size"], nfit)
@@ -479,7 +482,8 @@ class CDFExperiment:
         y = [(b[s["target"]]/b[s["reference"]]).to_numpy() for b in bands[:2]]
         started = time.monotonic()
         model.fit(arrays[0], y[0], arrays[1], y[1])
-        if any(d["parameter_delta_l2"] <= 0 for d in model.training_diagnostics):
+        if (any(d["parameter_delta_l2"] <= 0 for d in model.training_diagnostics)
+                or not all(model.parameters_moved)):
             raise ValueError("no learned parameter movement")
         metadata = {"medians": medians, "features": arm["features"], "groups": groups,
                     "target_normalization": s["target"]+"/"+s["reference"],
@@ -643,7 +647,10 @@ class CDFExperiment:
             raise
         except (ValueError, RuntimeError, AssertionError, TypeError, ImportError) as error:
             # Integrity checks above raise a separate type. Library incompatibility,
-            # numerical failure and epoch ceilings are visible model-specific skips.
+            # numerical failure and epoch ceilings are visible model-specific skips,
+            # unless the document says a failure is retried: then no terminal state exists.
+            if self.config.get("raise_fit_errors"):
+                raise
             skip.publish({"reason.json": self.json_bytes({"error": type(error).__name__,
                 "reason": str(error), "candidate": candidate["name"], "groups": groups})})
             return "skipped"
