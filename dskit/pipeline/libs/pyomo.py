@@ -3632,51 +3632,79 @@ class MeanAbsoluteDeviation(DeviationCharge):
         return lower, cost, rows
 
 
-class _PointDeviation(DeviationCharge):
-    """The dispersion of a book at a few outcome points, about a centre the caller already subtracted.
+class _AtomDeviation(DeviationCharge):
+    """A lower bound on a book's standard deviation over EVERY atom of an outcome grid, as a linear epigraph.
 
-    ``v`` holds the book's deviation from its (exact) mean at each point; ``masses`` are the points' MAD weights
-    (summing to one, a point may weigh zero) and ``roots`` each point's ``sqrt(p_k)`` of its own true mass. The
-    measure is the larger of two bounds on the book's standard deviation, both in units of ``price``:
-    ``price x sum_k w_k |v_k|`` (the mean absolute deviation, scaled to a normal's sd by ``price``) and
-    ``max_k sqrt(p_k) |v_k|`` (the sd is at least that at any single outcome: ``sd^2 >= p_k v_k^2``, exact for a
-    rare loss in a binary). So ``D = max(sum_k w_k |v_k|, max_k roots_k |v_k| / price)`` and the charge is
-    ``price x D``. Nothing is centred (no mean variable): one nonnegative ``t_k >= +-v_k`` per point, one ``m`` with
-    ``sum w_k t_k <= m`` and ``roots_k t_k / price <= m``: ``2P`` rows over the items plus ``P + 1``
-    over the auxiliaries. It is not a ``risk_charge`` measure (no ``measure`` name): the utility dispersion
-    charge builds it (:meth:`TransportPortfolioSolve._charge_plan`).
+    ``losses`` are the book's payoff at each atom, ordered by the grid (``masses`` the atoms' true probabilities,
+    all positive, summing to one); with ``v = L - E[L]`` and ``t = |v|`` the measure ``D`` is the largest of
+    ``sum_k p_k t_k`` (the mean absolute deviation), ``sqrt(p_k) t_k / price`` for each atom and, for every lowest
+    set ``T`` of atoms and every highest set, ``sum_T p_k t_k / (price sqrt(sum_T p_k))``. Each is at most the sd by
+    Cauchy-Schwarz (``sum_T p t <= sqrt(P_T) sqrt(sum_T p v^2) <= sqrt(P_T) sd``), so ``price x D`` is the larger
+    of ``price`` MADs (a normal's sd over its MAD) and the tails' sd bounds: a rare loss cannot fall between
+    points, since every atom is one. The charge is ``price x D``.
+
+    The epigraph keeps every row sparse: one free ``P_k`` per atom with ``P_k = L_k`` (the only rows over the
+    actions, and an out-of-the-money leg pays on part of the grid only), the free mean ``mu = sum p_k P_k``,
+    ``t_k >= +-(P_k - mu)`` and the running sums ``lo_j >= lo_{j-1} + p_j t_j`` (and ``hi_j`` from the top), so a
+    tail bound is two variables: about ``8`` rows of at most three auxiliaries per atom, none dense. It is not a
+    ``risk_charge`` measure (no ``measure`` name): the utility dispersion charge builds it
+    (:meth:`TransportPortfolioSolve._charge_plan`).
     """
 
-    def __init__(self, masses, price, roots):
+    def __init__(self, masses, price):
+        super().__init__(masses, price)
+        if len(self.masses) < 2 or (self.masses <= 0).any() or self.price <= 0:
+            raise ValueError("an atom deviation needs two or more positive masses and a positive price")
+
+    def columns(self, payoffs):
+        """Return ``D`` of every column of an ``(atoms, columns)`` payoff matrix (the vectorized :meth:`deviation`)."""
         import numpy as np
 
-        super().__init__(masses, price)
-        self.roots = np.asarray(roots, dtype=float)
-        if (self.roots.shape != self.masses.shape or not np.isfinite(self.roots).all() or (self.roots < 0).any()
-                or self.price <= 0):
-            raise ValueError("invalid point roots or price")
+        values = np.asarray(payoffs, dtype=float)
+        if values.ndim != 2 or values.shape[0] != len(self.masses) or not np.isfinite(values).all():
+            raise ValueError("invalid deviation payoffs")
+        p = self.masses[:, None]
+        t = np.abs(values-(p*values).sum(axis=0))
+        low = np.cumsum(p*t, axis=0)[:-1]/np.sqrt(np.cumsum(p)[:-1, None])
+        high = np.cumsum((p*t)[::-1], axis=0)[:-1]/np.sqrt(np.cumsum(p[::-1])[:-1, None])
+        return np.maximum.reduce([(p*t).sum(axis=0), low.max(axis=0)/self.price, high.max(axis=0)/self.price,
+                                  (np.sqrt(p)*t).max(axis=0)/self.price])
 
     def deviation(self, losses):
-        """Return ``max(sum_k w_k |v_k|, max_k roots_k |v_k| / price)`` (see :class:`DeviationCharge`)."""
+        """Return ``D`` of one payoff vector (see :class:`DeviationCharge`)."""
         import numpy as np
 
-        values = np.abs(np.asarray(losses, dtype=float))
-        if values.shape != self.masses.shape or not np.isfinite(values).all():
+        values = np.asarray(losses, dtype=float)
+        if values.shape != self.masses.shape:
             raise ValueError("invalid deviation losses")
-        return float(max(np.dot(self.masses, values), (self.roots*values).max()/self.price))
+        return float(self.columns(values[:, None])[0])
 
     def epigraph(self):
-        """Return ``t_0 .. t_{P-1}`` and ``m``, the rows ``+-v_k <= t_k``, ``sum w t <= m`` and ``roots t / price <= m``."""
-        points = len(self.masses)
-        rows = []
-        for k in range(points):
-            rows.append(("ub", {k: 1.}, {k: -1.}))
-            rows.append(("ub", {k: -1.}, {k: -1.}))
-        rows.append(("ub", {}, {**{k: float(w) for k, w in enumerate(self.masses) if w > 0}, points: -1.}))
-        for k in range(points):
-            if self.roots[k] > 0:
-                rows.append(("ub", {}, {k: float(self.roots[k])/self.price, points: -1.}))
-        return [0.]*(points+1), [0.]*points+[1.], rows
+        """Return the auxiliaries ``P, mu, t, lo, hi, D`` and the rows that make ``D`` the least feasible value."""
+        m, p = len(self.masses), [float(x) for x in self.masses]
+        mu, t0, lo0, hi0, top = m, m+1, 2*m+1, 3*m+1, 4*m+1
+        lower = [None]*(m+1)+[0.]*(3*m+1)
+        rows = [("eq", {k: -1.}, {k: 1.}) for k in range(m)]
+        rows.append(("eq", {}, {**{k: p[k] for k in range(m)}, mu: -1.}))
+        for k in range(m):
+            rows.append(("ub", {}, {k: 1., mu: -1., t0+k: -1.}))
+            rows.append(("ub", {}, {k: -1., mu: 1., t0+k: -1.}))
+        total = 0.
+        for j in range(m):   # lowest j+1 atoms, then the highest j+1
+            total += p[j]
+            rows.append(("ub", {}, {**({lo0+j-1: 1.} if j else {}), t0+j: p[j], lo0+j: -1.}))
+            if j < m-1:
+                rows.append(("ub", {}, {lo0+j: 1./(self.price*total**.5), top: -1.}))
+        total = 0.
+        for j in range(m):
+            k = m-1-j
+            total += p[k]
+            rows.append(("ub", {}, {**({hi0+j-1: 1.} if j else {}), t0+k: p[k], hi0+j: -1.}))
+            if j < m-1:
+                rows.append(("ub", {}, {hi0+j: 1./(self.price*total**.5), top: -1.}))
+        rows.append(("ub", {}, {**{t0+k: p[k] for k in range(m)}, top: -1.}))
+        rows.extend(("ub", {}, {t0+k: p[k]**.5/self.price, top: -1.}) for k in range(1, m-1))
+        return lower, [0.]*top+[1.], rows
 
 
 #: Every deviation a ``risk_charge`` declaration may name, by measure.
@@ -3918,10 +3946,10 @@ class TransportPortfolioSolve(PyomoSolve):
         the book the solve chooses: ``S = sum_g M_g`` over the name's
         groups (the ``aggregate`` key), ``M_g`` the larger of 1.25 x the mean
         absolute deviation (a normal's sd over its MAD) of the group's book
-        profit from its mean read at ``CHARGE_POINTS`` (5) mass levels of its
-        grid, and ``sqrt(p_k)`` times the book's deviation at any point (a
-        lower bound on its sd, with the grid's two extreme atoms always
-        points), held by epigraph variables (:meth:`_charge_plan`,
+        payoff over EVERY atom of its grid and the Cauchy-Schwarz lower bounds
+        on its sd at each atom and over each lowest and each highest set of
+        atoms (:class:`_AtomDeviation`, a linear epigraph with one payoff
+        variable per atom, about 8 sparse rows per atom; :meth:`_charge_plan`,
         :class:`_ChargeLines`). It needs radius 0 and no
         risk charge; the selection then carries a ``utility`` block
         (envelope and exact utility, the charges, envelope error, knot
@@ -4184,58 +4212,46 @@ class TransportPortfolioSolve(PyomoSolve):
         return _TangentEnvelope(utility["w0"], utility["gamma"], utility["wealth_lo"],
                                 utility["w0"]+highest, utility["n_tangents"], utility["core"])
 
-    #: Outcome points of a group's dispersion charge (:meth:`_charge_plan`).
-    CHARGE_POINTS = 5
     #: A normal's standard deviation over its mean absolute deviation, ``sqrt(pi / 2)`` to two places: ``S = 1.25 x MAD``.
     SD_PER_MAD = 1.25
 
     @classmethod
-    def _charge_plan(cls, groups, utility, points=None):
-        """Return the name-level dispersion charge: each group's outcome points, its deviation charge and the tangent lines.
+    def _charge_plan(cls, groups, utility):
+        """Return the name-level dispersion charge: each group's atoms, its deviation charge and the tangent lines.
 
-        A group's dispersion ``M_g`` is read for the book the solve chooses, at a few outcome points and no
-        reference book. The points are the group's grid atoms at the cumulative-mass levels
-        ``(k + 1/2) / points`` (quantiles of its own masses; an atom reaches a level within 1e-12, so a level
-        the masses hit exactly is not left to rounding; an atom hit by several levels is one point with their
-        summed weight ``w``) and always the grid's two extreme atoms (the first and last of positive mass),
-        with their own true masses, so a rare loss cannot fall between the levels; pure arithmetic, no LP, no
-        solver, the same on every host. At a point the book's deviation is ``(profit_k - expected profit) . x``,
-        linear in the actions about the group's exact mean. ``M_g`` is the larger of ``1.25 x sum_k w_k
-        |dev_k . x|`` (the mean absolute deviation, 1.25 a normal's sd over it) and ``sqrt(p_k) |dev_k . x|`` at
-        every point (a lower bound on the sd at each point from the point's own true mass ``p_k``, exact for a
-        binary): :class:`_PointDeviation`, ``attach`` in the model, ``charge`` in the audit. The first reads
-        the spread the levels see; the second keeps a rare loss, which the levels skip, in the charge. The
-        groups of one ``aggregate`` key (one name, several expiries) move together: with ``S_a = sum_g M_g``
-        the charge is ``gamma x S_a^2 / (2 w0)``, the variance of perfectly correlated books, so a name cannot
-        cut its charge by splitting across expiries. Its tangent lines run to the ceiling ``S_a`` cannot pass,
-        ``sum_g sum_j capacity_j x (item j's own M per contract)`` (the triangle inequality). A group whose
-        points never deviate carries no charge.
-        Returns ``{"rows": {index: points x items deviation array}, "charge": {index: _PointDeviation},
+        A group's dispersion ``M_g`` is read for the book the solve chooses, over EVERY positive-mass atom of its
+        grid in price order and no reference book (:class:`_AtomDeviation`; pure arithmetic, no LP, no solver,
+        the same on every host): the larger of ``1.25 x`` the mean absolute deviation of the book's payoff, a
+        normal's sd over its MAD (``SD_PER_MAD``), and the lower bounds on its sd at each single atom and over
+        every lowest and every highest set of atoms (Cauchy-Schwarz), so a rare loss cannot fall between
+        points and no direction of the actions has a zero charge unless its payoff is the same at every atom.
+        The payoff is the book's terminal payoff ``-losses . x`` (the credit is the same at every atom and
+        cancels in a deviation, and an out-of-the-money leg pays on part of the grid only). The groups of one
+        ``aggregate`` key (one name, several expiries) move together: with ``S_a = sum_g M_g`` the charge is
+        ``gamma x S_a^2 / (2 w0)``, the variance of perfectly correlated books, so a name cannot cut its charge
+        by splitting across expiries. Its tangent lines run to the ceiling ``S_a`` cannot pass,
+        ``sum_g sum_j capacity_j x (item j's own M per contract)`` (``M`` is a seminorm in the actions, so the
+        triangle inequality bounds it). A group whose atoms never differ carries no charge.
+        Returns ``{"rows": {index: atoms x items payoff array}, "charge": {index: _AtomDeviation},
         "members": {key: [index]}, "lines": {key: _ChargeLines}}``.
         """
         import numpy as np
 
-        points = cls.CHARGE_POINTS if points is None else points
         rows, charge, members, ceiling = {}, {}, {}, {}
-        levels = (np.arange(points)+.5)/points
         for i, g in enumerate(groups):
             masses = np.asarray(g["masses"], dtype=float)
-            masses = masses/masses.sum()
-            profit = np.asarray(g["credit"], dtype=float)-np.asarray(g["losses"], dtype=float)
-            hit = np.minimum(np.searchsorted(np.cumsum(masses), levels-1e-12), len(masses)-1)
-            positive = np.flatnonzero(masses > 0)
-            atoms = np.unique(np.concatenate([hit, positive[[0, -1]]]))
-            weights = np.array([(hit == a).sum() for a in atoms])/points
-            deviation = profit[atoms]-(masses[:, None]*profit).sum(axis=0)
-            roots = np.sqrt(masses[atoms])
-            absolute = np.abs(deviation)
-            # Each item's own measure per contract: the larger of its two bounds.
-            own = np.maximum(cls.SD_PER_MAD*(weights @ absolute), (roots[:, None]*absolute).max(axis=0))
-            if own.max() <= 1e-9*max(1., float(np.abs(profit).max())):
+            atoms = [k for k in np.argsort(np.asarray(g["grid"], dtype=float), kind="stable") if masses[k] > 0]
+            if len(atoms) < 2:
                 continue
-            rows[i], charge[i] = deviation, _PointDeviation(weights, cls.SD_PER_MAD, roots)
+            payoff = -np.asarray(g["losses"], dtype=float)[atoms]
+            probability = masses[atoms]/masses[atoms].sum()
+            measure = _AtomDeviation(probability, cls.SD_PER_MAD)
+            own = measure.columns(payoff)   # each item's own D per contract
+            if own.max() <= 1e-9*max(1., float(np.abs(payoff).max())):
+                continue
+            rows[i], charge[i] = payoff, measure
             members.setdefault(utility["aggregate"][g["id"]], []).append(i)
-            ceiling[i] = float(own @ np.asarray(g["capacity"], dtype=float))
+            ceiling[i] = cls.SD_PER_MAD*float(own @ np.asarray(g["capacity"], dtype=float))
         slope = utility["gamma"]/(2.*utility["w0"])
         lines = {name: _ChargeLines(slope, sum(ceiling[i] for i in indices), utility["n_tangents"])
                  for name, indices in members.items()}

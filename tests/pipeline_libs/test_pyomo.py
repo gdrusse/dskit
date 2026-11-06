@@ -5039,41 +5039,34 @@ def _bet_group(key="g", p=.85, credit=100., loss=500., capacity=400):
 
 
 QUIET = {"id": "market:0", "weight": 1., "terms": {}}
-#: The charge's outcome points (ADR-0299): quantiles of a group's own masses.
-POINTS = 5
+def _point_spread(masses, profits):
+    """The charge's S for a book by hand, over every atom: the larger of 1.25 x the mean absolute deviation and the
+    Cauchy-Schwarz bounds ``sum_T p_k |dev_k| / sqrt(sum_T p_k)`` on the sd over the single atoms and each lowest and
+    highest set of atoms (atoms in grid order, zero masses dropped).
 
-
-def _point_spread(masses, profits, points=POINTS):
-    """The charge's S for a book by hand: ``max(1.25 sum_k w_k |dev_k|, max_k sqrt(p_k) |dev_k|)`` at its points.
-
-    An independent oracle in exact fractions. The points: the first atom whose cumulative mass reaches
-    ``(k + 1/2) / points`` (within 1e-12) for each level, weight 1/points each, and the first and last atoms of
-    positive mass (weight zero if no level reaches them). ``dev`` is the profit less the exact mean, ``p_k`` the
-    atom's own true mass.
+    An independent oracle: deviations and means in exact fractions, one loop per bound.
     """
     import math
     from fractions import Fraction
 
     m = [Fraction(x) for x in masses]
     total = sum(m)
-    m = [x/total for x in m]
-    v = [Fraction(x) for x in profits]
-    mean = sum(a*b for a, b in zip(m, v))
-    cumulative, edge = [], Fraction(0)
-    for x in m:
-        edge += x
-        cumulative.append(edge)
-    weight = {}
-    for k in range(points):
-        level = Fraction(2*k+1, 2*points)
-        atom = next((i for i, c in enumerate(cumulative) if c >= level-Fraction(1, 10**12)), len(m)-1)
-        weight[atom] = weight.get(atom, Fraction(0))+Fraction(1, points)
-    positive = [i for i, x in enumerate(m) if x > 0]
-    for atom in (positive[0], positive[-1]):
-        weight.setdefault(atom, Fraction(0))
-    mad = sum(w*abs(v[i]-mean) for i, w in weight.items())
-    floor = max(math.sqrt(m[i])*abs(v[i]-mean) for i in weight)
-    return max(1.25*float(mad), float(floor))
+    keep = [i for i, x in enumerate(m) if x > 0]
+    p = [m[i]/total for i in keep]
+    v = [Fraction(profits[i]) for i in keep]
+    mean = sum(a*b for a, b in zip(p, v))
+    t = [abs(x-mean) for x in v]
+    best = 1.25*float(sum(a*b for a, b in zip(p, t)))
+    for k in range(len(p)):
+        best = max(best, math.sqrt(p[k])*float(t[k]))
+    for order in (range(len(p)), reversed(range(len(p)))):
+        weight = numerator = Fraction(0)
+        for count, k in enumerate(order, start=1):
+            weight += p[k]
+            numerator += p[k]*t[k]
+            if count < len(p):
+                best = max(best, float(numerator)/math.sqrt(weight))
+    return best
 
 
 def _spread_per_contract(group, item=0):
@@ -5230,29 +5223,25 @@ def _kelly_stake(q, fraction, ratio=1.3, loss=100., w0=10000.):
     return fraction*(a+b)/2.
 
 
-def _plan_of(groups, points=POINTS, aggregate=None):
+def _plan_of(groups, aggregate=None):
     from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
 
     program = _kelly_program(groups, aggregate=aggregate)
-    return TransportPortfolioSolve._charge_plan(groups, program["utility"], points)
+    return TransportPortfolioSolve._charge_plan(groups, program["utility"])
 
 
-def test_the_charge_plan_reads_each_groups_deviation_at_quantile_points_and_the_extreme_atoms():
-    """K points at the cumulative-mass levels (k + 1/2) / K plus the grid's two extreme atoms with their true masses,
-    deviations about the exact mean; no LP, no reference book."""
+def test_the_charge_plan_reads_each_groups_payoff_over_every_atom_in_grid_order():
+    """Every positive-mass atom is a point (no quantile levels to miss a tail); the rows are the books' payoffs, the
+    credit (the same at every atom) cancelling in a deviation; no LP, no reference book."""
     import numpy as np
 
     plan = _plan_of([_bet_group()])
-    # Levels .1 .3 .5 .7 .9 on masses .85 / .15: the first four fall on the +100 atom, the last on the -400 one.
-    assert np.asarray(plan["rows"][0]).ravel() == pytest.approx([75., -425.]), "profit less the exact mean (25)"
+    assert np.asarray(plan["rows"][0]).ravel() == pytest.approx([0., -500.]), "payoff: -losses"
     charge = plan["charge"][0]
-    assert list(charge.masses) == pytest.approx([.8, .2]) and charge.price == 1.25
-    assert list(charge.roots) == pytest.approx([.85**.5, .15**.5]), "each point's own true mass"
-    values = np.asarray(plan["rows"][0]).ravel()
-    assert charge.charge(values) == pytest.approx(1.25*145.), "1.25 x (.8 x 75 + .2 x 425) beats sqrt(.15) x 425"
-    rare = _plan_of([_loss_bet("g", .02)])
-    assert list(rare["charge"][0].masses) == pytest.approx([1., 0.]), "no level reaches the 2% loss: weight zero"
-    assert len(rare["rows"][0]) == 2, "but the extreme atom is a point, with its own mass"
+    assert list(charge.masses) == pytest.approx([.85, .15]) and charge.price == 1.25
+    assert charge.charge(np.asarray(plan["rows"][0]).ravel()) == pytest.approx(_point_spread([.85, .15], [100., -400.]))
+    unordered = {**_bet_group(), "grid": [1., 0.], "masses": [.15, .85], "losses": [[500.], [0.]]}
+    assert np.asarray(_plan_of([unordered])["rows"][0]).ravel() == pytest.approx([0., -500.]), "sorted by the grid"
     for q in (.02, .05, .1, .3, .5):
         bet = _loss_bet("g", q)
         plan = _plan_of([bet])
@@ -5261,16 +5250,35 @@ def test_the_charge_plan_reads_each_groups_deviation_at_quantile_points_and_the_
     assert _plan_of([{**_bet_group(), "masses": [1., 0.]}])["members"] == {}, "no spread, no charge"
 
 
-def test_the_dispersion_of_a_binary_is_near_its_standard_deviation_at_every_loss_probability():
-    """Per contract, S over the exact sd of a binary: the sd lower bound at the loss atom is exact for a rare loss, the
-    normal MAD ratio covers the middle (1.25 x MAD is 1.25 sd at q .5)."""
-    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+def test_the_dispersion_never_exceeds_the_larger_of_the_mad_and_the_sd_and_has_no_null_direction():
+    """Every tail bound is at most the sd (Cauchy-Schwarz), so S is at most max(1.25 MAD, sd); and any payoff that is
+    not the same at every atom is charged (the 7-point build left an 81-dimensional zero-charge space)."""
+    import numpy as np
+    from dskit.pipeline.libs.pyomo import _AtomDeviation
 
+    rng = np.random.default_rng(3)
+    for atoms in (2, 3, 13, 25):
+        masses = rng.random(atoms)+.01
+        masses /= masses.sum()
+        measure = _AtomDeviation(masses, 1.25)
+        for _ in range(60):
+            payoff = rng.normal(size=atoms)*np.where(rng.random(atoms) < .5, 1., 0.)   # sparse, like an OTM leg
+            mean = masses @ payoff
+            mad, sd = masses @ np.abs(payoff-mean), float(np.sqrt(masses @ (payoff-mean)**2))
+            value = measure.charge(payoff)
+            assert 1.25*mad-1e-12 <= value <= max(1.25*mad, sd)+1e-12, (atoms, value, mad, sd)
+            assert value == pytest.approx(_point_spread(masses, payoff))
+        assert measure.charge(np.full(atoms, 7.)) == pytest.approx(0., abs=1e-12)
+        assert measure.charge(np.eye(atoms)[0]) > 0
+
+
+def test_the_dispersion_of_a_binary_is_near_its_standard_deviation_at_every_loss_probability():
+    """Per contract, S over the exact sd of a binary: the sd bound at the loss atom is exact for a rare loss, the
+    normal MAD ratio covers the middle (1.25 x MAD is 1.25 sd at q .5)."""
     for q in (.02, .05, .1, .3, .5):
         bet = _loss_bet("g", q)
         sd = (q*(1.-q))**.5*(bet["credit"][0]+100.)
         assert .9 <= _spread_per_contract(bet)/sd <= 1.3, q
-    assert TransportPortfolioSolve.CHARGE_POINTS == POINTS
 
 
 def _exact_stake(group, gamma, w0):
@@ -5333,6 +5341,84 @@ def _crra_gain(group, stake, gamma, w0):
         z = (w0+stake*(credit-row[0]))/w0
         total += p*(math.log(z) if gamma == 1. else (z**(1.-gamma)-1.)/(1.-gamma))
     return w0*total
+
+
+#: Seven spot laws on a 13-point grid (the bench week's shape): ``(points, span in sds, student-t df or None, daily sigma)``.
+LAWS_13 = {"normal +-3": (13, 3., None, .04), "normal +-2.5": (13, 2.5, None, .04), "normal +-3.5": (13, 3.5, None, .04),
+           "t4 +-4": (13, 4., 4, .04), "t3 +-5": (13, 5., 3, .04), "normal +-3 sigma 2%": (13, 3., None, .02),
+           "normal +-3 sigma 8%": (13, 3., None, .08)}
+
+
+def _spread_on_law(law, delta, width, edge, capacity=2000):
+    """A short put spread (short at the ``delta`` quantile, long ``width`` of the spot below) as a one-item group on a
+    discretized law, sold at ``edge`` times its expected payout."""
+    import math
+    from scipy import stats
+
+    points, span, df, sigma = law
+    z = [-span+2.*span*k/(points-1) for k in range(points)]
+    cdf = stats.norm.cdf if df is None else stats.t(df).cdf
+    cuts = [-math.inf]+[(a+b)/2. for a, b in zip(z, z[1:])]+[math.inf]
+    masses = [cdf(hi)-cdf(lo) for lo, hi in zip(cuts, cuts[1:])]
+    spots = [100.*math.exp(sigma*v) for v in z]
+    short = 100.*math.exp(sigma*stats.norm.ppf(delta))
+    loss = [100.*(max(short-s, 0.)-max(short-100.*width-s, 0.)) for s in spots]
+    credit = edge*sum(p*v for p, v in zip(masses, loss))
+    return {"id": "g", "grid": spots, "masses": [p/sum(masses) for p in masses], "radius": 0., "scale": 100.,
+            "credit": [credit], "losses": [[v] for v in loss], "capacity": [capacity], "exclusive": [],
+            "reserve_rows": [[max(loss)-credit]], "linear_rows": []}
+
+
+def _stake_ratio(group, fraction, w0=300000.):
+    """The solved stake of a one-item group over its exact CRRA stake, and the regret over the gain."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params = _kelly_params()
+    params["solver_options"] = {**params["solver_options"], "mip_feasibility_tolerance": 1e-9}
+    gamma = 1./fraction
+    stake = TransportPortfolioSolve("kelly", params).run(
+        None, _kelly_program([group], fraction=fraction, w0=w0))["selection"]["quantities"][0][0]
+    exact = _exact_stake(group, gamma, w0)
+    gain = _crra_gain(group, exact, gamma, w0)
+    return stake, exact, (gain-_crra_gain(group, stake, gamma, w0))/gain if gain > 0 else 0.
+
+
+STAKE_BAND = (.6, 1.6)
+
+
+def test_a_put_spread_is_sized_near_the_exact_crra_stake_on_seven_13_point_grids():
+    """The review's table: short put spreads at 5 to 15 delta, 2.5 to 5% wide, sold at 1.1x and 1.3x their expected
+    payout, on seven 13-point laws at f .25 and .5 (112 rows). Typical rows are inside [0.6, 1.6] x the exact CRRA
+    stake; none is below 0.6 or above 2.1. The stake runs above the exact one because the charge is a second-order
+    (variance) cost: M is 0.84 to 0.98 of the sd, and a negatively skewed bet at a large stake (the worst rows risk
+    most of the wealth, at the larger edge) loses more than its variance says."""
+    rows = []
+    for law in sorted(LAWS_13):
+        for delta, width in ((.10, .025), (.10, .05), (.05, .025), (.15, .05)):
+            for edge in (1.1, 1.3):
+                group = _spread_on_law(LAWS_13[law], delta, width, edge)
+                for fraction in (.25, .5):
+                    stake, exact, regret = _stake_ratio(group, fraction)
+                    risked = stake*group["reserve_rows"][0][0]/300000.
+                    rows.append((stake/exact, law, delta, width, edge, fraction, regret, risked))
+    ratios = [r[0] for r in rows]
+    inside = sum(STAKE_BAND[0] <= x <= STAKE_BAND[1] for x in ratios)/len(ratios)
+    print(f"{len(rows)} rows: stake/exact {min(ratios):.2f} to {max(ratios):.2f}, {inside:.0%} inside {STAKE_BAND}; "
+          f"worst {max(rows)}")
+    assert min(ratios) >= .6 and max(ratios) <= 2.1, (min(rows), max(rows))
+    assert inside >= .85, inside
+
+
+def test_a_put_spread_is_sized_near_the_exact_crra_stake_on_a_25_atom_grid():
+    """A fine grid works too (the sd bounds run over every atom: 25 atoms, 8 rows each)."""
+    rows = []
+    for delta, width in ((.10, .025), (.10, .05), (.05, .025), (.15, .05)):
+        for edge in (1.1, 1.3):
+            group = _spread_on_law((25, 3., None, .04), delta, width, edge)
+            rows += [stake/exact for stake, exact, _ in (_stake_ratio(group, fraction) for fraction in (.25, .5))]
+    print("25 atoms: stake/exact", round(min(rows), 2), "to", round(max(rows), 2))
+    assert .6 <= min(rows) and max(rows) <= 2.1, rows
+    assert sum(x <= 1.6 for x in rows) >= .85*len(rows)
 
 
 @pytest.mark.parametrize("fraction", [.25, .5])
@@ -5402,20 +5488,24 @@ def _five_point_group(key="g", profits=((30., 30., 30., 30., -90.), (-90., 90., 
 
 
 def test_the_dispersion_rows_are_sparse_and_follow_the_items():
-    """Each group adds 3P+1 rows (P points), none over more than the items plus one variable: no dense rows."""
+    """8 atoms' worth of rows per group (8m - 2), each over at most three auxiliaries plus, only in the one row that
+    ties an atom's payoff variable to the actions, the items that pay at that atom: no dense row."""
     from pyomo.core.expr.visitor import identify_variables
     from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
 
     items = 12
-    profits = tuple(tuple(float((7*j+3*k) % 11-5) for k in range(5)) for j in range(items))
+    profits = tuple(tuple(float((7*j+3*k) % 11-5) if k < 3 or j % 2 else 0. for k in range(5)) for j in range(items))
     group = _five_point_group(profits=profits)
     model = TransportPortfolioSolve("kelly", _kelly_params()).build_model(
         _kelly_program([group], fraction=.5), _kelly_params())
     rows = list(model.dispersion_0.rows.values())
+    atoms = len(model.dispersion_0.aux)//4   # P, mu, t, lo, hi, D: 4m + 2
+    paying = [sum(1 for p in profits if p[k] != 0.) for k in range(5)]
     widths = [len(list(identify_variables(row.body))) for row in rows]
-    points = len(model.dispersion_0.aux)-1   # t_k per point and m
-    assert points == POINTS and len(rows) == 3*points+1 and max(widths) <= items+1, widths
-    assert sum(widths) <= 2*points*(items+1)+points+1+2*points, "2P deviation rows, the MAD row, P root rows"
+    assert atoms == 5 and len(rows) == 8*atoms-2, (atoms, len(rows))
+    assert sorted(widths)[-atoms:] == sorted(n+1 for n in paying), "the payoff ties are the only rows over items"
+    assert max(sorted(widths)[:-atoms]) <= max(atoms+1, 3), "every other row is over three auxiliaries or the mean row"
+    assert sum(widths) <= sum(paying)+3*len(rows)+2*atoms
 
 
 def test_a_book_is_charged_on_its_own_outcomes_not_a_reference_books():
@@ -5482,10 +5572,12 @@ def test_a_joint_scenario_shrinks_correlated_books_together():
         None, _kelly_program([a, b], fraction=.5, joint=scenarios))["selection"]
     only_a = TransportPortfolioSolve("kelly", _kelly_params()).run(None, _kelly_program(
         [a, b], fraction=.5, joint=[scenarios[0], {**crash, "terms": {"a": [-200.]}}]))["selection"]
-    q_quiet = quiet["quantities"][0][0]
-    assert quiet["quantities"][1][0] == q_quiet > 0
+    # Two identical names: the charge lines are linear between knots, so how a total splits between them is a tie the
+    # solver breaks either way; the per-name size is the average.
+    q_quiet = sum(q[0] for q in quiet["quantities"])/2.
+    assert q_quiet > 0
     (q_a, q_b), (q_a_only, q_b_only) = (q[0] for q in together["quantities"]), (q[0] for q in only_a["quantities"])
-    assert q_a == q_b < q_a_only < q_quiet, "the shared crash shrinks a more than a crash of its own"
+    assert (q_a+q_b)/2. < q_a_only < q_quiet, "the shared crash shrinks a more than a crash of its own"
     assert q_b_only >= q_quiet, "a book the crash does not reach keeps (at least) its quiet size"
     assert together["utility"]["wealth"]["market:-0.1"] == pytest.approx(10000.+77.5*(q_a+q_b)-200.*(q_a+q_b))
 
@@ -5532,7 +5624,7 @@ def test_derived_and_recorded_value_a_foreign_book_by_its_own_dispersion_charge(
     params = _kelly_params()
     derived, solved = _foreign(program, params)
     a, b = solved["quantities"][0]
-    hand = _point_spread([.2]*5, [30.*a-90.*b, 30.*a+90.*b, 30.*a+60.*b, 30.*a-30.*b, -90.*a], points=5)
+    hand = _point_spread([.2]*5, [30.*a-90.*b, 30.*a+90.*b, 30.*a+60.*b, 30.*a-30.*b, -90.*a])
     assert derived["selection"]["utility"]["dispersion"] == pytest.approx([hand])
     assert derived["selection"]["utility"]["exact_charges"] == pytest.approx([2.*hand**2/(2.*10000.)])
     assert derived["selection"]["utility"] == solved["utility"] and derived["selection"]["value"] == solved["value"]

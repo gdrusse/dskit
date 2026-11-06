@@ -1596,7 +1596,10 @@ class WeeklyOptionPortfolioStudy:
                 # a quarter Kelly from a half. The method states the gap it needs; a looser document refuses.
                 raise ValueError("the document's solver gaps (absolute_gap, relative_gap, solver_options mip_abs_gap and "
                                  "mip_rel_gap, all declared) exceed the kelly method's gap, or its time_limit is "
-                                 "undeclared or shorter than the method's, or its timeout_policy is not return")
+                                 "undeclared or shorter than the method's, or its timeout_policy is not return, or "
+                                 "solver_options mip_feasibility_tolerance is undeclared or above "
+                                 f"{cls.KELLY_MIP_FEASIBILITY_TOLERANCE}, or parity_tolerance is below "
+                                 f"{cls.KELLY_PARITY_FLOOR}")
         for symbol in symbols:
             problems = _AllQuotedOptionContext.validate_params({**p["bridge"], "symbol": symbol})
             if problems:
@@ -1704,14 +1707,24 @@ class WeeklyOptionPortfolioStudy:
         """Return the method's validated kelly policy, None when undeclared."""
         return method.get("kelly")
 
-    @staticmethod
-    def _gap_within(solver, kelly):
+    #: HiGHS's ``mip_feasibility_tolerance`` a kelly document must declare, at most: at its 1e-6 default the charge
+    #: variable sits under its tangent lines by up to ~0.006 at 300,000 (the tolerance times the lines' intercepts),
+    #: and the week is refused as ``model_over_audit`` against the parity tolerance.
+    KELLY_MIP_FEASIBILITY_TOLERANCE = 1e-9
+    #: The least ``parity_tolerance`` a kelly document may declare (the charge lines leave HiGHS up to 1e-4 of slack).
+    KELLY_PARITY_FLOOR = 1e-3
+
+    @classmethod
+    def _gap_within(cls, solver, kelly):
         """Return whether a document certifies as tightly as a kelly method needs.
 
         The certification gaps and both HiGHS gaps are declared and no looser
         than the method's ``gap``; the HiGHS ``time_limit`` is declared and no
-        shorter than the method's; and a week that times out above the gap is
-        skipped and listed (``timeout_policy`` return), not raised.
+        shorter than the method's; a week that times out above the gap is
+        skipped and listed (``timeout_policy`` return), not raised; HiGHS's
+        ``mip_feasibility_tolerance`` is declared at
+        :attr:`KELLY_MIP_FEASIBILITY_TOLERANCE` or tighter and the
+        ``parity_tolerance`` is at least :attr:`KELLY_PARITY_FLOOR`.
         """
         gap, options = kelly["gap"], solver.get("solver_options") or {}
         # Explicit, both HiGHS gaps too: an absent mip gap is HiGHS's own default (looser than a kelly method's).
@@ -1720,7 +1733,10 @@ class WeeklyOptionPortfolioStudy:
                 and number_ok(solver["absolute_gap"]) and solver["absolute_gap"] <= gap["absolute"]
                 and number_ok(solver["relative_gap"]) and solver["relative_gap"] <= gap["relative"]
                 and number_ok(options.get("mip_abs_gap")) and options["mip_abs_gap"] <= gap["absolute"]
-                and number_ok(options.get("mip_rel_gap")) and options["mip_rel_gap"] <= gap["relative"])
+                and number_ok(options.get("mip_rel_gap")) and options["mip_rel_gap"] <= gap["relative"]
+                and number_ok(options.get("mip_feasibility_tolerance"))
+                and options["mip_feasibility_tolerance"] <= cls.KELLY_MIP_FEASIBILITY_TOLERANCE
+                and number_ok(solver.get("parity_tolerance")) and solver["parity_tolerance"] >= cls.KELLY_PARITY_FLOOR)
 
     @staticmethod
     def _risk_charge_valid(spec):

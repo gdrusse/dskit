@@ -3433,9 +3433,13 @@ KELLY_FORMULATIONS = {
 
 
 def _for_kelly(params):
-    """Declare what a kelly document must: the time limit the method asks for and the timeout policy that skips a week."""
+    """Declare what a kelly document must: the time limit the method asks for, the timeout policy that skips a week,
+    HiGHS's MIP feasibility tolerance (its 1e-6 default leaves the charge variable up to ~0.006 under its lines at
+    300,000, above the parity tolerance) and a parity tolerance of at least 1e-3."""
     params["solver"]["timeout_policy"] = "return"
     params["solver"]["solver_options"]["time_limit"] = 1500
+    params["solver"]["solver_options"]["mip_feasibility_tolerance"] = 1e-9
+    params["solver"]["parity_tolerance"] = 1e-3
     return params
 
 
@@ -3674,6 +3678,30 @@ def test_centred_scenarios_give_every_book_a_zero_probability_weighted_deviation
         weighted = sum(s["weight"]*np.asarray(s["terms"].get(key, [0., 0.])) for s in scenarios)
         assert weighted == pytest.approx([0., 0.], abs=1e-12)
     assert centred(terms, [-.1, .1], {"-0.1": 0., "0.1": 0.}, 1.) == [{"id": "market:0", "weight": 1., "terms": {}}]
+
+
+@pytest.mark.parametrize("change", [
+    lambda s: s["solver_options"].pop("mip_feasibility_tolerance"),
+    lambda s: s["solver_options"].update(mip_feasibility_tolerance=1e-6),
+    lambda s: s["solver_options"].update(mip_feasibility_tolerance=float("nan")),
+    lambda s: s.update(parity_tolerance=1e-4),
+])
+def test_a_kelly_document_declares_the_mip_feasibility_tolerance_and_a_parity_floor(change):
+    """Without HiGHS's MIP feasibility tolerance at 1e-9 and a parity tolerance of 1e-3 or more, a 300,000 account's
+    week is refused as model_over_audit (the charge variable sits under its lines by the solver's slack)."""
+    kelly = {"id": "kelly025_lp", **KELLY_FORMULATIONS["kelly025_lp"]}
+    good, _ = _weekly_portfolio_fixture()
+    good["methods"] = [kelly]
+    _for_kelly(good)
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(good)
+    bad, _ = _weekly_portfolio_fixture()
+    bad["methods"] = [kelly]
+    _for_kelly(bad)
+    change(bad["solver"])
+    with pytest.raises(ValueError, match="mip_feasibility_tolerance"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(bad)
+    plain, _ = _weekly_portfolio_fixture()
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(plain)   # a dollar document is unchanged
 
 
 def test_a_kelly_document_declares_every_gap_and_holds_no_other_method():
