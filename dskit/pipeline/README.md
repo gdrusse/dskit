@@ -290,6 +290,14 @@ legacy stage-list grammar (below).
 
 ## What ships
 
+`libs.pyomo.TransportPortfolioSolve.actions` and `.derived` (ADR-0297, proposed) move a solved
+decision between hosts as integers: `actions` returns the integer incumbent of a recorded
+selection, `derived` rebuilds a selection from those integers plus a foreign solve certificate,
+recomputing every reserve, value and gap with this host's floats (the certificate's optimality is
+not re-verified). Their refusals are `RecordedCheckRefusal` (a `ValueError`) with `check`,
+`category` and `ratio` (a numeric miss over its tolerance, no value), so a caller can say why a
+foreign solve was refused. `StudyContract.check_dependencies` is the pin check `build` calls.
+
 `libs.pyomo.TransportActionScore` values integer actions with the same nominal,
 Wasserstein and optional MAD risk-charge terms used by `TransportPortfolioSolve`.
 It checks all shared constraints and enumerates a complete feasible catalogue,

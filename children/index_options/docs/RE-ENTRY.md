@@ -11,6 +11,8 @@ Updated: 2026-11-04 by Claude Opus 5.5. Predictive recipe locked (A0008, ADR-029
 - **Registries.** Prior coverage-v2 at revision 118; linked registry, owner-approved for repeat windows, at revision 40. The 2020Q1 original stays quarantined; use the linked re-run. 2021Q1 stays as run.
 - **Not run.** 2019Q1 (no blend history before 2019). 2023Q4 (tail reaches sealed 2024).
 
+- **MIO parallel units (ADR-0297, proposed, uncommitted on `claude/mio-parallel-on-rerun-20261105`).** A Mac or spare WSL worker solves one method of one quarter-arm and returns integer actions plus certificates; WSL re-derives values and replays. Synthetic tests only; no real unit has run; the first one (a parity unit) is an owner go. `mio_worker.py` and `tools/` are proposed. Owner rulings 2026-11-05 applied: per quarter-arm registries, Mac RAM disk exception, trust the Mac (one 1% first-unit parity check); blinded forecasts to workers NOT built; Mac units go to pinned non-blinded arms through 2023Q4 (cut bundles, no 2024+ rows), and the owner-approved policy `owner_selected_fixed_forecasts` feeds them the hash-pinned `fixed_loc` forecasts (synthetic tests only; see ADR-0297). Rests on Path A0003, A0009, A0010. Runbook: `docs/plans/mio-parallel/RUNBOOK.md`.
+
 ## Next
 
 - Produce forecast caches for the exact locked recipe, score them against A0005 and A0007 on 2020-2023 (post-exposure), and pin their hash in A0008. Then decide whether to re-run MIO on them.

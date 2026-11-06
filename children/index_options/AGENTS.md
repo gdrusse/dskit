@@ -153,7 +153,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # cdf_study.py: exact-expiry panel + JSON CDF/HPO CLI (ADR-0189/0190/0191)
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
-                           # ledger_studies.py (read-only CLI over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0258)
+                           # ledger_studies.py (read-only CLI over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0258; MIOPacketStudy `recorded`, ADR-0297); mio_worker.py (ADR-0297, PROPOSED: MIOMethodBundle/MIOMethodWorker solve one method off-host as integer actions; pinned, since it runs from each bundle); the coordinator is tools/mio_parallel_queue.py (PROPOSED), OUTSIDE the pinned package
                            # rl_env.py: OptionEntryEnv and OptionEntryCompare (single-decision RL/MIO control)
                            # mio_run_events.py (ADR-0283: MioRunRows, one method of a saved MIO result.json as event rows; the
                            # report document is configs/mio-report-limited36-available-size-20261029.json);
@@ -239,7 +239,7 @@ docs/explanations/README.md # glossary and worked synthetic payoff
                             # robust-condor-selection.md (+ .svg): robust selection by hand
                             # mio-glossary.md: plain-language MIO run-report terms (ADR-0283)
 docs/plans/README.md        # gated research stages
-docs/plans/mio-json/       # study.json (future schedule design); executable plan/run/compare templates
+docs/plans/mio-json/       # study.json (future schedule design); executable plan/run/compare templates; docs/plans/mio-parallel/ (ADR-0297, proposed: RUNBOOK.md, mac_worker.sh, queue.example.json)
 docs/memos/README.md        # execution-evidence convention; 2026-09-24 real-data closeout
 docs/research/              # README.md, .gitkeep; distribution-modeling/, real-data-backtest/ notes
 tests/                     # conftest.py; test_contracts, observations, nodes,
@@ -247,7 +247,7 @@ tests/                     # conftest.py; test_contracts, observations, nodes,
                            # synthetic_distribution_run, distribution_zoo, real_data,
                            # quote_backtest, debit_backtest, ledger_studies, theta_hypotheses (+ theta_synthetic.py, its
                            # synthetic world), theta_exact_expiry, strike_screen_panel_source, strike_screen_fits, strike_region_scores,
-                           # mio_run_report, mio_run_report_contract (ADR-0283), mio_book_outcomes (ADR-0285) (.py)
+                           # mio_run_report, mio_run_report_contract (ADR-0283), mio_book_outcomes (ADR-0285), mio_worker, mio_parallel_queue (ADR-0297; imports tools/) (.py)
 ```
 
 2026-10-27 owner-approved executable MIO packet: use mio_contract.py plus the

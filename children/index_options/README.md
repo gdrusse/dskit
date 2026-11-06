@@ -715,7 +715,12 @@ journal.json
 index_options/             # __init__.py, contracts.py, observations.py, nodes.py (CDFQuoteCondorSelect, ADR-0276),
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
-                           # ledger_studies.py (read-only studies over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0258);
+                           # ledger_studies.py (read-only studies over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0258;
+                           # MIOPacketStudy `recorded`: a worker's integer actions re-derived and replayed here, ADR-0297);
+                           # mio_worker.py (ADR-0297, PROPOSED: MIOMethodBundle stages one study's pinned code and inputs; MIOMethodWorker
+                           # solves one method anywhere and returns integer actions plus solver certificates (an objective and a bound, on
+                           # disk in sealed directories, never shown); WSL re-derives every value);
+                           # (the coordinator is NOT in this package, so a fix never changes a code pin: see tools/ below);
                            # mio_run_events.py (ADR-0283: MioRunRows, one method of a saved MIO result.json as event rows; the
                            # report document is configs/mio-report-limited36-available-size-20261029.json)
                            # mio_stress_coverage.py (ADR-0278: pinned opt-in 2019 one-day account mark coverage driver; prepare, execute, aggregate);
@@ -725,6 +730,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # validation rows around the listed strikes: model, horizon_empirical baseline and market-implied curves;
                            # rows/cells/curves/summary; no fit, no dskit change)
                            # pricing, tail mean and drawdown are dskit's (ADR-0182)
+tools/                     # mio_parallel_queue.py (ADR-0297, PROPOSED): the WSL coordinator, outside the pinned package; run it, never import it from a study
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
                            # run-calibrated-market-error-study.json (ADR-0290; retrospective residual study),
                            # run-option-scenario-stress.json (synthetic what-if repricing),

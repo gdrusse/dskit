@@ -128,6 +128,7 @@ __all__ = [
     "DeviationCharge",
     "MeanAbsoluteDeviation",
     "PyomoSolve",
+    "RecordedCheckRefusal",
     "ScenarioUtilitySolve",
     "SolveRecord",
     "WassersteinDual",
@@ -3631,6 +3632,74 @@ class MeanAbsoluteDeviation(DeviationCharge):
 _DEVIATION_CHARGES = {cls.measure: cls for cls in (MeanAbsoluteDeviation,)}
 
 
+class RecordedCheckRefusal(ValueError):
+    """A foreign solve's evidence failed one named check on this host.
+
+    The message is the ordinary refusal text; ``check``, ``category`` and ``ratio`` are the structured
+    account an operator can read without any objective, bound or dollar value. ``ratio`` sizes a numeric
+    miss against the tolerance that refused it (1.0 is exactly the tolerance; ``None`` where no
+    tolerance applies); ``week`` is set by the caller that knows the decision date.
+
+    Parameters
+    ----------
+    message : str
+        The refusal text.
+    check : str
+        Short snake-case name of the check that failed.
+    category : str
+        One of :attr:`CATEGORIES`.
+    ratio : float or None
+        Size of the miss over its tolerance, three significant figures.
+    week : str or None
+        The decision date, when known.
+
+    Examples
+    --------
+    ::
+
+        try:
+            solve.derived(program, actions, certificates)
+        except RecordedCheckRefusal as exc:
+            row = RecordedCheckRefusal.describe(exc)  # check, category, ratio, week
+    """
+
+    #: ``tolerance`` a numeric miss over its tolerance, at most :attr:`TOLERANCE_RATIO_LIMIT` times it (float noise
+    #: and solver tolerance sizes); ``numeric`` a miss beyond that limit or one with no tolerance to size it against
+    #: (not a tolerance issue: a wrong or garbage file reads like this); ``invalid_trade`` actions the program forbids;
+    #: ``certificate`` malformed or contradictory solver evidence; ``gap`` an uncertified gap; ``pricing`` the
+    #: dual pricing of foreign actions failed; ``file``/``replay`` are the caller's (file identity, exact replay).
+    CATEGORIES = ("tolerance", "numeric", "invalid_trade", "certificate", "gap", "pricing", "file", "replay", "other")
+    #: A numeric miss is called ``tolerance`` only up to this multiple of its tolerance. Differences between two hosts'
+    #: floats are a few times the tolerance at most; a miss a hundred times larger is not float noise.
+    TOLERANCE_RATIO_LIMIT = 100.
+
+    def __init__(self, message, check, category, ratio=None, week=None):
+        super().__init__(message)
+        if category not in self.CATEGORIES:
+            raise ValueError("unknown refusal category")
+        self.check, self.category, self.week = check, category, week
+        self.ratio = None if ratio is None or not math.isfinite(ratio) else float(f"{ratio:.3g}")
+
+    @classmethod
+    def sized(cls, message, check, difference, tolerance, category="tolerance"):
+        """Build the refusal for ``difference`` over ``tolerance`` (ratio ``None`` when the tolerance is not positive).
+
+        A ``tolerance`` category is kept only when the ratio is known and at most :attr:`TOLERANCE_RATIO_LIMIT`;
+        otherwise the refusal is ``numeric``.
+        """
+        ratio = difference/tolerance if tolerance > 0 else None
+        if category == "tolerance" and not (ratio is not None and math.isfinite(ratio) and ratio <= cls.TOLERANCE_RATIO_LIMIT):
+            category = "numeric"
+        return cls(message, check, category, ratio)
+
+    @staticmethod
+    def describe(exc):
+        """Return ``check``, ``category``, ``ratio`` and ``week`` of any exception (``unclassified``/``other`` for a plain one)."""
+        if isinstance(exc, RecordedCheckRefusal):
+            return {"check": exc.check, "category": exc.category, "ratio": exc.ratio, "week": exc.week}
+        return {"check": "unclassified", "category": "other", "ratio": None, "week": None}
+
+
 class TransportPortfolioSolve(PyomoSolve):
     """Size integer actions with marginal W1 profits and shared reserves.
 
@@ -4177,6 +4246,157 @@ class TransportPortfolioSolve(PyomoSolve):
                     "certificates": candidate["certificates"]}
         return self._recorded_candidate(inputs, selection, certificates)
 
+    @staticmethod
+    def actions(selection):
+        """Return the raw integer incumbent a recorded selection was extracted from.
+
+        Parameters
+        ----------
+        selection : dict
+            One decision's recorded ``selection`` (an executable selection or
+            a ``timeout`` envelope), as :meth:`extract` returns it.
+
+        Returns
+        -------
+        dict or None
+            ``{"primary_quantities", "pairs"}``: the primary integer
+            quantities per group and the cancelled pairs (group id, pair,
+            matched quantity), every value an int; None for a no-incumbent
+            timeout.
+
+        Raises
+        ------
+        ValueError
+            The selection lacks integer primary quantities or a sound cleanup.
+        """
+        import copy
+
+        if isinstance(selection, dict) and "timeout" in selection:
+            selection = selection.get("candidate")
+            if selection is None:
+                return None
+        if (not isinstance(selection, dict) or "primary_quantities" not in selection
+                or not isinstance(selection.get("canonicalization"), dict)
+                or not isinstance(selection["canonicalization"].get("primary"), dict)):
+            raise ValueError("incomplete recorded selection")
+        quantities = copy.deepcopy(selection["primary_quantities"])
+        pairs = copy.deepcopy(selection["canonicalization"]["primary"].get("pairs"))
+        if (not isinstance(quantities, list) or not isinstance(pairs, list)
+                or any(not isinstance(q, list) or any(type(v) is not int or v < 0 for v in q)
+                       for q in quantities)
+                or any(not isinstance(pair, dict) or set(pair) != {"group", "pair", "matched_quantity"}
+                       or type(pair["matched_quantity"]) is not int
+                       or not isinstance(pair["pair"], list) or len(pair["pair"]) != 2
+                       or any(type(j) is not int for j in pair["pair"]) for pair in pairs)):
+            raise ValueError("invalid recorded primary quantities")
+        return {"primary_quantities": quantities, "pairs": pairs}
+
+    def derived(self, inputs, actions, certificates):
+        """Re-derive a selection from integer actions and a foreign solve certificate.
+
+        The model is built here; the certificate's solver evidence is installed
+        as this solve's record, and the unchanged :meth:`extract` reprices,
+        cleans up, bounds and classifies the incumbent with this host's floats.
+
+        Parameters
+        ----------
+        inputs : dict
+            The transport program (groups, caps, joint rows).
+        actions : dict or None
+            :meth:`actions` of the foreign selection: primary quantities per
+            group plus the cancelled pairs; None for a no-incumbent timeout.
+        certificates : list of dict
+            Exactly one certificate without ``binding`` (``SolveRecord``
+            fields), as a recorded decision carries it.
+
+        Returns
+        -------
+        dict
+            ``{"selection": ...}`` exactly as :meth:`extract` returns it.
+
+        Raises
+        ------
+        ValueError
+            The actions do not fit the model, the certificate is malformed or
+            its model dimensions differ, or the extraction refuses.
+        """
+        import copy
+        import json
+        from pyomo.environ import Constraint, Var
+
+        json.dumps([actions, certificates], allow_nan=False)
+        fields = set(SolveRecord.field_names())-{"binding"}
+        if (not isinstance(certificates, list) or len(certificates) != 1
+                or not isinstance(certificates[0], dict) or set(certificates[0]) != fields):
+            raise RecordedCheckRefusal("incomplete recorded certificate", "certificate_fields", "certificate")
+        certificate = certificates[0]
+        if certificate["solver"] != self.params.get("solver", DEFAULT_SOLVER):
+            raise RecordedCheckRefusal("contradictory recorded certificate", "certificate_solver", "certificate")
+        self.solve_record = None
+        model = self.build_model(inputs, self.params)
+        for key, component in (("variables", Var), ("constraints", Constraint)):
+            expected = sum(1 for _ in model.component_data_objects(component, active=True))
+            if type(certificate[key]) is not int or certificate[key] != expected:
+                raise RecordedCheckRefusal("recorded model dimensions differ", "model_dimensions", "certificate")
+        if actions is None:
+            model._transport_no_incumbent = True
+        else:
+            if not isinstance(actions, dict) or set(actions) != {"primary_quantities", "pairs"}:
+                raise RecordedCheckRefusal("invalid recorded actions", "actions_shape", "invalid_trade")
+            quantities = copy.deepcopy(actions["primary_quantities"])
+            if (not isinstance(quantities, list) or len(quantities) != len(self._groups)
+                    or any(not isinstance(q, list) or len(q) != len(g["capacity"])
+                           or any(type(v) is not int or v < 0 for v in q)
+                           for q, g in zip(quantities, self._groups))):
+                raise RecordedCheckRefusal("invalid recorded primary quantities", "actions_shape", "invalid_trade")
+            lookup = {g["id"]: i for i, g in enumerate(self._groups)}
+            for pair in actions["pairs"]:
+                if (not isinstance(pair, dict) or set(pair) != {"group", "pair", "matched_quantity"}
+                        or pair["group"] not in lookup
+                        or not isinstance(pair["pair"], list) or len(pair["pair"]) != 2
+                        or any(type(j) is not int for j in pair["pair"])
+                        or type(pair["matched_quantity"]) is not int or pair["matched_quantity"] <= 0):
+                    raise RecordedCheckRefusal("invalid recorded cleanup pair", "cleanup_pair", "invalid_trade")
+                i, (a, b) = lookup[pair["group"]], pair["pair"]
+                if pair["pair"] not in self._groups[i]["exclusive"]:
+                    raise RecordedCheckRefusal("invalid recorded cleanup pair", "cleanup_pair", "invalid_trade")
+                quantities[i][a] += pair["matched_quantity"]
+                quantities[i][b] += pair["matched_quantity"]
+            for i, group in enumerate(quantities):
+                if any(v > cap for v, cap in zip(group, self._groups[i]["capacity"])):
+                    raise RecordedCheckRefusal("recorded actions exceed capacity", "capacity", "invalid_trade")
+                if i not in self._active:
+                    if any(group):
+                        raise RecordedCheckRefusal("recorded actions in a screened-out group",
+                                                   "screened_group", "invalid_trade")
+                    continue
+                for j, quantity in enumerate(group):
+                    model.x[i, j].set_value(quantity)
+            self._price_duals(model)
+        self.solve_record = SolveRecord(**{**certificate, "binding": ()})
+        return self.extract(model, None)
+
+    def _price_duals(self, model):
+        """Solve for the continuous duals worth exactly the actions set on ``model``.
+
+        A foreign certificate carries integer actions but no dual variables, and the model's profit
+        reads them (the worst-case W1 cost and every risk charge), so unset duals would price the
+        actions as if the ambiguity were zero. With every action fixed what remains is a linear
+        program whose optimum is those actions' worst-case cost; the foreign integer solve is not
+        repeated.
+        """
+        from pyomo.environ import Var
+
+        for variable in model.component_data_objects(Var, active=True):
+            if variable.parent_component() is model.x:
+                variable.fix()
+        name = self.params.get("solver", DEFAULT_SOLVER)
+        results = self._resolve_solver().solve(model)
+        priced = SolveRecord.from_solve(model, results, name, 0.)
+        if priced.termination != "optimal":
+            raise RecordedCheckRefusal("recorded actions could not be priced: "+str(priced.termination),
+                                       "dual_pricing", "pricing")
+
     def _recorded_candidate(self, inputs, selection, certificates, *, timeout=None):
         """Use the same feasibility and valuation audit for every saved incumbent."""
         import copy
@@ -4296,6 +4516,13 @@ class TransportPortfolioSolve(PyomoSolve):
             raise ValueError("uncertified recorded dollar gap")
         return {**copy.deepcopy(selection), "certificates": copy.deepcopy(certificates)}
 
+    @staticmethod
+    def _refuse_over_tolerance(message, misses, tolerance):
+        """Raise the first ``(check, difference)`` whose difference exceeds ``tolerance``, sized as a ratio of it."""
+        for check, difference in misses:
+            if difference > tolerance:
+                raise RecordedCheckRefusal.sized(message, check, difference, tolerance)
+
     def extract(self, model, results):
         """Certify and return the primary profit portfolio without another solve.
 
@@ -4327,19 +4554,22 @@ class TransportPortfolioSolve(PyomoSolve):
                     else ("ok", "warning", "aborted")
                     if first.termination == "maxTimeLimit" else ())
         raw_value = value(model.profit, exception=False)
+        message = "invalid primary solver certificate"
         if (first.status not in statuses or not number_ok(first.objective)
-                or (not missing_bound and not number_ok(first.bound)) or not number_ok(raw_value)
-                or abs(first.objective-raw_value) > tol
-                or (not missing_bound and first.bound < first.objective-tol)):
-
-            raise ValueError("invalid primary solver certificate")
+                or (not missing_bound and not number_ok(first.bound)) or not number_ok(raw_value)):
+            raise RecordedCheckRefusal(message, "certificate_fields", "certificate")
+        misses = [("certificate_objective", abs(first.objective-raw_value))]
+        if not missing_bound:
+            misses.append(("certificate_bound", first.objective-first.bound))
+        self._refuse_over_tolerance(message, misses, tol)
         chosen = self._incumbent(model)
         cleanup = chosen["canonicalization"]
         model_value = value(model.profit)
-        if (chosen["value"] < -tol or model_value > chosen["value"]+tol
-                or abs(model_value-first.objective-cleanup["profit_gain"]) > tol
-                or (not missing_bound and first.bound < chosen["value"]-tol)):
-            raise ValueError("invalid primary dual/primal incumbent value")
+        misses = [("incumbent_negative", -chosen["value"]), ("model_over_audit", model_value-chosen["value"]),
+                  ("cleanup_gain", abs(model_value-first.objective-cleanup["profit_gain"]))]
+        if not missing_bound:
+            misses.append(("bound_below_value", chosen["value"]-first.bound))
+        self._refuse_over_tolerance("invalid primary dual/primal incumbent value", misses, tol)
         primary_quantities = [q.copy() for q in chosen["quantities"]]
         # Cash is constructively feasible. Preserve every strictly positive
         # profit; only zero or parity-sized negative noise is replaced.
@@ -4354,7 +4584,8 @@ class TransportPortfolioSolve(PyomoSolve):
                         self.params["relative_gap"]*abs(chosen["value"]))
         reason = self._timeout_reason(first.to_obj(), chosen["value"])
         if not reason and gap > allowance:
-            raise ValueError(f"uncertified primary objective: {first.termination}, gap={gap}")
+            raise RecordedCheckRefusal(f"uncertified primary objective: {first.termination}, gap={gap}",
+                                       "gap", "gap", gap/allowance if allowance > 0 else None)
         chosen.update(bound=first.bound, gap=gap, model_value=model_value,
                       primary_quantities=primary_quantities,
                       canonicalization={"primary": cleanup, "secondary": None},

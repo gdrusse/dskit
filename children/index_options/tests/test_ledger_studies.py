@@ -2959,3 +2959,459 @@ def test_weekly_portfolio_risk_charge_refuses_invalid(spec):
     bad["methods"][0]["risk_charge"] = spec
     with pytest.raises(ValueError, match="invalid fixed method"):
         ledger_studies.WeeklyOptionPortfolioStudy(bad, inputs)
+
+
+# --- radius_scale: the volatility-scaled W1 radius (ADR-0297) ----------------------------------------------------
+
+#: `_method` digests (decision `seconds` removed) taken from the code before `radius_scale` existed.
+RADIUS_BASELINES = {
+    ("packet", 0.): "f272caf41f3e12db4af505e9f43425e5474575ec375b4b8f549565271951c748",
+    ("packet", .1): "fd0181f0b4bc42d4803592a4abe2fc79f385e86b7d55d30a3d4ddd0f98ba25e3",
+    ("weekly", 0.): "c2ebdcb1d6f54f739c9c7748e2c989c4dc0c35670da1d142ee5523b6162c1bcd",
+    ("weekly", .1): "28397c12b80cd20029cdad05e1ab19c16ecbdafde85159371c8ffcc190c6b8ee"}
+
+
+def _timeless_digest(result):
+    import copy
+    from dskit.pipeline.base import value_hash
+
+    result = copy.deepcopy(result)
+    for decision in result["decisions"]:
+        for certificate in decision.get("certificates", []):
+            certificate.pop("seconds", None)
+    return value_hash(result)
+
+
+@pytest.mark.parametrize("kind", ["packet", "weekly"])
+@pytest.mark.parametrize("rho", [0., .1])
+def test_a_method_without_radius_scale_is_byte_identical_to_the_code_before(kind, rho):
+    params, inputs = (_packet_clock_fixture if kind == "packet" else _weekly_portfolio_fixture)()
+    params["methods"][0]["rho"] = rho
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert _timeless_digest(result) == RADIUS_BASELINES[kind, rho]
+
+
+def _program_scales(monkeypatch):
+    """Record every group's radius and scale the solver is handed."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    seen, run = [], TransportPortfolioSolve.run
+
+    def spy(self, ctx, inputs):
+        seen.extend((g["radius"], g["scale"]) for g in inputs["groups"])
+        return run(self, ctx, inputs)
+    monkeypatch.setattr(TransportPortfolioSolve, "run", spy)
+    return seen
+
+
+def _weekly_method(radius_scale, rho):
+    params, inputs = _weekly_portfolio_fixture()
+    params["methods"][0]["rho"] = rho
+    if radius_scale:
+        params["methods"][0]["radius_scale"] = "reference_scale"
+    return params, inputs
+
+
+def test_radius_scale_makes_the_group_scale_spot_times_the_rows_reference_scale(monkeypatch):
+    seen = _program_scales(monkeypatch)
+    params, inputs = _weekly_method(False, .01)
+    ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert seen and {scale for _, scale in seen} == {100.}, "absent key: the scale stays the spot"
+    seen.clear()
+    params, inputs = _weekly_method(True, .5)
+    for row in inputs["X"]["contexts"]:
+        row["reference_scale"] = {"2019-01-02": .02, "2019-01-07": .04}[row["quote_date"]]
+    ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert {radius for radius, _ in seen} == {.5}, "rho is still the radius, in units of the scale"
+    assert sorted({scale for _, scale in seen}) == [2., 4.], "each row has its own spot x reference_scale"
+
+
+def test_radius_scale_is_the_same_ball_as_a_smaller_rho_on_the_spot_scale():
+    """W1 radius rho x scale: (rho .5, scale 2) and (rho .01, scale 100) are one ball, so one decision."""
+    scaled_params, inputs = _weekly_method(True, .5)
+    by_hand_params, _ = _weekly_method(False, .01)
+    spot_params, _ = _weekly_method(False, .5)
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    scaled = study(scaled_params, inputs)._method(scaled_params["methods"][0], None)
+    by_hand = study(by_hand_params, inputs)._method(by_hand_params["methods"][0], None)
+    spot = study(spot_params, inputs)._method(spot_params["methods"][0], None)
+    assert scaled["trades"] and not spot["trades"], "the volatility radius is far smaller than rho x spot"
+    held = [(a, b) for a, b in zip(scaled["decisions"], by_hand["decisions"]) if "selection" in a]
+    assert held and all("selection" in b for _, b in held)
+    for a, b in held:
+        assert a["selection"]["primary_quantities"] == b["selection"]["primary_quantities"]
+        assert a["selection"]["value"] == pytest.approx(b["selection"]["value"], rel=1e-9)
+        assert a["selection"]["bound"] == pytest.approx(b["selection"]["bound"], rel=1e-9)
+
+
+def _equal_but_last_bits(a, b):
+    """Return whether two results are equal but for float noise: the derived host re-prices the duals."""
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(_equal_but_last_bits(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(_equal_but_last_bits(x, y) for x, y in zip(a, b))
+    if isinstance(a, float):
+        return a == pytest.approx(b, rel=1e-12, abs=1e-12)
+    return a == b
+
+
+def test_the_derived_and_recorded_paths_value_the_actions_on_the_same_scale():
+    """The same integer actions are accepted on the scale that solved them and refused on any other."""
+    import copy
+    from index_options.mio_worker import MIOMethodWorker
+
+    params, inputs = _weekly_method(True, .5)
+    method = params["methods"][0]
+    solved = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    actions = MIOMethodWorker.actions(solved, ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).weeks)
+    assert any(e["actions"] for e in actions["decisions"].values())
+    derived = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, derived=actions)
+    assert _equal_but_last_bits(derived, solved)
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=derived) == derived
+    spot_scale = copy.deepcopy(params)
+    del spot_scale["methods"][0]["radius_scale"]
+    with pytest.raises(ValueError):
+        ledger_studies.WeeklyOptionPortfolioStudy(spot_scale, inputs)._method(
+            spot_scale["methods"][0], None, derived=actions)
+
+
+def test_derived_actions_for_a_week_with_no_eligible_candidate_are_refused():
+    """The derived path consumes exactly the eligible weeks: an entry for a week that had none is refused."""
+    import copy
+    from index_options.mio_worker import MIOMethodWorker
+
+    params, inputs = _weekly_method(True, .5)
+    method = params["methods"][0]
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    solved = study._method(method, None)
+    ineligible = [d["date"] for d in solved["decisions"] if d["status"] == "no_eligible_candidates"]
+    assert ineligible, "the fixture has weeks with no eligible candidate"
+    actions = MIOMethodWorker.actions(solved, study.weeks)
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, derived=actions)
+    extra = copy.deepcopy(actions)
+    extra["decisions"][ineligible[0]] = {"actions": [], "certificates": []}
+    with pytest.raises(ValueError, match="ineligible week"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, derived=extra)
+
+
+@pytest.mark.parametrize("value", ["spot", "", None, True, 1, ["reference_scale"], "Reference_Scale"])
+def test_radius_scale_refuses_any_other_value(value):
+    params, inputs = _weekly_portfolio_fixture()
+    params["methods"][0]["radius_scale"] = value
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+
+
+# --- a 25-point forecast grid: nothing in the study is sized by 13 (ADR-0297) --------------------------------------
+
+def _grid_fixture(points, strikes=(96., 98., 100., 102., 104.)):
+    """The weekly fixture on an evenly spaced -3..3 grid of ``points`` points and a denser two-sided chain."""
+    import copy
+    import math
+
+    params, inputs = _weekly_portfolio_fixture()
+    z = [-3.+6.*i/(points-1) for i in range(points)]
+    labels = [str(i) for i in range(points)]
+    params["bridge"].update(z_grid=z, grid_labels=labels)
+    for row in inputs["X"]["forecasts"]:
+        for key in [k for k in row if k.startswith("method_cdf_")]:
+            del row[key]
+        row.update({"method_cdf_"+label: .5*(1+math.erf(v/2**.5)) for label, v in zip(labels, z)})
+    quotes = []
+    for row in inputs["X"]["chain"]:
+        if row["strike_raw"] != 100. or row["type"] != "put":
+            continue
+        for kind in ("put", "call"):
+            for strike in strikes:
+                width = abs(strike-100.)
+                bid = max(.05, 4.-.9*width if (kind == "put") == (strike <= 100.) else .3)
+                quotes.append({**row, "type": kind, "strike_raw": strike, "strike": strike,
+                               "bid": bid, "ask": bid+.2})
+    inputs["X"]["chain"] = quotes
+    return params, copy.deepcopy(inputs)
+
+
+def test_a_25_point_grid_sizes_the_program_by_strikes_and_feeds_the_quadrature_every_knot():
+    study = {}
+    for points in (13, 25):
+        params, inputs = _grid_fixture(points)
+        study[points] = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    prepared = {n: s._prepare("2019-01-02") for n, s in study.items()}
+    for n in (13, 25):
+        groups, metadata, refusals = prepared[n]
+        assert len(groups) == 1 and not refusals, refusals
+        group, meta = groups[0], metadata[0]
+        support, items = len(group["grid"]), len(group["capacity"])
+        assert (len(group["losses"]), len(group["losses"][0])) == (support, items), "one loss row per support point"
+        assert len(group["masses"]) == support and abs(sum(group["masses"])-1.) < 1e-9
+        knots = meta["projection"]["breakpoints"]
+        assert len(knots) == n-2 or len(knots) == n, f"every grid point strictly inside the support is a knot ({n}, got {len(knots)})"
+        assert [round(z, 6) for z in knots] == sorted(round(z, 6) for z in knots)
+    coarse, fine = prepared[13][0][0], prepared[25][0][0]
+    assert (len(coarse["grid"]), len(coarse["capacity"])) == (len(fine["grid"]), len(fine["capacity"])), \
+        "the program is sized by the listed strikes, so a finer CDF adds no variable or row"
+    assert len(prepared[25][1][0]["projection"]["breakpoints"]) > len(prepared[13][1][0]["projection"]["breakpoints"])
+    # the normal CDF is the same distribution on either grid: the projected masses agree to interpolation error
+    assert fine["masses"] == pytest.approx(coarse["masses"], abs=2e-2)
+
+
+def test_a_25_point_grid_solves_and_replays_like_the_13_point_one():
+    results = {}
+    for points in (13, 25):
+        params, inputs = _grid_fixture(points)
+        params["methods"][0]["rho"] = .01
+        study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+        result = study._method(params["methods"][0], None)
+        assert study._method(params["methods"][0], None, recorded=result) == result
+        results[points] = result
+    assert results[13]["trades"] and results[25]["trades"]
+    sized = {n: [(c["variables"], c["constraints"]) for d in r["decisions"] for c in d.get("certificates", [])]
+             for n, r in results.items()}
+    assert sized[13] == sized[25], "solver size does not depend on the number of CDF points"
+
+
+# --- CDF rounding noise: raised just before MIO uses a forecast, a real decrease still refused (ADR-0297) ------------
+
+def _with_cdf(edit):
+    """The weekly fixture whose first forecast row's 13 CDF values ``edit`` may rewrite (label -> value dict)."""
+    params, inputs = _weekly_portfolio_fixture()
+    row = inputs["X"]["forecasts"][0]
+    values = {k: row[k] for k in row if k.startswith("method_cdf_")}
+    row.update(edit(values))
+    return params, inputs
+
+
+def _decisions(params, inputs):
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    return study._method(params["methods"][0], None), study
+
+
+@pytest.mark.parametrize("drop", [1e-15, 5e-10, 9e-10])
+def test_a_cdf_point_that_falls_by_rounding_noise_is_raised_to_the_prior_value(drop):
+    noisy = _with_cdf(lambda v: {"method_cdf_6": v["method_cdf_5"]-drop})
+    raised = _with_cdf(lambda v: {"method_cdf_6": v["method_cdf_5"]})
+    result, study = _decisions(*noisy)
+    expected, clean = _decisions(*raised)
+    trace = study._prepare("2019-01-02")[1][0]["projection"]
+    assert trace["cdf_noise_raised"] == pytest.approx(drop, rel=1e-6), "a repaired row says how far it moved"
+    # ... and the saved result says which rows were repaired, not only the in-memory projection
+    saved = json.loads(json.dumps(result))
+    repaired = [d["cdf_noise_repaired"] for d in saved["decisions"] if "cdf_noise_repaired" in d]
+    assert len(repaired) == 1 and repaired[0]["rows"] == 1
+    assert repaired[0]["largest"] == pytest.approx(drop, rel=1e-6)
+    assert list(repaired[0]["raised"]) == ["2019-01-02:X:2019-02-01"]
+    assert all("cdf_noise_repaired" not in d for d in expected["decisions"]), "a clean forecast carries no key"
+    assert all("cdf_noise_raised" not in m["projection"] for m in clean._prepare("2019-01-02")[1])
+    assert result["trades"], "the repaired forecast still drives a book"
+    assert result["trades"] == expected["trades"] and result["pnl"] == expected["pnl"]
+    assert [d.get("selection") for d in result["decisions"]] == [d.get("selection") for d in expected["decisions"]]
+
+
+def test_a_run_of_sub_tolerance_falls_is_raised_by_the_builders_own_rule():
+    """The builder (MONOTONE_TOLERANCE) judges consecutive differences, so MIO does too: each step is within
+    the tolerance, the cumulative fall is not, and a forecast the builder published must not refuse a method."""
+    drifting = _with_cdf(lambda v: {"method_cdf_5": v["method_cdf_4"]-8e-10, "method_cdf_6": v["method_cdf_4"]-1.6e-9})
+    flat = _with_cdf(lambda v: {"method_cdf_5": v["method_cdf_4"], "method_cdf_6": v["method_cdf_4"]})
+    result, study = _decisions(*drifting)
+    expected, _ = _decisions(*flat)
+    assert study._prepare("2019-01-02")[1][0]["projection"]["cdf_noise_raised"] == pytest.approx(1.6e-9, rel=1e-3)
+    assert result["trades"] and result["pnl"] == expected["pnl"]
+
+
+@pytest.mark.parametrize("edit", [
+    lambda v: {"method_cdf_6": v["method_cdf_5"]-2e-9},             # past the tolerance
+    lambda v: {"method_cdf_6": v["method_cdf_5"]-1e-6},
+    lambda v: {"method_cdf_6": v["method_cdf_5"]-.1},               # a real inversion
+    lambda v: {"method_cdf_6": float("nan")},
+    lambda v: {"method_cdf_6": -1e-3, "method_cdf_0": 0.},
+    lambda v: {"method_cdf_12": 1.0000001},
+], ids=["past-tol", "1e-6", "inversion", "nan", "negative", "above-one"])
+def test_a_real_cdf_decrease_or_defect_is_still_refused(edit):
+    params, inputs = _with_cdf(edit)
+    with pytest.raises(ValueError, match="incoherent method CDF"):
+        _decisions(params, inputs)
+
+
+def test_a_monotone_cdf_carries_no_trace_of_the_cleanup():
+    """Existing frozen forecasts are monotone: the cleanup changes neither their masses nor their evidence."""
+    params, inputs = _weekly_portfolio_fixture()
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    assert all("cdf_noise_raised" not in m["projection"] for m in study._prepare("2019-01-02")[1])
+    assert _timeless_digest(study._method(params["methods"][0], None)) == RADIUS_BASELINES["weekly", 0.]
+
+
+# --- the seven MIO formulations and the component cap (ADR-0297; owner rulings 2026-11-05 ~15:30 to ~16:00) ------------
+
+SHOCK10 = {"moves": [-.1, -.05, .05, .1], "loss_fraction": .1, "beta_lookback": 60}
+#: Shared base of every formulation: a 20% short-notional floor, no per-name or portfolio cap beyond the account.
+_BASE = {"portfolio_fraction": 1., "name_fraction": 1., "component_fraction": None, "short_notional_fraction": .2}
+#: 0.10 over the median reference_scale of 791,231 rows, 166 names, 2017-2019 (input-only; PLAN.md ~15:50).
+MEDIAN_REFERENCE_SCALE = 0.05963088521417719
+FORMULATIONS = {
+    "w1_010_shock10_lp": {**_BASE, "rho": .10, "shock": SHOCK10},
+    "w1_003_shock10_lp": {**_BASE, "rho": .03, "shock": SHOCK10},
+    "w1_003_shock10_mad050_lp": {**_BASE, "rho": .03, "shock": SHOCK10, "risk_charge": {"measure": "mad", "price": .5}},
+    "nominal_lp": {**_BASE, "rho": 0.},
+    "w1_010z_shock10_lp": {**_BASE, "rho": 1.676983322330843, "shock": SHOCK10, "radius_scale": "reference_scale"},
+    "w1_010_shock10_fine_lp": {**_BASE, "rho": .10, "shock": SHOCK10},  # its own document: the 25-point bridge grid
+    "w1_010_component25_shock10_lp": {**_BASE, "rho": .10, "shock": SHOCK10, "component_fraction": .25},
+    # The two added at ~17:30: a per-name cap of a quarter of the account, and a 5% shock budget on the FILLED account.
+    "w1_010_name25_shock10_lp": {**_BASE, "rho": .10, "shock": SHOCK10, "name_fraction": .25},
+    "w1_010_shock05_book_lp": {**_BASE, "rho": .10, "shock": {**SHOCK10, "loss_fraction": .05, "scope": "filled_account"}},
+}
+
+
+def test_all_nine_formulations_validate_and_differ_only_where_they_say():
+    base = FORMULATIONS["w1_010_shock10_lp"]
+    assert len(FORMULATIONS) == 9
+    for name, method in FORMULATIONS.items():
+        params, inputs = _weekly_portfolio_fixture()
+        params["methods"] = [{"id": name, **method}]
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    assert {k: v for k, v in FORMULATIONS["w1_010z_shock10_lp"].items() if k not in ("rho", "radius_scale")} == \
+        {k: v for k, v in base.items() if k != "rho"}
+    assert FORMULATIONS["w1_010_component25_shock10_lp"] == {**base, "component_fraction": .25}
+    assert FORMULATIONS["w1_010_shock10_fine_lp"] == base
+    assert FORMULATIONS["w1_010_name25_shock10_lp"] == {**base, "name_fraction": .25}
+    assert FORMULATIONS["w1_010_shock05_book_lp"] == {
+        **base, "shock": {"moves": [-.1, -.05, .05, .1], "loss_fraction": .05, "beta_lookback": 60,
+                          "scope": "filled_account"}}
+    assert FORMULATIONS["w1_010z_shock10_lp"]["rho"] == pytest.approx(.10/MEDIAN_REFERENCE_SCALE, rel=1e-15)
+
+
+def _spy_programs(monkeypatch):
+    """Record every program the solver is handed, with the selection it returns."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    seen, run = [], TransportPortfolioSolve.run
+
+    def spy(self, ctx, inputs):
+        out = run(self, ctx, inputs)
+        seen.append({"caps": [(c["upper"], len(c["groups"])) for c in inputs["caps"]],
+                     "joint": [r["upper"] for r in inputs.get("joint_rows", [])],
+                     "reserve": sum(out["selection"]["reserves"])})
+        return out
+    monkeypatch.setattr(TransportPortfolioSolve, "run", spy)
+    return seen
+
+
+def test_the_component_cap_binds_beside_the_shock_row(monkeypatch):
+    """25% of funding per correlated group: with open reserve from week one, week two's room is what is left."""
+    seen = _spy_programs(monkeypatch)
+    outcome = {}
+    for fraction in (None, .25):
+        seen.clear()
+        params, inputs = _weekly_portfolio_fixture()
+        params.update(initial=4000., deposit=0.)
+        params["methods"][0].update(rho=.01, component_fraction=fraction, short_notional_fraction=0.,
+                                    shock={**SHOCK10, "loss_fraction": .5})   # the shock row is present, not the limit
+        result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+        outcome[fraction] = (result, list(seen))
+    free, capped = outcome[None], outcome[.25]
+    assert all(s["joint"] == [2000.]*4 for s in free[1] + capped[1]), "the shock rows ride beside the cap"
+    assert len(capped[1][0]["caps"]) == len(free[1][0]["caps"])+1, "one group cap more"
+    week_two = capped[1][1]["caps"]
+    room = 4000.*.25-free[1][0]["reserve"]
+    assert any(upper == pytest.approx(room) for upper, _ in week_two), "the cap is 25% of funding less the open reserve"
+    assert room < free[1][1]["reserve"], "the book week two would take does not fit that room"
+    assert [d["status"] for d in capped[0]["decisions"]][:2] == ["selected", "cash"]
+    assert [d["status"] for d in free[0]["decisions"]][:2] == ["selected", "selected"]
+    assert len(capped[0]["trades"]) == 1 and len(free[0]["trades"]) == 2
+    assert all(s["reserve"] <= 4000.*.25+1e-6 for s in capped[1]), "no solve of the capped method exceeds the group cap"
+
+
+def test_the_name25_cap_is_a_quarter_of_funding_per_name_and_binds(monkeypatch):
+    """name_fraction .25 adds a per-name room of 25% of funding less its open reserve; no solve exceeds it."""
+    seen = _spy_programs(monkeypatch)
+    params, inputs = _weekly_portfolio_fixture()
+    params.update(initial=4000., deposit=0.)
+    params["methods"][0].update(FORMULATIONS["w1_010_name25_shock10_lp"], id="nominal", rho=.01,
+                                shock={**SHOCK10, "loss_fraction": .5}, short_notional_fraction=0.)
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert any(upper == pytest.approx(1000.) for upper, _ in seen[0]["caps"]), "25% of the 4000 funding, week one"
+    assert all(s["reserve"] <= 1000.+1e-6 for s in seen), "no solve of the capped method exceeds the name cap"
+    assert result["decisions"][0]["status"] == "selected"
+
+
+def test_the_book_shock_budget_is_five_percent_of_funding_on_the_filled_account(monkeypatch):
+    """w1_010_shock05_book_lp: scope filled_account with loss_fraction .05; the budget is 5% of funding."""
+    params, inputs = _weekly_portfolio_fixture()
+    params.update(initial=4000., deposit=0.)
+    params["methods"][0].update(FORMULATIONS["w1_010_shock05_book_lp"], id="nominal", rho=.01,
+                                shock={**FORMULATIONS["w1_010_shock05_book_lp"]["shock"], "beta_lookback": 20})
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    result = study._method(params["methods"][0], None)
+    shocks = [d["shock"] for d in result["decisions"] if "shock" in d]
+    assert shocks and all(x.get("scope", "filled_account") == "filled_account" for x in shocks)
+    assert all(x["limit"] == pytest.approx(.05*4000.) for x in shocks if x.get("limit") is not None)
+
+
+def _chain_world(chains, threshold=.3, history=250, seed=5):
+    """Chains of names where neighbours share one factor (correlation about .5) and all other pairs share none."""
+    import copy
+    import math
+    from datetime import date, timedelta
+    import numpy as np
+
+    params, inputs = _packet_clock_fixture()
+    base = inputs["X"]
+    days, day = [], date(2018, 12, 31)
+    while len(days) < history:
+        day -= timedelta(days=1)
+        if day.weekday() < 5:
+            days.append(day.isoformat())
+    days.sort()
+    rng = np.random.default_rng(seed)
+    names, series = [], {}
+    for c, length in enumerate(chains):
+        factors = rng.standard_normal((length+1, len(days)-1))
+        for i in range(length):
+            name = f"C{c}N{i}"
+            names.append(name)
+            path = np.exp(np.cumsum(np.r_[0., .01*(factors[i]+factors[i+1])/math.sqrt(2)]))
+            series[name] = {d: float(100*p/path[-1]) for d, p in zip(days, path)}   # ends at the live fixture's 100
+    params["symbols"] = names
+    params.update(correlation_threshold=threshold, correlation_lookback=history-1, correlation_min_pairs=20)
+    live = [r for r in base["bars"] if r["date"] >= "2019-01-02"]
+    data = {}
+    for name in names:
+        one = copy.deepcopy(base)
+        for kind in ("forecasts", "contexts", "chain"):
+            for row in one[kind]:
+                row["symbol"] = name
+        one["bars"] = [{"symbol": name, "date": d, "close": c} for d, c in series[name].items()] \
+            + [dict(r, symbol=name) for r in live]
+        data[name] = one
+    params["clocks"].update(sessions=days+[r["date"] for r in live], history_start=days[0])
+    params["selected_pairs"] = [{"id": n+"30", "symbol": n, "dte_min": 28, "dte_max": 32} for n in names]
+    return params, data, series, days
+
+
+def test_chained_neighbours_make_one_component_so_component_fraction_becomes_a_portfolio_cap():
+    """Confirms the prior agent's warning on synthetic data: `_components` is a transitive union, rule unchanged."""
+    import numpy as np
+    from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+
+    result = {}
+    for chains in ([12], [6, 6]):
+        params, data, series, days = _chain_world(chains)
+        names = params["symbols"]
+        corr = np.corrcoef([np.diff(np.log([series[n][d] for d in days])) for n in names])
+        pairs = [(i, j) for i in range(len(names)) for j in range(i+1, len(names))]
+        linked = sum(abs(corr[i, j]) >= .3 for i, j in pairs)
+        study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+        groups = study._components("2019-01-07")["groups"]
+        account = FundedOptionAccount(params["initial"], params["deposit"], params["deposit_every_days"], "2019-01-02")
+        method = {"component_fraction": .25, "portfolio_fraction": 1., "name_fraction": 1.}
+        limits = study._limits(account, method, {"groups": groups})
+        result[tuple(chains)] = (linked, len(pairs), sorted(len(g) for g in groups), limits, names)
+    linked, pairs, sizes, limits, names = result[(12,)]
+    assert linked == 11 and pairs == 66, "only the 11 neighbour pairs are correlated; 55 of 66 pairs are not"
+    assert sizes == [12], "yet one chain of neighbours is ONE component"
+    whole = [lim for lim in limits if lim["members"] == names]
+    assert sorted(round(lim["upper"], 6) for lim in whole) == [2500., 2500., 10000.], \
+        "the portfolio limit, the weekly limit and the component cap all span the whole universe: the cap is 25% of funding"
+    two_sizes, two_limits = result[(6, 6)][2], result[(6, 6)][3]
+    assert two_sizes == [6, 6], "two unlinked chains stay two components, each with its own 25%"
+    assert sorted(len(lim["members"]) for lim in two_limits if lim["upper"] == 2500. and len(lim["members"]) > 1) \
+        == [6, 6, 12], "(the weekly limit spans all 12; each chain has its own cap)"
