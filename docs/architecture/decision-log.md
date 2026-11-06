@@ -35850,7 +35850,7 @@ ADR-0290 amendment (Russell approved 2026-11-03): "Proceed with the stated assum
 
 **ADR-0293 boundary correction (QM-C1).** Raw producer JSON can mix structural evidence with learned values: fit/epoch metadata, completed summaries, warmup mappings and component calibration receipts are not metadata-only inputs. Preparation publishes exact domain-owned structural projections, pinned independently with each raw-source digest. Selection reads those projections and configuration/complete manifests only. Both authenticated consumers verify projection equality against raw artifacts after the permit, then inspect epoch and blend states. No preclaim model-state parsing; positive projection, false-projection and direct file-open traces cover the entire family.
 
-## ADR-0294 - Lock the quarterly M53 predictive recipe (owner approved, 2026-11-04)
+## ADR-0294 - Lock the quarterly M53 predictive recipe (owner approved, 2026-11-04; superseded 2026-11-05 by the fixed_loc recipe in Path A0008, ADR-0298)
 
 **Decision.** Owner: "lock it in if you agree with the analysis. make sure it is recorded." Path A0008 now names the recipe: four-component M53 with causal quarterly weights, 90-input MLP at fixed epoch 1 with no per-fit selection, and the quantile average of seeds 11/29/47 in the model slot. No code changes.
 
