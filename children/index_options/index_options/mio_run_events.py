@@ -139,7 +139,8 @@ class MioRunRows(Node):
             "times": {"decision": "16:00", "fill": "09:30",
                       "expiry": "16:00", "deposit": "08:00"},
             "actions": {"selected": "enter", "cash": "hold",
-                        "no_eligible_candidates": "hold", "kelly_risk_input": "hold"}})
+                        "no_eligible_candidates": "hold", "kelly_risk_input": "hold",
+                        "timeout_skipped": "skip"}})
         rows = node.run(ctx, {"table": result_json})
         rows["fills"][0]["side"]  # 'buy'
     """

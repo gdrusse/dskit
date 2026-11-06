@@ -3855,6 +3855,21 @@ class _TangentEnvelope:
         return self._largest_error(*self.core)
 
 
+def _records_agree(claimed, audit, tolerance=1e-9):
+    """Whether a recorded value matches this host's: the same type, floats within ``tolerance`` relative (and a small
+    absolute floor for values at float noise), dicts and lists element by element, ``None`` only for ``None``."""
+    if isinstance(audit, dict):
+        return (isinstance(claimed, dict) and set(claimed) == set(audit)
+                and all(_records_agree(claimed[k], audit[k], tolerance) for k in audit))
+    if isinstance(audit, (list, tuple)):
+        return (isinstance(claimed, (list, tuple)) and len(claimed) == len(audit)
+                and all(_records_agree(a, b, tolerance) for a, b in zip(claimed, audit)))
+    if isinstance(audit, float):
+        return (type(claimed) is float and math.isfinite(claimed)
+                and abs(claimed-audit) <= tolerance*max(abs(claimed), abs(audit))+1e-12)
+    return type(claimed) is type(audit) and claimed == audit
+
+
 class _ChargeLines:
     """The tangent lines under one convex dispersion charge ``slope x reserve^2``.
 
@@ -4989,10 +5004,12 @@ class TransportPortfolioSolve(PyomoSolve):
         for key in audited_keys:
             claimed, audit = selection[key], audited[key]
             if key == "utility":
-                # The record-only fields are sums this host orders its own way: present, never compared exactly.
-                if not isinstance(claimed, dict) or set(claimed) != set(audit):
-                    raise ValueError("recorded independent portfolio audit differs: "+key)
+                # The record-only fields are sums this host orders its own way: same keys and types, values within a
+                # relative 1e-9 (a last-bit difference replays; a forged record does not reach the saved row).
                 skip = TransportActionScore._RECORD_ONLY
+                if (not isinstance(claimed, dict) or set(claimed) != set(audit)
+                        or not all(_records_agree(claimed[k], audit[k]) for k in skip)):
+                    raise ValueError("recorded independent portfolio audit differs: "+key)
                 claimed = {k: v for k, v in claimed.items() if k not in skip}
                 audit = {k: v for k, v in audit.items() if k not in skip}
             if claimed != audit:
@@ -5236,7 +5253,7 @@ class TransportActionScore:
 
     #: A dispersion at or below this fraction of ``w0`` is float noise: the book's ratio and effective fraction are None.
     BOOK_NOISE = 1e-9
-    #: The ``utility`` keys that only record: a replay requires them but never compares them exactly (host float order).
+    #: The ``utility`` keys that only record: a replay compares them to a relative 1e-9, not exactly (host float order).
     _RECORD_ONLY = ("group_sd", "book")
 
     def _book_record(self, plan, exact_sd, totals):

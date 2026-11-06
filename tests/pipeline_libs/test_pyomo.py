@@ -5623,9 +5623,10 @@ def test_a_book_of_offsetting_legs_records_no_ratio_from_float_noise():
     assert real["ratio"] is not None and real["effective_fraction"] == pytest.approx(.5*real["ratio"]**2)
 
 
-def test_a_recorded_book_that_differs_in_the_last_bits_never_refuses_a_replay():
-    """``book`` and ``group_sd`` are records, not part of the valuation: a host whose BLAS sums in another order must
-    still replay the solve, while a changed charge or value still refuses."""
+def test_a_recorded_book_differing_in_the_last_bits_replays_but_a_forged_one_refuses():
+    """``book`` and ``group_sd`` are records a host orders its own way: compared to a relative 1e-9 and by type, so a
+    last-bit difference replays, while a materially different ratio, a wrong type or a missing key refuses (a forged
+    record must not reach the saved row)."""
     from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
 
     params = _kelly_params()
@@ -5635,17 +5636,28 @@ def test_a_recorded_book_that_differs_in_the_last_bits_never_refuses_a_replay():
     claimed = {k: v for k, v in solved.items() if k != "certificates"}
     node = TransportPortfolioSolve("replay", params)
     assert node._recorded(program, claimed, certificates)["utility"] == solved["utility"]
-    book = {**claimed["utility"]["book"], "sd": claimed["utility"]["book"]["sd"]*(1.+1e-15),
-            "ratio": claimed["utility"]["book"]["ratio"]*(1.-1e-15)}
-    nudged = {**claimed, "utility": {**claimed["utility"], "book": book,
-                                     "group_sd": [x*(1.+1e-15) for x in claimed["utility"]["group_sd"]]}}
+
+    def with_record(**changes):
+        utility = {**claimed["utility"], **changes}
+        return {**claimed, "utility": utility}
+    book, group_sd = claimed["utility"]["book"], claimed["utility"]["group_sd"]
+    nudged = with_record(book={**book, "sd": book["sd"]*(1.+1e-12), "ratio": book["ratio"]*(1.-1e-12)},
+                         group_sd=[x*(1.+1e-12) for x in group_sd])
     assert node._recorded(program, nudged, certificates)["quantities"] == solved["quantities"]
-    missing = {**claimed, "utility": {k: v for k, v in claimed["utility"].items() if k != "book"}}
-    with pytest.raises(ValueError, match="utility"):
-        node._recorded(program, missing, certificates)
-    forged = {**claimed, "utility": {**claimed["utility"], "exact": claimed["utility"]["exact"]+1.}}
-    with pytest.raises(ValueError, match="audit differs: utility"):
-        node._recorded(program, forged, certificates)
+    forged = {"book ratio": with_record(book={**book, "ratio": book["ratio"]*1.01}),
+              "book effective fraction": with_record(book={**book, "effective_fraction": book["effective_fraction"]*2.}),
+              "book none": with_record(book={**book, "ratio": None}),
+              "book type": with_record(book={**book, "sd": str(book["sd"])}),
+              "book key": with_record(book={k: v for k, v in book.items() if k != "sd"}),
+              "book nan": with_record(book={**book, "sd": float("nan")}),
+              "group_sd value": with_record(group_sd=[x*1.01 for x in group_sd]),
+              "group_sd length": with_record(group_sd=[*group_sd, 0.]),
+              "missing book": {**claimed, "utility": {k: v for k, v in claimed["utility"].items() if k != "book"}},
+              "changed charge": with_record(exact=claimed["utility"]["exact"]+1.)}
+    for name, record in forged.items():
+        with pytest.raises(ValueError, match="audit differs: utility|not JSON compliant"):   # a nan is refused earlier
+            node._recorded(program, record, certificates)
+            pytest.fail(name)
 
 
 def test_a_names_groups_are_charged_on_the_sum_of_their_dispersions():
