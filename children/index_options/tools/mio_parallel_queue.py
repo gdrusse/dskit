@@ -2834,6 +2834,9 @@ def check_study(study, weeks):
     study = copy.deepcopy(study)
     packet = MIOStudyContract.packet(study)
     packet["end_before"] = min(packet["end_before"], (date.fromisoformat(packet["start"]) + timedelta(days=7 * weeks)).isoformat())
+    bridge = study.get("domain", {}).get("params", {}).get("bridge")
+    if bridge is not None:  # the contract binds the bridge's entry clock to the selected packet
+        bridge["end_before"] = packet["end_before"]
     return study
 
 

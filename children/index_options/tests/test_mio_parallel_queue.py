@@ -4018,3 +4018,14 @@ def test_a_holdout_quarter_has_no_check_bundle(tmp_path):
               "selection_formulation_hashes": _pins("f")}
     with pytest.raises(ValueError, match="sealed holdout"):
         check_bundle(config, "b/rules", 1)
+
+
+def test_check_study_shortens_the_bridge_with_the_packet_so_the_contract_accepts_it():
+    """A real study binds bridge.end_before to the packet: the short check must move both."""
+    study = {"selected_packet": "p", "packets": [{"id": "p", "start": "2021-01-04", "end_before": "2021-04-01", "purpose": "development"}],
+             "domain": {"params": {"bridge": {"start": "2021-01-04", "end_before": "2021-04-01"}}}}
+    short = _queue_module.check_study(study, 2)
+    packet = [p for p in short["packets"] if p["id"] == "p"][0]
+    assert packet["end_before"] == short["domain"]["params"]["bridge"]["end_before"] == "2021-01-18"
+    assert short["domain"]["params"]["bridge"]["start"] == packet["start"]
+    assert study["domain"]["params"]["bridge"]["end_before"] == "2021-04-01", "the document's own study is untouched"
