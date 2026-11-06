@@ -1,39 +1,39 @@
 # RE-ENTRY - index_options
 
-Updated: 2026-11-04 by Claude Opus 5.5. Predictive recipe locked (A0008, ADR-0294); MIO runnable quarters complete; all MIO economics unopened.
+Updated: 2026-11-05 by Claude Opus 5.5. Full-span rerun: forecasts and scores done through 2023; MIO code reviewed; plain WSL MIO running. Full log: `/home/russell/data/index_options/full-span-rerun-20261105/PLAN.md`.
 
 ## Now
 
-- **Predictive lock.** Four-component M53 with causal quarterly weights; 90-input MLP at fixed epoch 1, no per-fit selection; quantile average of seeds 11/29/47 in the model slot. Post-exposure development on 2020-2023, not validation. Neither market arm blended (seed 11 only) passed. Owner also ruled: promotion and holdout retrain quarterly (A0004), and the warmup is refit at epoch 1 (A0008).
-- **Skill (frozen seed 11 at 2/45/1/1, not the locked recipe, which has never been scored).** Beats horizon_empirical and market_cal; versus raw market +0.72% (-0.21, 1.65), carried by 2021. Edge over market_cal fades by year: .84, .77, .33, .25. The MLP adds 0.089% in the blend (bag from existing fits; 60-day block interval includes zero).
-- **Exact-recipe caches do not exist yet.** Needed: epoch-1 warmup refits for seeds 11 and 47, seed 11's 8 quarters of 2020-2021, then all blends. The other 40 quarterly fits are already at epoch 1.
-- **MIO.** Same three methods on 17 quarters run on 2026-11-04 plus retained 2021Q1, all closed and reviewed. They use the frozen seed 11 forecasts with old epoch pins (23 for 2019Q2-Q4, then 2/45/1/1), so they predate the lock. Stock lists vary by quarter under an exclusion rule whose principle is the owner's; its thresholds were agent-set.
-- **Registries.** Prior coverage-v2 at revision 118; linked registry, owner-approved for repeat windows, at revision 40. The 2020Q1 original stays quarantined; use the linked re-run. 2021Q1 stays as run.
-- **Not run.** 2019Q1 (no blend history before 2019). 2023Q4 (tail reaches sealed 2024).
+- **Model.** Zoo winner `fixed_loc`; recipe `b10d67deebb5`: lr 1e-4, dropout 0.11, weight decay 0.045, hidden 64, width 8, 6 epochs, seeds 11/29/47/53/71, linear pool (`quarterly/recipe.json`). 166 names, list hash 8eae0a07.
+- **Forecasts.** 17 quarters (2019Q4, 2020Q1-2023Q4) done, scored and pinned from `claude/quarterly-forecasts-20261105` (ADR-0298). `check` passes. 2020Q1 rerun under load gave identical hashes. Scores unopened; `table` not run. Path A0008 now holds this recipe and supersedes M53. No 2024+ work (owner).
+- **MIO code.** `claude/mio-parallel-on-rerun-20261105` at the wrap commit (ADR-0297, A0010). Both final lenses clean on cae384c1 (zero Major or Critical), including all 108 parity state combinations with restarts; tests pass. Never run on the Mac or on real files through the queue.
+- **WSL MIO running.** `mio-wsl/jobs.json`, branch `claude/mio-wsl-run-20261105` c9eef46b: 4 formulations (w1_010_shock10_lp, w1_003_shock10_lp, w1_003_shock10_mad050_lp, nominal_lp) on 2019Q4, 2020Q1, 2021Q1, 2021Q2. Two running at wrap; two wait on the memory gate. Peak so far 4.2 GB against an 8 GB placeholder. Earlier documents took 3-5 h; here `run_root` is on D:, so maybe longer.
+- **Results location.** `run_root` is on `/mnt/d/full-span-rerun-20261105/mio-wsl/`. Copy closed results into WSL.
 
 ## Next
 
-- Produce forecast caches for the exact locked recipe, score them against A0005 and A0007 on 2020-2023 (post-exposure), and pin their hash in A0008. Then decide whether to re-run MIO on them.
-- Owner decides when to open MIO economics; nothing has been opened.
-- Sentinel clip needs an ADR (TorchCDF has no knob): 5 dead IV inputs, no measurable score gain.
+1. Keep `/home/russell/wt/mio-wsl-run-20261105` until solves close. Free C: by moving the WSL disk to D: (owner approved; no jobs running, backup first).
+2. Mac: rebuild its RAM disk (`fullspan-ram` is still attached), run the short check on a 1-2 week packet, then one real parity unit (RUNBOOK). Queue route: 5 remaining formulations, or all 9 for a single path.
+3. Owner reviews the 4 selection quarters, picks 3; run those on 2022-2023 unopened (A0010).
+4. Later: `quarterly_forecasts table`; 2024-2025 forecasts when the owner lifts the hold.
 
 ## Blocked / owner decisions
 
-- Universe: 68 of 118 names were ranked on data ending 2026-10-02, cut alphabetically at LLY. Results apply only to these survivors; not in the Path, and the owner has not ruled. Scores cover 110 names and 450,563 of 712,556 rows. A point-in-time universe needs a new panel.
-- Open MIO economics or not. Holdout stays sealed unless the owner promotes; 2026 sealed forever.
-- Whether to replace the MIO stock-exclusion rule with trade-when-quoted plus prepared splits: owner chose to keep it for now.
+- Plain WSL results cannot enter the queue (code pins and the 9-method check); decide import or re-solve, or compare outside the tool.
+- ADR-0296 (`auto` device, branch `claude/device-auto-20261105`, uncommitted): owner review and nine questions.
+- New-file manifest for ADR-0297 to confirm. WSL disk move to D: approved, after a backup; C: has 11 GB free, which limits queue jobs.
 
 ## Read first
 
-- [Predictive lock](research/distribution-modeling/2026-11-05-m53-predictive-lock.md).
-- [Locked Path](decisioning/path.csv).
-- [Prior quarterly comparison](research/distribution-modeling/2026-11-04-quarterly-m53-market-comparison-and-2019-mio.md).
+- `docs/plans/mio-parallel/RUNBOOK.md`; `docs/plans/quarterly-forecasts-runbook.md` (on the forecast branch).
+- [Locked Path](decisioning/path.csv), A0010.
+- `/home/russell/data/index_options/full-span-rerun-20261105/mio-review/formulation-review.md`.
 
 ## Do not
 
-- Open MIO economics or protected outcomes without the owner; never tail MIO logs, which contain account lines.
-- Call 2020-2023 results validation, or select seeds or epochs by score.
-- Run concurrent heavy jobs without a RAM budget: an out-of-memory kill hit MIO and a recorder on 2026-11-04. RAM is the limit on this desktop, and WSL writes can grow the disk file on C:.
-- Rewrite closed receipts, reset registries, or re-expose a development window in the prior registry.
-
-Evidence: `/home/russell/data/index_options/learning-diagnostics-20261104` (reports), `/home/russell/data/index_options/quarterly-prediction-cache-20261104/2019-extension` (MIO receipts) and `/home/russell/data/index_options/quarterly-prediction-cache-20261104/mio/eligibility-amendment-20261104` (amendments).
+- Do anything with 2024-2025 data; run MIO on 2024+; view final forecasts; open 2022-2023 MIO economics before the 3 picks.
+- Read or grep MIO run logs: one agent's grep of the 2022Q1 rules run.log returned five `weekly_decision` lines (values not seen by the main session).
+- Put anything with 2024+ outcomes on D:, or anything on the Mac SSD.
+- Waive the compute gate; exceed the WSL 6 GB and Windows 2 GB reserves; let C: fall under 3 GB.
+- Trust the commit message of c9eef46b on reuse by file pin: it is wrong (see Blocked).
+- Merge the forecast branch into the rerun tree. Journal rows on the branches collide at merge: renumber one side.

@@ -1328,7 +1328,12 @@ class WeeklyOptionPortfolioStudy:
         deviation of its loss under the model masses. A positive price
         records each selected book's risk_charge beside its unchanged
         expected; an absent key or kappa 0 leaves the program and record
-        unchanged.
+        unchanged. Optional method key radius_scale "reference_scale" (ADR-0297)
+        makes each group's W1 scale the spot times that row's reference_scale
+        instead of the spot, so rho is a radius in volatility units; the
+        solver, the LP screen, the certificates and the derived and recorded
+        replays all read that one scale. An absent key leaves every group and
+        every result unchanged.
     inputs : dict
         Per-symbol forecasts, contexts, chain and bars, already bounded before
         materialization. No outcomes are passed to the optimizer.
@@ -1345,7 +1350,8 @@ class WeeklyOptionPortfolioStudy:
                "weekly_fraction", "correlation_lookback", "correlation_min_pairs",
                "correlation_threshold", "solver", "methods")
     _METHOD_KEYS = {"id", "rho", "portfolio_fraction", "name_fraction", "component_fraction"}
-    _OPTIONAL_METHOD_KEYS = {"reserve_per_contract", "short_notional_fraction", "shock", "risk_charge"}
+    _OPTIONAL_METHOD_KEYS = {"reserve_per_contract", "short_notional_fraction", "shock", "risk_charge", "radius_scale"}
+    _RADIUS_SCALE = "reference_scale"
     _CHARGE_KEYS = ("reserve_per_contract", "short_notional_fraction")
     _SHOCK_KEYS = {"moves", "loss_fraction", "beta_lookback"}
     _FILLED_ACCOUNT = "filled_account"
@@ -1512,6 +1518,8 @@ class WeeklyOptionPortfolioStudy:
                     or any(not number_ok(v) or v < 0 for v in cls._charge(method).values())
                     or ("shock" in method and not cls._shock_valid(method["shock"]))
                     or ("risk_charge" in method and not cls._risk_charge_valid(method["risk_charge"]))
+                    or ("radius_scale" in method and (type(method["radius_scale"]) is not str
+                                                      or method["radius_scale"] != cls._RADIUS_SCALE))
                     or not isinstance(method["id"], str) or not method["id"] or method["id"] in ids
                     or not number_ok(method["rho"]) or method["rho"] < 0
                     or any(not number_ok(method[k]) or not 0 < method[k] <= 1
@@ -1856,7 +1864,7 @@ class WeeklyOptionPortfolioStudy:
                                   else self._by_day[symbol].get(day, {}))
                     prepared, projection = node._prepare(
                         forecast, context, day, expiry, day_quotes,
-                        {day: self._factors[symbol].get(day)})
+                        {day: self._factors[symbol].get(day)}, cdf_noise=node.CDF_NOISE)
                 except ValueError as exc:
                     if str(exc) not in {"insufficient_eligible_legs", "missing spot, scale or basis"}:
                         raise
@@ -1894,12 +1902,22 @@ class WeeklyOptionPortfolioStudy:
                     "dte": (date.fromisoformat(expiry)-date.fromisoformat(day)).days,
                     "factor": self._factors[symbol][day], "spot": prepared["spot"],
                     "items": items, "projection": projection, "method_fitted": forecast["fitted"]})
+                if "cdf_noise_raised" in projection:
+                    # Kept beside the projection (which the books drop) so a repaired row stays traceable.
+                    metadata[-1]["cdf_noise_raised"] = projection["cdf_noise_raised"]
                 if self.pairs is not None:
                     metadata[-1]["pair_id"] = self._pair(symbol, day, expiry)
         result = groups, metadata, refusals
         # Keep only the latest date; past weekly matrices can be recomputed.
         self._prepared_cache = {day: result}
         return result
+
+    def _group_scale(self, method, group, meta):
+        """Return the group's W1 scale: the spot, or the spot x the row's reference_scale when asked."""
+        if "radius_scale" not in method:
+            return group["scale"]
+        context = self._contexts[meta["symbol"]][meta["decision_date"], meta["expiry"]]
+        return group["scale"]*float(context["reference_scale"])
 
     def _limits(self, account, method, components):
         """Use one remaining-headroom policy at decision and next-session fill."""
@@ -1943,7 +1961,7 @@ class WeeklyOptionPortfolioStudy:
             reserve = self._floor(max(0., loss, -credit), charge or self._charge({}), legs, mult)
             if not math.isfinite(reserve) or abs(reserve-selection["reserves"][i]) > .001:
                 raise ValueError("selected physical-domain reserve parity failed")
-            books.append({k: v for k, v in meta.items() if k not in ("items", "projection")})
+            books.append({k: v for k, v in meta.items() if k not in ("items", "projection", "cdf_noise_raised")})
             books[-1].update(legs=legs, credit=credit, reserve=reserve, max_loss=loss,
                             contracts=count, expected=selection["group_values"][i],
                             strategy=classify_option_strategy(signed, strikes),
@@ -2160,9 +2178,9 @@ class WeeklyOptionPortfolioStudy:
             if isinstance(quotes, _SQLiteQuoteView):
                 quotes.close(verify=verify)
 
-    def _method(self, method, progress, *, recorded=None, events=None):
+    def _method(self, method, progress, *, recorded=None, derived=None, events=None):
         self._verify_quote_indexes()
-        result = self._method_impl(method, progress, recorded=recorded, events=events)
+        result = self._method_impl(method, progress, recorded=recorded, derived=derived, events=events)
         self._verify_quote_indexes()
         return result
 
@@ -2195,9 +2213,9 @@ class WeeklyOptionPortfolioStudy:
         finally:
             self.close_quote_indexes(verify=True)
 
-    def _method_impl(self, method, progress, *, recorded=None, events=None):
+    def _method_impl(self, method, progress, *, recorded=None, derived=None, events=None):
         """Consume the same lifecycle with its existing MIO decision provider."""
-        steps = self._method_steps(method, progress, recorded=recorded, events=events)
+        steps = self._method_steps(method, progress, recorded=recorded, derived=derived, events=events)
         try:
             next(steps)
         except StopIteration as done:
@@ -2206,17 +2224,26 @@ class WeeklyOptionPortfolioStudy:
             steps.close()
         raise RuntimeError("MIO lifecycle unexpectedly requested policy input")
 
-    def _method_steps(self, method, progress, *, recorded=None, events=None, policy=False):
-        """Advance one account, suspending only for an external policy decision."""
+    def _method_steps(self, method, progress, *, recorded=None, derived=None, events=None, policy=False):
+        """Advance one account, suspending only for an external policy decision.
+
+        ``recorded`` replays a complete result of this host exactly;
+        ``derived`` consumes a foreign worker's integer actions (``method``,
+        ``weeks`` and ``decisions``: date to ``{"actions", "certificates"}``)
+        through ``TransportPortfolioSolve.derived`` so every valuation is this
+        host's own. The two are exclusive.
+        """
         import copy
         from dskit.pipeline.libs.option_ledger import FundedOptionAccount
-        from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+        from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
 
         p = self.params
         defects = TransportPortfolioSolve.validate_params(p["solver"])
         if defects:
             raise ValueError("; ".join(defects))
-        recorded_decisions = None
+        if recorded is not None and derived is not None:
+            raise ValueError("recorded replay and derived actions are exclusive")
+        recorded_decisions = derived_decisions = None
         if recorded is not None:
             import json
             json.dumps(recorded, allow_nan=False)
@@ -2225,6 +2252,18 @@ class WeeklyOptionPortfolioStudy:
                     or [d.get("date") for d in recorded["decisions"]] != self.weeks):
                 raise ValueError("recorded method or decision calendar differs")
             recorded_decisions = {d["date"]: d for d in recorded["decisions"]}
+        if derived is not None:
+            import json
+            json.dumps(derived, allow_nan=False)
+            if (not isinstance(derived, dict) or set(derived) != {"method", "weeks", "decisions"}
+                    or derived["method"] != method["id"] or derived["weeks"] != self.weeks
+                    or not isinstance(derived["decisions"], dict)
+                    or any(day not in self.weeks or not isinstance(entry, dict)
+                           or set(entry) != {"actions", "certificates"}
+                           for day, entry in derived["decisions"].items())):
+                raise ValueError("derived method or decision calendar differs")
+            derived_decisions = dict(derived["decisions"])
+        consumed = set()
         account = FundedOptionAccount(
             p["initial"], p["deposit"], p["deposit_every_days"], self.calendar[0],
             deposit_end_before=self.clocks["entry_end_before"] if self.clocks else None)
@@ -2263,6 +2302,11 @@ class WeeklyOptionPortfolioStudy:
                           "eligible_by_symbol": dict(Counter(m["symbol"] for m in metadata)),
                           "refusals": refusals, "components": components, "funding": account.funding,
                           "open_reserve": sum(b["reserve"] for b in account.open.values())}
+                repaired = {m["id"]: m["cdf_noise_raised"] for m in metadata if "cdf_noise_raised" in m}
+                if repaired:
+                    # Only a repaired week carries the key, so a monotone forecast's record is unchanged.
+                    record["cdf_noise_repaired"] = {"rows": len(repaired), "largest": max(repaired.values()),
+                                                    "raised": repaired}
                 if self.pairs is not None:
                     record["eligible_by_pair"] = dict(Counter(m["pair_id"] for m in metadata))
                     record["fitted"] = sum(bool(m["method_fitted"]) for m in metadata)
@@ -2293,7 +2337,7 @@ class WeeklyOptionPortfolioStudy:
                 else:
                     mult = p["bridge"]["solver"]["multiplier"]
                     risk = self._risk_charge(method)
-                    configured = [{**g, "radius": method["rho"],
+                    configured = [{**g, "radius": method["rho"], "scale": self._group_scale(method, g, meta),
                                    "reserve_rows": g["reserve_rows"]
                                    + self._charge_coefficients(charge, meta["items"], mult),
                                    **({} if risk is None else {"risk_charge": dict(risk)})}
@@ -2318,6 +2362,21 @@ class WeeklyOptionPortfolioStudy:
                         quantities = yield copy.deepcopy(request)
                         selection = scorer.evaluate(quantities)
                         record["decision_source"] = "policy"
+                    elif derived_decisions is not None:
+                        if day not in derived_decisions:
+                            raise ValueError("derived actions lack an eligible week: "+day)
+                        claimed = derived_decisions[day]
+                        consumed.add(day)
+                        try:
+                            selection = solver.derived(program, claimed["actions"],
+                                                       claimed["certificates"])["selection"]
+                        except QuoteIndexIntegrityError:
+                            raise
+                        except Exception as exc:  # name the week of any refusal, typed or not
+                            if not isinstance(exc, RecordedCheckRefusal):
+                                exc = RecordedCheckRefusal(str(exc), "derived_actions", "other")
+                            exc.week = day
+                            raise exc
                     elif recorded_decisions is None:
                         selection = solver.run(None, program)["selection"]
                     else:
@@ -2380,6 +2439,8 @@ class WeeklyOptionPortfolioStudy:
                         "provisional": True})
         if pending is not None:
             raise ValueError("unprocessed order at study end")
+        if derived_decisions is not None and set(derived_decisions) != consumed:
+            raise ValueError("derived actions for an ineligible week")
         result = self._finish(method, account, decisions, rejected, snapshots)
         if events is not None:
             for point in result["curve"]:
@@ -2442,9 +2503,92 @@ class MIOPacketPlan(StudyNode):
 
 
 class MIOPacketStudy(StudyNode):
-    """Run every fixed method and independently replay its accounting evidence."""
+    """Run every fixed method and independently replay its accounting evidence.
 
+    Parameters
+    ----------
+    params : dict
+        ``study`` (the executable study) and optional ``recorded`` (null or
+        an absolute directory of worker action files, one
+        ``<method_id>.json`` plus its ``.sha256`` sidecar per method, as
+        ``index_options.mio_worker.MIOMethodWorker`` writes them). A
+        recorded method is re-derived here from its integer actions and then
+        replayed exactly like a local solve; any refusal falls back to the
+        local solve and is logged as ``recorded_rejected``.
+
+    Examples
+    --------
+    Run the packet with every method solved locally::
+
+        node = MIOPacketStudy("study", {"study": study})
+        out = node.run(ctx, {"permit": permit, "bounded_inputs": bounded, "provenance": provenance})
+    """
+
+    _PARAMS = ("study", "recorded")
+    #: The action-file format this node accepts (pinned by the worker's writer).
+    RECORDED_FORMAT = "mio-method-actions-v1"
     outputs = ("results", "audit")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Refuse unknown params and a ``recorded`` that is not null or an absolute directory."""
+        import os
+
+        errors = super().validate_params(params)
+        recorded = params.get("recorded")
+        if recorded is not None and (not isinstance(recorded, str) or not os.path.isabs(recorded)):
+            errors.append("recorded must be null or an absolute directory")
+        return errors
+
+    @staticmethod
+    def scrub(text):
+        """Replace every number in a refusal message with ``#`` so a logged event carries no value."""
+        import re
+
+        return re.sub(r"[-+]?\$?\d[\d,]*(\.\d+)?([eE][-+]?\d+)?", "#", text)
+
+    def _recorded_actions(self, method, plan, bounded):
+        """Load one worker action file, or None when the method has none; refuse any drift."""
+        import hashlib
+        import json
+        from pathlib import Path
+        from dskit.pipeline.libs.pyomo import RecordedCheckRefusal
+        from .observations import MIOPacketInputs
+
+        def refuse(message, check):
+            return RecordedCheckRefusal(message, check, "file")
+
+        path = Path(self.params["recorded"]) / (method["id"] + ".json")
+        if not path.is_file():
+            return None
+        raw = path.read_bytes()
+        sidecar = Path(str(path) + ".sha256")
+        parts = sidecar.read_text().split() if sidecar.is_file() else []
+        if not parts or parts[0] != hashlib.sha256(raw).hexdigest():
+            raise refuse("recorded action file sidecar digest mismatch", "sidecar_digest")
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except ValueError as exc:
+            raise refuse("recorded action file is not JSON: "+type(exc).__name__, "action_file_schema") from exc
+        study = self.params["study"]
+        required = {"format", "method", "attempt", "host", "bundle_manifest_sha256", "plan_sha256",
+                    "study_sha256", "portable_inputs_sha256", "dependencies", "actions",
+                    "result_sha256", "seconds", "timeouts"}
+        if not isinstance(body, dict) or set(body)-{"unit"} != required:
+            raise refuse("recorded action file schema differs", "action_file_schema")
+        if body["format"] != self.RECORDED_FORMAT or body["method"] != method["id"]:
+            raise refuse("recorded action file names another format or method", "action_file_identity")
+        if body["plan_sha256"] != plan["sha256"]:
+            raise refuse("recorded plan digest differs", "plan_digest")
+        if body["study_sha256"] != MIOPacketInputs.portable_study_sha256(study):
+            raise refuse("recorded study identity differs", "study_identity")
+        if body["dependencies"] != study["dependencies"]:
+            raise refuse("recorded dependency pins differ", "dependency_pins")
+        if body["portable_inputs_sha256"] != MIOPacketInputs.portable_inputs_sha256(bounded):
+            raise refuse("recorded bounded inputs differ", "bounded_inputs")
+        origin = {"sha256": hashlib.sha256(raw).hexdigest(), "host": body["host"],
+                  "attempt": body["attempt"], "bundle_manifest_sha256": body["bundle_manifest_sha256"]}
+        return body["actions"], origin
 
     @staticmethod
     def validate_indexed_inputs(study, bounded, plan, artifact_root=None):
@@ -2556,6 +2700,7 @@ class MIOPacketStudy(StudyNode):
     def run(self, ctx, inputs):
         """Run one authenticated packet and independently replay its results."""
         import json
+        from dskit.pipeline.libs.pyomo import RecordedCheckRefusal
 
         plan, registry, permit, bounded, provenance, params = self.validate_intake(ctx, inputs)
         d = self.params["study"]["domain"]
@@ -2568,25 +2713,64 @@ class MIOPacketStudy(StudyNode):
                 {"packet_id": packet_id, "phase": "provisional", "publication": "pending",
                  "provisional": True, **payload},
                 separators=(",", ":"), sort_keys=True))
+        recorded_from, rejections = {}, []
         for method in params["methods"]:
             event({"type": "method_start", "method": method["id"]})
             try:
                 progress = lambda mid, done, total, status: self.log.info(
                     "MIO method %s week %d/%d: %s", mid, done, total, status)
-                result = study._method(method, progress, events=event)
-                replay_study = WeeklyOptionPortfolioStudy(params, bounded["inputs"],
-                                                         adjustments=bounded.get("adjustments"))
-                try:
-                    replay = replay_study._method(method, None, recorded=result)
-                    replay_study.close_quote_indexes(verify=True)
-                finally:
-                    if any(type(q).__name__ == "_SQLiteQuoteView" for q in replay_study._quotes.values()):
+                def reject(exc):
+                    # The structured fields (method, week, check, category, ratio) carry no value: the ratio is a
+                    # miss over its tolerance. They go to the log and to the audit, which the coordinator reads.
+                    fields = {"method": method["id"], **RecordedCheckRefusal.describe(exc)}
+                    event({"type": "recorded_rejected", **fields,
+                           "error": type(exc).__name__+": "+self.scrub(str(exc))})
+                    rejections.append(fields)
+
+                def replayed(result):
+                    replay_study = WeeklyOptionPortfolioStudy(params, bounded["inputs"],
+                                                             adjustments=bounded.get("adjustments"))
+                    try:
+                        replay = replay_study._method(method, None, recorded=result)
+                        replay_study.close_quote_indexes(verify=True)
+                    except (QuoteIndexIntegrityError, RecordedCheckRefusal):
+                        raise
+                    except ValueError as exc:  # the exact replay refused the file's result
+                        raise RecordedCheckRefusal(str(exc), "decision_replay", "replay") from exc
+                    finally:
+                        if any(type(q).__name__ == "_SQLiteQuoteView" for q in replay_study._quotes.values()):
+                            try:
+                                replay_study.close_quote_indexes()
+                            except Exception:
+                                pass
+                    if replay != result:
+                        raise RecordedCheckRefusal("recorded decision replay mismatch", "decision_replay", "replay")
+
+                result, origin = None, None
+                if self.params.get("recorded") is not None:
+                    try:
+                        found = self._recorded_actions(method, plan, bounded)
+                    except Exception as exc:  # any malformed worker file: this method is solved locally
+                        found = None
+                        reject(exc)
+                    else:
+                        if found is None:
+                            event({"type": "recorded_absent", "method": method["id"]})
+                    if found is not None:
                         try:
-                            replay_study.close_quote_indexes()
-                        except Exception:
-                            pass
-                if replay != result:
-                    raise ValueError("recorded decision replay mismatch")
+                            result = study._method(method, progress, derived=found[0], events=event)
+                            replayed(result)
+                            origin = found[1]
+                        except QuoteIndexIntegrityError:
+                            raise
+                        except Exception as exc:  # a worker file never fails the packet: fall back to a local solve
+                            reject(exc)
+                            result = None
+                if result is None:
+                    result = study._method(method, progress, events=event)
+                    replayed(result)
+                if origin is not None:
+                    recorded_from[method["id"]] = origin
                 event({"type": "replay_verified", "method": method["id"]})
                 results.append({"id": method["id"], "status": "completed",
                                 "result": result, "replay_parity": True})
@@ -2595,7 +2779,7 @@ class MIOPacketStudy(StudyNode):
                     study.close_quote_indexes()
                     raise
                 event({"type": "method_failed", "method": method["id"],
-                       "error": type(exc).__name__+": "+str(exc)})
+                       "error": type(exc).__name__+": "+self.scrub(str(exc))})
                 results.append({"id": method["id"], "status": "failed",
                                 "error": type(exc).__name__+": "+str(exc), "replay_parity": False})
         study._verify_quote_indexes()
@@ -2607,6 +2791,14 @@ class MIOPacketStudy(StudyNode):
                  "research_only": True, "american_assignment_unmodeled": True}
         if "corporate_actions" in d["sources"]:
             audit["adjustments_sha256"] = provenance["adjustments_sha256"]
+        from .mio_contract import MIOStudyContract
+        tail, capped = MIOStudyContract.settlement_tail(self.params["study"])
+        if capped:
+            audit["tail_capped_at"] = tail  # ADR-0297: the owner's 2023Q4 cap applied to this packet
+        if self.params.get("recorded") is not None:
+            audit["recorded_from"] = {k: recorded_from[k] for k in sorted(recorded_from)}
+            if rejections:  # only a rejecting packet carries the key; the coordinator reads it (no economics)
+                audit["recorded_rejections"] = rejections
         registry.bind(plan, permit, "execution",
                       {"results": results, "audit": audit, "provenance": provenance})
         return {"results": results, "audit": audit}
@@ -2706,7 +2898,7 @@ class MIOPacketCompare(StudyNode):
                     row["timeouts"] = sum(d["status"] == "timeout_skipped" for d in result["decisions"])
                     row["decisions"] = [{k: v for k, v in decision.items() if k in {
                         "date", "status", "candidate_books", "candidate_contracts", "eligible_by_pair",
-                        "eligible_by_symbol", "fitted", "fallback", "refusals"}} for decision in result["decisions"]]
+                        "eligible_by_symbol", "fitted", "fallback", "refusals", "cdf_noise_repaired"}} for decision in result["decisions"]]
                     row["net_pnl"] = result["pnl"]
                     row["skips"] = dict(Counter(d["status"] for d in result["decisions"]
                                                if d["status"] not in {"selected", "cash"}))

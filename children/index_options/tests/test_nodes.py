@@ -2300,6 +2300,23 @@ def test_cdf_quote_condor_wires_next_session_raw_nbbo_to_ledger():
     assert booked["trades"][0]["pnl_usd"] == pytest.approx(497.4)
 
 
+def test_cdf_quote_condor_run_still_skips_a_rounding_dip_that_only_mio_forgives():
+    """The cleanup belongs to MIO's own read path (``_prepare(cdf_noise=...)``); the legacy ``run`` is unchanged."""
+    from index_options.nodes import CDFQuoteCondorSelect
+
+    params, inputs = _cdf_quote_fixture()
+    inputs["forecasts"][0]["method_cdf_z0"] = inputs["forecasts"][0]["method_cdf_m1"]-5e-10
+    out = CDFQuoteCondorSelect("bridge", params).run(None, inputs)
+    assert out["orders"] == [] and out["summary"]["refused"]["incoherent method CDF"] == 1
+    node = CDFQuoteCondorSelect("bridge", params)
+    quotes = [r for r in inputs["chain"] if r["date"] == "2019-01-02" and r["expiration"] == "2019-02-01"]
+    args = (inputs["forecasts"][0], inputs["contexts"][0], "2019-01-02", "2019-02-01", quotes, {"2019-01-02": .25})
+    with pytest.raises(ValueError, match="incoherent method CDF"):
+        node._prepare(*args)
+    solver_context, evidence = node._prepare(*args, cdf_noise=CDFQuoteCondorSelect.CDF_NOISE)
+    assert evidence["cdf_noise_raised"] == pytest.approx(5e-10, rel=1e-3)
+
+
 @pytest.mark.parametrize("change,reason", [("missing_fill", "missing_fill_quote"),
                                            ("split_on_expiry", "basis_change")])
 def test_cdf_quote_condor_refuses_unfillable_or_split_crossing_trade(change, reason):

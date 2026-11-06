@@ -2,8 +2,11 @@
 
 import copy
 import csv
+import hashlib
 import json
+import logging
 import math
+import re
 from datetime import date, timedelta
 
 from dskit.pipeline.base import value_hash
@@ -19,6 +22,10 @@ __all__ = ["MIOStudyContract", "OptionPolicyStudyContract", "OptionPolicyFeasibi
 
 
 _DIMENSIONS_MEMORY_MAX = 5 * 1024**3
+#: Owner ruling 2026-11-05 (ADR-0297, amending ADR-0293's "do not truncate 2023Q4"): a packet that ends by
+#: this date never reads a settlement date on or after it. It is the ONLY boundary a tail is capped at.
+OWNER_TAIL_CAP = "2024-01-01"
+_LOG = logging.getLogger(__name__)
 
 
 def dimensions_memory_cap_bytes():
@@ -213,6 +220,38 @@ class MIOStudyContract(StudyContract):
         return next(p for p in study["packets"] if p["id"] == study["selected_packet"])
 
     @staticmethod
+    def settlement_tail(study):
+        """Return ``(tail_before, capped)``: the settlement read tail and whether the owner cap applied.
+
+        The tail is the packet end plus the longest pair maturity and padding and may not pass the
+        document's own ``protected_end_before``. The ONLY case that is capped instead of refused is the
+        owner's 2023Q4 ruling (2026-11-05): a boundary of exactly ``OWNER_TAIL_CAP`` (options expiring
+        before 2024-01-01). A tail equal to the boundary is not capped. Under a later boundary, a packet
+        whose tail would reach the cap refuses.
+
+        Raises
+        ------
+        ValueError
+            The packet reaches protected data, or its tail does and the boundary is not the owner cap, or
+            the tail would read past the owner cap under a later boundary.
+        """
+        d, packet = study["domain"], MIOStudyContract.packet(study)
+        protected = d["params"]["bridge"]["protected_end_before"]
+        maximum = max(x["dte_max"] for x in d["pairs"])
+        end = packet["end_before"]
+        tail = (date.fromisoformat(end)+timedelta(days=maximum+d["tail_padding_days"])).isoformat()
+        if end > protected:
+            raise ValueError("packet reaches protected data")
+        if tail > protected:
+            if protected != OWNER_TAIL_CAP:
+                raise ValueError("derived settlement tail reaches protected data")
+            return protected, True
+        if end <= OWNER_TAIL_CAP < tail:
+            raise ValueError("a packet whose settlement tail reaches "+OWNER_TAIL_CAP
+                             + " needs protected_end_before no later than that date")
+        return tail, False
+
+    @staticmethod
     def selection(study):
         """Verify the selection run/artifact and its forecast/training identities."""
         d = study["domain"]
@@ -234,6 +273,11 @@ class MIOStudyContract(StudyContract):
             return MIOStudyContract._pinned_selection(study, selection)
         if selection.get("policy") == "owner_selected_saved_zoo_outputs":
             return MIOStudyContract._owner_selected_selection(study, selection)
+        if selection.get("policy") == "owner_selected_fixed_forecasts":
+            try:
+                return MIOStudyContract._fixed_selection(study, selection)
+            except (KeyError, TypeError, AttributeError, IndexError) as error:
+                raise ValueError("malformed fixed-forecast evidence") from error
         if set(selection) != {"run_dir", "document_hash", "node", "port", "sha256"}:
             raise ValueError("bound model-zoo selection receipt required")
         run = RunAttestation(selection["run_dir"])
@@ -748,19 +792,22 @@ class MIOStudyContract(StudyContract):
     @staticmethod
     def _stitched_sources(study, source, receipt):
         """Bind the prepared forecast/context files to the same receipt manifest."""
-        d = study["domain"]
         stitched = receipt["stitched"]
         if not isinstance(stitched, dict) or set(stitched) != {"forecast", "context"}:
             raise ValueError("stitched forecast/context pins required")
         for role, name in (("forecasts", "forecast"), ("contexts", "context")):
-            item = stitched[name]
-            binding = d["sources"][role]
-            relpath = binding["files"]["shared"]
-            digest = binding["pin"]["files"].get(relpath)
-            if (not isinstance(item, dict) or set(item) != {"relpath", "sha256"}
-                    or item != {"relpath": relpath, "sha256": digest}
-                    or source.pin["files"].get(relpath) != digest):
+            if stitched[name] != MIOStudyContract._shared_file(study, source, role):
                 raise ValueError("stitched source does not match receipt manifest")
+
+    @staticmethod
+    def _shared_file(study, source, role):
+        """Return one role's shared file and digest, bound to the same manifest as the receipt."""
+        binding = study["domain"]["sources"][role]
+        relpath = binding["files"]["shared"]
+        digest = binding["pin"]["files"].get(relpath)
+        if source.pin["files"].get(relpath) != digest:
+            raise ValueError("stitched source does not match receipt manifest")
+        return {"relpath": relpath, "sha256": digest}
 
     #: The accepted M53 producer method: a rolling quantile average with dispersion buckets.
     PINNED_SAVED_METHOD = {"by": "disp", "components": ["model", "market_cal", "pooled", "baseline"],
@@ -914,6 +961,215 @@ class MIOStudyContract(StudyContract):
         MIOStudyContract._pinned_training(source, receipt)
         return receipt
 
+    #: What a fixed-forecast document must say about its choice. The owner approved this forecast type
+    #: (PLAN.md 2026-11-05 ~15:10); it won a score-ranked zoo and HPO picks its values, so it is NOT the
+    #: "owner_selected_no_score_ranking" of the other policies.
+    FIXED_SELECTION_BASIS = "owner_approved_fixed_loc_after_score_ranked_zoo_and_hpo"
+    #: The first quarter of the 2020+ run. Its folds count 2 from 2020Q1 on (the builder's ``FOLD_2020Q1``).
+    FIXED_FIRST_QUARTER = (2020, 1)
+    FIXED_FIRST_FOLD = 2
+    #: The one 2019 quarter MIO may read (owner, PLAN.md 2026-11-05 ~17:15 and ~17:55: 2019Q4 is a selection
+    #: quarter; 2019Q1 to Q3 are not forecast). The builder numbers 2019 after the 2020+ folds, from
+    #: ``FOLD_2019Q1`` = 26, so 2019Q4 is fold 29. The HPO tuned on 2019, so these receipts carry
+    #: ``tuning_disclosure`` and no other quarter's may.
+    FIXED_2019_FOLDS = {(2019, 4): 29}
+    FIXED_TUNED_YEAR = 2019
+    _FIXED_AVERAGES = ("linear_pool", "quantile_average")
+    _FIXED_RECEIPT_KEYS = {"schema", "quarter", "bridge_fold", "forecast_window", "label_cutoff", "recipe",
+                           "recipe_sha256", "fit_document_sha256", "panel_sha256", "fold_table_sha256",
+                           "fit_manifest_sha256", "forecasts_sha256", "contexts_sha256", "device", "hardware",
+                           "synthetic", "ticker_lock_sha256", "rows", "expected_names", "missing_names",
+                           "owner_name_exceptions", "coverage_note", "seed_average_status",
+                           "evaluation_computed", "z_grid", "grid_labels", "code_commit"}
+    #: Keys a receipt may add: the builder's second grid, and the tuned-year disclosure.
+    _FIXED_OPTIONAL_KEYS = {"fine_grid", "tuning_disclosure"}
+
+    @staticmethod
+    def _fixed_selection(study, selection):
+        """Bind one quarter's hash-pinned forecast files to the document (ADR-0297).
+
+        The receipt is ``quarterly-forecast/v1``. Downstream reads a CDF per row and needs no blend
+        knowledge, so no producer run is attested here: the document pins the recipe, the snapshot pins
+        the bytes, and the checks below bind them to the packet. Only identity and date columns of the
+        forecast files are decoded, never a CDF value.
+        """
+        if (set(selection) != {"policy", "receipt", "recipe_sha256", "selection_basis"}
+                or selection["selection_basis"] != MIOStudyContract.FIXED_SELECTION_BASIS):
+            raise ValueError("explicit fixed-forecast selection required")
+        source, receipt = MIOStudyContract._receipt_source(
+            study, {k: selection[k] for k in ("policy", "receipt")})
+        if (not isinstance(receipt, dict) or receipt.get("schema") != "quarterly-forecast/v1"
+                or set(receipt)-MIOStudyContract._FIXED_OPTIONAL_KEYS != MIOStudyContract._FIXED_RECEIPT_KEYS):
+            raise ValueError("quarterly forecast receipt schema or fields differ")
+        if receipt["synthetic"] is not False:
+            raise ValueError("forecast receipt comes from a synthetic builder run")
+        commit = receipt["code_commit"]
+        if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
+            raise ValueError("forecast receipt code_commit must be the builder's clean-tree commit")
+        if receipt["evaluation_computed"] is not False:
+            raise ValueError("forecast receipt says evaluation_computed: it must be false")
+        fold, start, end = MIOStudyContract._fixed_quarter(receipt["quarter"])
+        tuned = int(receipt["quarter"][:4]) == MIOStudyContract.FIXED_TUNED_YEAR
+        disclosure = receipt.get("tuning_disclosure")
+        if tuned != ("tuning_disclosure" in receipt) or (tuned and (not isinstance(disclosure, str) or not disclosure)):
+            raise ValueError("a tuned-year forecast receipt must carry its tuning_disclosure, and no other may")
+        window = receipt["forecast_window"]
+        if (window != {"start": start, "end_before": end} or type(receipt["bridge_fold"]) is not int
+                or receipt["bridge_fold"] != fold):
+            raise ValueError("receipt quarter, bridge fold and forecast window must agree")
+        if receipt["label_cutoff"] != start:
+            raise ValueError("forecast label cutoff is not the quarter start")
+        packet, bridge = MIOStudyContract.packet(study), study["domain"]["params"]["bridge"]
+        if type(bridge["fold"]) is not int or bridge["fold"] != fold:
+            raise ValueError("forecast fold differs from the document's bridge fold")
+        if not start <= MIOStudyContract._date(packet["start"]) < MIOStudyContract._date(packet["end_before"]) <= end:
+            raise ValueError("forecast window does not cover the packet")
+        protected = MIOStudyContract._date(bridge["protected_end_before"])
+        if end > protected or packet["end_before"] > protected:
+            raise ValueError("forecast window or packet reaches protected_end_before")
+        if packet["purpose"] not in {"development", "adaptation", "confirmation"}:
+            raise ValueError("forecast packet purpose is not nonsealed")
+        MIOStudyContract._fixed_recipe(receipt, selection["recipe_sha256"])
+        leaf, forecasts_sha256 = MIOStudyContract._fixed_grid(receipt, bridge)
+        MIOStudyContract._fixed_names(study, receipt)
+        files = {"forecasts": leaf, "contexts": "contexts.parquet"}
+        for role, leaf in files.items():
+            files[role] = MIOStudyContract._shared_file(study, source, role)["relpath"]
+            if files[role] != f"{receipt['quarter']}/{leaf}":
+                raise ValueError("forecast file belongs to another quarter")
+        if selection["receipt"]["file"] != f"{receipt['quarter']}/receipt.json":
+            raise ValueError("forecast receipt file belongs to another quarter")
+        coarse = f"{receipt['quarter']}/forecasts.parquet"
+        if (forecasts_sha256 != source.pin["files"].get(files["forecasts"])
+                or receipt["forecasts_sha256"] != source.pin["files"].get(coarse)
+                or receipt["contexts_sha256"] != source.pin["files"].get(files["contexts"])):
+            raise ValueError("receipt digests differ from the pinned forecast files")
+        MIOStudyContract._fixed_rows(source, files, receipt, bridge)
+        return receipt
+
+    #: The builder's second grid: its own file, and the only keys its receipt record may carry.
+    FIXED_FINE_FILE = "forecasts-fine.parquet"
+    _FIXED_FINE_KEYS = {"file", "sha256", "z_grid", "grid_labels", "seed_average", "scored"}
+
+    @staticmethod
+    def _fixed_grid(receipt, bridge):
+        """Return ``(forecast file leaf, its digest)`` for the grid the document declares.
+
+        The receipt's own grid binds ``forecasts.parquet``. A document that declares the builder's second
+        (finer, output-only) grid binds ``forecasts-fine.parquet`` instead, and only when the receipt's
+        ``fine_grid`` record says exactly what that file is: its name, the grid and labels the document
+        declares, the recipe's own seed average, never scored, over the same span and holding every point of
+        the scored grid. Any other grid refuses.
+        """
+        grid, labels = bridge["z_grid"], bridge["grid_labels"]
+        if receipt["z_grid"] == grid and receipt["grid_labels"] == labels:
+            return "forecasts.parquet", receipt["forecasts_sha256"]
+        fine = receipt.get("fine_grid")
+        if (not isinstance(fine, dict) or fine.get("z_grid") != grid or fine.get("grid_labels") != labels):
+            raise ValueError("MIO probability grid differs from the forecast grid")
+        points, coarse = fine["z_grid"], receipt["z_grid"]
+        if (set(fine) != MIOStudyContract._FIXED_FINE_KEYS or fine["file"] != MIOStudyContract.FIXED_FINE_FILE
+                or fine["scored"] is not False or fine["seed_average"] != receipt["recipe"]["average"]
+                or not isinstance(fine["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", fine["sha256"])
+                or not isinstance(points, list) or not isinstance(coarse, list) or len(points) < 2
+                or any(type(z) not in (int, float) or isinstance(z, bool) for z in points)
+                or any(a >= b for a, b in zip(points, points[1:]))
+                or points[0] != coarse[0] or points[-1] != coarse[-1] or not set(coarse) <= set(points)
+                or not isinstance(labels, list) or len(labels) != len(points) or len(set(labels)) != len(labels)):
+            raise ValueError("receipt fine_grid record does not describe a finer grid over the scored span")
+        return fine["file"], fine["sha256"]
+
+    @staticmethod
+    def _fixed_quarter(name):
+        """Return ``(fold, start, end_before)`` of a quarter name; only 2019Q4 and 2020Q1 through 2023Q4 pass."""
+        match = re.fullmatch(r"(\d{4})Q([1-4])", name) if isinstance(name, str) else None
+        if match is None:
+            raise ValueError("forecast quarter name required")
+        year, number = int(match.group(1)), int(match.group(2))
+        first_year, first_number = MIOStudyContract.FIXED_FIRST_QUARTER
+        start = date(year, 3*number-2, 1)
+        end = date(year+1, 1, 1) if number == 4 else date(year, 3*number+1, 1)
+        tuned_fold = MIOStudyContract.FIXED_2019_FOLDS.get((year, number))
+        if ((year, number) < MIOStudyContract.FIXED_FIRST_QUARTER and tuned_fold is None
+                or end.isoformat() > OWNER_TAIL_CAP):
+            raise ValueError("forecast quarter is outside the quarters MIO may read")
+        fold = tuned_fold or MIOStudyContract.FIXED_FIRST_FOLD+4*(year-first_year)+number-first_number
+        return fold, start.isoformat(), end.isoformat()
+
+    @staticmethod
+    def _fixed_recipe(receipt, pinned):
+        """Bind the receipt's recipe to the document's pin; any number of distinct seeds averages."""
+        recipe = receipt["recipe"]
+        if receipt["recipe_sha256"] != pinned or value_hash(recipe) != pinned:
+            raise ValueError("forecast recipe differs from the document's recipe pin")
+        seeds = recipe["seeds"]
+        if (recipe["kind"] != "fixed_loc" or recipe["average"] not in MIOStudyContract._FIXED_AVERAGES
+                or not isinstance(seeds, list) or not seeds or any(type(s) is not int for s in seeds)
+                or len(set(seeds)) != len(seeds)):
+            raise ValueError("forecast recipe must be fixed_loc with distinct integer seeds and a known average")
+
+    @staticmethod
+    def _fixed_names(study, receipt):
+        """Require the locked list (A0009): in the document, and partitioned by the receipt."""
+        from . import ticker_lock
+
+        lock = ticker_lock.TickerLock.load(ticker_lock.DEFAULT_LOCK)
+        lock.check({"symbols": study["domain"]["params"]["symbols"]})
+        expected, missing = receipt["expected_names"], receipt["missing_names"]
+        if (not isinstance(expected, list) or not isinstance(missing, list)
+                or sorted([*expected, *missing]) != sorted(lock.symbols)):
+            raise ValueError("forecast names do not partition the locked ticker list")
+        with open(ticker_lock.DEFAULT_LOCK, "rb") as handle:
+            if receipt["ticker_lock_sha256"] != hashlib.sha256(handle.read()).hexdigest():
+                raise ValueError("forecasts were built on another ticker lock file")
+        exceptions = receipt["owner_name_exceptions"]
+        if not isinstance(exceptions, dict) or not set(exceptions) <= set(missing):
+            raise ValueError("ticker exceptions must be missing names of the lock")
+
+    @staticmethod
+    def _fixed_rows(source, files, receipt, bridge):
+        """Verify both pinned files and their identity and date columns; no CDF value is decoded."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        from dskit.pipeline.libs.cdf_experiment import CDFExperiment, IntegrityError
+
+        identity = ["symbol", "quote_date", "expiry", "fold", "band"]
+        schemas = {"forecasts": {*identity, "fitted", *("method_cdf_"+label for label in bridge["grid_labels"])},
+                   "contexts": {*identity, "spot", "reference_scale", "settlement_date"}}
+        read = {"forecasts": [*identity, "fitted"], "contexts": [*identity, "settlement_date"]}
+        window, frames = receipt["forecast_window"], {}
+        for role, relative in files.items():
+            path = source.file(relative, verify=True)
+            schema = pq.read_schema(path)
+            if set(schema.names) != schemas[role]:
+                raise ValueError(f"forecast {role} columns differ from the contract")
+            dates = [c for c in read[role] if c in ("quote_date", "expiry", "settlement_date")]
+            if not all(pa.types.is_string(schema.field(c).type) or pa.types.is_large_string(schema.field(c).type) for c in dates):
+                raise ValueError("canonical string date columns required")
+            frame = frames[role] = pq.read_table(path, columns=read[role]).to_pandas()
+            if frame.isna().any().any():
+                raise ValueError("null in a forecast identity or date column")
+            if not all(frame[c].str.fullmatch(r"\d{4}-\d{2}-\d{2}").all() for c in dates):
+                raise ValueError("canonical string date columns required")
+            if any((frame[c] >= OWNER_TAIL_CAP).any() for c in dates):
+                raise ValueError("forecast file holds a row at or past "+OWNER_TAIL_CAP)
+            if not frame["quote_date"].between(window["start"], window["end_before"], inclusive="left").all():
+                raise ValueError("forecast row is quoted outside the forecast window")
+            if not frame["fold"].eq(receipt["bridge_fold"]).all():
+                raise ValueError("forecast row fold differs from the receipt")
+            if not frame["band"].eq("val").all():
+                raise ValueError("forecast row band is not val")
+            if type(receipt["rows"]) is not int or receipt["rows"] < 1 or len(frame) != receipt["rows"]:
+                raise ValueError("forecast rows differ from the receipt")
+            if set(frame["symbol"]) != set(receipt["expected_names"]):
+                raise ValueError("forecast rows name other tickers than the receipt expects")
+        if frames["forecasts"]["fitted"].dtype != bool or not frames["forecasts"]["fitted"].all():
+            raise ValueError("every forecast row must be fitted")
+        try:
+            CDFExperiment.check_pairing(frames["forecasts"], frames["contexts"], identity)
+        except IntegrityError as error:
+            raise ValueError("forecast and context row pairing differs") from error
+
     @staticmethod
     def _pinned_training(source, receipt):
         """Bind training summaries to reviewed, byte-pinned fit and fold evidence."""
@@ -1020,13 +1276,15 @@ class MIOStudyContract(StudyContract):
         padding = d["tail_padding_days"]
         if type(padding) is not int or padding < 0:
             raise ValueError("nonnegative settlement padding required")
-        maximum = max(x["dte_max"] for x in d["pairs"])
-        tail = (date.fromisoformat(packet["end_before"])+timedelta(days=maximum+padding)).isoformat()
         if (not date.fromisoformat(d["history_start"]).isoformat() == d["history_start"]
                 or d["history_start"] >= packet["start"]):
             raise ValueError("strictly prior history start required")
-        if tail > p["bridge"]["protected_end_before"]:
-            raise ValueError("derived settlement tail reaches protected data")
+        # ADR-0297 (owner, 2026-11-05, 2023Q4): never read past the protected boundary. A tail that would
+        # reach it is capped there; the weekly study already trades only expiries before the tail.
+        tail, capped = self.settlement_tail(study)
+        if capped:
+            _LOG.info("MIO settlement tail capped at protected_end_before %s for the packet ending %s",
+                      p["bridge"]["protected_end_before"], packet["end_before"])
         upcoming = [candidate for candidate in study["packets"]
                     if candidate["purpose"] != "development"
                     and candidate["start"] >= packet["end_before"]]
@@ -1599,9 +1857,7 @@ class OptionPolicyStudyContract(MIOStudyContract):
             if (policy["evaluation"] is not None or policy["artifact"] is not None
                     or policy["baselines"] != []):
                 raise ValueError("probe or training mode cannot consume an evaluation artifact or baseline")
-            max_dte = max(pair["dte_max"] for pair in study["domain"]["pairs"])
-            tail_before = (date.fromisoformat(packet["end_before"])
-                           + timedelta(days=max_dte + study["domain"]["tail_padding_days"])).isoformat()
+            tail_before, _ = self.settlement_tail(study)  # capped: labels may not mature past the boundary
             if train_window["end_before"] > packet["end_before"] or maturity > tail_before:
                 raise ValueError("training decisions or matured labels exceed selected packet read tail")
             if policy["mode"] == "probe":

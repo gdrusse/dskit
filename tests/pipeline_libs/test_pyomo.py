@@ -4758,3 +4758,269 @@ def test_transport_action_score_catalogue_propagates_valuation_errors(monkeypatc
     monkeypatch.setattr(scorer, "value", fail_valuation)
     with pytest.raises(ValueError, match="valuation failed"):
         scorer.catalogue(3)
+
+
+def _derive(params, inputs, solved):
+    """Return what a second host derives from ``solved``'s integer actions and certificate alone."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in solved["certificates"]]
+    return TransportPortfolioSolve("derive", params).derived(
+        inputs, TransportPortfolioSolve.actions(solved), certificates)["selection"]
+
+
+def _priced_program(radius, scale, charged=False):
+    """One group worth 10 a contract nominally; its W1 deduction is 100 x radius x scale a contract."""
+    program = _transport_action_score_program(radius=radius)
+    group = program["groups"][0]
+    group.update(scale=scale, reserve_rows=[[5.]])
+    if charged:
+        group["risk_charge"] = {"measure": "mad", "price": .02}
+    program["caps"] = [{"groups": ["g"], "upper": 10.}]
+    return program
+
+
+@pytest.mark.parametrize("radius, scale", [(0., 1.), (.05, 1.), (.05, .5), (.02, 2.)])
+@pytest.mark.parametrize("charged", [False, True], ids=["plain", "mad"])
+def test_transport_portfolio_derived_prices_the_worst_case_dual_of_foreign_actions(radius, scale, charged):
+    """The dual variables are not in the actions: ``derived`` must price them, not read zeros."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    inputs = _priced_program(radius, scale, charged)
+    params = _screen_params("lp")
+    solved = TransportPortfolioSolve("solve", params).run(None, inputs)["selection"]
+    assert solved["quantities"] == [[2]], "a book is held, so the dual cost is not zero"
+    expected = 2*(10-100*radius*scale-(1. if charged else 0.))
+    assert solved["value"] == pytest.approx(expected, abs=1e-6)
+    derived = _derive(params, inputs, solved)
+    assert derived["quantities"] == solved["quantities"]
+    assert derived["value"] == pytest.approx(solved["value"], abs=1e-7)
+    assert derived["group_values"] == pytest.approx(solved["group_values"], abs=1e-7)
+
+
+def test_transport_portfolio_derived_refuses_actions_priced_on_another_scale():
+    """A group's scale sets its W1 ball: the certificate of one scale does not fit another's actions."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params = _screen_params("lp")
+    inputs = _priced_program(.05, .5)
+    solved = TransportPortfolioSolve("solve", params).run(None, inputs)["selection"]
+    assert solved["quantities"] == [[2]]
+    assert _derive(params, inputs, solved)["value"] == pytest.approx(solved["value"], abs=1e-7)
+    with pytest.raises(ValueError, match="certificate"):
+        _derive(params, _priced_program(.05, 1.), solved)
+
+
+def _foreign(program, params, change=None, **certificate):
+    """Solve ``program``, then hand ``derived`` a foreign file: ``certificate`` fields replaced, ``change`` applied to the actions."""
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    solved = TransportPortfolioSolve("solve", params).run(None, program)["selection"]
+    certificates = [{**{k: v for k, v in c.items() if k != "binding"}, **certificate} for c in solved["certificates"]]
+    actions = copy.deepcopy(TransportPortfolioSolve.actions(solved))
+    if change is not None:
+        change(actions)
+    return TransportPortfolioSolve("derive", params).derived(program, actions, certificates), solved
+
+
+def test_recorded_refusal_names_the_check_and_sizes_a_tolerance_miss_as_a_ratio():
+    """A foreign objective off by 2.5 tolerances is a 'tolerance' refusal with ratio 2.5 and no dollar value."""
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
+
+    params, program = _screen_params("lp"), _priced_program(.05, .5)
+    solved = TransportPortfolioSolve("solve", params).run(None, program)["selection"]
+    tol, objective = params["parity_tolerance"], solved["certificates"][0]["objective"]
+    for factor, within in ((2.5, False), (.5, True)):
+        try:
+            _foreign(program, params, objective=objective+factor*tol)
+        except RecordedCheckRefusal as exc:
+            assert not within and exc.category == "tolerance" and exc.check == "certificate_objective"
+            assert exc.ratio == pytest.approx(2.5, rel=.05) and "certificate" in str(exc)
+            assert exc.week is None
+        else:
+            assert within, "a miss inside the tolerance is accepted"
+    assert issubclass(RecordedCheckRefusal, ValueError)
+
+
+def test_recorded_refusal_categories_for_an_invalid_trade_a_bad_certificate_and_dimensions():
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal
+
+    params, program = _screen_params("lp"), _priced_program(.05, .5)
+
+    def over(actions):
+        actions["primary_quantities"][0][0] = 99
+    with pytest.raises(RecordedCheckRefusal, match="exceed capacity") as caught:
+        _foreign(program, params, over)
+    assert (caught.value.category, caught.value.check, caught.value.ratio) == ("invalid_trade", "capacity", None)
+
+    def pair(actions):
+        actions["pairs"] = [{"group": "g", "pair": [0, 1], "matched_quantity": 1}]
+    with pytest.raises(RecordedCheckRefusal, match="cleanup pair") as caught:
+        _foreign(program, params, pair)
+    assert caught.value.category == "invalid_trade"
+
+    def ragged(actions):
+        actions["primary_quantities"][0] = [1, 2, 3]
+    with pytest.raises(RecordedCheckRefusal, match="primary quantities") as caught:
+        _foreign(program, params, ragged)
+    assert caught.value.category == "invalid_trade"
+    with pytest.raises(RecordedCheckRefusal, match="dimensions") as caught:
+        _foreign(program, params, variables=123456)
+    assert (caught.value.category, caught.value.check) == ("certificate", "model_dimensions")
+    with pytest.raises(RecordedCheckRefusal, match="contradictory") as caught:
+        _foreign(program, params, solver="other")
+    assert caught.value.category == "certificate"
+    describe = RecordedCheckRefusal.describe
+    assert describe(ValueError("anything 12.5"))["category"] == "other" and describe(caught.value)["check"] == caught.value.check
+
+
+def test_derived_refuses_actions_in_a_screened_out_group_and_other_model_dimensions():
+    """Two guards of ``derived`` itself (not ``_recorded``): a pruned group's actions, and another model's size."""
+    import copy
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
+
+    groups, caps = _screen_groups()
+    program = {"groups": groups, "caps": caps}
+    solved = TransportPortfolioSolve("screen", _screen_params("lp")).run(None, program)["selection"]
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in solved["certificates"]]
+    actions = copy.deepcopy(TransportPortfolioSolve.actions(solved))
+    assert TransportPortfolioSolve("ok", _screen_params("lp")).derived(program, actions, certificates)
+    forged = copy.deepcopy(actions)
+    forged["primary_quantities"][1][0] = 1
+    with pytest.raises(RecordedCheckRefusal, match="screened-out group") as caught:
+        TransportPortfolioSolve("forged", _screen_params("lp")).derived(program, forged, certificates)
+    assert caught.value.category == "invalid_trade"
+    with pytest.raises(ValueError, match="recorded model dimensions differ"):
+        TransportPortfolioSolve("other", _screen_params("none")).derived(program, actions, certificates)
+
+
+def test_derived_refuses_an_incumbent_the_certificate_contradicts_with_a_ratio():
+    """A bound below the audited value by 4 tolerances: category 'tolerance', ratio about 4 (never a dollar figure)."""
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
+
+    params, program = _screen_params("lp"), _priced_program(.05, .5)
+    solved = TransportPortfolioSolve("solve", params).run(None, program)["selection"]
+    tol, value = params["parity_tolerance"], solved["value"]
+    cert = solved["certificates"][0]
+    with pytest.raises(RecordedCheckRefusal) as caught:
+        _foreign(program, params, objective=cert["objective"], bound=value-4*tol)
+    assert caught.value.category == "tolerance" and caught.value.ratio == pytest.approx(4., rel=.05)
+    assert str(caught.value.check) in {"certificate_bound", "bound_below_value"}
+    assert "$" not in str(caught.value)
+
+
+def test_derived_refuses_feasible_but_suboptimal_foreign_actions_priced_at_their_own_quantities():
+    """The duals are priced with the actions FIXED. Without that, the pricing solve re-optimises the quantities, silently
+    replaces the foreign book with the optimum, and the optimum's certificate would match."""
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal
+
+    params, program = _screen_params("lp"), _priced_program(.05, .5)
+
+    def fewer(actions):
+        assert actions["primary_quantities"] == [[2]]
+        actions["primary_quantities"] = [[1]]  # feasible (capacity 10), worth less than the certificate's optimum
+    with pytest.raises(RecordedCheckRefusal) as caught:
+        _foreign(program, params, fewer)
+    assert caught.value.check == "certificate_objective" and caught.value.category in ("tolerance", "numeric")
+
+
+def test_a_numeric_miss_is_a_tolerance_issue_only_below_a_stated_ratio_else_numeric():
+    """C4: a garbage file's miss used to read as ``tolerance`` like float noise; above the limit it is ``numeric``."""
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
+
+    limit = RecordedCheckRefusal.TOLERANCE_RATIO_LIMIT
+    assert limit == 100.
+    sized = RecordedCheckRefusal.sized
+    assert sized("m", "c", 2.5, 1.).category == "tolerance" and sized("m", "c", limit, 1.).category == "tolerance"
+    assert sized("m", "c", limit*1.01, 1.).category == "numeric" and sized("m", "c", 1e9, 1.).category == "numeric"
+    unsized = sized("m", "c", 1., 0.)
+    assert (unsized.category, unsized.ratio) == ("numeric", None), "no tolerance to size against: not a tolerance issue"
+    assert "numeric" in RecordedCheckRefusal.CATEGORIES
+    params, program = _screen_params("lp"), _priced_program(.05, .5)
+    solved = TransportPortfolioSolve("solve", params).run(None, program)["selection"]
+    objective = solved["certificates"][0]["objective"]
+    with pytest.raises(RecordedCheckRefusal) as caught:
+        _foreign(program, params, objective=objective+1e6*params["parity_tolerance"])
+    assert (caught.value.category, caught.value.check) == ("numeric", "certificate_objective")
+    assert caught.value.ratio == pytest.approx(1e6, rel=.01)
+
+
+def test_an_uncertified_gap_against_a_zero_allowance_has_no_ratio():
+    """Test gap: ``gap`` refusals size the miss over the allowance; with no allowance there is nothing to divide by."""
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
+
+    params, program = _screen_params("lp"), _priced_program(.05, .5)
+    solved = TransportPortfolioSolve("solve", params).run(None, program)["selection"]
+    certificate = solved["certificates"][0]
+    wide = {**params, "absolute_gap": 1e-7}
+    with pytest.raises(RecordedCheckRefusal) as caught:
+        _foreign(program, wide, bound=certificate["bound"]+1e-6)
+    assert (caught.value.category, caught.value.check) == ("gap", "gap") and caught.value.ratio == pytest.approx(10., rel=.2)
+    tight = {**params, "absolute_gap": 0., "relative_gap": 0.}
+    with pytest.raises(RecordedCheckRefusal) as caught:
+        _foreign(program, tight, bound=certificate["bound"]+1e-9)
+    assert (caught.value.category, caught.value.check, caught.value.ratio) == ("gap", "gap", None)
+
+
+# -- skeptic round 3: pins on the refusal checks (mutants that survived) ------------------------------------------------
+def test_derived_refuses_when_the_dual_pricing_solve_is_not_optimal(monkeypatch):
+    """A foreign book whose pricing LP did not end optimal must be refused as ``dual_pricing`` (``pricing``), never priced."""
+    from types import SimpleNamespace
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, SolveRecord
+
+    params, program = _screen_params("lp"), _priced_program(.05, .5)
+    real = SolveRecord.from_solve.__func__
+    state = {"armed": False}
+
+    def from_solve(cls, *args, **kwargs):
+        record = real(cls, *args, **kwargs)
+        return SimpleNamespace(termination="infeasible") if state["armed"] else record
+
+    monkeypatch.setattr(SolveRecord, "from_solve", classmethod(from_solve))
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+    solved = TransportPortfolioSolve("solve", params).run(None, program)["selection"]
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in solved["certificates"]]
+    state["armed"] = True
+    with pytest.raises(RecordedCheckRefusal, match="could not be priced") as caught:
+        TransportPortfolioSolve("derive", params).derived(program, TransportPortfolioSolve.actions(solved), certificates)
+    assert (caught.value.check, caught.value.category, caught.value.ratio) == ("dual_pricing", "pricing", None)
+
+
+def test_a_miss_exactly_at_the_tolerance_is_accepted_and_one_past_it_is_refused():
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
+
+    check = TransportPortfolioSolve._refuse_over_tolerance
+    check("m", [("c", 1e-5)], 1e-5)  # difference == tolerance: within
+    with pytest.raises(RecordedCheckRefusal) as caught:
+        check("m", [("c", 1.0001e-5)], 1e-5)
+    assert caught.value.ratio == pytest.approx(1.0, abs=.01) or caught.value.ratio == 1.0
+
+
+def test_a_refusal_never_keeps_a_non_finite_ratio_and_rounds_to_three_figures():
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal
+
+    for bad in (float("inf"), float("-inf"), float("nan")):
+        assert RecordedCheckRefusal("m", "c", "numeric", bad).ratio is None
+    assert RecordedCheckRefusal("m", "c", "numeric", 2.34567).ratio == 2.35
+    assert RecordedCheckRefusal("m", "c", "numeric", None).ratio is None
+
+
+def test_derived_refuses_a_cleanup_pair_matching_zero_contracts():
+    """``matched_quantity`` must be positive: a valid exclusive pair with 0 matched was accepted when the check read ``< 0``."""
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal
+
+    program, params = _roundtrip_portfolio(), _roundtrip_selector().params
+
+    def zero(actions):
+        actions["pairs"] = [{"group": "g", "pair": [0, 1], "matched_quantity": 0}]
+    with pytest.raises(RecordedCheckRefusal) as caught:
+        _foreign(program, params, zero)
+    assert (caught.value.check, caught.value.category) == ("cleanup_pair", "invalid_trade")
+
+
+@pytest.mark.parametrize("field", ["objective", "bound", "gap", "seconds"])
+def test_derived_refuses_a_non_finite_number_anywhere_in_the_file(field):
+    params, program = _screen_params("lp"), _priced_program(.05, .5)
+    with pytest.raises(ValueError, match="Out of range float"):
+        _foreign(program, params, **{field: float("nan")})

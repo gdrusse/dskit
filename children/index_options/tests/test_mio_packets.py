@@ -1,13 +1,14 @@
 """Synthetic execution of the same JSON packet spine used by real debugging."""
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
 from dskit.onboarding import OnboardingRoot, run_acquisition
-from dskit.onboarding.artifacts import payload_files
+from dskit.onboarding.artifacts import PinnedPayloadSource, payload_files
 from dskit.pipeline.base import value_hash
 from dskit.pipeline.document import load_document
 from dskit.pipeline.driver import run_document, resolve_json_artifact, RunAttestation
@@ -2218,3 +2219,808 @@ def test_blinded_structural_projection_rejects_learned_extra_fields(tmp_path, mo
     study["domain"]["predictive"]["receipt"].update(save("receipt.json", receipt))
     with pytest.raises(ValueError, match="structural projection"):
         MIOStudyContract.selection(study)
+
+
+def test_settlement_tail_is_capped_at_the_protected_boundary_and_nothing_past_it_is_read(study, tmp_path, monkeypatch):
+    """A tail that would reach protected data is capped at it (2023Q4: options expiring before 2024-01-01 only)."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache-home"))
+    from index_options import mio_contract
+    cap = "2019-02-05"
+    monkeypatch.setattr(mio_contract, "OWNER_TAIL_CAP", cap)  # only the owner's boundary is capped, not any date
+    study["domain"]["params"]["bridge"]["protected_end_before"] = cap
+    # the unchanged derived tail (2019-01-08 + 32 days = 2019-02-09) reaches past the cap
+    _, plan, permit = _open(study)
+    assert plan["runnable"]
+    assert all(plan["read_bounds"][role]["end_before"] == cap for role in ("chain", "bars", "sessions"))
+    ctx = NodeContext(name="intake", asof="2019-02-09", run_dir=str(tmp_path / "run"))
+    intake = MIOPacketInputs("intake", {"study": study}).run(ctx, {"permit": permit})
+    bounded = intake["bounded_inputs"]
+    assert bounded["clocks"]["tail_end_before"] == cap
+    for symbol in bounded["inputs"].values():
+        assert all(row["date"] < cap for row in symbol["bars"])
+        assert all(row["settlement_date"] < cap for row in symbol["contexts"] if "settlement_date" in row)
+        assert symbol["chain_index"]["bounds"]["expiration"] == {"end_before": cap}
+    out = MIOPacketStudy("study", {"study": study}).run(
+        ctx, {"permit": permit, "bounded_inputs": bounded, "provenance": intake["provenance"]})
+    assert out["results"][0]["status"] == "completed"
+    assert out["audit"]["tail_capped_at"] == cap, "the cap shows in the audit"
+
+
+def test_settlement_tail_equal_to_the_owner_cap_is_not_capped_and_other_boundaries_refuse(study, monkeypatch):
+    from datetime import date, timedelta
+    from index_options import mio_contract
+    from index_options.mio_contract import MIOStudyContract
+
+    end = MIOStudyContract.packet(study)["end_before"]
+    tail = (date.fromisoformat(end) + timedelta(days=max(x["dte_max"] for x in study["domain"]["pairs"])
+                                                + study["domain"]["tail_padding_days"])).isoformat()
+    monkeypatch.setattr(mio_contract, "OWNER_TAIL_CAP", tail)
+    study["domain"]["params"]["bridge"]["protected_end_before"] = tail
+    assert MIOStudyContract.settlement_tail(study) == (tail, False), "tail exactly equal to the cap: nothing was cut"
+    one_less = (date.fromisoformat(tail) - timedelta(days=1)).isoformat()
+    monkeypatch.setattr(mio_contract, "OWNER_TAIL_CAP", one_less)
+    study["domain"]["params"]["bridge"]["protected_end_before"] = one_less
+    assert MIOStudyContract.settlement_tail(study) == (one_less, True)
+    # a boundary that is not the owner cap is never capped, whatever its date
+    monkeypatch.setattr(mio_contract, "OWNER_TAIL_CAP", "2024-01-01")
+    with pytest.raises(ValueError, match="reaches protected data"):
+        MIOStudyContract.settlement_tail(study)
+
+
+def test_policy_probe_maturity_is_checked_against_the_capped_tail(study, monkeypatch):
+    from index_options import mio_contract
+    from index_options.mio_contract import OptionPolicyStudyContract
+    from index_options.rl_env import OptionStructuredEntryEnv
+
+    packet = study["packets"][0]
+    cap = "2019-02-05"  # the unchanged derived tail is 2019-02-09
+    monkeypatch.setattr(mio_contract, "OWNER_TAIL_CAP", cap)
+    study["domain"]["params"]["bridge"]["protected_end_before"] = cap
+    study["domain"]["policy"] = {
+        "mode": "probe", "method_id": study["domain"]["params"]["methods"][0]["id"], "evaluation": None,
+        "artifact": None, "baselines": [], "probe_receipt": None,
+        "training": {
+            "window": {"start": packet["start"], "end_before": packet["end_before"]},
+            "maturity_end_before": cap, "env": "index_options.rl_env:OptionStructuredEntryEnv",
+            "env_schema": OptionStructuredEntryEnv.PAYLOAD_SCHEMA, "feature_transform": "identity",
+            "env_bounds": {"max_coordinates": 1, "max_quantity": 1, "max_features": 1,
+                           "reward_scale": 1.0, "max_edits": 1}, "algo": "PPO", "algo_params": {"gamma": 1},
+            "policy": "MlpPolicy", "seed": 7, "total_timesteps": 12}}
+    OptionPolicyStudyContract()._validate_policy(study)  # labels maturing exactly at the cap pass
+    study["domain"]["policy"]["training"]["maturity_end_before"] = "2019-02-06"
+    with pytest.raises(ValueError, match="exceed selected packet read tail"):
+        OptionPolicyStudyContract()._validate_policy(study)
+
+
+def test_settlement_tail_refusals_notice_and_owner_cap(study, tmp_path, monkeypatch, caplog):
+    """ADR-0297: the boundary is the document's protected_end_before; a 2023Q4-style tail under a later one refuses."""
+    import logging
+    from datetime import date, timedelta
+    from index_options import mio_contract
+    from index_options.mio_contract import MIOStudyContract
+
+    tail, capped = MIOStudyContract.settlement_tail(study)
+    assert capped is False and tail < study["domain"]["params"]["bridge"]["protected_end_before"]
+    end = MIOStudyContract.packet(study)["end_before"]
+    # a packet that itself reaches protected data
+    study["domain"]["params"]["bridge"]["protected_end_before"] = "2019-01-07"
+    assert end > "2019-01-07"
+    with pytest.raises(ValueError, match="packet reaches protected data"):
+        MIOStudyContract.settlement_tail(study)
+    # the owner cap: the tail (packet end + dte + padding) passes the cap, the packet end does not
+    uncapped = (date.fromisoformat(end) + timedelta(days=max(x["dte_max"] for x in study["domain"]["pairs"])
+                                                   + study["domain"]["tail_padding_days"])).isoformat()
+    monkeypatch.setattr(mio_contract, "OWNER_TAIL_CAP", end)
+    study["domain"]["params"]["bridge"]["protected_end_before"] = uncapped
+    with pytest.raises(ValueError, match="needs protected_end_before no later than"):
+        MIOStudyContract.settlement_tail(study)
+    study["domain"]["params"]["bridge"]["protected_end_before"] = end
+    assert MIOStudyContract.settlement_tail(study) == (end, True)
+    with caplog.at_level(logging.INFO, logger="index_options.mio_contract"):
+        MIOStudyContract().resolve(study)
+    notices = [r.getMessage() for r in caplog.records if "tail capped" in r.getMessage()]
+    assert len(notices) == 1 and end in notices[0] and not any(c in notices[0] for c in "$"), notices
+
+
+# --- owner_selected_fixed_forecasts: hash-pinned fixed_loc forecasts (ADR-0297) ------------------------------------
+
+FIXED_POLICY = "owner_selected_fixed_forecasts"
+FIXED_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+FIXED_BASIS = "owner_approved_fixed_loc_after_score_ranked_zoo_and_hpo"
+FIXED_LABELS = ["zm3", "zm2.5", "zm2", "zm1.5", "zm1", "zm0.5", "zp0", "zp0.5", "zp1", "zp1.5", "zp2", "zp2.5", "zp3"]
+#: The builder's second grid (ForecastGrid.finer): every 0.25 z over the same span, labelled by its zlabel rule.
+FINE_Z = [-3.+.25*i for i in range(25)]
+FINE_LABELS = ["z"+("m" if z < 0 else "p")+format(abs(z), "g") for z in FINE_Z]
+FINE_FILE = "forecasts-fine.parquet"
+FIXED_RECIPE = {"kind": "fixed_loc", "learning_rate": 3e-4, "dropout": .1, "weight_decay": .1, "hidden": 64,
+                "width": 16, "epochs": 1, "seeds": [11], "average": "quantile_average"}
+#: The builder's quarter table (quarterly_forecasts.Quarter): the first decision of each fixture packet.
+FIXED_QUARTERS = {"2019Q4": (29, "2019-10-01", "2020-01-01", "2019-10-08"),
+                  "2020Q1": (2, "2020-01-01", "2020-04-01", "2020-01-08"),
+                  "2020Q2": (3, "2020-04-01", "2020-07-01", "2020-04-08"),
+                  "2023Q4": (17, "2023-10-01", "2024-01-01", "2023-11-29")}
+
+
+def _move_dates(node, days):
+    """Return ``node`` with every ISO date string moved ``days`` later (the fixture keeps its weekdays)."""
+    from datetime import date, timedelta
+    import re
+
+    if isinstance(node, dict):
+        return {k: _move_dates(v, days) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_move_dates(v, days) for v in node]
+    if isinstance(node, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", node):
+        return (date.fromisoformat(node)+timedelta(days=days)).isoformat()
+    return node
+
+
+def _lock_file(path, symbols):
+    import hashlib
+
+    wire = json.dumps(list(symbols), separators=(",", ":")).encode()
+    path.write_text(json.dumps({"symbols": list(symbols), "count": len(symbols), "sha256": hashlib.sha256(wire).hexdigest()}))
+    return path
+
+
+def _pin(root, registry, source, folder, **config):
+    from dskit.onboarding.artifacts import payload_files
+
+    vid = registry.register("source_config", {
+        "name": source, "catalog_source": "synthetic", "connector": "localblobs",
+        "config": {"path": str(folder), "as_of": "2026-01-01T00:00:00+00:00", **config}}, origin="test")
+    registry.transition(vid, "active", origin="test")
+    run_acquisition(root, registry, source, "files", "backfill")
+    acquired = payload_files(root, source, "files")
+    return {"root": root.root, "source": source, "stream": "files", "snapshot": acquired["snapshot"],
+            "manifest_sha256": acquired["manifest_sha256"], "files": acquired["sha256"]}
+
+
+def fixed_world(tmp_path, monkeypatch, quarter="2020Q1", *, seeds=(11,), names=("X",), missing=(), receipt=None,
+                forecasts=None, contexts=None, neighbour_receipt=None, fine=False, fine_forecasts=None):
+    """Write synthetic forecast files in exactly the builder's contract and a study bound to them.
+
+    Dates come from the weekly fixture moved into ``quarter``; rows that would settle in 2024 get no forecast
+    (owner ruling). ``receipt``, ``forecasts`` and ``contexts`` edit the written quarter's receipt dict and row
+    lists before pinning. ``fine`` also writes each quarter's ``forecasts-fine.parquet`` (25 points) and its receipt record; ``fine_forecasts`` edits the written quarter's fine rows. Returns the study, the ``mio-bindings`` dict and the forecast folder.
+    """
+    from datetime import date
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from index_options import ticker_lock
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    fold, start, end_before, decision = FIXED_QUARTERS[quarter]
+    params, data = _packet_clock_fixture()
+    days = (date.fromisoformat(decision)-date(2019, 1, 2)).days
+    params, data = _move_dates(params, days), _move_dates(data, days)
+    clocks, pairs = params.pop("clocks"), params.pop("selected_pairs")
+    bridge = params["bridge"]
+    bridge.update(fold=fold, protected_end_before="2024-01-01", grid_labels=FIXED_LABELS,
+                  end_before=clocks["entry_end_before"], require_fitted=True)
+    lock_path = _lock_file(tmp_path/"synthetic-lock.json", names)
+    monkeypatch.setattr(ticker_lock, "DEFAULT_LOCK", lock_path)
+
+    def sha(path):
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def table(rows, fold_number, edit):
+        rows = [dict(r) for r in rows if r["expiry"] < "2024-01-01"]
+        for row in rows:
+            row.update(fold=fold_number)
+            for old, new in zip(map(str, range(13)), FIXED_LABELS):
+                if "method_cdf_"+old in row:
+                    row["method_cdf_"+new], row["fitted"] = row.pop("method_cdf_"+old), True
+        return edit(rows) if edit else rows
+
+    root_dir = tmp_path/"forecast-root"
+    recipe = {**FIXED_RECIPE, "seeds": list(seeds)}
+    identity = value_hash(recipe)
+    grid = bridge["z_grid"]
+
+    def write_quarter(name, number, first, last, edit_receipt, edit_forecasts, edit_contexts):
+        folder = root_dir/name
+        folder.mkdir(parents=True)
+        fs, cs = table(data["X"]["forecasts"], number, edit_forecasts), table(data["X"]["contexts"], number, edit_contexts)
+        for rows, leaf in ((fs, "forecasts.parquet"), (cs, "contexts.parquet")):
+            pd.DataFrame(rows).to_parquet(folder/leaf, index=False, compression="zstd")
+        if fine:
+            import math
+            wide = [{**{k: r[k] for k in ("symbol", "quote_date", "expiry", "fold", "band", "fitted")},
+                     **{"method_cdf_"+label: .5*(1+math.erf(z/2**.5)) for label, z in zip(FINE_LABELS, FINE_Z)}}
+                    for r in fs]
+            wide = fine_forecasts(wide) if fine_forecasts and folder.name == quarter else wide
+            pd.DataFrame(wide).to_parquet(folder/FINE_FILE, index=False, compression="zstd")
+        body = {"schema": "quarterly-forecast/v1", "quarter": name, "bridge_fold": number,
+                "forecast_window": {"start": first, "end_before": last}, "label_cutoff": first,
+                "recipe": recipe, "recipe_sha256": identity, "fit_document_sha256": "a"*64, "panel_sha256": "b"*64,
+                "fold_table_sha256": "c"*64, "fit_manifest_sha256": "d"*64, "device": "cuda",
+                "forecasts_sha256": sha(folder/"forecasts.parquet"), "contexts_sha256": sha(folder/"contexts.parquet"),
+                "hardware": {"device": "cuda"}, "synthetic": False, "code_commit": FIXED_COMMIT, "ticker_lock_sha256": sha(lock_path),
+                "owner_name_exceptions": {}, "coverage_note": "rows reaching the limit are absent",
+                "seed_average_status": "open", "rows": len(fs),
+                "expected_names": [n for n in names if n not in missing], "missing_names": list(missing),
+                "evaluation_computed": False, "z_grid": grid, "grid_labels": FIXED_LABELS}
+        if fine:
+            body["fine_grid"] = {"file": FINE_FILE, "sha256": sha(folder/FINE_FILE), "z_grid": FINE_Z,
+                                 "grid_labels": FINE_LABELS, "seed_average": recipe["average"], "scored": False}
+        if edit_receipt:
+            edit_receipt(body)
+        (folder/"receipt.json").write_text(json.dumps(body, sort_keys=True, indent=1))
+
+    write_quarter(quarter, fold, start, end_before, receipt, forecasts, contexts)
+    other = next(q for q in ("2020Q1", "2020Q2") if q != quarter)
+    write_quarter(other, FIXED_QUARTERS[other][0], *FIXED_QUARTERS[other][1:3], neighbour_receipt, None, None)
+    market = tmp_path/"market"
+    market.mkdir()
+    for name in names:
+        for role in ("chain", "bars"):
+            rows = [{**row, "symbol": name} for row in data["X"][role]]
+            pq.write_table(pa.Table.from_pylist(rows), market/f"{role}-{name}.parquet")
+    pq.write_table(pa.table({"date": clocks["sessions"]}), market/"sessions.parquet")
+    root = OnboardingRoot.create(str(tmp_path/"ob"))
+    registry = root.registry()
+    pin = _pin(root, registry, "synthetic-forecasts", root_dir, include=[
+        "*/forecasts.parquet", "*/contexts.parquet", "*/receipt.json", *(["*/"+FINE_FILE] if fine else [])])
+    held = _pin(root, registry, "synthetic-market", market)
+    binding = {"forecasts": {"pin": pin, "files": {"shared": f"{quarter}/forecasts.parquet"}},
+               "contexts": {"pin": pin, "files": {"shared": f"{quarter}/contexts.parquet"}},
+               "receipt": {"source": pin, "file": f"{quarter}/receipt.json", "sha256": pin["files"][f"{quarter}/receipt.json"]}}
+    sources = {"forecasts": copy.deepcopy(binding["forecasts"]), "contexts": copy.deepcopy(binding["contexts"]),
+               "sessions": {"pin": copy.deepcopy(held), "files": {"shared": "sessions.parquet"}}}
+    for role in ("chain", "bars"):
+        sources[role] = {"pin": copy.deepcopy(held), "files": {name: f"{role}-{name}.parquet" for name in names}}
+    params["symbols"] = list(names)
+    pairs = [{**pairs[0], "id": name+"30", "symbol": name} for name in names]
+    packet = {"id": "dev", "start": clocks["entry_start"], "end_before": clocks["entry_end_before"],
+              "purpose": "development", "predecessor": None}
+    study = {"contract": "index_options.mio_contract:MIOStudyContract",
+             "registry": {"path": str(tmp_path/"exposure.sqlite"), "id": "6f6a1f0e-7a1b-4a57-9d3e-0c6b6c1f8f11",
+                          "domain": "test:fixed-forecasts"},
+             "packets": [packet], "selected_packet": "dev",
+             "code": _implementation_pins(StudyContract, "index_options.mio_contract"),
+             "dependencies": {"pytest": pytest.__version__},
+             "domain": {"params": params, "pairs": pairs, "history_start": clocks["history_start"],
+                        "tail_padding_days": 0, "sources": sources, "synthetic": False,
+                        "predictive": {"policy": FIXED_POLICY, "receipt": copy.deepcopy(binding["receipt"]),
+                                       "recipe_sha256": identity, "selection_basis": FIXED_BASIS},
+                        "admission": {"mode": "debug_fixture_not_admitted", "evidence": None},
+                        "report": {"primary_metric": None}}}
+    return {"study": study, "binding": binding, "folder": root_dir/quarter, "recipe_sha256": identity,
+            "fold": fold, "quarter": quarter}
+
+
+def _select(study):
+    from index_options.mio_contract import MIOStudyContract
+    return MIOStudyContract.selection(study)
+
+
+@pytest.mark.parametrize("seeds", [(11,), (11, 29, 47)], ids=["one-seed", "three-seeds"])
+@pytest.mark.parametrize("quarter", ["2019Q4", "2020Q1", "2023Q4"])
+def test_fixed_forecasts_pass_on_the_contract_as_written(tmp_path, monkeypatch, quarter, seeds):
+    disclose = (lambda b: b.update(tuning_disclosure="The HPO tuned on 2019: favored, not independent.")) \
+        if quarter == "2019Q4" else None
+    world = fixed_world(tmp_path, monkeypatch, quarter, seeds=seeds, receipt=disclose)
+    receipt = _select(world["study"])
+    assert receipt["recipe_sha256"] == world["recipe_sha256"] and receipt["recipe"]["seeds"] == list(seeds)
+    assert receipt["bridge_fold"] == FIXED_QUARTERS[quarter][0]
+    assert StudyContract.build(world["study"])["runnable"]
+
+
+def _value(path, value):
+    def edit(body):
+        node = body
+        for key in path[:-1]:
+            node = node[key]
+        node[path[-1]] = value
+    return edit
+
+
+def _drop(key):
+    return lambda body: body.pop(key)
+
+
+@pytest.mark.parametrize("edit, match", [
+    (_value(["schema"], "quarterly-forecast/v2"), "schema"),
+    (_drop("device"), "fields"),
+    (_drop("ticker_lock_sha256"), "fields"),
+    (_drop("code_commit"), "fields"),     # the real builder always writes it
+    (_value(["code_commit"], None), "code_commit"),   # a synthetic or dirty-tree run has none
+    (_value(["code_commit"], ""), "code_commit"),
+    (_value(["code_commit"], "HEAD"), "code_commit"),
+    (_value(["code_commit"], FIXED_COMMIT.upper()), "code_commit"),
+    (_value(["code_commit"], 1234), "code_commit"),
+    (_value(["synthetic"], True), "synthetic"),
+    (_value(["forecasts_sha256"], "f"*64), "digests"),
+    (_value(["contexts_sha256"], "f"*64), "digests"),
+    (_value(["ticker_lock_sha256"], "f"*64), "ticker lock"),
+    (_value(["owner_name_exceptions"], {"X": "a ruling"}), "exceptions"),
+    (_value(["extra"], 1), "fields"),
+    (_value(["bridge_fold"], 3), "must agree"),
+    (_value(["bridge_fold"], 2.0), "must agree"),
+    (_value(["quarter"], "2020Q2"), "must agree"),
+    (_value(["quarter"], "2019Q3"), "outside the quarters"),
+    (_value(["quarter"], "2019Q1"), "outside the quarters"),
+    (_value(["quarter"], "2019Q4"), "tuning_disclosure"),  # 2019 needs its disclosure; then fold and window differ
+    (_value(["tuning_disclosure"], "stray"), "tuning_disclosure"),  # a 2020Q1 receipt may not carry one
+    (_value(["quarter"], "2024Q1"), "outside the quarters"),
+    (_value(["forecast_window", "start"], "2020-01-09"), "must agree"),
+    (_value(["forecast_window", "start"], "2019-12-31"), "must agree"),
+    (_value(["forecast_window", "end_before"], "2020-03-31"), "must agree"),
+    (_value(["label_cutoff"], "2020-01-02"), "cutoff"),
+    (_value(["evaluation_computed"], True), "evaluation"),
+    (_value(["evaluation_computed"], 0), "evaluation"),
+    (_value(["z_grid"], [-3+.5*i for i in range(12)]+[3.5]), "grid"),
+    (_value(["grid_labels"], FIXED_LABELS[::-1]), "grid"),
+    (_value(["recipe_sha256"], "e"*64), "recipe"),
+    (_value(["recipe", "kind"], "m53"), "recipe"),
+    (_value(["recipe", "seeds"], []), "recipe"),
+    (_value(["recipe", "seeds"], [11, 11]), "recipe"),
+    (_value(["rows"], 99), "rows"),
+    (_value(["expected_names"], []), "ticker"),
+    (_value(["missing_names"], ["X"]), "ticker"),
+], ids=lambda v: None if callable(v) else str(v)[:12])
+def test_fixed_receipt_refusals(tmp_path, monkeypatch, edit, match):
+    def self_consistent(body):
+        edit(body)
+        if body.get("recipe", {}) != FIXED_RECIPE and body.get("recipe_sha256") != "e"*64:
+            # a changed recipe with its own hash is refused for what it says, not for a stale hash
+            body["recipe_sha256"] = value_hash(body["recipe"])
+    world = fixed_world(tmp_path, monkeypatch, receipt=self_consistent)
+    with pytest.raises(ValueError, match=match):
+        _select(world["study"])
+    with pytest.raises(ValueError, match=match):
+        StudyContract.build(world["study"])
+
+
+@pytest.mark.parametrize("edit", [
+    lambda body: body["recipe"].update(learning_rate=1e-3),   # the body changed, its recorded hash did not
+    lambda body: body["recipe"].update(seeds=[11, 12]),
+    lambda body: body.update(recipe_sha256=value_hash({**body["recipe"], "dropout": .5})),   # a hash of another body
+], ids=["body-lr", "body-seeds", "hash-of-another-body"])
+def test_the_recipe_body_must_hash_to_the_documents_pin(tmp_path, monkeypatch, edit):
+    """`_fixed_recipe` checks the receipt's recorded hash AND the hash of the recipe body it carries."""
+    world = fixed_world(tmp_path, monkeypatch, receipt=edit)
+    with pytest.raises(ValueError, match="recipe"):
+        _select(world["study"])
+
+
+def _builder_receipt_keys(source):
+    """The key set of the ``receipt = {...}`` literal in the forecast builder's source, and its optional keys."""
+    import ast
+    tree = ast.parse(source)
+    keys, optional = set(), set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "receipt" for t in node.targets)
+                and isinstance(node.value, ast.Dict)):
+            keys |= {k.value for k in node.value.keys if isinstance(k, ast.Constant)}
+        if (isinstance(node, ast.Assign) and any(isinstance(t, ast.Subscript) and getattr(t.value, "id", None) == "receipt"
+                                                 for t in node.targets)):
+            optional.add(node.targets[0].slice.value)
+    return keys, optional
+
+
+def test_the_accepted_receipt_keys_are_exactly_the_builders():
+    """Regression: the builder writes ``code_commit`` and the contract once refused every real receipt for it.
+
+    The builder is a sibling branch until it merges: read its source from ``index_options.quarterly_forecasts``
+    when present, else from the path in MIO_FORECAST_BUILDER_SOURCE; otherwise this check cannot run.
+    """
+    import importlib.util
+    import os
+    from index_options.mio_contract import MIOStudyContract
+    spec = importlib.util.find_spec("index_options.quarterly_forecasts")
+    path = spec.origin if spec else os.environ.get("MIO_FORECAST_BUILDER_SOURCE")
+    if not path or not os.path.exists(path):
+        pytest.skip("the forecast builder source is not available")
+    keys, optional = _builder_receipt_keys(open(path).read())
+    assert keys and "code_commit" in keys, "the receipt literal was not found"
+    assert keys == MIOStudyContract._FIXED_RECEIPT_KEYS
+    assert optional <= MIOStudyContract._FIXED_OPTIONAL_KEYS
+
+
+def test_the_synthetic_builder_receipt_literal_carries_the_keys_the_fixture_writes(tmp_path, monkeypatch):
+    """The fixture is the builder's contract: its receipt has every required key, code_commit included."""
+    from index_options.mio_contract import MIOStudyContract
+    world = fixed_world(tmp_path, monkeypatch)
+    written = json.loads((world["folder"]/"receipt.json").read_text())
+    assert set(written) == MIOStudyContract._FIXED_RECEIPT_KEYS and written["code_commit"] == FIXED_COMMIT
+
+
+@pytest.mark.parametrize("edit", [
+    lambda r: r.update(note="harmless extra key"),
+    lambda r: r.update(seeds=[29]),
+    lambda r: r.update(learning_rate=1e-3),
+], ids=["extra-key", "other-seed", "other-rate"])
+def test_a_receipt_recipe_edited_without_its_hash_is_refused(tmp_path, monkeypatch, edit):
+    """The recipe's own bytes must hash to the pin: a recipe that still passes the kind and seed checks, kept under the
+    right ``recipe_sha256``, differs from the document's recipe and is refused (a pin-only check would pass it)."""
+    def edited(body):
+        edit(body["recipe"])
+    world = fixed_world(tmp_path, monkeypatch, receipt=edited)
+    with pytest.raises(ValueError, match="recipe"):
+        _select(world["study"])
+
+
+@pytest.mark.parametrize("edit, match", [
+    (lambda b: b.pop("tuning_disclosure"), "tuning_disclosure"),
+    (lambda b: b.update(tuning_disclosure=""), "tuning_disclosure"),
+    (lambda b: b.update(tuning_disclosure=["tuned"]), "tuning_disclosure"),
+    (lambda b: b.update(bridge_fold=26), "must agree"),  # the builder's FOLD_2019Q1: not Q4's 29
+    (lambda b: b.update(bridge_fold=5), "must agree"),
+], ids=["missing", "empty", "not-text", "wrong-fold-26", "wrong-fold-5"])
+def test_a_2019q4_receipt_needs_its_tuning_disclosure_and_fold_29(tmp_path, monkeypatch, edit, match):
+    """The HPO tuned on 2019: the builder's receipt says so, the contract refuses one that does not."""
+    def tuned(body):
+        body["tuning_disclosure"] = "The HPO tuned on 2019: favored, not independent."
+        edit(body)
+    world = fixed_world(tmp_path, monkeypatch, "2019Q4", receipt=tuned)
+    with pytest.raises(ValueError, match=match):
+        _select(world["study"])
+
+
+@pytest.mark.parametrize("edit", [
+    lambda r: r.update(kind="m53"),
+    lambda r: r.update(seeds=[]),
+    lambda r: r.update(seeds=[11, 11]),
+    lambda r: r.update(seeds=[11.0]),
+    lambda r: r.update(average="median"),
+])
+def test_a_recipe_the_document_also_pins_must_still_be_a_fixed_loc_recipe(tmp_path, monkeypatch, edit):
+    recipe = copy.deepcopy(FIXED_RECIPE)
+    edit(recipe)
+
+    def bad(body):
+        body.update(recipe=recipe, recipe_sha256=value_hash(recipe))
+    study = fixed_world(tmp_path, monkeypatch, receipt=bad)["study"]
+    study["domain"]["predictive"]["recipe_sha256"] = value_hash(recipe)
+    with pytest.raises(ValueError, match="recipe"):
+        _select(study)
+
+
+def _rows(column, value):
+    def edit(rows):
+        rows[0][column] = value
+        return rows
+    return edit
+
+
+@pytest.mark.parametrize("role, edit, match", [
+    ("forecasts", _rows("quote_date", "2024-01-02"), "2024-01-01"),
+    ("forecasts", _rows("expiry", "2024-01-02"), "2024-01-01"),
+    ("contexts", _rows("settlement_date", "2024-01-02"), "2024-01-01"),
+    ("contexts", _rows("expiry", "2024-01-02"), "2024-01-01"),
+    # the cap day itself is already protected: ``>= OWNER_TAIL_CAP``, not ``>``
+    ("forecasts", _rows("quote_date", "2024-01-01"), "at or past 2024-01-01"),
+    ("forecasts", _rows("expiry", "2024-01-01"), "at or past 2024-01-01"),
+    ("contexts", _rows("settlement_date", "2024-01-01"), "at or past 2024-01-01"),
+    ("contexts", _rows("expiry", "2024-01-01"), "at or past 2024-01-01"),
+    ("forecasts", _rows("quote_date", "2020-04-01"), "window"),
+    ("forecasts", _rows("quote_date", "2019-12-31"), "window"),
+    ("forecasts", _rows("fold", 3), "fold"),
+    ("contexts", _rows("fold", 3), "fold"),
+    ("forecasts", _rows("band", "fit"), "band"),
+    ("forecasts", _rows("fitted", False), "fitted"),
+    ("forecasts", _rows("expiry", "2020-2-7"), "canonical"),
+    ("forecasts", _rows("symbol", "Q"), "ticker"),
+    ("forecasts", lambda rows: rows[:-1], "pairing|rows differ"),
+    ("contexts", lambda rows: rows[:-1], "rows differ"),
+    ("contexts", _rows("expiry", "2020-02-09"), "pairing"),
+    ("contexts", _rows("settlement_date", None), "null"),
+    ("forecasts", lambda rows: [{k: v for k, v in r.items() if k != "method_cdf_zp3"} for r in rows], "columns"),
+    ("contexts", lambda rows: [{**r, "y": .1} for r in rows], "columns"),
+], ids=lambda v: None if callable(v) else str(v)[:12])
+def test_fixed_row_refusals(tmp_path, monkeypatch, role, edit, match):
+    world = fixed_world(tmp_path, monkeypatch, **{role: edit})
+    with pytest.raises(ValueError, match=match):
+        _select(world["study"])
+
+
+def test_fixed_rows_repeated_in_both_files_do_not_pair(tmp_path, monkeypatch):
+    twice = lambda rows: rows+[rows[0]]  # noqa: E731
+    with pytest.raises(ValueError, match="pairing"):
+        _select(fixed_world(tmp_path, monkeypatch, forecasts=twice, contexts=twice)["study"])
+
+
+def test_a_consistently_wrong_fold_for_the_quarter_is_refused(tmp_path, monkeypatch):
+    """Receipt, rows and document all say fold 3: the quarter's own table still says 2."""
+    three = lambda rows: [{**r, "fold": 3} for r in rows]  # noqa: E731
+    study = fixed_world(tmp_path, monkeypatch, receipt=_value(["bridge_fold"], 3), forecasts=three, contexts=three)["study"]
+    study["domain"]["params"]["bridge"]["fold"] = 3
+    with pytest.raises(ValueError, match="must agree"):
+        _select(study)
+
+
+def test_a_receipt_body_that_differs_from_its_own_recipe_hash_is_refused(tmp_path, monkeypatch):
+    study = fixed_world(tmp_path, monkeypatch, receipt=_value(["recipe", "epochs"], 2))["study"]
+    with pytest.raises(ValueError, match="recipe"):
+        _select(study)
+
+
+def test_a_receipt_filed_under_another_quarter_is_refused(tmp_path, monkeypatch):
+    """Its body says 2020Q1 and every other check holds; it sits in the 2020Q2 folder."""
+    moved = lambda b: b.update(quarter="2020Q1", bridge_fold=2, label_cutoff="2020-01-01",  # noqa: E731
+                               forecast_window={"start": "2020-01-01", "end_before": "2020-04-01"})
+    world = fixed_world(tmp_path, monkeypatch, neighbour_receipt=moved)
+    pin = world["binding"]["receipt"]["source"]
+    world["study"]["domain"]["predictive"]["receipt"].update(
+        file="2020Q2/receipt.json", sha256=pin["files"]["2020Q2/receipt.json"])
+    with pytest.raises(ValueError, match="another quarter"):
+        _select(world["study"])
+
+
+def test_a_receipt_recording_a_second_grid_still_serves_its_13_point_document(tmp_path, monkeypatch):
+    """The builder may record ``fine_grid``; this policy reads only ``forecasts.parquet`` until a fine route exists."""
+    record = {"file": "forecasts-fine.parquet", "sha256": "f"*64, "z_grid": [], "grid_labels": [],
+              "seed_average": "quantile_average", "scored": False}
+    assert _select(fixed_world(tmp_path, monkeypatch, receipt=lambda b: b.update(fine_grid=record))["study"])
+
+
+def test_fixed_date_columns_must_be_the_contract_strings(tmp_path, monkeypatch):
+    from datetime import date as day
+
+    def typed(rows):
+        for row in rows:
+            row["quote_date"] = day.fromisoformat(row["quote_date"])
+        return rows
+    with pytest.raises(ValueError, match="canonical"):
+        _select(fixed_world(tmp_path, monkeypatch, forecasts=typed)["study"])
+
+
+@pytest.mark.parametrize("edit, match", [
+    (lambda s: s["domain"]["params"]["bridge"].update(fold=3), "fold"),
+    (lambda s: s["domain"]["params"]["bridge"].update(fold=2.0), "fold"),
+    (lambda s: s["domain"]["params"]["bridge"].update(protected_end_before="2020-03-31"), "protected"),
+    (lambda s: s["domain"]["params"]["bridge"].update(grid_labels=FIXED_LABELS[::-1]), "grid"),
+    (lambda s: s["domain"]["params"]["bridge"].update(z_grid=[-2.5+.5*i for i in range(13)]), "grid"),
+    (lambda s: s["domain"]["predictive"].update(recipe_sha256="e"*64), "recipe"),
+    (lambda s: s["domain"]["predictive"].pop("recipe_sha256"), "fixed-forecast selection"),
+    (lambda s: s["domain"]["predictive"].update(selection_basis="owner_selected_no_score_ranking"), "fixed-forecast selection"),
+    (lambda s: s["domain"]["predictive"].update(saved_method={}), "fixed-forecast selection"),
+    (lambda s: s["packets"][0].update(start="2019-12-31"), "window"),
+    (lambda s: s["packets"][0].update(end_before="2020-04-02"), "window"),
+    (lambda s: s["packets"][0].update(purpose="holdout"), "purpose"),
+    (lambda s: s["domain"]["params"].update(symbols=["X", "Y"]), "ticker"),
+])
+def test_fixed_document_refusals(tmp_path, monkeypatch, edit, match):
+    study = fixed_world(tmp_path, monkeypatch)["study"]
+    edit(study)
+    with pytest.raises(ValueError, match=match):
+        _select(study)
+
+
+def test_fixed_pins_are_verified_and_bound_to_the_receipts_quarter(tmp_path, monkeypatch):
+    world = fixed_world(tmp_path, monkeypatch)
+    study, q = world["study"], world["quarter"]
+    source = PinnedPayloadSource(study["domain"]["sources"]["forecasts"]["pin"])
+
+    def attempt(edit, match):
+        changed = copy.deepcopy(study)
+        edit(changed)
+        with pytest.raises(ValueError, match=match):
+            _select(changed)
+
+    def repin_file(s, relative, digest):
+        for pin in (s["domain"]["sources"]["forecasts"]["pin"], s["domain"]["sources"]["contexts"]["pin"],
+                    s["domain"]["predictive"]["receipt"]["source"]):
+            pin["files"][relative] = digest
+
+    attempt(lambda s: repin_file(s, f"{q}/forecasts.parquet", "f"*64), "pin absent from manifest")
+    attempt(lambda s: s["domain"]["sources"]["contexts"]["pin"]["files"].update({f"{q}/contexts.parquet": "f"*64}),
+            "share one pinned manifest")
+    attempt(lambda s: s["domain"]["predictive"]["receipt"].update(sha256="f"*64), "digest differs")
+    attempt(lambda s: s["domain"]["sources"]["forecasts"]["files"].update(shared="2020Q2/forecasts.parquet"), "quarter")
+    attempt(lambda s: s["domain"]["sources"]["contexts"]["files"].update(shared="2020Q2/contexts.parquet"), "quarter")
+    attempt(lambda s: s["domain"]["predictive"]["receipt"].update(
+        file="2020Q2/receipt.json", sha256=source.pin["files"]["2020Q2/receipt.json"]), "fold")
+    for leaf in ("forecasts.parquet", "contexts.parquet", "receipt.json"):
+        path = Path(source.file(f"{q}/{leaf}"))
+        original = path.read_bytes()
+        path.unlink()
+        path.write_bytes(original+b"\0")  # never write through a hard link
+        with pytest.raises(ValueError, match="drift"):
+            _select(study)
+        path.unlink()
+        path.write_bytes(original)
+    assert _select(study)["quarter"] == q, "restored bytes pass"
+
+
+def test_fixed_ticker_list_equals_the_lock_and_missing_names_partition_it(tmp_path, monkeypatch):
+    names = ("X", "Y")
+    world = fixed_world(tmp_path/"ok", monkeypatch, names=names, missing=("Y",))
+    assert _select(world["study"])["missing_names"] == ["Y"], "a missing name has no rows and stays on the list"
+    for tag, kwargs, match in [("silent", {"receipt": _value(["missing_names"], [])}, "ticker"),
+                               ("both", {"receipt": _value(["expected_names"], ["X", "Y"])}, "ticker"),
+                               ("repeat", {"receipt": _value(["missing_names"], ["Y", "Y"])}, "ticker"),
+                               ("outsider", {"receipt": _value(["missing_names"], ["Z"])}, "ticker")]:
+        study = fixed_world(tmp_path/tag, monkeypatch, names=names, missing=("Y",), **kwargs)["study"]
+        with pytest.raises(ValueError, match=match):
+            _select(study)
+    # an expected name with no rows is a silent cut; so is a document on part of the list
+    study = fixed_world(tmp_path/"no-rows", monkeypatch, names=names)["study"]
+    with pytest.raises(ValueError, match="ticker"):
+        _select(study)
+    study = fixed_world(tmp_path/"part", monkeypatch, names=names, missing=("Y",))["study"]
+    study["domain"]["params"]["symbols"] = ["X"]
+    with pytest.raises(ValueError, match="ticker"):
+        _select(study)
+
+
+def test_fixed_selection_reads_the_real_locked_list(tmp_path, monkeypatch):
+    """The lock is never synthetic in production: the real 166-name file passes, and one name short refuses."""
+    from index_options import ticker_lock
+
+    real = ticker_lock.TickerLock.load(ticker_lock.DEFAULT_LOCK).symbols
+    assert len(real) == 166
+    default = ticker_lock.DEFAULT_LOCK
+    first, last = real[0], real[-1]
+
+    def rows_for_first(rows):
+        return [{**r, "symbol": first} for r in rows]
+    world = fixed_world(tmp_path, monkeypatch, names=("X",), forecasts=rows_for_first, contexts=rows_for_first,
+                        receipt=lambda b: b.update(expected_names=[first], missing_names=list(real[1:]),
+                                                   ticker_lock_sha256=hashlib.sha256(default.read_bytes()).hexdigest()))
+    monkeypatch.setattr(ticker_lock, "DEFAULT_LOCK", default)
+    study = world["study"]
+    study["domain"]["params"]["symbols"] = list(real)
+    assert _select(study)["expected_names"] == [first]
+    study["domain"]["params"]["symbols"] = list(real[:-1])
+    with pytest.raises(ValueError, match="ticker"):
+        _select(study)
+    assert last not in study["domain"]["params"]["symbols"]
+
+
+def test_existing_policies_refuse_a_fixed_forecast_receipt_exactly_as_before(tmp_path, monkeypatch):
+    """A fixed-forecast receipt is no back door into the other policies, and they keep their own refusals."""
+    from index_options.mio_contract import MIOStudyContract, OptionPolicyStudyContract
+
+    world = fixed_world(tmp_path, monkeypatch)
+    ref = world["study"]["domain"]["predictive"]["receipt"]
+    for policy, message in [("owner_selected_pinned_forecasts", "invalid pinned forecast receipt"),
+                            ("owner_selected_saved_zoo_outputs", "invalid owner-selected development receipt"),
+                            ("owner_selected_blinded_cache", "explicit blinded producer authority required")]:
+        study = copy.deepcopy(world["study"])
+        study["domain"]["predictive"] = {"policy": policy, "receipt": ref}
+        with pytest.raises(ValueError, match=message):
+            MIOStudyContract.selection(study)
+    study = copy.deepcopy(world["study"])
+    study["domain"]["predictive"] = {"policy": "best_model_zoo_output", "receipt": ref}
+    with pytest.raises(ValueError, match="bound model-zoo selection receipt required"):
+        MIOStudyContract.selection(study)
+    # the RL/policy contract keeps its 2019-only route: a fixed forecast is the plain selection, not that one
+    policy_study = copy.deepcopy(world["study"])
+    policy_study["domain"]["policy"] = {"mode": "training"}
+    assert OptionPolicyStudyContract.selection(policy_study)["quarter"] == world["quarter"]
+    # _stitched_sources' refusals and its success are untouched by sharing the binding rule
+    source, _ = MIOStudyContract._receipt_source(world["study"], {"policy": "x", "receipt": ref})
+    sources = world["study"]["domain"]["sources"]
+    good = {"forecast": {"relpath": sources["forecasts"]["files"]["shared"],
+                         "sha256": sources["forecasts"]["pin"]["files"][sources["forecasts"]["files"]["shared"]]},
+            "context": {"relpath": sources["contexts"]["files"]["shared"],
+                        "sha256": sources["contexts"]["pin"]["files"][sources["contexts"]["files"]["shared"]]}}
+    assert MIOStudyContract._stitched_sources(world["study"], source, {"stitched": good}) is None
+    for stitched, message in [(None, "pins required"), ({"forecast": good["forecast"]}, "pins required"),
+                              ({**good, "context": None}, "does not match"),
+                              ({**good, "context": {**good["context"], "sha256": "0"*64}}, "does not match"),
+                              ({**good, "context": {**good["context"], "extra": 1}}, "does not match")]:
+        with pytest.raises(ValueError, match=message):
+            MIOStudyContract._stitched_sources(world["study"], source, {"stitched": stitched})
+    with pytest.raises(KeyError):
+        MIOStudyContract._stitched_sources(world["study"], source, {})
+
+
+
+# --- the 25-point grid: forecasts-fine.parquet bound by its own route (ADR-0297) --------------------------------------
+
+def fine_study(world, quarter=None, file=FINE_FILE):
+    """Return the world's study re-bound as the builder's ``mio-bindings-*-fine`` binding says: the 25-point file and grid."""
+    study = copy.deepcopy(world["study"])
+    study["domain"]["sources"]["forecasts"]["files"]["shared"] = f"{quarter or world['quarter']}/{file}"
+    bridge = study["domain"]["params"]["bridge"]
+    bridge["z_grid"], bridge["grid_labels"] = list(FINE_Z), list(FINE_LABELS)
+    return study
+
+
+@pytest.mark.parametrize("quarter", ["2020Q1", "2023Q4"])
+def test_the_fine_file_binds_through_its_own_route_with_its_own_hash(tmp_path, monkeypatch, quarter):
+    world = fixed_world(tmp_path, monkeypatch, quarter, fine=True)
+    receipt = _select(fine_study(world))
+    pinned = world["study"]["domain"]["sources"]["forecasts"]["pin"]["files"]
+    assert receipt["fine_grid"]["sha256"] == pinned[f"{quarter}/{FINE_FILE}"]
+    assert StudyContract.build(fine_study(world))["runnable"]
+    assert _select(world["study"]), "the 13-point document of the same snapshot is unchanged"
+
+
+def _coarse_grid(study):
+    bridge = study["domain"]["params"]["bridge"]
+    bridge["z_grid"], bridge["grid_labels"] = [-3+.5*i for i in range(13)], list(FIXED_LABELS)
+
+
+@pytest.mark.parametrize("edit, match", [
+    # the fine file under the 13-point grid, and the 13-point file under the fine grid
+    (lambda s: (_coarse_grid(s), s["domain"]["sources"]["forecasts"]["files"].update(shared="2020Q1/"+FINE_FILE)),
+     "another quarter"),
+    (lambda s: s["domain"]["sources"]["forecasts"]["files"].update(shared="2020Q1/forecasts.parquet"), "another quarter"),
+    (lambda s: s["domain"]["sources"]["forecasts"]["files"].update(shared="2020Q2/"+FINE_FILE), "another quarter"),
+    (lambda s: s["domain"]["params"]["bridge"].update(z_grid=FINE_Z[:-1]+[3.25]), "grid"),
+    (lambda s: s["domain"]["params"]["bridge"].update(grid_labels=FINE_LABELS[::-1]), "grid"),
+], ids=["coarse-grid-fine-file", "fine-grid-coarse-file", "other-quarter-fine-file", "z-grid-off", "labels-reversed"])
+def test_a_fine_binding_that_does_not_match_its_file_and_grid_is_refused(tmp_path, monkeypatch, edit, match):
+    world = fixed_world(tmp_path, monkeypatch, fine=True)
+    study = fine_study(world)
+    edit(study)
+    with pytest.raises(ValueError, match=match):
+        _select(study)
+
+
+@pytest.mark.parametrize("edit, match", [
+    (lambda b: b["fine_grid"].update(sha256="e"*64), "digest"),
+    (lambda b: b["fine_grid"].update(scored=True), "fine"),
+    (lambda b: b["fine_grid"].update(seed_average="linear_pool"), "fine"),
+    (lambda b: b["fine_grid"].update(file="forecasts-other.parquet"), "fine"),
+    (lambda b: b["fine_grid"].update(extra=1), "fine"),
+    (lambda b: b["fine_grid"].update(z_grid=[z for z in FINE_Z if z != 0.]), "grid"),
+    (lambda b: b["fine_grid"].update(grid_labels=FINE_LABELS[:-1]), "grid"),
+    (lambda b: b["fine_grid"].pop("scored"), "fine"),
+    (lambda b: b.pop("fine_grid"), "grid"),
+    (lambda b: b.update(forecasts_sha256="e"*64), "digest"),
+], ids=["sha", "scored", "average", "file", "extra-key", "dropped-point", "labels", "no-scored", "no-record", "coarse-sha"])
+def test_a_fine_receipt_record_that_does_not_describe_the_file_is_refused(tmp_path, monkeypatch, edit, match):
+    world = fixed_world(tmp_path, monkeypatch, fine=True, receipt=edit)
+    with pytest.raises(ValueError, match=match):
+        _select(fine_study(world))
+
+
+def _relabel(points):
+    return ["z"+("m" if z < 0 else "p")+format(abs(z), "g") for z in points]
+
+
+@pytest.mark.parametrize("points, labels", [
+    ([-3.25]+FINE_Z[1:], None),                                    # starts before the scored span
+    (FINE_Z[:-1]+[3.25], None),                                    # ends after it
+    ([z for z in FINE_Z if z != 0.], None),                        # a scored point (0) is missing
+    ([FINE_Z[0], FINE_Z[2], FINE_Z[1]]+FINE_Z[3:], None),          # not strictly increasing
+    (FINE_Z, FINE_LABELS[:-1]+[FINE_LABELS[0]]),                   # a repeated label
+    (FINE_Z, FINE_LABELS[:-1]),                                    # one label short
+    ([FINE_Z[0]], None),                                           # fewer than two points
+], ids=["span-start", "span-end", "scored-point-missing", "unordered", "repeated-label", "short-labels", "one-point"])
+def test_a_fine_grid_that_is_not_a_finer_grid_over_the_scored_span_is_refused(tmp_path, monkeypatch, points, labels):
+    """The record and the document agree with each other, so only the shape of the grid itself is wrong."""
+    labels = labels or _relabel(points)
+
+    def record(body):
+        body["fine_grid"].update(z_grid=points, grid_labels=labels)
+    world = fixed_world(tmp_path, monkeypatch, fine=True, receipt=record)
+    study = fine_study(world)
+    study["domain"]["params"]["bridge"].update(z_grid=list(points), grid_labels=list(labels))
+    with pytest.raises(ValueError, match="does not describe a finer grid"):
+        _select(study)
+
+
+@pytest.mark.parametrize("rows, match", [
+    (lambda rows: [{k: v for k, v in r.items() if k != "method_cdf_"+FINE_LABELS[3]} for r in rows], "columns"),
+    (lambda rows: [{**r, "extra": 1.} for r in rows], "columns"),
+    (lambda rows: rows[:1] + rows[:1], "rows|pairing"),
+    (lambda rows: [{**r, "fitted": False} for r in rows], "fitted"),
+    (lambda rows: [{**r, "fold": 9} for r in rows], "fold"),
+    (lambda rows: [{**r, "expiry": "2024-01-03"} for r in rows], "2024-01-01"),
+], ids=["column-gone", "column-added", "rows-differ", "unfitted", "fold", "2024-row"])
+def test_an_honestly_pinned_fine_file_with_the_wrong_structure_is_refused(tmp_path, monkeypatch, rows, match):
+    world = fixed_world(tmp_path, monkeypatch, fine=True, fine_forecasts=rows)
+    with pytest.raises(ValueError, match=match):
+        _select(fine_study(world))
+
+
+def test_a_fine_file_changed_after_it_was_pinned_is_refused(tmp_path, monkeypatch):
+    import pandas as pd
+
+    world = fixed_world(tmp_path, monkeypatch, fine=True)
+    pin = world["study"]["domain"]["sources"]["forecasts"]["pin"]
+    path = PinnedPayloadSource(pin).file(f"{world['quarter']}/{FINE_FILE}")      # the acquired snapshot's own copy
+    frame = pd.read_parquet(path)
+    frame.loc[:, "method_cdf_"+FINE_LABELS[3]] = 0.
+    frame.to_parquet(path, index=False)
+    with pytest.raises(ValueError):
+        _select(fine_study(world))
+    assert _select(world["study"]), "the untouched 13-point file still verifies"

@@ -4577,6 +4577,11 @@ class CDFQuoteCondorSelect(Node):
 
     role = "transform"
     outputs = ("decisions", "orders", "ledger_chain", "stress_extra_cost_usd", "skips", "summary")
+    #: The largest fall between consecutive CDF grid points MIO takes as float rounding (the forecast builder's
+    #: own ``MONOTONE_TOLERANCE``, same consecutive-difference rule, ADR-0297). Only a caller that passes it to
+    #: :meth:`_prepare` gets the repair; :meth:`run` (the legacy backtest) still refuses any fall.
+    CDF_NOISE = 1e-9
+
     _PARAMS = ("symbol", "start", "end_before", "protected_end_before", "fold",
                "require_fitted", "z_grid", "grid_labels", "target_dte", "dte_tolerance",
                "max_abs_z", "max_relative_spread", "min_quote_size",
@@ -4780,8 +4785,13 @@ class CDFQuoteCondorSelect(Node):
         """Keep the legacy fill policy, whose quote screen checks unit depth."""
         return True
 
-    def _prepare(self, forecast, context, day, expiry, quotes, factors):
-        """Project same-date inputs for a solver without reading future market data."""
+    def _prepare(self, forecast, context, day, expiry, quotes, factors, cdf_noise=0.):
+        """Project same-date inputs for a solver without reading future market data.
+
+        ``cdf_noise`` is the largest fall between consecutive CDF points taken as rounding: such a CDF is
+        raised to its running maximum (a monotone one is returned bit for bit) and the amount is recorded in
+        the projection evidence. The default, 0, refuses any fall.
+        """
         import numpy as np
         from dskit.pipeline.libs.predictive_cdf import MeanPreservingCDFGrid
 
@@ -4795,9 +4805,14 @@ class CDFQuoteCondorSelect(Node):
         if type(forecast.get("fitted")) is not bool:
             raise ValueError("invalid fitted flag")
         cdf = np.array([forecast.get(f"method_cdf_{label}") for label in p["grid_labels"]], dtype=float)
-        if (not np.isfinite(cdf).all() or (cdf < 0).any() or (cdf > 1).any()
-                or (np.diff(cdf) < 0).any()):
+        if not np.isfinite(cdf).all() or (cdf < 0).any() or (cdf > 1).any():
             raise ValueError("incoherent method CDF")
+        # Rounding noise, and only noise: no consecutive fall may exceed cdf_noise (the builder's own rule).
+        if (-np.diff(cdf)).max() > cdf_noise:
+            raise ValueError("incoherent method CDF")
+        running = np.maximum.accumulate(cdf)
+        raised = float((running-cdf).max())
+        cdf = running
         spot_raw = float(spot)/factor
         eligible, quote_rows = {}, {}
         rows = quotes.items() if hasattr(quotes, "items") else (
@@ -4823,6 +4838,8 @@ class CDFQuoteCondorSelect(Node):
             return float(np.interp(z, p["z_grid"], cdf, left=0., right=1.))
         projection = MeanPreservingCDFGrid(
             support, probability, spot=spot_raw, breakpoints=knots, **p["projection"])
+        if raised:
+            projection.evidence["cdf_noise_raised"] = raised
         index = {strike: i for i, strike in enumerate(support)}
         legs = {role: [] for role in RobustCondorSelect._ROLES}
         for (right, strike), market in eligible.items():

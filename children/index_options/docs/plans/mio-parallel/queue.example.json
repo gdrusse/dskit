@@ -1,0 +1,90 @@
+{
+  "notes": "Example coordinator config (ADR-0297, PROPOSED). Every path is a placeholder: copy, edit, never point it at a live run folder. queue_root MUST be on WSL ext4 (real 0700): action files, run roots and logs live there and the coordinator refuses a Windows drive. scratch_root may be D: (bundles, worker work dirs, the index cache only). READY-<quarter>.json markers live in queue_root; each quarter-arm's run document must name its OWN registry path, and its predictive policy is owner_selected_fixed_forecasts for the hash-pinned fixed_loc forecasts (document shape in the RUNBOOK; through 2023Q4 only; a blinded-cache arm gets no worker units). Path row A0010 (locked): nine formulations (selection_formulations) on four selection quarters (selection_quarters: 2019q4, 2020q1, 2021q1, 2021q2); the owner reads those results (report-selection), picks 3 (record-selection, once), and only those 3 run on the 8 holdout quarters 2022q1 to 2023q4 (holdout_quarters), sealed: their files live under <queue_root>/holdout/, status.json shows their states only until the owner runs unseal, and no report command exists for them. Total 9 x 4 + 3 x 8 = 60 accounts. selection_formulation_hashes pins the spec of every formulation id (the hash of the method spec incl. its id, Phases.spec_hash): a document whose method of that id hashes differently is refused, in a selection or a holdout quarter, so an id cannot name another formulation later; a refusal prints the observed and pinned hash prefixes. A holdout quarter is not planned, and the coordinator refuses to start, while its READY marker exists and the selection is not recorded: write the holdout READY markers only after the picks, and run the selection quarters first. Each selection quarter must run all nine formulations across its arms (the fine one is its own arm: own document, registry and 25-point grid); each holdout quarter exactly the picks. Method specs are in the RUNBOOK. A limit that is not a finite number (NaN) refuses. Quarters after 2023q4 are refused. Defaults are the first-parity setting: one Mac slot, no spare WSL slot, until the parity unit passes; raise the slots afterwards. parity.unit is REQUIRED with a Mac. unit_ram_gb and document_ram_gb (8) are UNMEASURED placeholders. A limit below its floor (c_floor_gb 3, c_job_gb 3.4, unit_ram_gb 4, document_ram_gb 4, ramp_seconds 120, stale_seconds 1800, wsl_reserve_gb 6, windows_reserve_gb 2, mac_reserve_gb 4) is raised to the floor, an unknown limit refuses. max_attempts names a host's lease cap (default 2 each; never unlimited). The Mac certificate type is fixed (mio-method-unit) and not configurable. c_mount and compute_scripts are pinned (/mnt/c and the compute skill directory): any other value refuses to start. After the first WSL rejection of a worker result (read from a running document's log within one pass, or from its close audit) no new Mac unit is placed until the owner runs clear-rejections --through SEQ. A sealed holdout quarter shows unit, check and count only. WSL-ONLY route (the Mac off): delete the mac block (parity is then ignored) and set wsl_slots to 1 or 2 (0 with no Mac is refused at start); the Mac can be added later on the same queue_root with a parity.unit that is still pending and was never leased on WSL (RUNBOOK: WSL first, the Mac added later). spec hashes normalise numbers, so 1 and 1.0 hash alike.",
+  "queue_root": "/home/russell/data/index_options/full-span-rerun-20261105/mio",
+  "scratch_root": "/mnt/d/full-span-rerun-20261105/mio-scratch",
+  "python": "/home/russell/dskit/.venv/bin/python",
+  "runtime": "/home/russell/wt/mio-parallel-20261105",
+  "reuse_root": "/mnt/d/full-span-rerun-20261105/mio-scratch/index-cache",
+  "c_mount": "/mnt/c",
+  "compute_scripts": "/mnt/c/Users/russe/.codex/skills/mac-compute-worker/scripts",
+  "wsl_slots": 0,
+  "quarters": [
+    "2019q4",
+    "2020q1",
+    "2021q1",
+    "2021q2",
+    "2022q1",
+    "2022q2",
+    "2022q3",
+    "2022q4",
+    "2023q1",
+    "2023q2",
+    "2023q3",
+    "2023q4"
+  ],
+  "selection_quarters": [
+    "2019q4",
+    "2020q1",
+    "2021q1",
+    "2021q2"
+  ],
+  "holdout_quarters": [
+    "2022q1",
+    "2022q2",
+    "2022q3",
+    "2022q4",
+    "2023q1",
+    "2023q2",
+    "2023q3",
+    "2023q4"
+  ],
+  "selection_formulations": [
+    "w1_010_shock10_lp",
+    "w1_003_shock10_lp",
+    "w1_003_shock10_mad050_lp",
+    "nominal_lp",
+    "w1_010z_shock10_lp",
+    "w1_010_shock10_fine_lp",
+    "w1_010_component25_shock10_lp",
+    "w1_010_name25_shock10_lp",
+    "w1_010_shock05_book_lp"
+  ],
+  "selection_picks": 3,
+  "selection_formulation_hashes": {
+      "w1_010_shock10_lp": "5df0260c24382f5687cca7a0a79c5c7dd31f18026c40565b7dd6280ba01444d2",
+      "w1_003_shock10_lp": "f039c1052a70e03e1677c3a221645cf866bd63aeb542de6e78c61f27f7607dce",
+      "w1_003_shock10_mad050_lp": "4cb355a1430cd91ca057ea6de25d1f1b6c38db1c229d8cfdf70a2b6e8b7db027",
+      "nominal_lp": "2aafa98563258583cba3ba132e00f99f94a654aa0cdaf93d8b91456e5f02d77f",
+      "w1_010z_shock10_lp": "117f2a065186e0cc05b22dce4023e9979bd2e66f168c681cc0436bf5975098b3",
+      "w1_010_shock10_fine_lp": "cbd34f09cec9d5bb8dc80b4481f58d503dfd247985a852138875eb7b9874e925",
+      "w1_010_component25_shock10_lp": "6971f606c5e65db85b7c00a713a22a009a5e63a8211178e4c1dd10d2fa74d50c",
+      "w1_010_name25_shock10_lp": "5147dcca687ef5a3da75948e4835271d7bb6118258a632fe989277ee85aaab0d",
+      "w1_010_shock05_book_lp": "d63a2e649f4cf133b3f94b44e796efe20533e6cd7d734bba44ee68f982b0840c"
+  },
+  "parity": {
+    "unit": "2019q4/rules/w1_010_shock10_lp"
+  },
+  "mac": {
+    "alias": "mac",
+    "root": "/Volumes/mio-ram",
+    "python": "/Users/gibsonrussell/Compute/software/mio-worker-20261102/bin/python",
+    "worker_script": "/Volumes/mio-ram/mac_worker.sh",
+    "sentinel": "REPLACE_WITH_THE_TOKEN_WRITTEN_TO_/Volumes/mio-ram/.mio-sentinel",
+    "slots": 1
+  },
+  "limits": {
+    "unit_ram_gb": 8,
+    "document_ram_gb": 8,
+    "mac_reserve_gb": 6,
+    "c_floor_gb": 3,
+    "c_job_gb": 3.4,
+    "ramp_seconds": 300,
+    "stale_seconds": 4500,
+    "max_attempts": {
+      "mac": 2,
+      "wsl": 2
+    },
+    "max_refunds": 3,
+    "parity_grace_seconds": 14400
+  }
+}

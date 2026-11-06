@@ -685,19 +685,26 @@ class MIOPacketInputs(StudyNode):
     outputs = ("bounded_inputs", "provenance")
 
     @staticmethod
-    def _portable_code_pins(pins):
-        """Keep validated package paths relative so checkout moves reuse indexes."""
+    def _portable_code_path(name):
+        """Return one absolute code pin's package-relative posix path (the one walk-up rule)."""
         from pathlib import Path
 
+        source = Path(name)
+        if not source.is_absolute():
+            raise ValueError("absolute study code pin required")
+        if not source.is_file():
+            raise ValueError("missing study code pin: "+name)
+        root = source.parent
+        while (root / "__init__.py").is_file():
+            root = root.parent
+        return source.relative_to(root).as_posix()
+
+    @classmethod
+    def _portable_code_pins(cls, pins):
+        """Keep validated package paths relative so checkout moves reuse indexes."""
         portable = {}
         for name, digest in pins.items():
-            source = Path(name)
-            if not source.is_absolute():
-                raise ValueError("absolute study code pin required")
-            root = source.parent
-            while (root / "__init__.py").is_file():
-                root = root.parent
-            relative = source.relative_to(root).as_posix()
+            relative = cls._portable_code_path(name)
             if relative in portable:
                 raise ValueError("ambiguous portable study code pin")
             portable[relative] = digest
@@ -724,15 +731,9 @@ class MIOPacketInputs(StudyNode):
             Bounded inputs and their source/plan provenance.
         """
         from dskit.pipeline.base import value_hash
-        from dskit.pipeline.libs.parquet import DateBoundedParquet, SQLiteParquetIndex
-        from dskit.pipeline.libs.option_ledger import StandardSplitAdjustment
-        from dskit.onboarding.artifacts import PinnedPayloadSource
-        import json
-        from .mio_contract import MIOStudyContract
         import os
-        import pyarrow as pa
-        import pyarrow.dataset as ds
         from pathlib import Path
+        from .mio_contract import MIOStudyContract
 
         plan, registry = self.plan(), self.registry()
         permit = inputs["permit"]
@@ -740,11 +741,133 @@ class MIOPacketInputs(StudyNode):
         MIOStudyContract.verify_blinded_payloads(self.params["study"], plan, permit)
         if not plan["runnable"]:
             raise ValueError("unbound packet")
-        d = self.params["study"]["domain"]
-        packet = MIOStudyContract.packet(self.params["study"])
+        study = self.params["study"]
+        if ctx is not None and getattr(ctx, "run_dir", None):
+            quote_root = Path(ctx.run_dir) / "artifacts" / "mio-quotes"
+            cache_home = os.environ.get("XDG_CACHE_HOME")
+            cache_base = (Path(cache_home) if cache_home and Path(cache_home).is_absolute()
+                          else Path.home() / ".cache")
+            reuse_root = cache_base / "dskit" / "sqlite-parquet-index"
+        else:
+            import tempfile
+            quote_root = Path(tempfile.mkdtemp(prefix="mio-quote-index-")) / "artifacts" / "mio-quotes"
+            reuse_root = None
+        bounded = self.read_bounded(study, plan["read_bounds"], MIOStudyContract.packet(study),
+                                    quote_root, reuse_root, log=self.log)
+        data, adjustments = bounded["inputs"], bounded.get("adjustments")
+        provenance = {"plan_sha256": plan["sha256"], "inputs_sha256": value_hash(bounded),
+                      "source_pins_sha256": value_hash(plan["source_pins"]), "read_bounds": plan["read_bounds"],
+                      "counts": {s: {k: len(v) for k, v in rows.items()} for s, rows in data.items()}}
+        if adjustments is not None:
+            provenance["adjustments_sha256"] = value_hash(adjustments)
+        registry.bind(plan, permit, "inputs", provenance)
+        return {"bounded_inputs": bounded, "provenance": provenance}
+
+    @staticmethod
+    def portable_inputs_sha256(bounded):
+        """Digest bounded inputs without the host-specific index file and its bytes.
+
+        Parameters
+        ----------
+        bounded : dict
+            ``bounded_inputs`` as :meth:`read_bounded` returns them.
+
+        Returns
+        -------
+        str
+            SHA-256 of the same inputs with every ``chain_index.index``
+            reduced to its schema descriptor and row count (``path`` and
+            ``sha256`` dropped), so two hosts that read the same pinned rows
+            agree even though their SQLite bytes differ.
+        """
+        import copy
+        from dskit.pipeline.base import value_hash
+
+        portable = copy.deepcopy(bounded)
+        for data in portable.get("inputs", {}).values():
+            entry = data.get("chain_index")
+            if isinstance(entry, dict) and isinstance(entry.get("index"), dict):
+                entry["index"] = {k: v for k, v in entry["index"].items() if k not in ("path", "sha256")}
+            if isinstance(entry, dict) and isinstance(entry.get("source_pin"), dict):
+                entry["source_pin"] = {k: v for k, v in entry["source_pin"].items() if k != "root"}
+        return value_hash(portable)
+
+    @classmethod
+    def portable_study_sha256(cls, study):
+        """Digest a study's identity without any host path.
+
+        Parameters
+        ----------
+        study : dict
+            An executable study (the WSL original or a worker bundle's copy
+            whose code pins and source pin roots were rewritten).
+
+        Returns
+        -------
+        str
+            SHA-256 of the domain, packets, selected packet, dependencies,
+            package-relative code pins and each source's manifest digest and
+            files; the registry and every absolute root are excluded.
+        """
+        from dskit.pipeline.base import value_hash
+
+        sources = {}
+        for role, binding in study["domain"]["sources"].items():
+            pin = binding["pin"]
+            sources[role] = {"files": binding["files"],
+                             "pin": {k: v for k, v in pin.items() if k != "root"}}
+        domain = {**study["domain"], "sources": sources}
+        return value_hash({"contract": study["contract"], "packets": study["packets"],
+                           "selected_packet": study["selected_packet"], "domain": domain,
+                           "dependencies": study["dependencies"],
+                           "code": cls._portable_code_pins(study["code"])})
+
+    @classmethod
+    def read_bounded(cls, study, bounds, packet, quote_root, reuse_root, log=None):
+        """Read and verify one packet's bounded inputs; no registry, no claim.
+
+        Parameters
+        ----------
+        study : dict
+            The executable study whose source pins and code pins resolve on
+            this host.
+        bounds : dict
+            The plan's ``read_bounds`` (computed by ``StudyContract.build``).
+        packet : dict
+            The selected packet (``MIOStudyContract.packet``).
+        quote_root : pathlib.Path
+            Directory for this run's per-symbol SQLite quote indexes.
+        reuse_root : pathlib.Path or None
+            The same-device index cache root, or None for no reuse.
+        log : logging.Logger or None
+            Receives the intake counts.
+
+        Returns
+        -------
+        dict
+            ``inputs`` per symbol (forecasts, contexts, chain_index, bars),
+            ``clocks`` and, when the study pins corporate actions,
+            ``adjustments``.
+
+        Raises
+        ------
+        ValueError
+            A pinned byte drifts, a source is malformed or the split source
+            names another symbol or window.
+        """
+        from dskit.pipeline.base import value_hash
+        from dskit.pipeline.libs.parquet import DateBoundedParquet, SQLiteParquetIndex
+        from dskit.pipeline.libs.option_ledger import StandardSplitAdjustment
+        from dskit.onboarding.artifacts import PinnedPayloadSource
+        import json
+        from pathlib import Path
+        import pyarrow as pa
+        import pyarrow.dataset as ds
+
+        d = study["domain"]
         symbols, pairs = d["params"]["symbols"], d["pairs"]
-        bounds = plan["read_bounds"]
         tail = bounds["chain"]["end_before"]
+        quote_root = Path(quote_root)
         checked = {}
 
         def read(role, key, columns, temporal, where=None):
@@ -814,16 +937,6 @@ class MIOPacketInputs(StudyNode):
                     if day in basis_factors and basis_factors[day] != factor:
                         raise ValueError("inconsistent daily basis metadata")
                     basis_factors[day] = factor
-            if ctx is not None and getattr(ctx, "run_dir", None):
-                quote_root = Path(ctx.run_dir) / "artifacts" / "mio-quotes"
-                cache_home = os.environ.get("XDG_CACHE_HOME")
-                cache_base = (Path(cache_home) if cache_home and Path(cache_home).is_absolute()
-                              else Path.home() / ".cache")
-                reuse_root = cache_base / "dskit" / "sqlite-parquet-index"
-            else:
-                import tempfile
-                quote_root = Path(tempfile.mkdtemp(prefix="mio-quote-index-")) / "artifacts" / "mio-quotes"
-                reuse_root = None
             quote_path = str(quote_root / (symbol + ".sqlite"))
             from .ledger_studies import _AllQuotedOptionContext
             quote_node = _AllQuotedOptionContext("prepare", {**d["params"]["bridge"], "symbol": symbol})
@@ -841,8 +954,8 @@ class MIOPacketInputs(StudyNode):
                 reuse_identity=({"verified_source_sha256": binding["pin"]["files"][relative],
                                  "predicate": {"symbol": symbol, "expiries": expiries},
                                  "validator": quote_node.params,
-                                 "code": self._portable_code_pins(self.params["study"]["code"]),
-                                 "dependencies": self.params["study"]["dependencies"]}
+                                 "code": cls._portable_code_pins(study["code"]),
+                                 "dependencies": study["dependencies"]}
                                 if reuse_root is not None else None),
                 replay_validator=reuse_root is not None)
             for row in bars:
@@ -856,7 +969,8 @@ class MIOPacketInputs(StudyNode):
                                 "forecast_expiries": expiries, "selected_rows": quote_index["rows"],
                                 "basis_factors": basis_factors},
                             "bars": bars}
-            self.log.info("MIO quote intake complete for %s: %d indexed rows", symbol, quote_index["rows"])
+            if log is not None:
+                log.info("MIO quote intake complete for %s: %d indexed rows", symbol, quote_index["rows"])
         # Detect drift during the bounded scan as well as before it.
         for source, relative in checked.values():
             source.file(relative, verify=True)
@@ -865,10 +979,4 @@ class MIOPacketInputs(StudyNode):
             "entry_end_before": packet["end_before"], "tail_end_before": tail}}
         if adjustments is not None:
             bounded["adjustments"] = adjustments
-        provenance = {"plan_sha256": plan["sha256"], "inputs_sha256": value_hash(bounded),
-                      "source_pins_sha256": value_hash(plan["source_pins"]), "read_bounds": bounds,
-                      "counts": {s: {k: len(v) for k, v in rows.items()} for s, rows in data.items()}}
-        if adjustments is not None:
-            provenance["adjustments_sha256"] = value_hash(adjustments)
-        registry.bind(plan, permit, "inputs", provenance)
-        return {"bounded_inputs": bounded, "provenance": provenance}
+        return bounded

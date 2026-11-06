@@ -589,3 +589,19 @@ def test_re_exposure_claim_is_development_and_leaves_original_untouched(study):
     assert final["claims"][original_claim["permit"]["id"]] == original_claim
     r2 = StudyContract.build({**disposed, "selected_packet": "r2"})
     assert registry.preview(r2)["classification"] == "fresh"
+
+
+def test_check_dependencies_is_the_one_refusal_build_applies(study):
+    import importlib.metadata
+
+    installed = importlib.metadata.version("pytest")
+    StudyContract.check_dependencies({"pytest": installed})
+    StudyContract.check_dependencies({})
+    with pytest.raises(ValueError, match="dependency pin drift: pytest"):
+        StudyContract.check_dependencies({"pytest": "0.0.0"})
+    with pytest.raises(ValueError, match="dependency pin drift: no-such-package-dskit"):
+        StudyContract.check_dependencies({"no-such-package-dskit": "1.0"})
+    drifted = copy.deepcopy(study)
+    drifted["dependencies"] = {"pytest": "0.0.0"}
+    with pytest.raises(ValueError, match="dependency pin drift: pytest"):
+        StudyContract.build(drifted)

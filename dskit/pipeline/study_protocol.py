@@ -95,6 +95,28 @@ class StudyContract(ABC):
                 raise ValueError("code pin drift: " + path)
 
     @staticmethod
+    def check_dependencies(dependencies):
+        """Refuse any installed package version that differs from its pin.
+
+        Parameters
+        ----------
+        dependencies : dict
+            Package name to the exact installed version the study pins.
+
+        Raises
+        ------
+        ValueError
+            A pinned package is absent or installed at another version.
+        """
+        for package, version in dependencies.items():
+            try:
+                installed = importlib.metadata.version(package)
+            except importlib.metadata.PackageNotFoundError as exc:
+                raise ValueError("dependency pin drift: "+package) from exc
+            if installed != version:
+                raise ValueError("dependency pin drift: "+package)
+
+    @staticmethod
     def re_exposed(packet, earlier):
         """Return the id of the earlier non-development packet this development packet repeats.
 
@@ -167,9 +189,7 @@ class StudyContract(ABC):
             cls.validate_implementation(study["code"], (cls, hook))
         if not study["dependencies"]:
             missing.append("dependencies")
-        for package, version in study["dependencies"].items():
-            if importlib.metadata.version(package) != version:
-                raise ValueError("dependency pin drift: "+package)
+        cls.check_dependencies(study["dependencies"])
         resolved = hook().resolve(study)
         if set(resolved) != {"missing", "read_bounds", "cohort", "source_pins"}:
             raise ValueError("invalid domain plan")
