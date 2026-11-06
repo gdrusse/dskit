@@ -152,7 +152,9 @@ All are descriptive, over the filled books (trades) unless said otherwise.
   `cash` (solved, chose nothing), `no_eligible_candidates`, `timeout_skipped`,
   `no_entry_fill_session` and `existing_cap_breach_cash` (no headroom left).
   `shock_risk_input` and `shock_held_breach` exist only with the opt-in shock
-  gate, which these methods do not use.
+  gate, which these methods do not use. `kelly_risk_input` exists only with the
+  opt-in `kelly` objective (a week it could not size); a report document for such a
+  method must map it to `hold` in its `actions`.
 - **Fitted vs fallback forecast**: a forecast is fitted when the method learned
   from earlier rows; otherwise it is the fallback. Reports count both per decision.
 

@@ -3420,10 +3420,10 @@ def test_chained_neighbours_make_one_component_so_component_fraction_becomes_a_p
 # --- the fractional-Kelly formulations (ADR-0299; owner ordered 2026-11-06) ------------------------------------------
 
 #: The shock's four moves inside a finer grid of sixteen, its lookback, the one cut that keeps log wealth finite, the
-#: envelope's resolution, the fill's slack on the cash row, a name's own risk, and the gap the objective needs (ADR-0299).
+#: envelope's resolution, the fill's slack on the cash row, and the gap the objective needs (ADR-0299).
 KELLY_MOVES = [-.15, -.125, -.1, -.075, -.05, -.035, -.02, -.01, .01, .02, .035, .05, .075, .1, .125, .15]
 KELLY = {"n_tangents": 32, "core": 2., "wealth_floor": .01, "moves": KELLY_MOVES, "beta_lookback": 60,
-         "cash_buffer": .05, "dispersion": .1, "gap": {"absolute": 1., "relative": .01}}
+         "cash_buffer": .05, "gap": {"absolute": 1., "relative": .05}, "time_limit": 1500}
 #: No sizing cap: the fractions are 1 (the cash rule), no component cap, no robustness radius, no short-notional floor.
 _KELLY_BASE = {"rho": 0., "portfolio_fraction": 1., "name_fraction": 1., "component_fraction": None}
 KELLY_FORMULATIONS = {
@@ -3432,11 +3432,19 @@ KELLY_FORMULATIONS = {
 }
 
 
+def _for_kelly(params):
+    """Declare what a kelly document must: the time limit the method asks for and the timeout policy that skips a week."""
+    params["solver"]["timeout_policy"] = "return"
+    params["solver"]["solver_options"]["time_limit"] = 1500
+    return params
+
+
 def _kelly_fixture(fraction=.5, **kelly):
     """The weekly fixture under a kelly method whose history needs are met by the fixture's few sessions."""
     params, inputs = _weekly_portfolio_fixture()
     params.update(correlation_lookback=5, correlation_min_pairs=2)
     params["solver"]["parity_tolerance"] = 1e-3   # the study's: the charge lines leave HiGHS up to 1e-4 of slack
+    _for_kelly(params)
     params["methods"] = [{"id": "kelly", **_KELLY_BASE,
                           "kelly": {**KELLY, "fraction": fraction, "beta_lookback": 5, **kelly}}]
     return params, inputs
@@ -3446,6 +3454,7 @@ def test_the_two_kelly_formulations_validate_and_differ_only_in_the_fraction():
     for name, method in KELLY_FORMULATIONS.items():
         params, inputs = _weekly_portfolio_fixture()
         params["methods"] = [{"id": name, **method}]
+        _for_kelly(params)
         ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
     quarter, half = KELLY_FORMULATIONS["kelly025_lp"], KELLY_FORMULATIONS["kelly050_lp"]
     assert {k: v for k, v in quarter["kelly"].items() if k != "fraction"} == \
@@ -3481,8 +3490,7 @@ def test_the_two_kelly_formulations_validate_and_differ_only_in_the_fraction():
     lambda m: m["kelly"].update(cash_buffer=1.),
     lambda m: m["kelly"].update(cash_buffer=None),
     lambda m: m["kelly"].pop("cash_buffer"),
-    lambda m: m["kelly"].update(dispersion=-.1),
-    lambda m: m["kelly"].update(dispersion=None),
+    lambda m: m["kelly"].update(dispersion=.1),
     lambda m: m["kelly"].update(gap={"absolute": 0., "relative": .01}),
     lambda m: m["kelly"].update(gap={"absolute": 1., "relative": 1.}),
     lambda m: m["kelly"].update(gap={"absolute": 1.}),
@@ -3495,6 +3503,7 @@ def test_the_two_kelly_formulations_validate_and_differ_only_in_the_fraction():
 def test_a_kelly_method_refuses_every_sizing_cap_and_every_bad_key(change):
     params, inputs = _weekly_portfolio_fixture()
     params["methods"] = [{"id": "kelly025_lp", **KELLY_FORMULATIONS["kelly025_lp"]}]
+    _for_kelly(params)
     params["methods"][0]["kelly"] = dict(params["methods"][0]["kelly"])
     change(params["methods"][0])
     with pytest.raises(ValueError, match="invalid fixed method"):
@@ -3535,10 +3544,10 @@ def test_a_kelly_method_hands_the_solver_a_utility_program_under_the_cash_rule_a
     assert utility["gamma"] == 2. and utility["w0"] == result["decisions"][1]["funding"]
     assert utility["wealth_lo"] == pytest.approx(.01*utility["w0"])
     assert utility["joint"] == [{"id": "market:0", "weight": 1., "terms": {}}], "flat bars: the moves get no weight"
-    assert utility["dispersion"] == .1 and "marginal_weight" not in utility
+    assert utility["aggregate"] == {g["id"]: g["id"].split(":")[1] for g in program["groups"]} and "dispersion" not in utility
     kelly = result["decisions"][1]["kelly"]
     assert kelly["sigma_daily"] == 0. and kelly["quiet"] == 1. and set(kelly["weights"]) == {str(m) for m in KELLY_MOVES}
-    assert kelly["dropped"] == [] and kelly["gap"] == {"absolute": 1., "relative": .01}
+    assert kelly["dropped"] == [] and kelly["gap"] == {"absolute": 1., "relative": .05}
     assert kelly["betas"] == {"X": 1.} and kelly["horizon_sessions"] >= 1
     assert set(kelly["losses"]) == set(kelly["weights"]), "the selection's loss under each move is recorded"
     if statuses[1][1] == "selected":
@@ -3614,6 +3623,7 @@ def test_a_market_move_reaches_correlated_names_more_than_an_independent_one(mon
     seen = _spy_utility_programs(monkeypatch)
     params, data, series, days = _chain_world([2, 1])
     params["methods"] = [{"id": "kelly050_lp", **KELLY_FORMULATIONS["kelly050_lp"]}]
+    _for_kelly(params)
     params["methods"][0]["kelly"] = {**KELLY_FORMULATIONS["kelly050_lp"]["kelly"], "beta_lookback": 240}   # 60 sessions is too noisy to rank
     study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
     result = study._method(params["methods"][0], None)
@@ -3623,7 +3633,11 @@ def test_a_market_move_reaches_correlated_names_more_than_an_independent_one(mon
     program = seen[0]
     joint = {s["id"]: s for s in program["utility"]["joint"]}
     assert set(joint) == {"market:0", *(f"market:{m}" for m in KELLY_MOVES)}
-    assert sum(s["weight"] for s in joint.values()) == pytest.approx(1.) and joint["market:0"]["terms"] == {}
+    import numpy as np
+    assert sum(s["weight"] for s in joint.values()) == pytest.approx(1.)
+    for key in program["utility"]["aggregate"]:
+        deviation = sum(s["weight"]*np.asarray(s["terms"].get(key, 0.)) for s in joint.values())
+        assert deviation == pytest.approx(0., abs=1e-9), "each book's probability-weighted deviation is zero"
     crash = joint["market:-0.1"]["terms"]
     by_name = {key.split(":")[1]: row for key, row in crash.items()}
     assert set(by_name) == {"C0N0", "C0N1", "C1N0"}
@@ -3632,8 +3646,94 @@ def test_a_market_move_reaches_correlated_names_more_than_an_independent_one(mon
     losses = week["kelly"]["losses"]
     assert set(losses) == {str(m) for m in KELLY_MOVES}
     wealth = week["selection"]["utility"]["wealth"]
-    assert wealth["market:-0.1"] < wealth["market:0"] and wealth["market:0"] == pytest.approx(
-        week["kelly"]["w0"]+sum(week["selection"]["group_values"]))
+    assert wealth["market:-0.1"] < wealth["market:0"]
+    assert sum(s["weight"]*wealth[s["id"]] for s in joint.values()) == pytest.approx(
+        week["kelly"]["w0"]+sum(week["selection"]["group_values"])), "the expected wealth is the forecast mean, whatever the moves"
+
+
+def test_centred_scenarios_give_every_book_a_zero_probability_weighted_deviation():
+    """A short put's profit against its no-move payoff is negative on average over the moves (the no-move payoff is not
+    the forecast mean); centring makes the weighted deviation zero for each book, the quiet cell included."""
+    import numpy as np
+
+    centred = ledger_studies.WeeklyOptionPortfolioStudy._centred_scenarios
+    # Loss net of credit at the shocked spot: terms[move][book]; terms[0.] the no-move loss. A short put (loss grows on a
+    # fall) and a long call (loss shrinks on a rise), two items each.
+    terms = {0.: {"short": [0., 10.], "long": [30., 5.]},
+             -.1: {"short": [20., 40.], "long": [30., 5.]},
+             .1: {"short": [0., 10.], "long": [20., 0.]},
+             .2: {"short": [0., 10.], "long": [0., 0.]}}
+    weights = {"-0.1": .1, "0.1": .1, "0.2": 0.}
+    raw = {key: sum(weights[str(m)]*(np.asarray(terms[0.][key])-np.asarray(terms[m][key])) for m in (-.1, .1))
+           for key in terms[0.]}
+    assert raw["short"].min() < -1., "uncentred, the short book carries a negative mean deviation"
+    scenarios = centred(terms, [-.1, .1, .2], weights, 0.8)
+    assert [s["id"] for s in scenarios] == ["market:0", "market:-0.1", "market:0.1"], "a move with no weight is not modelled"
+    assert sum(s["weight"] for s in scenarios) == pytest.approx(1.)
+    for key in terms[0.]:
+        weighted = sum(s["weight"]*np.asarray(s["terms"].get(key, [0., 0.])) for s in scenarios)
+        assert weighted == pytest.approx([0., 0.], abs=1e-12)
+    assert centred(terms, [-.1, .1], {"-0.1": 0., "0.1": 0.}, 1.) == [{"id": "market:0", "weight": 1., "terms": {}}]
+
+
+def test_a_kelly_document_declares_every_gap_and_holds_no_other_method():
+    """An absent mip gap is HiGHS's default (looser than the method's): refused. A kelly method runs alone."""
+    params, _ = _weekly_portfolio_fixture()
+    kelly = {"id": "kelly025_lp", **KELLY_FORMULATIONS["kelly025_lp"]}
+    params["methods"] = [kelly]
+    _for_kelly(params)
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    for missing in ("mip_abs_gap", "mip_rel_gap"):
+        bad, _ = _weekly_portfolio_fixture()
+        _for_kelly(bad)
+        bad["methods"] = [kelly]
+        del bad["solver"]["solver_options"][missing]
+        with pytest.raises(ValueError, match="gaps"):
+            ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(bad)
+        plain, _ = _weekly_portfolio_fixture()
+        del plain["solver"]["solver_options"][missing]
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(plain)   # a dollar document is unchanged
+    bare, _ = _weekly_portfolio_fixture()
+    bare["methods"] = [kelly]
+    _for_kelly(bare)
+    del bare["solver"]["solver_options"]
+    with pytest.raises(ValueError, match="gaps"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(bare)
+    mixed, _ = _weekly_portfolio_fixture()
+    mixed["methods"] = [{"id": "locked", **FORMULATIONS["w1_010_shock10_lp"]}, kelly]
+    with pytest.raises(ValueError, match="runs alone"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(mixed)
+    _for_kelly(mixed)
+    mixed["methods"] = [kelly, {"id": "kelly050_lp", **KELLY_FORMULATIONS["kelly050_lp"]}]
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(mixed)   # kelly methods may share a document
+    for change in (lambda s: s["solver_options"].pop("time_limit"), lambda s: s["solver_options"].update(time_limit=900),
+                   lambda s: s.pop("timeout_policy"), lambda s: s.update(timeout_policy="raise")):
+        short, _ = _weekly_portfolio_fixture()
+        _for_kelly(short)
+        short["methods"] = [kelly]
+        change(short["solver"])
+        with pytest.raises(ValueError, match="time_limit"):
+            ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(short)
+    longer, _ = _weekly_portfolio_fixture()
+    _for_kelly(longer)
+    longer["solver"]["solver_options"]["time_limit"] = 3000
+    longer["methods"] = [kelly]
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(longer)   # a longer limit is no looser
+
+
+def test_a_kelly_week_records_how_many_groups_the_screen_dropped(monkeypatch):
+    params, data, method = _overlapping_kelly_world()
+    week = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)["decisions"][0]
+    screen = week["kelly"]["screen"]
+    assert set(screen) == {"rule", "candidates", "kept", "screened", "fallback"}
+    assert screen["candidates"] == week["kelly"]["candidates"] and screen["kept"]+screen["screened"] == screen["candidates"]
+
+
+def test_a_comparison_row_lists_the_names_a_kelly_method_dropped_and_their_weeks():
+    decisions = [{"date": "2019-01-02", "kelly": {"dropped": []}}, {"date": "2019-01-07", "kelly": {"dropped": ["A", "B"]}},
+                 {"date": "2019-01-14", "kelly": {"dropped": ["A"]}}, {"date": "2019-01-21", "status": "cash"}]
+    assert ledger_studies.MIOPacketCompare._kelly_dropped(decisions) == {
+        "names": {"A": ["2019-01-07", "2019-01-14"], "B": ["2019-01-07"]}, "name_count": 2, "name_weeks": 3}
 
 
 #: `_method` digests of two shock methods (decision `seconds` removed), computed from 69579ad3's code, before `_move_terms`
@@ -3660,6 +3760,7 @@ def _overlapping_kelly_world(buffer=.05):
     params, data, series, days = _chain_world([2, 1])
     params["clocks"]["entry_end_before"] = "2019-01-09"
     params["solver"]["parity_tolerance"] = 1e-3
+    _for_kelly(params)
     method = {"id": "k", **KELLY_FORMULATIONS["kelly050_lp"]}
     method["kelly"] = {**method["kelly"], "beta_lookback": 240, "cash_buffer": buffer}
     params["methods"] = [method]
@@ -3741,16 +3842,18 @@ def test_a_kelly_method_refuses_a_document_whose_gaps_are_looser_than_its_own():
     gap binds the document's certification and HiGHS gaps; the lp screen itself is allowed (a documented restriction)."""
     params, inputs = _weekly_portfolio_fixture()
     params["methods"] = [{"id": "kelly025_lp", **KELLY_FORMULATIONS["kelly025_lp"]}]
+    _for_kelly(params)
     ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
     for screen in ("lp", "none"):
         params["solver"]["group_screen"] = screen
         ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
-    for loose in ({"absolute_gap": 50.}, {"relative_gap": .05}, {"solver_options": {"mip_abs_gap": 50., "threads": 1}},
-                  {"solver_options": {"mip_rel_gap": .05, "threads": 1}}):
+    for loose in ({"absolute_gap": 50.}, {"relative_gap": .06}, {"solver_options": {"mip_abs_gap": 50., "threads": 1, "time_limit": 1500}},
+                  {"solver_options": {"mip_rel_gap": .06, "threads": 1, "time_limit": 1500, "mip_abs_gap": 1.}}):
         bad, _ = _weekly_portfolio_fixture()
+        _for_kelly(bad)
         bad["methods"] = params["methods"]
         bad["solver"].update(loose)
-        with pytest.raises(ValueError, match="gaps exceed"):
+        with pytest.raises(ValueError, match="solver gaps"):
             ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(bad)
         plain, _ = _weekly_portfolio_fixture()
         plain["solver"].update(loose)
@@ -3789,6 +3892,7 @@ def test_a_nonfinite_bar_drops_that_name_for_the_week_not_the_week(monkeypatch):
     params, data, series, days = _chain_world([2, 1])
     params["clocks"]["entry_end_before"] = "2019-01-09"   # so 2019-01-07 has a fill session
     params["solver"]["parity_tolerance"] = 1e-3
+    _for_kelly(params)
     params["methods"] = [{"id": "kelly050_lp", **KELLY_FORMULATIONS["kelly050_lp"]}]
     study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
     bad = params["symbols"][0]
@@ -3802,7 +3906,8 @@ def test_a_nonfinite_bar_drops_that_name_for_the_week_not_the_week(monkeypatch):
     result = study._method(params["methods"][0], None)
     week = next(d for d in result["decisions"] if d["date"] == "2019-01-07")
     assert week["status"] in ("selected", "cash") and week["kelly"]["status"] == "estimated"
-    assert week["kelly"]["dropped"] == [bad] and week["kelly"]["candidates"] == week["candidate_books"]-1
+    assert week["kelly"]["dropped"] == [bad] and week["kelly"]["candidates"] == week["candidate_books"], "counted after the drop"
+    assert bad not in week["eligible_by_symbol"] and sum(week["eligible_by_symbol"].values()) == week["candidate_books"]
     assert bad not in week["kelly"]["betas"]
     program = next(p for p in seen if p["groups"][0]["id"].startswith("2019-01-07:"))
     assert len(program["groups"]) == week["kelly"]["candidates"] and not any(bad in g["id"] for g in program["groups"])

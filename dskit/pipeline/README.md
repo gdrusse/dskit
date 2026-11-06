@@ -304,8 +304,8 @@ A program's optional `utility` block (ADR-0299) makes both value a W0-scaled
 fractional-Kelly expected utility of scenario wealth instead (tangent envelope
 from `tangent_utility`; every scenario's wealth is W0 plus every group's
 expected profit plus the scenario's declared profit terms; a hard wealth
-floor) less a `dispersion` charge of `gamma x dispersion x reserve^2 / (2 W0)`
-per group (radius 0, no risk charge). Rows grow with the scenarios and the
+floor) less a dispersion charge of `gamma x (sum over a name of sqrt(d_g) x reserve_g)^2 / (2 W0)`
+per name (`d_g` the variance of the group's best book's profit per reserve squared, from its own grid; the `aggregate` key names the name; radius 0, no risk charge). Rows grow with the scenarios and the
 groups, never with the grid points.
 It checks all shared constraints and enumerates a complete feasible catalogue,
 refusing a declared Cartesian-size limit before enumeration.

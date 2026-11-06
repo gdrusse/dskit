@@ -1343,13 +1343,20 @@ class WeeklyOptionPortfolioStudy:
         wealth finite), moves and beta_lookback (the shock's own rules, on a
         finer grid of moves), cash_buffer (0 to < 1, the share of funding the
         decision's cash row leaves unused so the next session's reprice has
-        room; the fill checks the whole cash rule), dispersion (>= 0, the
-        variance of a book's own profit as a share of its reserve squared,
-        charged at gamma x dispersion x reserve^2 / (2 x wealth): the cost of
-        a name's own risk, so concentration is not free) and gap (absolute
+        room; the fill checks the whole cash rule) and gap (absolute
         and relative: the document's solver absolute_gap, relative_gap,
-        mip_abs_gap and mip_rel_gap may be no looser, since the objective is
-        dollars of growth and a 50-dollar gap certifies a weak week as cash).
+        mip_abs_gap and mip_rel_gap must ALL be declared and no looser, since
+        the objective is dollars of growth and a 50-dollar gap certifies a
+        weak week as cash), time_limit (seconds: the document's HiGHS
+        solver_options time_limit must be declared and at least this, and its
+        timeout_policy must be return, so a week that ends above the gap is
+        skipped and listed as timeout_skipped). A name's own risk is charged at gamma x
+        (sum over the name's expiries of sqrt(d) x reserve)^2 / (2 x wealth),
+        d each book's own variance of profit per reserve squared from its
+        forecast outcomes (no constant), so concentration, and splitting a
+        name across expiries, is not free. A document holds kelly methods
+        or none: a kelly method runs alone, so the locked formulations keep
+        their gap.
         Such a method must declare rho 0, portfolio_fraction 1,
         name_fraction 1 and component_fraction null and may not declare
         shock, risk_charge, radius_scale or short_notional_fraction: the
@@ -1394,7 +1401,7 @@ class WeeklyOptionPortfolioStudy:
     _CHARGE_KEYS = ("reserve_per_contract", "short_notional_fraction")
     _SHOCK_KEYS = {"moves", "loss_fraction", "beta_lookback"}
     _KELLY_KEYS = {"fraction", "n_tangents", "core", "wealth_floor", "moves", "beta_lookback", "cash_buffer",
-                   "dispersion", "gap"}
+                   "gap", "time_limit"}
     _KELLY_GAP_KEYS = {"absolute", "relative"}
     #: Degrees of freedom of the Student t that prices the market-move cells (ADR-0299): one fixed constant, the heavy
     #: tail a normal law lacks, the lowest with a finite variance to match the basket's.
@@ -1579,11 +1586,17 @@ class WeeklyOptionPortfolioStudy:
                              or not 0 < method["component_fraction"] <= 1))):
                 raise ValueError("invalid fixed method")
             ids.add(method["id"])
+        if any("kelly" in m for m in p["methods"]) and not all("kelly" in m for m in p["methods"]):
+            # A kelly method needs a 1-dollar gap; the locked formulations were certified at theirs, and the
+            # document has one solver block: a kelly method runs alone.
+            raise ValueError("a kelly method runs alone: no non-kelly method in its document")
         for method in p["methods"]:
-            if "kelly" in method and not cls._gap_within(p["solver"], method["kelly"]["gap"]):
+            if "kelly" in method and not cls._gap_within(p["solver"], method["kelly"]):
                 # The objective is dollars of growth: a 50-dollar gap certifies a weak week as cash and cannot tell
                 # a quarter Kelly from a half. The method states the gap it needs; a looser document refuses.
-                raise ValueError("the document's solver gaps exceed the kelly method's gap")
+                raise ValueError("the document's solver gaps (absolute_gap, relative_gap, solver_options mip_abs_gap and "
+                                 "mip_rel_gap, all declared) exceed the kelly method's gap, or its time_limit is "
+                                 "undeclared or shorter than the method's, or its timeout_policy is not return")
         for symbol in symbols:
             problems = _AllQuotedOptionContext.validate_params({**p["bridge"], "symbol": symbol})
             if problems:
@@ -1671,7 +1684,7 @@ class WeeklyOptionPortfolioStudy:
                 and number_ok(kelly["core"]) and kelly["core"] > 1
                 and number_ok(kelly["wealth_floor"]) and 0 < kelly["wealth_floor"] < 1
                 and number_ok(kelly["cash_buffer"]) and 0 <= kelly["cash_buffer"] < 1
-                and number_ok(kelly["dispersion"]) and kelly["dispersion"] >= 0
+                and number_ok(kelly["time_limit"]) and kelly["time_limit"] > 0
                 and isinstance(kelly["gap"], dict) and set(kelly["gap"]) == cls._KELLY_GAP_KEYS
                 and number_ok(kelly["gap"]["absolute"]) and kelly["gap"]["absolute"] > 0
                 and number_ok(kelly["gap"]["relative"]) and 0 <= kelly["gap"]["relative"] < 1
@@ -1692,13 +1705,22 @@ class WeeklyOptionPortfolioStudy:
         return method.get("kelly")
 
     @staticmethod
-    def _gap_within(solver, gap):
-        """Return whether a document's certification gaps and HiGHS gaps are no looser than a kelly method's."""
-        options = solver.get("solver_options") or {}
-        return (number_ok(solver["absolute_gap"]) and solver["absolute_gap"] <= gap["absolute"]
+    def _gap_within(solver, kelly):
+        """Return whether a document certifies as tightly as a kelly method needs.
+
+        The certification gaps and both HiGHS gaps are declared and no looser
+        than the method's ``gap``; the HiGHS ``time_limit`` is declared and no
+        shorter than the method's; and a week that times out above the gap is
+        skipped and listed (``timeout_policy`` return), not raised.
+        """
+        gap, options = kelly["gap"], solver.get("solver_options") or {}
+        # Explicit, both HiGHS gaps too: an absent mip gap is HiGHS's own default (looser than a kelly method's).
+        return (solver.get("timeout_policy") == "return"
+                and number_ok(options.get("time_limit")) and options["time_limit"] >= kelly["time_limit"]
+                and number_ok(solver["absolute_gap"]) and solver["absolute_gap"] <= gap["absolute"]
                 and number_ok(solver["relative_gap"]) and solver["relative_gap"] <= gap["relative"]
-                and number_ok(options.get("mip_abs_gap", 0.)) and options.get("mip_abs_gap", 0.) <= gap["absolute"]
-                and number_ok(options.get("mip_rel_gap", 0.)) and options.get("mip_rel_gap", 0.) <= gap["relative"])
+                and number_ok(options.get("mip_abs_gap")) and options["mip_abs_gap"] <= gap["absolute"]
+                and number_ok(options.get("mip_rel_gap")) and options["mip_rel_gap"] <= gap["relative"])
 
     @staticmethod
     def _risk_charge_valid(spec):
@@ -1755,6 +1777,34 @@ class WeeklyOptionPortfolioStudy:
                                     - np.asarray(group["credit"])).tolist()
                        for group, meta in zip(groups, metadata)}
                 for move in moves}
+
+    @staticmethod
+    def _centred_scenarios(terms, moves, weights, quiet):
+        """Return the kelly method's joint scenarios, each book's deviation centred on its forecast mean.
+
+        ``terms[move][id]`` is a book's loss at the shocked spot net of its
+        credit, ``terms[0.][id]`` the same at the spot: their difference is
+        the book's profit deviation in that move, whose probability-weighted
+        sum over the modelled moves is not zero (the no-move payoff is not the
+        forecast mean; for short premium it is below it). Subtracting that
+        mean from every scenario, the quiet cell included, makes the
+        weighted deviation zero for each book, so the expected wealth is the
+        forecast's. A move with no weight is not modelled; with none the
+        quiet cell stands alone with no terms.
+        """
+        import numpy as np
+
+        modelled = [move for move in moves if weights[str(move)] > 0]
+        total = quiet+sum(weights[str(move)] for move in modelled)
+        deviations = {move: {key: np.asarray(terms[0.][key])-np.asarray(row) for key, row in terms[move].items()}
+                      for move in modelled}
+        centre = {key: sum(weights[str(move)]*deviations[move][key] for move in modelled)/total
+                  for key in terms[0.]} if modelled else {}
+        return ([{"id": "market:0", "weight": quiet,
+                  "terms": {key: (-mean).tolist() for key, mean in centre.items() if mean.any()}}]
+                + [{"id": f"market:{move}", "weight": weights[str(move)],
+                    "terms": {key: (row-centre[key]).tolist() for key, row in deviations[move].items()}}
+                   for move in modelled])
 
     def _horizon_sessions(self, day, days):
         """Return how many sessions the calendar holds in the ``days`` calendar days ending at ``day``, at least 1."""
@@ -2536,13 +2586,21 @@ class WeeklyOptionPortfolioStudy:
                     if estimate["dropped"]:
                         kept = [i for i, m in enumerate(metadata) if m["symbol"] not in estimate["dropped"]]
                         groups, metadata = [groups[i] for i in kept], [metadata[i] for i in kept]
+                        # The counts are of the candidates the week can trade, after the drop.
+                        record.update(candidate_books=len(groups),
+                                      candidate_contracts=sum(len(g["capacity"])//2 for g in groups),
+                                      eligible_by_symbol=dict(Counter(m["symbol"] for m in metadata)))
+                        if self.pairs is not None:
+                            record["eligible_by_pair"] = dict(Counter(m["pair_id"] for m in metadata))
+                            record["fitted"] = sum(bool(m["method_fitted"]) for m in metadata)
+                            record["fallback"] = len(metadata)-record["fitted"]
                     # Wealth to size on is the capital not already committed: funding less every open book's reserve.
                     w0 = account.remaining(self.params["symbols"], 1.)
                     weights = self._move_weights(day, kelly, self._mean_dte(metadata), estimate["names"])
                     record["kelly"] = {
                         "fraction": kelly["fraction"], "gamma": 1./kelly["fraction"], "w0": w0,
                         "funding": account.funding, "open_reserve": record["open_reserve"],
-                        "cash_buffer": kelly["cash_buffer"], "dispersion": kelly["dispersion"], "gap": dict(kelly["gap"]),
+                        "cash_buffer": kelly["cash_buffer"], "gap": dict(kelly["gap"]),
                         "wealth_lo": kelly["wealth_floor"]*w0,
                         "betas": dict(estimate["betas"]), "dropped": list(estimate["dropped"]),
                         "candidates": len(metadata), **weights,
@@ -2579,19 +2637,18 @@ class WeeklyOptionPortfolioStudy:
                         # The shock's move terms become joint wealth scenarios: each scenario's profit is the move's
                         # terminal loss against the no-move loss (the credit cancels), beside the expected profit the
                         # solver adds itself; a move the history gives no weight is recorded but not modelled (its
-                        # floor would be a cap). The quiet cell is the expectation alone.
+                        # floor would be a cap). Each book's deviation is centred so that its probability-weighted
+                        # deviation over the quiet cell and the moves is zero: the expectation stays its forecast's.
                         terms = self._move_terms([*kelly["moves"], 0.], estimate["betas"], metadata, configured, mult)
                         rows = [{"id": f"shock:{move}", "terms": terms[move], "upper": 0.} for move in kelly["moves"]]
-                        weights = record["kelly"]["weights"]
                         program["utility"] = {
                             "w0": record["kelly"]["w0"], "gamma": record["kelly"]["gamma"],
                             "n_tangents": kelly["n_tangents"], "core": kelly["core"],
-                            "wealth_lo": record["kelly"]["wealth_lo"], "dispersion": kelly["dispersion"],
-                            "joint": [{"id": "market:0", "weight": record["kelly"]["quiet"], "terms": {}}]
-                            + [{"id": f"market:{move}", "weight": weights[str(move)],
-                                "terms": {key: [base-shocked for base, shocked in zip(terms[0.][key], row)]
-                                          for key, row in terms[move].items()}}
-                               for move in kelly["moves"] if weights[str(move)] > 0]}
+                            "wealth_lo": record["kelly"]["wealth_lo"],
+                            # A name's expiries are one risk: the solver charges them on their summed reserves.
+                            "aggregate": {meta["id"]: meta["symbol"] for meta in metadata},
+                            "joint": self._centred_scenarios(terms, kelly["moves"], record["kelly"]["weights"],
+                                                             record["kelly"]["quiet"])}
                     if policy:
                         from dskit.pipeline.libs.pyomo import TransportActionScore
 
@@ -2648,6 +2705,9 @@ class WeeklyOptionPortfolioStudy:
                     if kelly is not None:
                         record["kelly"]["losses"] = ({row["id"].split(":", 1)[1]: None for row in rows} if timed_out
                                                      else self._shock_losses(rows, metadata, selection["quantities"]))
+                        # The lp screen is a restriction: it drops candidate groups with no edge that could hedge.
+                        # How many it dropped this week is a decision field, not only a log line.
+                        record["kelly"]["screen"] = (None if policy else dict(solver.last_screen))
                     if books:
                         pending = {"books": books, "components": components, "record": record}
                 decisions.append(record)
@@ -3114,6 +3174,20 @@ class MIOPacketCompare(StudyNode):
 
     outputs = ("report",)
 
+    @staticmethod
+    def _kelly_dropped(decisions):
+        """Return the names a kelly method dropped for a bad bar and the weeks of each (ADR-0299).
+
+        A dollar method keeps such a name; a kelly method drops it for every
+        week its window holds the bar, so the comparison must show it.
+        """
+        dropped = {}
+        for decision in decisions:
+            for name in decision.get("kelly", {}).get("dropped", []):
+                dropped.setdefault(name, []).append(decision["date"])
+        return {"names": dropped, "name_count": len(dropped),
+                "name_weeks": sum(len(weeks) for weeks in dropped.values())}
+
     def run(self, ctx, inputs):
         from dskit.pipeline.base import value_hash
         from .mio_contract import MIOStudyContract
@@ -3144,7 +3218,11 @@ class MIOPacketCompare(StudyNode):
                     row["timeouts"] = sum(d["status"] == "timeout_skipped" for d in result["decisions"])
                     row["decisions"] = [{k: v for k, v in decision.items() if k in {
                         "date", "status", "candidate_books", "candidate_contracts", "eligible_by_pair",
-                        "eligible_by_symbol", "fitted", "fallback", "refusals", "cdf_noise_repaired"}} for decision in result["decisions"]]
+                        "eligible_by_symbol", "fitted", "fallback", "refusals", "cdf_noise_repaired"}}
+                        | ({"kelly": {k: decision["kelly"].get(k) for k in ("status", "dropped", "candidates", "screen")}}
+                           if "kelly" in decision else {}) for decision in result["decisions"]]
+                    if any("kelly" in d for d in result["decisions"]):
+                        row["kelly_dropped"] = self._kelly_dropped(result["decisions"])
                     row["net_pnl"] = result["pnl"]
                     row["skips"] = dict(Counter(d["status"] for d in result["decisions"]
                                                if d["status"] not in {"selected", "cash"}))
