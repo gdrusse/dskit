@@ -100,7 +100,8 @@ class MioRunRows(Node):
         accepted saved-premium discrepancy in dollars. ``actions``
         (``{status: action}``) — each decision status the run may save and
         the event action it becomes; an unlisted status refuses (a kelly
-        method adds `kelly_risk_input`, a week it declined to size: `hold`).
+        method needs `kelly_risk_input`, a week it declined to size: `hold`,
+        and `timeout_skipped`, a week that ended above the gap: `skip`).
 
     Inputs
     ------

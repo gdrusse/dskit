@@ -154,7 +154,7 @@ All are descriptive, over the filled books (trades) unless said otherwise.
   `shock_risk_input` and `shock_held_breach` exist only with the opt-in shock
   gate, which these methods do not use. `kelly_risk_input` exists only with the
   opt-in `kelly` objective (a week it could not size); a report document for such a
-  method must map it to `hold` in its `actions`.
+  method must map it to `hold` and `timeout_skipped` to `skip` in its `actions`.
 - **Fitted vs fallback forecast**: a forecast is fitted when the method learned
   from earlier rows; otherwise it is the fallback. Reports count both per decision.
 

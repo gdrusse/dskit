@@ -4987,7 +4987,15 @@ class TransportPortfolioSolve(PyomoSolve):
         audited_keys = ("quantities", "reserves", "group_values", "value", *charged,
                         *(("utility",) if self._utility is not None else ()))
         for key in audited_keys:
-            if selection[key] != audited[key]:
+            claimed, audit = selection[key], audited[key]
+            if key == "utility":
+                # The record-only fields are sums this host orders its own way: present, never compared exactly.
+                if not isinstance(claimed, dict) or set(claimed) != set(audit):
+                    raise ValueError("recorded independent portfolio audit differs: "+key)
+                skip = TransportActionScore._RECORD_ONLY
+                claimed = {k: v for k, v in claimed.items() if k not in skip}
+                audit = {k: v for k, v in audit.items() if k not in skip}
+            if claimed != audit:
                 raise ValueError("recorded independent portfolio audit differs: "+key)
         gap = None if missing_bound else max(0., certificate["bound"]-audited["value"])
         allowance = max(self.params["absolute_gap"], self.params["relative_gap"]*abs(audited["value"]))
@@ -5226,18 +5234,23 @@ class TransportActionScore:
             wealth.append(self.utility["w0"]+mean+sum(float(np.dot(row, quantities[i])) for i, row in terms.items()))
         return names, wealth
 
+    #: A dispersion at or below this fraction of ``w0`` is float noise: the book's ratio and effective fraction are None.
+    BOOK_NOISE = 1e-9
+    #: The ``utility`` keys that only record: a replay requires them but never compares them exactly (host float order).
+    _RECORD_ONLY = ("group_sd", "book")
+
     def _book_record(self, plan, exact_sd, totals):
         """Return how the charge compares with the chosen book's exact sd (a record: nothing in the solve reads it).
 
         ``sd`` and ``dispersion`` are the book's exact standard deviation and the charge's ``S`` combined the way the
         charge combines them: the groups of one ``aggregate`` key add (perfectly correlated), the keys in quadrature.
         ``ratio`` is ``sd / dispersion`` and ``effective_fraction`` the Kelly fraction the charge actually applies,
-        ``f x ratio^2`` with ``f = 1 / gamma``: the label ``f`` is nominal when the ratio is not one. A book with no
-        dispersion (cash) records no ratio.
+        ``f x ratio^2`` with ``f = 1 / gamma``: the label ``f`` is nominal when the ratio is not one. A book whose
+        dispersion is float noise (at most :attr:`BOOK_NOISE` of ``w0``: cash, or legs that offset) records no ratio.
         """
         sd = math.sqrt(sum(sum(exact_sd[i] for i in indices)**2 for indices in plan["members"].values()))
         dispersion = math.sqrt(sum(total**2 for total in totals.values()))
-        ratio = sd/dispersion if dispersion > 0. else None
+        ratio = sd/dispersion if dispersion > self.BOOK_NOISE*self.utility["w0"] else None
         return {"sd": float(sd), "dispersion": float(dispersion), "ratio": ratio,
                 "effective_fraction": None if ratio is None else ratio**2/self.utility["gamma"]}
 

@@ -5608,6 +5608,46 @@ def test_a_book_is_charged_on_its_own_outcomes_not_a_reference_books():
     assert selection["value"] == pytest.approx(scorer.value(selection["quantities"])["value"], abs=1e-6)
 
 
+def test_a_book_of_offsetting_legs_records_no_ratio_from_float_noise():
+    """Two legs whose payoffs cancel to float noise (1e-13 relative) have an sd and an M of ~1e-11: the record gives
+    them no ratio and no effective fraction (their quotient would be arbitrary), while a real book keeps both."""
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+
+    group = _five_point_group(profits=((30., 30., 30., 30., -90.), (-30.*(1.+1e-13), -30.*(1.+1e-13), -30.*(1.+1e-13),
+                                                                     -30.*(1.+1e-13), 90.*(1.+1e-13))))
+    scorer = TransportActionScore(_kelly_program([group], fraction=.5), {"parity_tolerance": 1e-8})
+    noise = scorer.value([[3, 3]])["utility"]["book"]
+    assert 0. < noise["sd"] < 1e-9 and 0. < noise["dispersion"] < 1e-9, noise
+    assert noise["ratio"] is None and noise["effective_fraction"] is None
+    real = scorer.value([[3, 0]])["utility"]["book"]
+    assert real["ratio"] is not None and real["effective_fraction"] == pytest.approx(.5*real["ratio"]**2)
+
+
+def test_a_recorded_book_that_differs_in_the_last_bits_never_refuses_a_replay():
+    """``book`` and ``group_sd`` are records, not part of the valuation: a host whose BLAS sums in another order must
+    still replay the solve, while a changed charge or value still refuses."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params = _kelly_params()
+    program = _kelly_program([_five_point_group(capacity=12)], fraction=.5)
+    solved = TransportPortfolioSolve("solve", params).run(None, program)["selection"]
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in solved["certificates"]]
+    claimed = {k: v for k, v in solved.items() if k != "certificates"}
+    node = TransportPortfolioSolve("replay", params)
+    assert node._recorded(program, claimed, certificates)["utility"] == solved["utility"]
+    book = {**claimed["utility"]["book"], "sd": claimed["utility"]["book"]["sd"]*(1.+1e-15),
+            "ratio": claimed["utility"]["book"]["ratio"]*(1.-1e-15)}
+    nudged = {**claimed, "utility": {**claimed["utility"], "book": book,
+                                     "group_sd": [x*(1.+1e-15) for x in claimed["utility"]["group_sd"]]}}
+    assert node._recorded(program, nudged, certificates)["quantities"] == solved["quantities"]
+    missing = {**claimed, "utility": {k: v for k, v in claimed["utility"].items() if k != "book"}}
+    with pytest.raises(ValueError, match="utility"):
+        node._recorded(program, missing, certificates)
+    forged = {**claimed, "utility": {**claimed["utility"], "exact": claimed["utility"]["exact"]+1.}}
+    with pytest.raises(ValueError, match="audit differs: utility"):
+        node._recorded(program, forged, certificates)
+
+
 def test_a_names_groups_are_charged_on_the_sum_of_their_dispersions():
     """Two groups of one name: charge = gamma x (S_1 + S_2)^2 / (2 w0); two names: the sum of the squares."""
     from dskit.pipeline.libs.pyomo import TransportActionScore
