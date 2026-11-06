@@ -3419,7 +3419,7 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         training_context = self._training_context(x)
         monitor = None if self.patience is None else self._monitor_set(cal_x, cal_y)
         self.models, self.losses, self.monitor_losses, self.best_epochs = [], [], [], []
-        self.training_diagnostics, self.step_paths = [], []
+        self.training_diagnostics, self.step_paths, self.parameters_moved = [], [], []
         diagnostic_monitor = (self._monitor_set(cal_x, cal_y)
                               if self.training_telemetry and monitor is None else monitor)
         for seed in self.seeds:
@@ -3428,7 +3428,7 @@ class MixtureMLPCDF(_MixtureParameterCDF):
             parameter_count = sum(p.numel()*(2 if p.is_complex() else 1) for p in model.parameters() if p.requires_grad)
             if self.max_parameters is not None and parameter_count > self.max_parameters:
                 raise ValueError(f"parameter budget exceeded: {parameter_count} > {self.max_parameters}")
-            initial = [p.detach().clone() for p in model.parameters()] if self.training_telemetry else None
+            initial = [p.detach().clone() for p in model.parameters()]
             epoch_zero = (self._monitor_loss(model, diagnostic_monitor)
                           if self.training_telemetry else None)
             steps = 0
@@ -3464,6 +3464,7 @@ class MixtureMLPCDF(_MixtureParameterCDF):
                 stop.restore(model)
                 self.monitor_losses.append(stop.history)
                 self.best_epochs.append(stop.best_epoch)
+            self.parameters_moved.append(any(not torch.equal(p.detach(), v) for p, v in zip(model.parameters(), initial)))
             if self.training_telemetry:
                 delta = sum((p.detach()-v).abs().double().square().sum().item()
                             for p, v in zip(model.parameters(), initial))**.5
@@ -3476,7 +3477,7 @@ class MixtureMLPCDF(_MixtureParameterCDF):
             model.eval()
             self.models.append(model)
             self.losses.append(losses)
-        del xx, yy, hh, optimizer, order, loss, ix, stepper
+        del xx, yy, hh, optimizer, order, loss, ix, stepper, initial
         gc.collect()
         if self.device.startswith("cuda"):
             torch.cuda.empty_cache()

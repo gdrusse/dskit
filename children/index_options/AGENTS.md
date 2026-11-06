@@ -172,7 +172,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # exact-expiry surface, lifecycle, chain archive and own_iv series; no model)
                            # strike_region_scores.py (ADR-0276: StrikeRegionScores, saved CDFExperiment fits scored around the
                            # listed strikes on fit and validation rows; rows/cells/curves/summary; no fit)
-                           # pricing, tail mean and drawdown are dskit's (ADR-0182)
+                           # pricing, tail mean and drawdown are dskit's (ADR-0182); quarterly_forecasts.py, panel_extension.py (ADR-0298, proposed: forecasts 2019Q4 and 2020Q1-2025-11-28, scores through 2023 only; docs/plans/quarterly-forecasts-runbook.md)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
                            # rl-entry-synthetic.json (tiny pinned PPO/restore/paired MIO smoke),
                            # run-option-scenario-stress.json (synthetic JSON book and shocks),
