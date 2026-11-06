@@ -1710,6 +1710,10 @@ class Coordinator:
                 # A unit the Mac held and lost is not this case: _parity_watch reports it and releases the others.
                 raise ValueError(f"parity.unit {self.parity_unit} is already solved ({first['status']}) without a held parity "
                                  "file: name a unit that has not been solved yet, so the Mac can solve it for the comparison")
+        for row in self.queue.units(status="returned"):
+            if row["role"] == "primary" and row["unit_id"] != self.parity_unit:  # only a live parity pair settles a held result
+                self._transition(row["unit_id"], "rejected", row["attempt"],
+                                 note="no comparison: held for a parity unit the config no longer names; the document solves it")
         for row in self.queue.units(status="leased"):
             self.handles[row["unit_id"]] = {"pid": row["pid"], "pid_start": row["pid_start"]}
 

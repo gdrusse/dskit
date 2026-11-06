@@ -3896,6 +3896,25 @@ def test_a_dead_twin_lets_the_arm_run_and_no_verdict_is_written(tmp_path):
     assert "no comparison" in c.reasons["parity"]
 
 
+@pytest.mark.parametrize("parity", [None, {"unit": "q/a/m2"}], ids=["mac_block_removed", "another_parity_unit"])
+def test_a_held_mac_result_does_not_strand_its_arm_when_the_config_changes_across_a_restart(tmp_path, parity):
+    mac, wsl, docs = FakeHost("mac", 1), FakeHost("wsl", 2), Documents()
+    limits = {"unit_ram_gb": 8, "document_ram_gb": 8}
+    first = Coordinator(tmp_path / "q", _parity_plan(), [mac, wsl], docs, _probe(wsl=80.), limits, Clock(),
+                        parity={"unit": "q/a/m1"})
+    first.tick()
+    first.join_spawns()
+    mac.finish("q/a/m1", 1)
+    first.tick()
+    first.join_spawns()
+    assert first.queue.unit("q/a/m1")["status"] == "returned"
+    hosts = [FakeHost("mac", 1), wsl] if parity else [wsl]
+    again = Coordinator(tmp_path / "q", _parity_plan(), hosts, docs, _probe(wsl=80.), limits, Clock(),
+                        **({"parity": parity} if parity else {}))
+    row = again.queue.unit("q/a/m1")
+    assert row["status"] == "rejected" and "no comparison" in row["history"][-1].get("note", "")
+
+
 def test_a_restart_with_the_parity_unit_still_leased_on_the_mac_is_accepted(tmp_path):
     plan = _parity_plan()
     first = Coordinator(tmp_path / "q", plan, [FakeHost("mac", 1), FakeHost("wsl", 0)], Documents(), _probe(wsl=80.),
