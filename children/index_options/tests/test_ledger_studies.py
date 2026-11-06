@@ -3422,8 +3422,11 @@ def test_chained_neighbours_make_one_component_so_component_fraction_becomes_a_p
 #: The shock's four moves inside a finer grid of sixteen, its lookback, the one cut that keeps log wealth finite, the
 #: envelope's resolution, the fill's slack on the cash row, and the gap the objective needs (ADR-0299).
 KELLY_MOVES = [-.15, -.125, -.1, -.075, -.05, -.035, -.02, -.01, .01, .02, .035, .05, .075, .1, .125, .15]
+#: The certification gap of the kelly formulations, in ONE place: a relative 5% (the owner has not yet chosen between 5%
+#: and 10%, ADR-0299 speed amendment), so a change is this line; the tests below read it.
+KELLY_GAP = {"absolute": 1., "relative": .05}
 KELLY = {"n_tangents": 32, "core": 2., "wealth_floor": .01, "moves": KELLY_MOVES, "beta_lookback": 60,
-         "cash_buffer": .05, "gap": {"absolute": 1., "relative": .05}, "time_limit": 1500}
+         "cash_buffer": .05, "gap": KELLY_GAP, "time_limit": 1500}
 #: No sizing cap: the fractions are 1 (the cash rule), no component cap, no robustness radius, no short-notional floor.
 _KELLY_BASE = {"rho": 0., "portfolio_fraction": 1., "name_fraction": 1., "component_fraction": None}
 KELLY_FORMULATIONS = {
@@ -3553,7 +3556,7 @@ def test_a_kelly_method_hands_the_solver_a_utility_program_under_the_cash_rule_a
     assert utility["aggregate"] == {g["id"]: g["id"].split(":")[1] for g in program["groups"]} and "dispersion" not in utility
     kelly = result["decisions"][1]["kelly"]
     assert kelly["sigma_daily"] == 0. and kelly["quiet"] == 1. and set(kelly["weights"]) == {str(m) for m in KELLY_MOVES}
-    assert kelly["dropped"] == [] and kelly["gap"] == {"absolute": 1., "relative": .05}
+    assert kelly["dropped"] == [] and kelly["gap"] == KELLY_GAP
     assert kelly["betas"] == {"X": 1.} and kelly["horizon_sessions"] >= 1
     assert set(kelly["losses"]) == set(kelly["weights"]), "the selection's loss under each move is recorded"
     if statuses[1][1] == "selected":
@@ -3775,8 +3778,27 @@ def test_a_kelly_week_records_the_books_sd_ratio_and_effective_fraction():
         assert book["effective_fraction"] == pytest.approx(week["kelly"]["fraction"]*book["ratio"]**2)
         assert book["sd"] > 0 and book["dispersion"] > 0
     assert set(ledger_studies.MIOPacketCompare._KELLY_ROW_KEYS) <= set(solved[0]["kelly"])
+    for week in solved:
+        solve = week["kelly"]["solve"]
+        assert set(solve) == {"strategy_outcome", "bound_source"} and solve["strategy_outcome"] is not None
+        assert solve == {k: week["certificates"][0][k] for k in solve}
     skipped = [d for d in result["decisions"] if d.get("status") == "kelly_risk_input"]
     assert all("book" not in d["kelly"] for d in skipped), "no solve, no record"
+
+
+def test_a_kelly_week_whose_relaxation_fails_is_a_timeout_skipped_week_with_its_reason(monkeypatch):
+    """The direct solve is not a fallback (it never finishes on a real week): the week does not trade, is
+    `timeout_skipped`, and the decision records why (`kelly.solve`)."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    monkeypatch.setattr(TransportPortfolioSolve, "_relaxation", lambda self, solver, model, limit: None)
+    params, inputs = _kelly_fixture(fraction=.5)
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    skipped = [d for d in result["decisions"] if d.get("status") == "timeout_skipped"]
+    assert skipped and not [d for d in result["decisions"] if d.get("status") == "selected"]
+    for week in skipped:
+        assert week["kelly"]["solve"] == {"strategy_outcome": "relaxation_failed", "bound_source": "none"}
+        assert week["kelly"]["book"] is None and week["selection"]["timeout"] == "no_incumbent"
 
 
 def test_a_comparison_row_lists_the_names_a_kelly_method_dropped_and_their_weeks():

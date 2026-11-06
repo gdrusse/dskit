@@ -6026,7 +6026,7 @@ def _pair_incumbent(program, params):
     results = node._solve(solver, model)
     held = node._build_solve_record(solver, model, results, "appsi_highs", 0.)
     bound = max(held.objective, best["model_value"])
-    node.solve_record = SolveRecord(**{**held.to_obj(), "bound": bound, "gap": SolveRecord._gap(held.objective, bound),
+    node.solve_record = type(held)(**{**held.to_obj(), "bound": bound, "gap": SolveRecord._gap(held.objective, bound),
                                        "binding": ()})
     return node, model, results, best
 
@@ -6154,15 +6154,107 @@ def test_relax_fix_reads_reduced_costs_with_the_sign_that_bounds_a_forced_action
     assert forced_bound <= bound+costs[1, 0]+1e-6, "one forced contract loses at least the reduced cost"
 
 
-def test_relax_fix_falls_back_to_the_direct_solve_when_the_relaxation_fails(monkeypatch):
+def _hedged_program():
+    crash = {"id": "m", "weight": .05, "terms": {"a": [-250.], "b": [-250.], "hedge": [600.]}}
+    hedge = {**_bet_group("hedge", p=.5, credit=-20., loss=0., capacity=50), "reserve_rows": [[20.]]}
+    return _kelly_program([_bet_group("a"), _bet_group("b"), hedge], fraction=.5, joint=[{**QUIET, "weight": .95}, crash])
+
+
+def test_a_failed_relaxation_records_a_timeout_with_its_reason_and_never_solves_directly(monkeypatch):
+    """The direct solve never finishes on a real week (ADR-0299 speed amendment): a relaxation that fails is a skipped
+    week whose certificate names the reason, not a fall back to it. Outside `return` mode the failure is refused."""
     from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
 
     program = _kelly_program([_bet_group("a")], fraction=.5)
+    solves = []
     monkeypatch.setattr(TransportPortfolioSolve, "_relaxation", lambda self, solver, model, limit: None)
+    original = TransportPortfolioSolve._solve_once
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once",
+                        lambda self, *a, **k: solves.append(1) or original(self, *a, **k))
     selection = TransportPortfolioSolve("relax", _strategy_params("relax_fix")).run(None, program)["selection"]
-    direct = TransportPortfolioSolve("direct", _strategy_params("direct")).run(None, program)["selection"]
-    assert selection["quantities"] == direct["quantities"]
-    assert selection["certificates"][0]["bound"] == pytest.approx(direct["certificates"][0]["bound"])
+    assert selection["timeout"] == "no_incumbent" and selection["candidate"] is None and not solves
+    certificate = selection["certificates"][0]
+    assert (certificate["strategy_outcome"], certificate["bound_source"]) == ("relaxation_failed", "none")
+    assert certificate["termination"] == "maxTimeLimit" and certificate["objective"] is None
+    replayed = TransportPortfolioSolve("replay", _strategy_params("relax_fix"))._recorded(
+        program, {k: v for k, v in selection.items() if k != "certificates"}, selection["certificates"])
+    assert replayed["timeout"] == "no_incumbent"
+    with pytest.raises(ValueError, match="relaxation"):
+        TransportPortfolioSolve("raise", {**_strategy_params("relax_fix"), "timeout_policy": "raise"}).run(None, program)
+
+
+def test_the_certificate_says_how_the_week_was_decided_and_where_its_bound_came_from(monkeypatch):
+    """`strategy_outcome` and `bound_source` are explicit (the termination labels stay as they were): certified
+    against the relaxation, certified by a solve with reduced-cost fixing, declined, or the direct path. A dollar
+    program's certificate has neither field."""
+    from dskit.pipeline.libs.pyomo import SolveRecord, TransportPortfolioSolve
+
+    program = _hedged_program()
+    seen = {}
+    loose = TransportPortfolioSolve("loose", _strategy_params("relax_fix", absolute_gap=1e6)).run(None, program)["selection"]
+    seen["loose"] = loose["certificates"][0]
+    tight = _strategy_params("relax_fix", absolute_gap=1e-9, relative_gap=0.)
+    seen["certified"] = TransportPortfolioSolve("tight", tight).run(None, program)["selection"]["certificates"][0]
+    seen["direct"] = TransportPortfolioSolve("direct", _strategy_params("direct")).run(None, program)["selection"]["certificates"][0]
+    monkeypatch.setattr(TransportPortfolioSolve, "UTILITY_CERTIFY_ACTIONS", 0)
+    declined = TransportPortfolioSolve("declined", tight).run(None, program)["selection"]
+    assert declined["timeout"] == "gap"
+    seen["declined"] = declined["certificates"][0]
+    got = {k: (c["strategy_outcome"], c["bound_source"]) for k, c in seen.items()}
+    assert got == {"loose": ("relaxation_certified", "relaxation"), "certified": ("certified", "certification"),
+                   "direct": ("direct", "solver"), "declined": ("declined", "relaxation")}, got
+    assert seen["declined"]["termination"] == "maxTimeLimit" and seen["loose"]["termination"] == "optimal"
+    plain = {"groups": [_bet_group(capacity=4)], "caps": [{"groups": ["g"], "upper": 10000.}]}
+    dollar = TransportPortfolioSolve("plain", _strategy_params("relax_fix")).run(None, plain)["selection"]["certificates"][0]
+    assert set(dollar) == set(SolveRecord.field_names()), "a dollar certificate is unchanged"
+
+
+def test_the_support_and_certification_solves_run_with_tight_internal_gaps_not_the_documents(monkeypatch):
+    """The document's gap is the acceptance test; the search and the certification solves stop at a stated small gap
+    (the support solve at the document's 5% gap stopped early, costing value), and the options are restored."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    program = _hedged_program()
+    params = _strategy_params("relax_fix", absolute_gap=1e-9, relative_gap=0.)
+    params["solver_options"] = {**params["solver_options"], "mip_rel_gap": .05, "mip_abs_gap": 1.}
+    seen, original = [], TransportPortfolioSolve._solve_once
+
+    def spy(self, solver, model, time_limit=None):
+        seen.append((solver.options["mip_rel_gap"], solver.options["mip_abs_gap"], "mip_dual_bound" in solver.options))
+        return original(self, solver, model, time_limit)
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", spy)
+    node = TransportPortfolioSolve("gaps", params)
+    node.run(None, program)
+    assert len(seen) == 2 and seen[1][2] and not seen[0][2], "a support search, then a certification"
+    for rel, absolute, _bound in seen:
+        assert rel == TransportPortfolioSolve.UTILITY_SEARCH_REL_GAP <= 1e-4
+        assert absolute == TransportPortfolioSolve.UTILITY_SEARCH_ABS_GAP <= 1e-6
+
+
+def test_a_certification_that_returns_no_solution_keeps_the_support_incumbent(monkeypatch):
+    """In `return` mode a certification solve that ends with no solution must not discard the incumbent the support
+    search found: the week keeps it, bounded by the relaxation."""
+    from pyomo.environ import Var
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    program = _hedged_program()
+    tight = _strategy_params("relax_fix", absolute_gap=1e-9, relative_gap=0.)
+    baseline = TransportPortfolioSolve("base", tight).run(None, program)["selection"]
+    original = TransportPortfolioSolve._solve_once
+
+    def empty_certification(self, solver, model, time_limit=None):
+        result = original(self, solver, model, time_limit)
+        if "mip_dual_bound" in solver.options:   # the certification solve: HiGHS finds nothing in time
+            model._transport_no_incumbent = True
+            for variable in model.component_data_objects(Var):
+                variable.set_value(None)
+        return result
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", empty_certification)
+    kept = TransportPortfolioSolve("kept", tight).run(None, program)["selection"]
+    candidate = kept["candidate"] if "timeout" in kept else kept
+    assert "timeout" not in kept or kept["timeout"] != "no_incumbent", "the support incumbent is kept"
+    assert candidate["quantities"] == baseline["quantities"] and sum(map(sum, candidate["quantities"])) > 0
+    assert kept["certificates"][0]["objective"] is not None and kept["certificates"][0]["bound"] is not None
 
 
 def test_a_dollar_program_ignores_the_utility_solve_strategy_and_a_bad_one_refuses():

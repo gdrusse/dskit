@@ -471,6 +471,39 @@ class SolveRecord:
         return min(gaps) if gaps else None
 
 
+@dataclass(frozen=True)
+class _UtilitySolveRecord(SolveRecord):
+    """A :class:`SolveRecord` of a utility program, saying how the strategy decided the week (ADR-0299).
+
+    ``termination`` and ``status`` keep the meaning they have for every solve, so the timeout policy decides a week
+    after a declined certification as it does after a native limit; these two fields say what actually happened.
+
+    Parameters
+    ----------
+    strategy_outcome : str
+        ``relaxation_certified`` (the support incumbent is within the allowance of the LP relaxation's bound, no
+        certification solve), ``certified`` (a certification solve ran on the program with the actions the reduced
+        costs rule out fixed), ``declined`` (too many actions left free to certify: no limit was hit, the
+        incumbent stands under the relaxation's bound), ``relaxation_failed`` (the relaxation did not solve, no
+        incumbent) or ``direct`` (the whole integer program was handed to the solver).
+    bound_source : str
+        ``relaxation`` (the bound is the LP relaxation's), ``certification`` (the tighter of the relaxation and the
+        certification solve with the fixed actions' reach), ``solver`` (the solver's own bound, ``direct``) or
+        ``none``.
+    """
+
+    strategy_outcome: str
+    bound_source: str
+
+    #: The values the two fields may hold.
+    OUTCOMES = ("relaxation_certified", "certified", "declined", "relaxation_failed", "direct")
+    SOURCES = ("relaxation", "certification", "solver", "none")
+
+    def coherent(self):
+        """Whether both fields hold a value the strategy can write."""
+        return self.strategy_outcome in self.OUTCOMES and self.bound_source in self.SOURCES
+
+
 class PyomoSolve(Node):
     """The abstract doorway: one pyomo program as one pipeline Node.
 
@@ -4009,6 +4042,12 @@ class TransportPortfolioSolve(PyomoSolve):
     #: real 2021Q1 groups, 5,556 free actions ran 540 s against a 300 s cap and improved nothing. Above this the
     #: strategy stops at the support incumbent and certifies against the relaxation alone.
     UTILITY_CERTIFY_ACTIONS = 2000
+    #: The relative and absolute gaps the support search and the certification solve stop at, whatever the document's
+    #: allowance (never looser than the document's own HiGHS gaps): the document's gap is the acceptance test of the
+    #: week, not a reason to stop searching early (at the document's 5% the support solve stopped up to 7.4% short
+    #: of the value it could reach, a contract and more).
+    UTILITY_SEARCH_REL_GAP = 1e-4
+    UTILITY_SEARCH_ABS_GAP = 1e-6
 
     @classmethod
     def validate_params(cls, params):
@@ -4604,6 +4643,8 @@ class TransportPortfolioSolve(PyomoSolve):
         if (getattr(self, "_utility", None) is not None
                 and self.params.get("utility_solve", self.UTILITY_SOLVES[0]) == "relax_fix"):
             return self._solve_relax_fix(solver, model)
+        if getattr(self, "_utility", None) is not None:
+            model._transport_outcome, model._transport_bound_source = "direct", "solver"
         return self._solve_once(solver, model)
 
     def _solve_once(self, solver, model, time_limit=None):
@@ -4663,6 +4704,46 @@ class TransportPortfolioSolve(PyomoSolve):
                 variable.domain = domain
         return bound, relaxed, costs
 
+    def _search_gaps(self, solver):
+        """A context that tightens the solver's MIP gaps to the strategy's own small ones, and restores the document's."""
+        import contextlib
+
+        @contextlib.contextmanager
+        def tightened():
+            wanted = {"mip_rel_gap": self.UTILITY_SEARCH_REL_GAP, "mip_abs_gap": self.UTILITY_SEARCH_ABS_GAP}
+            saved = {key: solver.options.get(key) for key in wanted}
+            for key, small in wanted.items():
+                solver.options[key] = small if saved[key] is None else min(small, saved[key])
+            try:
+                yield
+            finally:
+                for key, value in saved.items():
+                    if value is None:
+                        del solver.options[key]
+                    else:
+                        solver.options[key] = value
+        return tightened()
+
+    def _relaxation_failed(self, model):
+        """A week whose relaxation did not solve: refused outside ``return`` mode, else a no-incumbent timeout.
+
+        The direct solve never finishes on a real week (ADR-0299 speed amendment), so it is not the fallback; the
+        certificate's ``strategy_outcome`` carries the reason.
+        """
+        from types import SimpleNamespace
+        from pyomo.environ import Var
+
+        if self.params.get("timeout_policy", "raise") != "return":
+            raise ValueError("the utility relaxation did not solve (failed or no time left); the direct integer "
+                             "solve is not a fallback: declare timeout_policy return to skip the week")
+        self.log.info("utility relaxation did not solve: the week is a no-incumbent timeout")
+        for variable in model.component_data_objects(Var):
+            variable.set_value(None)
+        model._transport_no_incumbent = True
+        model._transport_outcome, model._transport_bound_source = "relaxation_failed", "none"
+        return SimpleNamespace(solver=SimpleNamespace(status="aborted", termination_condition="maxTimeLimit"),
+                               problem=None, solution=())
+
     def _solve_relax_fix(self, solver, model):
         """The utility strategy: relax, search the support for an incumbent, certify on the reduced-cost-fixed program.
 
@@ -4671,19 +4752,21 @@ class TransportPortfolioSolve(PyomoSolve):
         rules it out of any solution better than the incumbent (``bound + rc_j < incumbent``, an LP fact that
         every integer solution obeys) is fixed at zero: the fixed program holds every better solution, so its
         own bound, and the relaxation's, hold for the whole program; ``model._transport_bound`` carries the
-        tighter of the two into the certificate. A relaxation that does not solve falls back to the direct
-        solve. Counts and seconds are logged; no value is.
+        tighter of the two into the certificate. The search and the certification stop at the strategy's own small
+        gaps (:attr:`UTILITY_SEARCH_REL_GAP`), the document's gap being only the acceptance test. A certification
+        that ends without a solution keeps the support incumbent. A relaxation that does not solve is a skipped
+        week (:meth:`_relaxation_failed`), never a direct solve. Counts and seconds are logged; no value is.
         """
         from pyomo.environ import Var
 
         model._transport_bound, model._transport_declined = None, False
+        model._transport_outcome, model._transport_bound_source = "certified", "certification"
         budget = float(self.params.get("solver_options", {}).get("time_limit", 0) or 0)
         clock = time.perf_counter()
         remaining = lambda: None if not budget else max(1., budget-(time.perf_counter()-clock))
         relaxed = self._relaxation(solver, model, remaining())
         if relaxed is None:
-            self.log.info("utility relaxation did not solve; direct solve")
-            return self._solve_once(solver, model, remaining())
+            return self._relaxation_failed(model)
         bound, stakes, costs = relaxed
         lp_seconds = time.perf_counter()-clock
         tolerance = max(self.params["parity_tolerance"], 1e-9)
@@ -4695,7 +4778,8 @@ class TransportPortfolioSolve(PyomoSolve):
             if not variable.fixed:   # a cash start (every scenario wealth at w0); the relaxed point is no integer start
                 variable.set_value(self._utility["w0"] if variable.parent_component() is model.W else 0)
         share = None if not budget else max(1., self.UTILITY_INCUMBENT_SHARE*budget)
-        result = self._solve_once(solver, model, None if share is None else min(share, remaining()))
+        with self._search_gaps(solver):
+            result = self._solve_once(solver, model, None if share is None else min(share, remaining()))
         search_seconds = time.perf_counter()-clock-lp_seconds
         incumbent = None if getattr(model, "_transport_no_incumbent", False) else self._objective_value(model)
         for key in outside:
@@ -4705,6 +4789,7 @@ class TransportPortfolioSolve(PyomoSolve):
             if bound-incumbent <= allowance:
                 # The support program's own bound covers only the support: the relaxation is the certificate.
                 model._transport_bound, model._transport_outside = bound, bound
+                model._transport_outcome, model._transport_bound_source = "relaxation_certified", "relaxation"
                 self.log.info("utility solve: relaxation %.0fs, support %d of %d actions, incumbent certified "
                               "against the relaxation in %.0fs, peak rss %.2f GB", lp_seconds,
                               len(stakes)-len(outside), len(stakes), search_seconds, self._peak_rss())
@@ -4717,22 +4802,30 @@ class TransportPortfolioSolve(PyomoSolve):
         free = len(stakes)-len(fixed)
         if free > self.UTILITY_CERTIFY_ACTIONS:
             # Too many actions for HiGHS to certify in any time: the support incumbent stands, bounded by the
-            # relaxation (every outside action could reach it), and the certificate says the limit was reached.
+            # relaxation (every outside action could reach it); no limit was hit, and the certificate says so.
             model._transport_bound, model._transport_outside, model._transport_declined = bound, bound, True
+            model._transport_outcome, model._transport_bound_source = "declined", "relaxation"
             self.log.info("utility solve: relaxation %.0fs, support %d of %d actions, incumbent search %.0fs, "
                           "certification declined (%d free actions, limit %d); the relaxation is the bound, "
                           "peak rss %.2f GB", lp_seconds, len(stakes)-len(outside), len(stakes), search_seconds,
                           free, self.UTILITY_CERTIFY_ACTIONS, self._peak_rss())
             return result
+        support = None if incumbent is None else [(v, v.value) for v in model.component_data_objects(Var)]
         for key in fixed:
             model.x[key].setub(0)
         solver.options["mip_dual_bound"] = bound   # HiGHS stops at the gap against the bound it cannot improve on
         try:
-            result = self._solve_once(solver, model, remaining())
+            with self._search_gaps(solver):
+                result = self._solve_once(solver, model, remaining())
         finally:
             del solver.options["mip_dual_bound"]
             for key in fixed:
                 model.x[key].setub(capacity[key])
+        if support is not None and getattr(model, "_transport_no_incumbent", False):
+            # The certification found no solution in its time: the support incumbent it started from still stands.
+            for variable, value in support:
+                variable.set_value(value)
+            model._transport_no_incumbent = False
         # Every solution outside the fixed program holds a fixed action j, so its value is at most bound + rc_j.
         model._transport_bound = bound
         model._transport_outside = max((bound+costs[key] for key in fixed), default=None)
@@ -4776,9 +4869,14 @@ class TransportPortfolioSolve(PyomoSolve):
             bound = min(relaxed, own if outside is None else max(own, outside))
             record = replace(record, bound=bound, gap=SolveRecord._gap(record.objective, bound))
             if getattr(model, "_transport_declined", False) and record.gap is not None:
-                # A declined certification is the strategy's own time limit: the record says so, the way a native
-                # limit would, so the timeout policy decides the week and nothing is misread as certified.
+                # A declined certification keeps the label a native limit would carry (the timeout policy decides the
+                # week and nothing is misread as certified); no limit was hit, and strategy_outcome says so.
                 record = replace(record, termination="maxTimeLimit", status="aborted")
+        outcome = getattr(model, "_transport_outcome", None)
+        if outcome is not None:
+            record = _UtilitySolveRecord(**{name: getattr(record, name) for name in SolveRecord.field_names()},
+                                         strategy_outcome=outcome,
+                                         bound_source=getattr(model, "_transport_bound_source", "none"))
         return record
 
     def _timeout_reason(self, certificate, value):
@@ -4795,7 +4893,7 @@ class TransportPortfolioSolve(PyomoSolve):
         """Validate absent-incumbent evidence against the reconstructed model."""
         import copy
         from pyomo.environ import Constraint, Var
-        fields = set(SolveRecord.field_names())-{"binding"}
+        fields = self._certificate_fields(self._utility is not None)
         if (self.params.get("timeout_policy", "raise") != "return"
                 or not isinstance(certificates, list) or len(certificates) != 1
                 or not isinstance(certificates[0], dict) or set(certificates[0]) != fields):
@@ -4877,6 +4975,11 @@ class TransportPortfolioSolve(PyomoSolve):
         if self._utility is not None:
             program["utility"] = self._utility
         return program
+
+    @staticmethod
+    def _certificate_fields(utility):
+        """The keys of a certificate: a utility program's carries ``strategy_outcome`` and ``bound_source`` too."""
+        return set((_UtilitySolveRecord if utility else SolveRecord).field_names())-{"binding"}
 
     def _cash(self):
         """Return the audited cash selection: nothing held, nothing reserved, nothing earned."""
@@ -4989,11 +5092,14 @@ class TransportPortfolioSolve(PyomoSolve):
         from pyomo.environ import Constraint, Var
 
         json.dumps([actions, certificates], allow_nan=False)
-        fields = set(SolveRecord.field_names())-{"binding"}
+        fields = self._certificate_fields(isinstance(inputs, dict) and inputs.get("utility") is not None)
         if (not isinstance(certificates, list) or len(certificates) != 1
                 or not isinstance(certificates[0], dict) or set(certificates[0]) != fields):
             raise RecordedCheckRefusal("incomplete recorded certificate", "certificate_fields", "certificate")
         certificate = certificates[0]
+        if "strategy_outcome" in fields and not _UtilitySolveRecord(
+                **{**certificate, "binding": ()}).coherent():
+            raise RecordedCheckRefusal("contradictory recorded certificate", "certificate_strategy", "certificate")
         if certificate["solver"] != self.params.get("solver", DEFAULT_SOLVER):
             raise RecordedCheckRefusal("contradictory recorded certificate", "certificate_solver", "certificate")
         self.solve_record = None
@@ -5037,7 +5143,8 @@ class TransportPortfolioSolve(PyomoSolve):
                 for j, quantity in enumerate(group):
                     model.x[i, j].set_value(quantity)
             self._price_duals(model)
-        self.solve_record = SolveRecord(**{**certificate, "binding": ()})
+        self.solve_record = (_UtilitySolveRecord if self._utility is not None else SolveRecord)(
+            **{**certificate, "binding": ()})
         return self.extract(model, None)
 
     def _price_duals(self, model):
@@ -5082,9 +5189,11 @@ class TransportPortfolioSolve(PyomoSolve):
                 or not isinstance(certificates, list) or len(certificates) != 1):
             raise ValueError("incomplete recorded selection")
         certificate = certificates[0]
-        fields = set(SolveRecord.field_names())-{"binding"}
+        fields = self._certificate_fields(isinstance(inputs, dict) and inputs.get("utility") is not None)
         if not isinstance(certificate, dict) or set(certificate) != fields:
             raise ValueError("incomplete recorded certificate")
+        if "strategy_outcome" in fields and not _UtilitySolveRecord(**{**certificate, "binding": ()}).coherent():
+            raise ValueError("contradictory recorded certificate")
         statuses = (("ok", "warning") if certificate["termination"] == "optimal"
                     else ("ok", "warning", "aborted")
                     if certificate["termination"] == "maxTimeLimit" else ())

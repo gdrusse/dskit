@@ -2732,6 +2732,11 @@ class WeeklyOptionPortfolioStudy:
                         # How the charge compares with the book it sized (exact sd, its dispersion, their ratio and the
                         # fraction actually applied): the labelled fraction is nominal. A record only; None when no solve.
                         record["kelly"]["book"] = None if timed_out else dict(selection["utility"]["book"])
+                        # How the strategy decided the week and where the bound came from (the termination fields keep
+                        # their usual meaning): a failed relaxation is a skipped week that says so here.
+                        certificates = selection.get("certificates") or [{}]
+                        record["kelly"]["solve"] = {k: certificates[0].get(k)
+                                                    for k in ("strategy_outcome", "bound_source")}
                     if books:
                         pending = {"books": books, "components": components, "record": record}
                 decisions.append(record)
@@ -3199,7 +3204,7 @@ class MIOPacketCompare(StudyNode):
     outputs = ("report",)
     #: What a comparison row keeps of each kelly decision's ``kelly`` record (``book``: the exact sd, the charge, their
     #: ratio and the fraction the charge applies, ADR-0299).
-    _KELLY_ROW_KEYS = ("status", "dropped", "candidates", "screen", "book")
+    _KELLY_ROW_KEYS = ("status", "dropped", "candidates", "screen", "book", "solve")
 
     @staticmethod
     def _kelly_dropped(decisions):
