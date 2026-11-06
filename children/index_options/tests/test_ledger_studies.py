@@ -3415,3 +3415,203 @@ def test_chained_neighbours_make_one_component_so_component_fraction_becomes_a_p
     assert two_sizes == [6, 6], "two unlinked chains stay two components, each with its own 25%"
     assert sorted(len(lim["members"]) for lim in two_limits if lim["upper"] == 2500. and len(lim["members"]) > 1) \
         == [6, 6, 12], "(the weekly limit spans all 12; each chain has its own cap)"
+
+
+# --- the fractional-Kelly formulations (ADR-0299; owner ordered 2026-11-06) ------------------------------------------
+
+#: The shock's moves and lookback, the one cut that keeps log wealth finite, and the envelope's resolution.
+KELLY = {"n_tangents": 32, "core": 2., "wealth_floor": .01, "moves": SHOCK10["moves"], "beta_lookback": 60}   # 32: ADR-0299 sizing
+#: No sizing cap: the fractions are 1 (the cash rule), no component cap, no robustness radius, no short-notional floor.
+_KELLY_BASE = {"rho": 0., "portfolio_fraction": 1., "name_fraction": 1., "component_fraction": None}
+KELLY_FORMULATIONS = {
+    "kelly025_lp": {**_KELLY_BASE, "kelly": {**KELLY, "fraction": .25}},
+    "kelly050_lp": {**_KELLY_BASE, "kelly": {**KELLY, "fraction": .5}},
+}
+
+
+def _kelly_fixture(fraction=.5, **kelly):
+    """The weekly fixture under a kelly method whose history needs are met by the fixture's few sessions."""
+    params, inputs = _weekly_portfolio_fixture()
+    params.update(correlation_lookback=5, correlation_min_pairs=2)
+    params["methods"] = [{"id": "kelly", **_KELLY_BASE,
+                          "kelly": {**KELLY, "fraction": fraction, "beta_lookback": 5, **kelly}}]
+    return params, inputs
+
+
+def test_the_two_kelly_formulations_validate_and_differ_only_in_the_fraction():
+    for name, method in KELLY_FORMULATIONS.items():
+        params, inputs = _weekly_portfolio_fixture()
+        params["methods"] = [{"id": name, **method}]
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    quarter, half = KELLY_FORMULATIONS["kelly025_lp"], KELLY_FORMULATIONS["kelly050_lp"]
+    assert {k: v for k, v in quarter["kelly"].items() if k != "fraction"} == \
+        {k: v for k, v in half["kelly"].items() if k != "fraction"}
+    assert (quarter["kelly"]["fraction"], half["kelly"]["fraction"]) == (.25, .5)
+    assert KELLY["moves"] == SHOCK10["moves"] and KELLY["beta_lookback"] == SHOCK10["beta_lookback"], \
+        "the joint market risk reuses the shock's moves and lookback"
+    assert not any(k in quarter for k in ("shock", "risk_charge", "radius_scale", "short_notional_fraction"))
+
+
+@pytest.mark.parametrize("change", [
+    lambda m: m.update(rho=.1),
+    lambda m: m.update(portfolio_fraction=.5),
+    lambda m: m.update(name_fraction=.25),
+    lambda m: m.update(component_fraction=.25),
+    lambda m: m.update(shock=SHOCK10),
+    lambda m: m.update(risk_charge={"measure": "mad", "price": .5}),
+    lambda m: m.update(radius_scale="reference_scale"),
+    lambda m: m.update(short_notional_fraction=.2),
+    lambda m: m.update(short_notional_fraction=0.),
+    lambda m: m["kelly"].update(fraction=0.),
+    lambda m: m["kelly"].update(fraction=1.5),
+    lambda m: m["kelly"].update(n_tangents=1),
+    lambda m: m["kelly"].update(n_tangents=64.),
+    lambda m: m["kelly"].update(core=1.),
+    lambda m: m["kelly"].update(wealth_floor=0.),
+    lambda m: m["kelly"].update(wealth_floor=1.),
+    lambda m: m["kelly"].update(moves=[]),
+    lambda m: m["kelly"].update(moves=[-.1, 0.]),
+    lambda m: m["kelly"].update(moves=[-.1, -.1]),
+    lambda m: m["kelly"].update(beta_lookback=1),
+    lambda m: m["kelly"].update(loss_fraction=.1),
+    lambda m: m["kelly"].pop("moves"),
+    lambda m: m.update(kelly=None),
+])
+def test_a_kelly_method_refuses_every_sizing_cap_and_every_bad_key(change):
+    params, inputs = _weekly_portfolio_fixture()
+    params["methods"] = [{"id": "kelly025_lp", **KELLY_FORMULATIONS["kelly025_lp"]}]
+    params["methods"][0]["kelly"] = dict(params["methods"][0]["kelly"])
+    change(params["methods"][0])
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    assert KELLY_FORMULATIONS["kelly025_lp"]["kelly"] == {**KELLY, "fraction": .25}, "the formulation itself is untouched"
+
+
+def _spy_utility_programs(monkeypatch):
+    """Record every program the solver is handed, whole."""
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    seen, run = [], TransportPortfolioSolve.run
+
+    def spy(self, ctx, inputs):
+        seen.append(copy.deepcopy(inputs))
+        return run(self, ctx, inputs)
+    monkeypatch.setattr(TransportPortfolioSolve, "run", spy)
+    return seen
+
+
+def test_a_kelly_method_hands_the_solver_a_utility_program_under_the_cash_rule_alone(monkeypatch):
+    """No weekly budget, no name or component cap, no joint loss row: the cash rule and the utility block."""
+    seen = _spy_utility_programs(monkeypatch)
+    params, inputs = _kelly_fixture()
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    result = study._method(params["methods"][0], None)
+    statuses = [(d["date"], d["status"]) for d in result["decisions"]]
+    assert statuses[0] == ("2019-01-02", "kelly_risk_input"), "no strictly prior session: the first week does not trade"
+    assert result["decisions"][0]["kelly"]["status"] == "insufficient_history"
+    assert "selection" not in result["decisions"][0]
+    assert statuses[1][1] in ("selected", "cash") and result["decisions"][1]["kelly"]["status"] == "estimated"
+    assert seen, "the second week solves"
+    program = seen[0]
+    assert [c["upper"] for c in program["caps"]] == [pytest.approx(result["decisions"][1]["funding"])]
+    assert len(program["caps"]) == 1 and "joint_rows" not in program
+    utility = program["utility"]
+    assert utility["gamma"] == 2. and utility["w0"] == result["decisions"][1]["funding"]
+    assert utility["wealth_lo"] == pytest.approx(.01*utility["w0"])
+    assert utility["marginal_weight"] == 1. and utility["joint"] == [], "flat bars: the moves get no weight"
+    kelly = result["decisions"][1]["kelly"]
+    assert kelly["sigma_daily"] == 0. and kelly["quiet"] == 1. and set(kelly["weights"]) == {"-0.1", "-0.05", "0.05", "0.1"}
+    assert kelly["betas"] == {"X": 1.} and kelly["horizon_sessions"] >= 1
+    assert set(kelly["losses"]) == set(kelly["weights"]), "the selection's loss under each move is recorded"
+    if statuses[1][1] == "selected":
+        assert result["decisions"][1]["selection"]["utility"]["wealth_min"] >= utility["wealth_lo"]
+        assert result["decisions"][1]["selection"]["utility"]["exact"] > 0.
+
+
+def test_a_kelly_result_replays_through_the_recorded_and_derived_routes():
+    """The same integer actions, re-valued by this host's envelope, give the same result; the recorded route agrees."""
+    from index_options.mio_worker import MIOMethodWorker
+
+    params, inputs = _kelly_fixture()
+    method = params["methods"][0]
+    solved = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    assert any(d.get("status") == "selected" for d in solved["decisions"]), "the fixture trades under Kelly"
+    actions = MIOMethodWorker.actions(solved, ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).weeks)
+    derived = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, derived=actions)
+    assert _equal_but_last_bits(derived, solved)
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=solved) == solved
+    other = ledger_studies.WeeklyOptionPortfolioStudy(*_kelly_fixture(fraction=.25))
+    with pytest.raises(ValueError):
+        other._method(other.params["methods"][0], None, derived={**actions, "method": "kelly"})
+
+
+def test_a_smaller_kelly_fraction_never_takes_more_contracts():
+    totals = {}
+    for fraction in (.25, .5, 1.):
+        params, inputs = _kelly_fixture(fraction=fraction)
+        result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+        totals[fraction] = sum(sum(sum(q) for q in d["selection"]["quantities"])
+                               for d in result["decisions"] if "selection" in d)
+    assert totals[.25] <= totals[.5] <= totals[1.]
+
+
+def test_a_method_without_the_kelly_key_hands_the_solver_no_utility_block(monkeypatch):
+    seen = _spy_utility_programs(monkeypatch)
+    params, inputs = _weekly_portfolio_fixture()
+    params["methods"][0].update(FORMULATIONS["w1_010_shock10_lp"], id="nominal", shock={**SHOCK10, "beta_lookback": 2})
+    ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert seen and all("utility" not in program and "joint_rows" in program for program in seen)
+
+
+def test_move_weights_read_only_sessions_strictly_before_the_decision():
+    """Bars on or after the decision day cannot change the move weights; an earlier bar does."""
+    import copy
+
+    params, data, series, days = _chain_world([2, 1])
+    kelly = {**KELLY, "fraction": .5}
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    day = "2019-01-07"
+    before = study._move_weights(day, kelly, 30)
+    assert before["status"] == "estimated" and before["sigma_daily"] > 0
+    assert sum(before["weights"].values())+before["quiet"] == pytest.approx(1.)
+    assert all(0 < w < 1 for w in before["weights"].values()) and 0 < before["quiet"] < 1
+    assert before["weights"]["-0.1"] < before["weights"]["-0.05"], "a larger move is rarer under the fitted scale"
+    assert before["horizon_sessions"] == sum(1 for d in study.history_calendar if "2018-12-08" < d <= day)
+    later = copy.deepcopy(data)
+    for name in params["symbols"]:
+        for row in later[name]["bars"]:
+            if row["date"] >= day:
+                row["close"] *= 3.
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, later)._move_weights(day, kelly, 30) == before
+    earlier = copy.deepcopy(data)
+    for row in earlier[params["symbols"][0]]["bars"]:
+        if row["date"] == "2019-01-04":
+            row["close"] *= 1.2
+    changed = ledger_studies.WeeklyOptionPortfolioStudy(params, earlier)._move_weights(day, kelly, 30)
+    assert changed["weights"] != before["weights"]
+
+
+def test_a_market_move_reaches_correlated_names_more_than_an_independent_one(monkeypatch):
+    """Two names sharing a factor carry larger betas than the lone name: the joint scenarios hit their books harder."""
+    seen = _spy_utility_programs(monkeypatch)
+    params, data, series, days = _chain_world([2, 1])
+    params["methods"] = [{"id": "kelly050_lp", **KELLY_FORMULATIONS["kelly050_lp"]}]
+    params["methods"][0]["kelly"] = {**KELLY_FORMULATIONS["kelly050_lp"]["kelly"], "beta_lookback": 240}   # 60 sessions is too noisy to rank
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    result = study._method(params["methods"][0], None)
+    week = next(d for d in result["decisions"] if "selection" in d)
+    betas = week["kelly"]["betas"]
+    assert betas["C0N0"] > betas["C1N0"] and betas["C0N1"] > betas["C1N0"], "the shared factor raises beta"
+    program = seen[0]
+    joint = {s["id"]: s for s in program["utility"]["joint"]}
+    assert set(joint) == {"market:-0.1", "market:-0.05", "market:0.05", "market:0.1"}
+    assert program["utility"]["marginal_weight"]+sum(s["weight"] for s in joint.values()) == pytest.approx(1.)
+    crash = joint["market:-0.1"]["terms"]
+    by_name = {key.split(":")[1]: row for key, row in crash.items()}
+    assert set(by_name) == {"C0N0", "C0N1", "C1N0"}
+    assert max(min(by_name["C0N0"]), min(by_name["C0N1"])) < min(by_name["C1N0"]), \
+        "the same short put loses more where beta is larger"
+    losses = week["kelly"]["losses"]
+    assert set(losses) == {"-0.1", "-0.05", "0.05", "0.1"}
+    assert week["selection"]["utility"]["joint_wealth"]["market:-0.1"] == pytest.approx(week["funding"]-losses["-0.1"])

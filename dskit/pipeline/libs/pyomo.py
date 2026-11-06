@@ -3700,6 +3700,72 @@ class RecordedCheckRefusal(ValueError):
         return {"check": "unclassified", "category": "other", "ratio": None, "week": None}
 
 
+class _TangentEnvelope:
+    """The tangent-plane envelope of one concave utility over a wealth range.
+
+    Knots are ``n`` geometric points from ``lo`` to ``hi`` (the envelope's
+    overestimate of a log or CRRA utility is uniform in log-wealth spacing)
+    plus ``n`` more over the core band ``[w0/core, w0*core]``, where a sized
+    book keeps its scenario wealth and the error must be small, plus ``w0``
+    itself, so the envelope is exactly zero there and cash is worth exactly
+    nothing. ``u`` and its slope come from :func:`tangent_utility`, the one
+    utility home. ``value`` is the envelope (the least tangent) at given
+    wealths; ``live`` names the tangents that can be that least line somewhere
+    in a range; ``error`` and ``core_error`` are the largest overestimate on
+    ``[lo, hi]`` and on the core band, which a concave utility reaches only
+    where two adjacent tangents cross.
+    """
+
+    def __init__(self, w0, gamma, lo, hi, n, core):
+        import numpy as np
+
+        if not 0 < lo < w0 <= hi or type(n) is not int or n < 2 or not number_ok(core) or core <= 1:
+            raise ValueError("envelope needs 0 < lo < w0 <= hi, at least two knots and a core band above 1")
+        self.core = (max(float(lo), float(w0)/float(core)), min(float(hi), float(w0)*float(core)))
+        knots = np.unique(np.concatenate([np.geomspace(lo, hi, n), np.geomspace(*self.core, n), [float(w0)]]))
+        u, du = tangent_utility(knots, w0, gamma)
+        self.w0, self.gamma, self.lo, self.hi = float(w0), float(gamma), float(lo), float(hi)
+        self.knots, self.intercept, self.slope = knots, u-du*knots, du
+        # Where adjacent tangents cross: tangent j is the least line between crossings j-1 and j.
+        self.crossings = (self.intercept[1:]-self.intercept[:-1])/(self.slope[:-1]-self.slope[1:])
+
+    def value(self, wealth):
+        """Return the envelope at each wealth: the least tangent there."""
+        import numpy as np
+
+        w = np.atleast_1d(np.asarray(wealth, dtype=float))
+        return np.min(self.intercept[None, :]+self.slope[None, :]*w[:, None], axis=1)
+
+    def exact(self, wealth):
+        """Return the utility itself at each wealth."""
+        return tangent_utility(wealth, self.w0, self.gamma)[0]
+
+    def live(self, lo, hi):
+        """Return the indices of the tangents that are the least line somewhere in ``[lo, hi]``."""
+        import numpy as np
+
+        starts = np.r_[-np.inf, self.crossings]
+        ends = np.r_[self.crossings, np.inf]
+        return [int(j) for j in np.flatnonzero((starts <= hi) & (ends >= lo))]
+
+    def _largest_error(self, lo, hi):
+        """Return the largest envelope-minus-utility on ``[lo, hi]``: at the crossings, where it peaks."""
+        inside = [x for x in self.crossings if lo <= x <= hi]
+        if not inside:
+            return 0.
+        return float(max(self.value(inside)-self.exact(inside)))
+
+    @property
+    def error(self):
+        """The largest overestimate anywhere on ``[lo, hi]``."""
+        return self._largest_error(self.lo, self.hi)
+
+    @property
+    def core_error(self):
+        """The largest overestimate on the core band around ``w0``."""
+        return self._largest_error(*self.core)
+
+
 class TransportPortfolioSolve(PyomoSolve):
     """Size integer actions with marginal W1 profits and shared reserves.
 
@@ -3747,6 +3813,20 @@ class TransportPortfolioSolve(PyomoSolve):
         charge per group; group_values stay uncharged (credit minus
         W1-worst loss) and value is their sum minus the charges. An absent
         key or a zero price builds the identical program and selection.
+        Optional ``utility`` (see :meth:`_checked_utility`) replaces the
+        dollar objective by ``w0`` times the expected tangent-envelope
+        utility of scenario wealth (:func:`tangent_utility`, the one home;
+        ``gamma`` 1 is full Kelly, ``1/gamma`` the fraction): one scenario
+        per group and own grid point at ``marginal_weight`` (independent
+        outcomes, additive growth) plus the declared joint scenarios, every
+        scenario's wealth held at or above ``wealth_lo`` by a hard bound.
+        It needs radius 0 and no risk charge; the selection then carries a
+        ``utility`` block (envelope and exact utility, envelope error, knot
+        count, lowest and highest scenario wealth, the joint wealths) and
+        ``value`` is the envelope objective; group_values stay the dollar
+        expectations. The LP screen still reads dollar expectations, so a
+        group with no standalone expected profit is screened out even
+        where its joint-scenario profit would hedge another group.
 
     Examples
     --------
@@ -3809,7 +3889,7 @@ class TransportPortfolioSolve(PyomoSolve):
         import copy
         import numpy as np
 
-        if (not isinstance(inputs, dict) or set(inputs)-{"joint_rows"} != {"groups", "caps"}
+        if (not isinstance(inputs, dict) or set(inputs)-{"joint_rows", "utility"} != {"groups", "caps"}
                 or not isinstance(inputs["groups"], list)):
             raise ValueError("inputs must contain groups and caps")
         groups, caps = copy.deepcopy(inputs["groups"]), copy.deepcopy(inputs["caps"])
@@ -3861,7 +3941,8 @@ class TransportPortfolioSolve(PyomoSolve):
             raise ValueError("every group must have a shared reserve cap")
         sizes = {g["id"]: len(g["capacity"]) for g in groups}
         cls._checked_joint(joint, sizes)
-        return groups, caps, duals, joint, charges
+        utility = cls._checked_utility(inputs.get("utility"), groups, charges)
+        return groups, caps, duals, joint, charges, utility
 
     @staticmethod
     def _group_charge(group):
@@ -3872,10 +3953,21 @@ class TransportPortfolioSolve(PyomoSolve):
         return charge if charge.active else None
 
     @staticmethod
-    def _checked_joint(joint, sizes):
-        """Refuse a malformed, unknown, non-finite or cash-infeasible joint row."""
+    def _checked_terms(terms, sizes, what):
+        """Normalize one ``group id -> coefficients`` map in place; refuse an unknown, short or non-finite one."""
         import numpy as np
 
+        if not isinstance(terms, dict) or not terms or set(terms)-set(sizes):
+            raise ValueError(f"invalid {what}")
+        for key, coefficients in terms.items():
+            a = np.asarray(coefficients, dtype=float)
+            if a.shape != (sizes[key],) or not np.isfinite(a).all():
+                raise ValueError(f"invalid {what} coefficients")
+            terms[key] = a.tolist()
+
+    @classmethod
+    def _checked_joint(cls, joint, sizes):
+        """Refuse a malformed, unknown, non-finite or cash-infeasible joint row."""
         if not isinstance(joint, list):
             raise ValueError("joint_rows must be a list")
         seen = set()
@@ -3887,11 +3979,102 @@ class TransportPortfolioSolve(PyomoSolve):
                     or not number_ok(row["upper"]) or row["upper"] < 0):
                 raise ValueError("invalid joint row")
             seen.add(row["id"])
-            for key, coefficients in row["terms"].items():
-                a = np.asarray(coefficients, dtype=float)
-                if a.shape != (sizes[key],) or not np.isfinite(a).all():
-                    raise ValueError("invalid joint row coefficients")
-                row["terms"][key] = a.tolist()
+            cls._checked_terms(row["terms"], sizes, "joint row")
+
+    #: The keys of a ``utility`` block, every one explicit.
+    UTILITY_KEYS = frozenset({"w0", "gamma", "n_tangents", "core", "wealth_lo", "marginal_weight", "joint"})
+    #: How far the scenario weights may miss one in total (float sums of configured weights).
+    UTILITY_WEIGHT_TOLERANCE = 1e-9
+
+    @classmethod
+    def _checked_utility(cls, utility, groups, charges):
+        """Validate and normalize the optional ``utility`` block; None when absent.
+
+        ``w0`` is the account wealth the utility is taken relative to;
+        ``gamma`` the relative risk aversion handed to :func:`tangent_utility`
+        (``1`` is log utility, full Kelly; ``1/gamma`` is the Kelly fraction);
+        ``n_tangents`` the knots of the envelope over the whole reachable
+        range and again over the core band ``[w0/core, w0*core]`` (``core``
+        above 1); ``wealth_lo`` the positive floor every scenario's wealth
+        must keep (a hard cut, so the utility is finite);
+        ``marginal_weight`` the probability of the quiet regime in
+        which each group lands on its own grid independently of the others;
+        ``joint`` the other regimes, each ``{"id", "weight", "terms"}``, terms
+        mapping a group id to that group's PROFIT per contract in the
+        scenario. The weights and ``marginal_weight`` sum to one. A utility
+        objective is an expectation under the nominal masses: every group's
+        radius must be zero and no risk charge may be priced.
+        """
+        if utility is None:
+            return None
+        if (not isinstance(utility, dict) or set(utility) != cls.UTILITY_KEYS
+                or not number_ok(utility["w0"]) or utility["w0"] <= 0
+                or not number_ok(utility["gamma"]) or utility["gamma"] < 1
+                or type(utility["n_tangents"]) is not int or utility["n_tangents"] < 2
+                or not number_ok(utility["core"]) or utility["core"] <= 1
+                or not number_ok(utility["wealth_lo"]) or not 0 < utility["wealth_lo"] < utility["w0"]
+                or not number_ok(utility["marginal_weight"]) or not 0 <= utility["marginal_weight"] <= 1
+                or not isinstance(utility["joint"], list)):
+            raise ValueError("invalid utility block")
+        if any(g["radius"] != 0 for g in groups) or any(charge is not None for charge in charges):
+            raise ValueError("a utility objective needs radius 0 and no priced risk charge")
+        sizes = {g["id"]: len(g["capacity"]) for g in groups}
+        seen, total = set(), float(utility["marginal_weight"])
+        for scenario in utility["joint"]:
+            if (not isinstance(scenario, dict) or set(scenario) != {"id", "weight", "terms"}
+                    or not isinstance(scenario["id"], str) or not scenario["id"] or scenario["id"] in seen
+                    or not number_ok(scenario["weight"]) or scenario["weight"] < 0):
+                raise ValueError("invalid utility scenario")
+            seen.add(scenario["id"])
+            cls._checked_terms(scenario["terms"], sizes, "utility scenario")
+            total += float(scenario["weight"])
+        if abs(total-1.) > cls.UTILITY_WEIGHT_TOLERANCE:
+            raise ValueError("utility scenario weights must sum to one")
+        return {**utility, "w0": float(utility["w0"]), "gamma": float(utility["gamma"]), "core": float(utility["core"]),
+                "wealth_lo": float(utility["wealth_lo"]), "marginal_weight": float(utility["marginal_weight"])}
+
+    @staticmethod
+    def _utility_scenarios(groups, utility):
+        """Return every utility scenario as ``(id, weight, {group index: profit coefficients})``.
+
+        The quiet regime is one scenario per group and positive-mass grid
+        point, weighted ``marginal_weight x mass``, in which that group alone
+        lands on the point (profit ``credit - loss``) and every other group
+        sits at ``w0``: the additive, independent-outcomes reading of the
+        growth rate. The joint scenarios follow in their declared order.
+        """
+        import numpy as np
+
+        scenarios = []
+        for i, g in enumerate(groups):
+            profit = np.asarray(g["credit"], dtype=float)-np.asarray(g["losses"], dtype=float)
+            for k, mass in enumerate(g["masses"]):
+                if mass > 0:
+                    scenarios.append((f"{g['id']}:{k}", utility["marginal_weight"]*float(mass), {i: profit[k]}))
+        lookup = {g["id"]: i for i, g in enumerate(groups)}
+        for scenario in utility["joint"]:
+            scenarios.append((scenario["id"], float(scenario["weight"]),
+                              {lookup[key]: np.asarray(row, dtype=float) for key, row in scenario["terms"].items()}))
+        return scenarios
+
+    @staticmethod
+    def _scenario_range(terms, groups, active):
+        """Return the wealth change a scenario can reach over the active groups: ``(lowest, highest)``."""
+        lo = hi = 0.
+        for i, row in terms.items():
+            if i in active:
+                for coefficient, capacity in zip(row, groups[i]["capacity"]):
+                    lo += min(0., float(coefficient))*capacity
+                    hi += max(0., float(coefficient))*capacity
+        return lo, hi
+
+    @classmethod
+    def _utility_envelope(cls, groups, utility, scenarios):
+        """Return the one tangent envelope of a program: knots from ``wealth_lo`` to the highest reachable wealth."""
+        every = set(range(len(groups)))
+        highest = max((cls._scenario_range(terms, groups, every)[1] for _id, _w, terms in scenarios), default=0.)
+        return _TangentEnvelope(utility["w0"], utility["gamma"], utility["wealth_lo"],
+                                utility["w0"]+highest, utility["n_tangents"], utility["core"])
 
     @staticmethod
     def _group_lp_bound(group):
@@ -4011,7 +4194,7 @@ class TransportPortfolioSolve(PyomoSolve):
         ValueError
             Program or screen parameters are invalid, or a group LP fails.
         """
-        groups, _caps, _duals, _joint, _charges = self._checked(inputs)
+        groups, _caps, _duals, _joint, _charges, _utility = self._checked(inputs)
         return self._screen_metadata(groups)
 
     def _screened(self, groups):
@@ -4035,8 +4218,50 @@ class TransportPortfolioSolve(PyomoSolve):
                 and all(float(row[a]) >= -float(row[b]) for row in joint))
 
     def _joint_terms(self, key):
-        """Return one group's coefficient list from each joint row that names it."""
-        return [row["terms"][key] for row in self._joint if key in row["terms"]]
+        """Return one group's LOSS coefficients from each joint row and utility scenario that names it.
+
+        A utility scenario states profit per contract; negated here so every
+        row reads as a loss and one round-trip test serves both.
+        """
+        rows = [row["terms"][key] for row in self._joint if key in row["terms"]]
+        if self._utility is not None:
+            rows.extend([-float(c) for c in scenario["terms"][key]]
+                        for scenario in self._utility["joint"] if key in scenario["terms"])
+        return rows
+
+    def _attach_utility(self, m, groups, active):
+        """Add the scenario wealths, the tangent rows and the W0-scaled expected utility to ``m``.
+
+        One ``W[s]`` and ``U[s]`` per scenario that reaches an active group;
+        ``W[s]`` is bounded to the wealth that scenario can reach (so
+        ``wealth_lo`` is a hard cut) and only the tangents that can be the
+        least line in that range are written. A scenario no active group
+        reaches sits at ``w0``, where the envelope is zero, and is left out.
+        The objective is ``w0`` times the expected envelope, so its units are
+        dollars to first order and the gap policies keep their meaning.
+        """
+        from pyomo.environ import ConstraintList, Expression, Reals, Var
+
+        utility = self._utility
+        scenarios = self._utility_scenarios(groups, utility)
+        envelope = self._utility_envelope(groups, utility, scenarios)
+        reached = [(s, terms) for s, (_id, _w, terms) in enumerate(scenarios)
+                   if any(i in active and any(c != 0 for c in row) for i, row in terms.items())]
+        bounds = {}
+        for s, terms in reached:
+            lo, hi = self._scenario_range(terms, groups, active)
+            bounds[s] = (max(envelope.lo, utility["w0"]+lo), min(envelope.hi, utility["w0"]+hi))
+        m.W = Var(list(bounds), domain=Reals, bounds=lambda m, s: bounds[s])
+        m.U = Var(list(bounds), domain=Reals)
+        m.wealth = ConstraintList()
+        m.tangent = ConstraintList()
+        for s, terms in reached:
+            m.wealth.add(m.W[s] == utility["w0"]+sum(
+                float(c)*m.x[i, j] for i, row in terms.items() if i in active
+                for j, c in enumerate(row) if c != 0))
+            for j in envelope.live(*bounds[s]):
+                m.tangent.add(m.U[s] <= float(envelope.intercept[j])+float(envelope.slope[j])*m.W[s])
+        m.profit = Expression(expr=utility["w0"]*sum(scenarios[s][1]*m.U[s] for s, _terms in reached))
 
     def build_model(self, inputs, params):
         """Build a joint finite bounded integer program.
@@ -4061,9 +4286,9 @@ class TransportPortfolioSolve(PyomoSolve):
             NonNegativeReals, Objective, Var, maximize,
         )
 
-        groups, caps, duals, joint, charges = self._checked(inputs)
+        groups, caps, duals, joint, charges, utility = self._checked(inputs)
         self._groups, self._caps, self._duals, self._joint = groups, caps, duals, joint
-        self._charges = charges
+        self._charges, self._utility = charges, utility
         self._charged = any(charge is not None for charge in charges)
         self._active = active = self._screened(groups)
         m = ConcreteModel()
@@ -4114,10 +4339,14 @@ class TransportPortfolioSolve(PyomoSolve):
                        if lookup[key] in m.reserve for j, c in enumerate(coefficients) if c != 0)
             if not isinstance(expr, (int, float)):
                 m.rows.add(expr <= row["upper"])
-        m.profit = Expression(expr=sum(values))
+        if utility is None:
+            m.profit = Expression(expr=sum(values))
+        else:
+            self._attach_utility(m, groups, set(active))
         m.objective = Objective(expr=m.profit, sense=maximize)
         for variable in m.component_data_objects(Var):
-            variable.set_value(0)
+            # Cash: nothing held, and every scenario wealth at w0.
+            variable.set_value(utility["w0"] if utility is not None and variable.parent_component() is m.W else 0)
         return m
 
     def _solve(self, solver, model):
@@ -4217,14 +4446,35 @@ class TransportPortfolioSolve(PyomoSolve):
                 for j, quantity in enumerate(q):
                     model.x[i, j].set_value(quantity)
             quantities.append(q)
-        program = {"groups": self._groups, "caps": self._caps, "joint_rows": self._joint}
+        program = self._program()
         scored = TransportActionScore(program, {"parity_tolerance": tolerance}).evaluate(quantities)
         audited = {"quantities": scored["quantities"], "reserves": scored["reserves"],
                    "group_values": scored["group_values"], "value": scored["value"],
                    "canonicalization": cleanup}
         if self._charged:
             audited["risk_charges"] = scored["risk_charges"]
+        if self._utility is not None:
+            audited["utility"] = scored["utility"]
         return audited
+
+    def _program(self):
+        """Return the checked program the built model stands for."""
+        program = {"groups": self._groups, "caps": self._caps, "joint_rows": self._joint}
+        if self._utility is not None:
+            program["utility"] = self._utility
+        return program
+
+    def _cash(self):
+        """Return the audited cash selection: nothing held, nothing reserved, nothing earned."""
+        zero = [[0]*len(g["capacity"]) for g in self._groups]
+        chosen = {"quantities": zero, "reserves": [0.]*len(zero),
+                  "group_values": [0.]*len(zero), "value": 0.}
+        if self._charged:
+            chosen["risk_charges"] = [0.]*len(zero)
+        if self._utility is not None:
+            chosen["utility"] = TransportActionScore(
+                self._program(), {"parity_tolerance": self.params["parity_tolerance"]}).value(zero)["utility"]
+        return chosen
 
     def _recorded(self, inputs, selection, certificates):
         """Recheck executable selections or explicit non-executable timeouts."""
@@ -4391,7 +4641,11 @@ class TransportPortfolioSolve(PyomoSolve):
             if variable.parent_component() is model.x:
                 variable.fix()
         name = self.params.get("solver", DEFAULT_SOLVER)
-        results = self._resolve_solver().solve(model)
+        try:
+            results = self._resolve_solver().solve(model)
+        except RuntimeError as exc:  # appsi raises instead of returning when the fixed actions are infeasible
+            raise RecordedCheckRefusal("recorded actions could not be priced: infeasible",
+                                       "dual_pricing", "pricing") from exc
         priced = SolveRecord.from_solve(model, results, name, 0.)
         if priced.termination != "optimal":
             raise RecordedCheckRefusal("recorded actions could not be priced: "+str(priced.termination),
@@ -4406,7 +4660,7 @@ class TransportPortfolioSolve(PyomoSolve):
         json.dumps([selection, certificates], allow_nan=False)
         required = {"quantities", "reserves", "group_values", "value", "model_value",
                     "bound", "gap", "canonicalization", "primary_quantities"}
-        if (not isinstance(selection, dict) or set(selection)-{"risk_charges"} != required
+        if (not isinstance(selection, dict) or set(selection)-{"risk_charges", "utility"} != required
                 or not isinstance(certificates, list) or len(certificates) != 1):
             raise ValueError("incomplete recorded selection")
         certificate = certificates[0]
@@ -4445,6 +4699,8 @@ class TransportPortfolioSolve(PyomoSolve):
         model = self.build_model(inputs, self.params)
         if ("risk_charges" in selection) != self._charged:
             raise ValueError("recorded risk charges differ from the program")
+        if ("utility" in selection) != (self._utility is not None):
+            raise ValueError("recorded utility differs from the program")
         for key, component in (("variables", Var), ("constraints", Constraint)):
             expected = sum(1 for _ in model.component_data_objects(component, active=True))
             if type(certificate[key]) is not int or certificate[key] != expected:
@@ -4492,9 +4748,7 @@ class TransportPortfolioSolve(PyomoSolve):
             raise ValueError("invalid recorded primary valuation")
         charged = ("risk_charges",) if self._charged else ()
         if audited["value"] <= 0:
-            audited.update(quantities=[[0]*len(g["capacity"]) for g in self._groups],
-                           reserves=[0.]*len(self._groups), group_values=[0.]*len(self._groups),
-                           value=0., **{k: [0.]*len(self._groups) for k in charged})
+            audited.update(self._cash())
         if (not isinstance(selection["quantities"], list)
                 or any(not isinstance(q, list) or any(type(v) is not int for v in q)
                        for q in selection["quantities"])
@@ -4502,7 +4756,9 @@ class TransportPortfolioSolve(PyomoSolve):
                        or any(not number_ok(v) for v in selection[k])
                        for k in ("reserves", "group_values", *charged))):
             raise ValueError("invalid recorded final audit types")
-        for key in ("quantities", "reserves", "group_values", "value", *charged):
+        audited_keys = ("quantities", "reserves", "group_values", "value", *charged,
+                        *(("utility",) if self._utility is not None else ()))
+        for key in audited_keys:
             if selection[key] != audited[key]:
                 raise ValueError("recorded independent portfolio audit differs: "+key)
         gap = None if missing_bound else max(0., certificate["bound"]-audited["value"])
@@ -4574,11 +4830,7 @@ class TransportPortfolioSolve(PyomoSolve):
         # Cash is constructively feasible. Preserve every strictly positive
         # profit; only zero or parity-sized negative noise is replaced.
         if chosen["value"] <= 0.:
-            zero = [[0]*len(g["capacity"]) for g in self._groups]
-            chosen = {"quantities": zero, "reserves": [0.]*len(zero),
-                      "group_values": [0.]*len(zero), "value": 0.}
-            if self._charged:
-                chosen["risk_charges"] = [0.]*len(zero)
+            chosen = self._cash()
         gap = None if missing_bound else max(0., first.bound-chosen["value"])
         allowance = max(self.params["absolute_gap"],
                         self.params["relative_gap"]*abs(chosen["value"]))
@@ -4670,8 +4922,13 @@ class TransportActionScore:
         self.params = copy.deepcopy(params)
         self.program = copy.deepcopy(program)
         (self.groups, self.caps, self.duals, self.joint,
-         self.charges) = TransportPortfolioSolve._checked_program(self.program)
+         self.charges, self.utility) = TransportPortfolioSolve._checked_program(self.program)
         identity = {"groups": self.groups, "caps": self.caps, "joint_rows": self.joint}
+        self.scenarios = self.envelope = None
+        if self.utility is not None:
+            identity["utility"] = self.utility
+            self.scenarios = TransportPortfolioSolve._utility_scenarios(self.groups, self.utility)
+            self.envelope = TransportPortfolioSolve._utility_envelope(self.groups, self.utility, self.scenarios)
         self.program_identity = hashlib.sha256(json.dumps(
             identity, sort_keys=True, separators=(",", ":"), allow_nan=False
         ).encode("utf-8")).hexdigest()
@@ -4721,7 +4978,36 @@ class TransportActionScore:
                         for key, coefficients in row["terms"].items())
             if total > row["upper"]+tolerance:
                 raise _TransportActionInfeasible("quantities violate joint row "+row["id"])
+        if self.utility is not None:
+            for name, wealth in zip(*self._wealth(quantities)):
+                if wealth < self.utility["wealth_lo"]-tolerance:
+                    raise _TransportActionInfeasible("quantities breach the wealth floor in scenario "+name)
         return quantities, reserves
+
+    def _wealth(self, quantities):
+        """Return every utility scenario's id and the wealth these quantities reach in it."""
+        import numpy as np
+
+        names, wealth = [], []
+        for name, _weight, terms in self.scenarios:
+            names.append(name)
+            wealth.append(self.utility["w0"]+sum(float(np.dot(row, quantities[i])) for i, row in terms.items()))
+        return names, wealth
+
+    def _utility_components(self, quantities):
+        """Value the quantities under the tangent envelope (what the program maximizes) and the utility itself."""
+        import numpy as np
+
+        names, wealth = self._wealth(quantities)
+        weights = np.asarray([weight for _name, weight, _terms in self.scenarios], dtype=float)
+        joint = {name for name, _w, _t in self.scenarios[len(self.scenarios)-len(self.utility["joint"]):]}
+        return {"envelope": float(self.utility["w0"]*np.dot(weights, self.envelope.value(wealth))),
+                "exact": float(self.utility["w0"]*np.dot(weights, self.envelope.exact(wealth))),
+                "envelope_error": self.envelope.error, "core_error": self.envelope.core_error,
+                "knots": int(len(self.envelope.knots)),
+                "wealth_min": float(min(wealth, default=self.utility["w0"])),
+                "wealth_max": float(max(wealth, default=self.utility["w0"])),
+                "joint_wealth": {name: float(w) for name, w in zip(names, wealth) if name in joint}}
 
     def check_feasible(self, quantities):
         """Check feasibility without evaluating the action's economic objective.
@@ -4765,13 +5051,18 @@ class TransportActionScore:
             group_values.append(float(np.dot(group["credit"], q)-worst_loss))
             deductions.append(float(worst_loss-nominal_loss))
             risk_charges.append(0. if charge is None else float(charge.charge(loss)))
-        return {
+        result = {
             "quantities": quantities, "reserves": reserves,
             "group_values": group_values, "nominal_values": nominal_values,
             "uncertainty_deductions": deductions, "risk_charges": risk_charges,
             "value": float(sum(group_values)-sum(risk_charges)),
             "program_identity": self.program_identity,
         }
+        if self.utility is not None:
+            # The objective is the W0-scaled expected envelope utility; the dollar group values stay beside it.
+            result["utility"] = self._utility_components(quantities)
+            result["value"] = result["utility"]["envelope"]
+        return result
 
     def value(self, quantities):
         """Return economic components for one integer action.

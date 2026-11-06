@@ -153,7 +153,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # cdf_study.py: exact-expiry panel + JSON CDF/HPO CLI (ADR-0189/0190/0191)
                            # distribution.py (condor under a forecast, ADR-0168);
                            # grid.py (the ADR-0187 cell table + document generator);
-                           # ledger_studies.py (read-only CLI over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0258; MIOPacketStudy `recorded`, ADR-0297); mio_worker.py (ADR-0297, PROPOSED: MIOMethodBundle/MIOMethodWorker solve one method off-host as integer actions; pinned, since it runs from each bundle); the coordinator is tools/mio_parallel_queue.py (PROPOSED), OUTSIDE the pinned package
+                           # ledger_studies.py (read-only CLI over walk ledgers: allocate, ADR-0196; hedge, ADR-0197; account, ADR-0258; MIOPacketStudy `recorded`, ADR-0297; the `kelly` method key, ADR-0299: a fractional-Kelly objective with no sizing cap, joint market scenarios from the shock's moves); mio_worker.py (ADR-0297, PROPOSED: MIOMethodBundle/MIOMethodWorker solve one method off-host as integer actions; pinned, since it runs from each bundle); the coordinator is tools/mio_parallel_queue.py (PROPOSED), OUTSIDE the pinned package
                            # rl_env.py: OptionEntryEnv and OptionEntryCompare (single-decision RL/MIO control)
                            # mio_run_events.py (ADR-0283: MioRunRows, one method of a saved MIO result.json as event rows; the
                            # report document is configs/mio-report-limited36-available-size-20261029.json);

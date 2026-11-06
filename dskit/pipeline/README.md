@@ -300,6 +300,10 @@ foreign solve was refused. `StudyContract.check_dependencies` is the pin check `
 
 `libs.pyomo.TransportActionScore` values integer actions with the same nominal,
 Wasserstein and optional MAD risk-charge terms used by `TransportPortfolioSolve`.
+A program's optional `utility` block (ADR-0299) makes both value a W0-scaled
+fractional-Kelly expected utility of scenario wealth instead (tangent envelope
+from `tangent_utility`; per-group own-outcome scenarios plus declared joint
+scenarios; a hard wealth floor; radius 0, no risk charge).
 It checks all shared constraints and enumerates a complete feasible catalogue,
 refusing a declared Cartesian-size limit before enumeration.
 `libs.sb3.FiniteDecisionEnv` supplies a reusable one-decision Gymnasium adapter:
