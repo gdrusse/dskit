@@ -3422,11 +3422,11 @@ def test_chained_neighbours_make_one_component_so_component_fraction_becomes_a_p
 #: The shock's four moves inside a finer grid of sixteen, its lookback, the one cut that keeps log wealth finite, the
 #: envelope's resolution, the fill's slack on the cash row, and the gap the objective needs (ADR-0299).
 KELLY_MOVES = [-.15, -.125, -.1, -.075, -.05, -.035, -.02, -.01, .01, .02, .035, .05, .075, .1, .125, .15]
-#: The certification gap of the kelly formulations, in ONE place: a relative 5% (the owner has not yet chosen between 5%
-#: and 10%, ADR-0299 speed amendment), so a change is this line; the tests below read it.
-KELLY_GAP = {"absolute": 1., "relative": .05}
+#: The certification gap of the kelly formulations, in ONE place: a relative 10% (the owner's decision of 2026-11-06 after
+#: the measured real week, ADR-0299), so a change is this line; the tests below read it.
+KELLY_GAP = {"absolute": 1., "relative": .10}
 KELLY = {"n_tangents": 32, "core": 2., "wealth_floor": .01, "moves": KELLY_MOVES, "beta_lookback": 60,
-         "cash_buffer": .05, "gap": KELLY_GAP, "time_limit": 1500}
+         "cash_buffer": .05, "gap": KELLY_GAP, "time_limit": 2400}
 #: No sizing cap: the fractions are 1 (the cash rule), no component cap, no robustness radius, no short-notional floor.
 _KELLY_BASE = {"rho": 0., "portfolio_fraction": 1., "name_fraction": 1., "component_fraction": None}
 KELLY_FORMULATIONS = {
@@ -3441,7 +3441,7 @@ def _for_kelly(params):
     300,000, above the parity tolerance), a parity tolerance of at least 1e-3 and the ``lp`` group screen (a real week's
     program does not fit without it)."""
     params["solver"]["timeout_policy"] = "return"
-    params["solver"]["solver_options"]["time_limit"] = 1500
+    params["solver"]["solver_options"]["time_limit"] = KELLY["time_limit"]
     params["solver"]["solver_options"]["mip_feasibility_tolerance"] = 1e-9
     params["solver"]["parity_tolerance"] = 1e-3
     params["solver"]["group_screen"] = "lp"
@@ -3917,8 +3917,8 @@ def test_a_kelly_method_refuses_a_document_whose_gaps_are_looser_than_its_own():
     params["methods"] = [{"id": "kelly025_lp", **KELLY_FORMULATIONS["kelly025_lp"]}]
     _for_kelly(params)
     ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
-    for loose in ({"absolute_gap": 50.}, {"relative_gap": .06}, {"solver_options": {"mip_abs_gap": 50., "threads": 1, "time_limit": 1500}},
-                  {"solver_options": {"mip_rel_gap": .06, "threads": 1, "time_limit": 1500, "mip_abs_gap": 1.}}):
+    for loose in ({"absolute_gap": 50.}, {"relative_gap": .11}, {"solver_options": {"mip_abs_gap": 50., "threads": 1, "time_limit": 2400}},
+                  {"solver_options": {"mip_rel_gap": .11, "threads": 1, "time_limit": 2400, "mip_abs_gap": 1.}}):
         bad, _ = _weekly_portfolio_fixture()
         _for_kelly(bad)
         bad["methods"] = params["methods"]
@@ -3928,6 +3928,36 @@ def test_a_kelly_method_refuses_a_document_whose_gaps_are_looser_than_its_own():
         plain, _ = _weekly_portfolio_fixture()
         plain["solver"].update(loose)
         ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(plain)   # a dollar document keeps its gap
+
+
+def test_the_kelly_formulations_certify_at_a_relative_ten_percent_within_2400_seconds():
+    """The owner's decision (ADR-0299, 2026-11-06), after the measured real week on the Mac: the half-Kelly LP finished at
+    1153 s with a certified gap of 2.29%; the quarter-Kelly LP had not in 1500 s. The gap is a relative 10% and the limit
+    2400 s; a document at the limit validates, one 1 s short or one gap step looser refuses, one at the 5% gap still passes."""
+    assert KELLY_GAP == {"absolute": 1., "relative": .10} and KELLY["time_limit"] == 2400
+    for method in KELLY_FORMULATIONS.values():
+        assert method["kelly"]["gap"] == {"absolute": 1., "relative": .10} and method["kelly"]["time_limit"] == 2400
+    params, _ = _weekly_portfolio_fixture()
+    params["methods"] = [{"id": "kelly050_lp", **KELLY_FORMULATIONS["kelly050_lp"]}]
+    _for_kelly(params)
+    assert params["solver"]["solver_options"]["time_limit"] == 2400, "the helper declares the method's own limit"
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    for change, match in ((lambda s: s["solver_options"].update(time_limit=2399), "time_limit"),
+                          (lambda s: s["solver_options"].update(time_limit=1500), "time_limit"),
+                          (lambda s: s.update(relative_gap=.11), "solver gaps"),
+                          (lambda s: s["solver_options"].update(mip_rel_gap=.11), "solver gaps")):
+        bad, _ = _weekly_portfolio_fixture()
+        _for_kelly(bad)
+        bad["methods"] = params["methods"]
+        change(bad["solver"])
+        with pytest.raises(ValueError, match=match):
+            ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(bad)
+    for tighter in (lambda s: s.update(relative_gap=.05), lambda s: s["solver_options"].update(mip_rel_gap=.05)):
+        ok, _ = _weekly_portfolio_fixture()
+        _for_kelly(ok)
+        ok["methods"] = params["methods"]
+        tighter(ok["solver"])
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(ok)   # a tighter gap is no looser
 
 
 def _t4_cdf(x):
