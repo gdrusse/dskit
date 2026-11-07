@@ -3485,7 +3485,7 @@ def test_the_two_kelly_formulations_validate_and_differ_only_in_the_fraction():
     lambda m: m.update(shock=SHOCK10),
     lambda m: m.update(risk_charge={"measure": "mad", "price": .5}),
     lambda m: m.update(radius_scale="reference_scale"),
-    lambda m: m.update(short_notional_fraction=-.2),
+    lambda m: m.update(short_notional_fraction=0.),
     lambda m: m["kelly"].update(fraction=0.),
     lambda m: m["kelly"].update(fraction=1.5),
     lambda m: m["kelly"].update(n_tangents=1),
@@ -3767,17 +3767,25 @@ def test_a_kelly_week_records_how_many_groups_the_screen_dropped(monkeypatch):
     assert screen["candidates"] == week["kelly"]["candidates"] and screen["kept"]+screen["screened"] == screen["candidates"]
 
 
-def test_a_kelly_method_may_declare_the_short_notional_floor():
-    """ADR-0299 audit: the floor stays on a kelly method (it was refused); zero is the old no-floor behaviour, a negative
-    one is refused as for every method."""
-    for floor in (.2, 0., .5):
+def test_a_kelly_method_must_declare_the_short_notional_floor_at_twenty_percent_or_more():
+    """ADR-0299 audit: without the margin a zero-reserve hybrid is free leverage, so a kelly method that declares less
+    than 0.2 (or nothing, or a non-number) is refused; 0.2 and more validate; a negative one is invalid as for any method."""
+    floor = ledger_studies.WeeklyOptionPortfolioStudy.KELLY_SHORT_NOTIONAL_FLOOR
+    assert floor == .2 == _BASE["short_notional_fraction"]
+
+    def check(change):
         params, _ = _weekly_portfolio_fixture()
-        params["methods"] = [{"id": "kelly025_lp", **KELLY_FORMULATIONS["kelly025_lp"], "short_notional_fraction": floor}]
+        params["methods"] = [{"id": "kelly025_lp", **KELLY_FORMULATIONS["kelly025_lp"]}]
+        change(params["methods"][0])
         _for_kelly(params)
         ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
-    params["methods"][0]["short_notional_fraction"] = -.2
+    for accepted in (.2, .5):
+        check(lambda m, v=accepted: m.update(short_notional_fraction=v))
+    for refused in (0., .19, -.2, "0.2", None, float("nan")):
+        with pytest.raises(ValueError, match="invalid fixed method"):
+            check(lambda m, v=refused: m.update(short_notional_fraction=v))
     with pytest.raises(ValueError, match="invalid fixed method"):
-        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+        check(lambda m: m.pop("short_notional_fraction"))
 
 
 def test_the_short_notional_floor_charges_the_gross_sold_strike_and_a_long_at_the_same_strike_does_not_net_it():
@@ -3804,7 +3812,7 @@ def _reversal_hybrid(w0=100000., capacity=1000):
     spots, mult = [95., 100., 105., 110., 115., 120.], 100.
     losses = [[-sign*mult*max((s-k) if right == "call" else (k-s), 0.) for right, k, sign in items] for s in spots]
     credit = [8260., 0., 0., 0.]
-    reserve_rows = [[l-c for l, c in zip(row, credit)] for row in losses]+[[-c for c in credit]]
+    reserve_rows = [[loss-c for loss, c in zip(row, credit)] for row in losses]+[[-c for c in credit]]
     group = {"id": "g", "grid": spots, "masses": [1./6.]*6, "radius": 0., "scale": 100., "credit": credit,
              "losses": losses, "capacity": [capacity]*4, "exclusive": [], "reserve_rows": reserve_rows, "linear_rows": []}
     meta = [{"strike": k, "sign": sign} for _right, k, sign in items]
@@ -3840,9 +3848,7 @@ def test_the_floor_sizes_a_zero_reserve_hybrid_by_margin_not_capacity():
 
 def test_a_kelly_weeks_trades_carry_the_floored_reserve_the_solver_and_the_ledger_share():
     """The books the selection becomes and the ledger's trades carry reserve = max(loss, -credit, 20% of the sold
-    strikes' notional), the one `_floor` the solver rows use; a kelly week with the floor takes no more than without."""
-    import copy
-
+    strikes' notional), the one `_floor` the solver rows use."""
     params, inputs = _kelly_fixture(fraction=.5)
     assert params["methods"][0]["short_notional_fraction"] == .2
     result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
@@ -3855,10 +3861,6 @@ def test_a_kelly_weeks_trades_carry_the_floored_reserve_the_solver_and_the_ledge
         for book in week.get("books", []):
             notional = sum(.2*leg["strike"]*mult*leg["quantity"] for leg in book["legs"] if leg["sign"] < 0)
             assert book["reserve"] >= notional-1e-9
-    bare = copy.deepcopy(params)
-    bare["methods"][0]["short_notional_fraction"] = 0.
-    free = ledger_studies.WeeklyOptionPortfolioStudy(bare, inputs)._method(bare["methods"][0], None)
-    assert result["contracts"] <= free["contracts"]
 
 
 def test_a_kelly_week_records_the_books_sd_ratio_and_effective_fraction():

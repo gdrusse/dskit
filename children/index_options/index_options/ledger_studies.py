@@ -1362,7 +1362,7 @@ class WeeklyOptionPortfolioStudy:
         shock, risk_charge or radius_scale: the sizing caps are gone, and what
         remains is the cash rule (new reserves within funding less open
         reserves), the reserve rows, the capital-charge floors
-        (short_notional_fraction, 0.2 in both formulations, the value the
+        (short_notional_fraction, required at 0.2 or more, the value the
         other formulations use; reserve_per_contract, optional) and the
         defined-loss structures. The floor is applied by the one `_floor`,
         to the solver's reserve rows, the books and the ledger alike (a
@@ -1413,6 +1413,9 @@ class WeeklyOptionPortfolioStudy:
     _KELLY_TAIL_DF = 4
     #: What a kelly method may not also declare: every sizing cap, and the dollar-objective controls.
     _KELLY_EXCLUDES = ("shock", "risk_charge", "radius_scale")
+    #: The least ``short_notional_fraction`` a kelly method must declare, the value the other formulations use: without
+    #: the margin a zero-reserve box or reversal hybrid is free leverage to a growth objective (ADR-0299 audit).
+    KELLY_SHORT_NOTIONAL_FLOOR = .2
     _KELLY_RISK_INPUT = "kelly_risk_input"
     _FILLED_ACCOUNT = "filled_account"
     _OPTIONAL_PARAMS = ("fill_sizing",)
@@ -1698,6 +1701,8 @@ class WeeklyOptionPortfolioStudy:
                 and number_ok(kelly["gap"]["relative"]) and 0 <= kelly["gap"]["relative"] < 1
                 and cls._moves_valid(kelly["moves"], kelly["beta_lookback"])
                 and not any(key in method for key in cls._KELLY_EXCLUDES)
+                and number_ok(method.get("short_notional_fraction"))
+                and method["short_notional_fraction"] >= cls.KELLY_SHORT_NOTIONAL_FLOOR
                 and number_ok(method["rho"]) and method["rho"] == 0
                 and method["portfolio_fraction"] == 1 and method["name_fraction"] == 1
                 and method["component_fraction"] is None)
@@ -2671,7 +2676,7 @@ class WeeklyOptionPortfolioStudy:
                             "w0": record["kelly"]["w0"], "gamma": record["kelly"]["gamma"],
                             "n_tangents": kelly["n_tangents"], "core": kelly["core"],
                             "wealth_lo": record["kelly"]["wealth_lo"],
-                            # A name's expiries are one risk: the solver charges them on their summed reserves.
+                            # A name's expiries are one risk: the solver charges them on their summed dispersion.
                             "aggregate": {meta["id"]: meta["symbol"] for meta in metadata},
                             "joint": self._centred_scenarios(terms, kelly["moves"], record["kelly"]["weights"],
                                                              record["kelly"]["quiet"])}
