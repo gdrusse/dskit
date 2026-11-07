@@ -3427,8 +3427,10 @@ KELLY_MOVES = [-.15, -.125, -.1, -.075, -.05, -.035, -.02, -.01, .01, .02, .035,
 KELLY_GAP = {"absolute": 1., "relative": .10}
 KELLY = {"n_tangents": 32, "core": 2., "wealth_floor": .01, "moves": KELLY_MOVES, "beta_lookback": 60,
          "cash_buffer": .05, "gap": KELLY_GAP, "time_limit": 2400}
-#: No sizing cap: the fractions are 1 (the cash rule), no component cap, no robustness radius, no short-notional floor.
-_KELLY_BASE = {"rho": 0., "portfolio_fraction": 1., "name_fraction": 1., "component_fraction": None}
+#: No sizing cap: the fractions are 1 (the cash rule), no component cap, no robustness radius; the 20% short-notional floor stays.
+#: The short-notional floor is the other formulations' (``_BASE``): margin a broker would hold against zero-loss parity books.
+_KELLY_BASE = {"rho": 0., "portfolio_fraction": 1., "name_fraction": 1., "component_fraction": None,
+               "short_notional_fraction": _BASE["short_notional_fraction"]}
 KELLY_FORMULATIONS = {
     "kelly025_lp": {**_KELLY_BASE, "kelly": {**KELLY, "fraction": .25}},
     "kelly050_lp": {**_KELLY_BASE, "kelly": {**KELLY, "fraction": .5}},
@@ -3471,7 +3473,8 @@ def test_the_two_kelly_formulations_validate_and_differ_only_in_the_fraction():
     assert (quarter["kelly"]["fraction"], half["kelly"]["fraction"]) == (.25, .5)
     assert set(SHOCK10["moves"]) <= set(KELLY["moves"]) and KELLY["beta_lookback"] == SHOCK10["beta_lookback"], \
         "the joint market risk keeps the shock's moves inside its grid, and its lookback"
-    assert not any(k in quarter for k in ("shock", "risk_charge", "radius_scale", "short_notional_fraction"))
+    assert not any(k in quarter for k in ("shock", "risk_charge", "radius_scale"))
+    assert quarter["short_notional_fraction"] == half["short_notional_fraction"] == .2 == _BASE["short_notional_fraction"]
 
 
 @pytest.mark.parametrize("change", [
@@ -3482,8 +3485,7 @@ def test_the_two_kelly_formulations_validate_and_differ_only_in_the_fraction():
     lambda m: m.update(shock=SHOCK10),
     lambda m: m.update(risk_charge={"measure": "mad", "price": .5}),
     lambda m: m.update(radius_scale="reference_scale"),
-    lambda m: m.update(short_notional_fraction=.2),
-    lambda m: m.update(short_notional_fraction=0.),
+    lambda m: m.update(short_notional_fraction=-.2),
     lambda m: m["kelly"].update(fraction=0.),
     lambda m: m["kelly"].update(fraction=1.5),
     lambda m: m["kelly"].update(n_tangents=1),
@@ -3763,6 +3765,100 @@ def test_a_kelly_week_records_how_many_groups_the_screen_dropped(monkeypatch):
     screen = week["kelly"]["screen"]
     assert set(screen) == {"rule", "candidates", "kept", "screened", "fallback"}
     assert screen["candidates"] == week["kelly"]["candidates"] and screen["kept"]+screen["screened"] == screen["candidates"]
+
+
+def test_a_kelly_method_may_declare_the_short_notional_floor():
+    """ADR-0299 audit: the floor stays on a kelly method (it was refused); zero is the old no-floor behaviour, a negative
+    one is refused as for every method."""
+    for floor in (.2, 0., .5):
+        params, _ = _weekly_portfolio_fixture()
+        params["methods"] = [{"id": "kelly025_lp", **KELLY_FORMULATIONS["kelly025_lp"], "short_notional_fraction": floor}]
+        _for_kelly(params)
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    params["methods"][0]["short_notional_fraction"] = -.2
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_the_short_notional_floor_charges_the_gross_sold_strike_and_a_long_at_the_same_strike_does_not_net_it():
+    """A padding pair (a long and a short at one strike) cannot create free contracts: the floor counts the sold leg's
+    whole strike notional, the long leg adds nothing and takes nothing away."""
+    charge = {"reserve_per_contract": 0., "short_notional_fraction": .2}
+    legs = [{"strike": 100., "sign": -1, "quantity": 3}, {"strike": 100., "sign": 1, "quantity": 3}]
+    floor = ledger_studies.WeeklyOptionPortfolioStudy._floor
+    assert floor(0., charge, legs, 100) == pytest.approx(.2*100.*100.*3)
+    assert floor(0., charge, legs[:1], 100) == floor(0., charge, legs, 100)
+    assert floor(0., charge, legs[1:], 100) == 0.
+    rows = ledger_studies.WeeklyOptionPortfolioStudy._charge_coefficients(
+        charge, [{"strike": 100., "sign": -1}, {"strike": 100., "sign": 1}], 100)
+    assert rows == [[2000., 0.]]
+
+
+def _reversal_hybrid(w0=100000., capacity=1000):
+    """ABBV's zero-reserve hybrid: short C32.5, short P115, long C115, long P92.5 on a spot law that never goes below 92.5.
+
+    Its payoff is the same (-82.5 a share) at every spot, so the sold legs bring in 8,260 against a loss of 8,250: a
+    reserve of nothing and a small certain gain, which a growth objective stakes without limit unless the margin counts.
+    """
+    items = [("call", 32.5, -1), ("put", 115., -1), ("call", 115., 1), ("put", 92.5, 1)]
+    spots, mult = [95., 100., 105., 110., 115., 120.], 100.
+    losses = [[-sign*mult*max((s-k) if right == "call" else (k-s), 0.) for right, k, sign in items] for s in spots]
+    credit = [8260., 0., 0., 0.]
+    reserve_rows = [[l-c for l, c in zip(row, credit)] for row in losses]+[[-c for c in credit]]
+    group = {"id": "g", "grid": spots, "masses": [1./6.]*6, "radius": 0., "scale": 100., "credit": credit,
+             "losses": losses, "capacity": [capacity]*4, "exclusive": [], "reserve_rows": reserve_rows, "linear_rows": []}
+    meta = [{"strike": k, "sign": sign} for _right, k, sign in items]
+    program = {"groups": [group], "caps": [{"groups": ["g"], "upper": .95*w0}],
+               "utility": {"w0": w0, "gamma": 4., "n_tangents": 32, "core": 2., "wealth_lo": .01*w0, "aggregate": {"g": "g"},
+                           "joint": [{"id": "market:0", "weight": 1., "terms": {}}]}}
+    return program, meta, mult
+
+
+def test_the_floor_sizes_a_zero_reserve_hybrid_by_margin_not_capacity():
+    """Without the floor the hybrid is staked to its capacity of 1,000 packages (a certain gain with no reserve); with the
+    20% short-notional floor its reserve is 2,950 a package and the stake falls to the cash it needs."""
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    program, meta, mult = _reversal_hybrid()
+    params = {"absolute_gap": 1e-3, "relative_gap": 0., "parity_tolerance": 1e-3, "timeout_policy": "return",
+              "group_screen": "lp",
+              "solver_options": {"threads": 1, "mip_abs_gap": 1e-9, "mip_rel_gap": 0., "mip_feasibility_tolerance": 1e-9,
+                                 "time_limit": 60}}
+    free = TransportPortfolioSolve("free", params).run(None, program)["selection"]
+    assert min(free["quantities"][0][:3]) >= 900, "no margin: nearly the whole capacity of 1,000 (the long P92.5 is dead weight)"
+    floored = copy.deepcopy(program)
+    charge = {"reserve_per_contract": 0., "short_notional_fraction": .2}
+    floored["groups"][0]["reserve_rows"] += ledger_studies.WeeklyOptionPortfolioStudy._charge_coefficients(charge, meta, mult)
+    held = TransportPortfolioSolve("held", params).run(None, floored)["selection"]
+    short_call, short_put, long_call, _long_put = held["quantities"][0]
+    margin = .2*32.5*mult*short_call+.2*115.*mult*short_put   # 650 a short call, 2,300 a short put
+    assert margin <= .95*100000.+1e-6 and margin >= .9*.95*100000., "the cash the margin needs sizes the stake"
+    assert max(held["quantities"][0]) <= 150 < 900 <= min(free["quantities"][0][:3])
+    assert held["reserves"][0] == pytest.approx(margin)
+
+
+def test_a_kelly_weeks_trades_carry_the_floored_reserve_the_solver_and_the_ledger_share():
+    """The books the selection becomes and the ledger's trades carry reserve = max(loss, -credit, 20% of the sold
+    strikes' notional), the one `_floor` the solver rows use; a kelly week with the floor takes no more than without."""
+    import copy
+
+    params, inputs = _kelly_fixture(fraction=.5)
+    assert params["methods"][0]["short_notional_fraction"] == .2
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    mult = params["bridge"]["solver"]["multiplier"]
+    assert result["trades"], "the fixture trades under Kelly"
+    for trade in result["trades"]:
+        notional = sum(.2*leg["strike"]*mult*leg["quantity"] for leg in trade["legs"] if leg["sign"] < 0)
+        assert trade["reserve"] == pytest.approx(max(0., trade["max_loss"], -trade["credit"], notional))
+    for week in result["decisions"]:
+        for book in week.get("books", []):
+            notional = sum(.2*leg["strike"]*mult*leg["quantity"] for leg in book["legs"] if leg["sign"] < 0)
+            assert book["reserve"] >= notional-1e-9
+    bare = copy.deepcopy(params)
+    bare["methods"][0]["short_notional_fraction"] = 0.
+    free = ledger_studies.WeeklyOptionPortfolioStudy(bare, inputs)._method(bare["methods"][0], None)
+    assert result["contracts"] <= free["contracts"]
 
 
 def test_a_kelly_week_records_the_books_sd_ratio_and_effective_fraction():

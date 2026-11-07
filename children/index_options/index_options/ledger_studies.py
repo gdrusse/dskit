@@ -1359,10 +1359,15 @@ class WeeklyOptionPortfolioStudy:
         their gap.
         Such a method must declare rho 0, portfolio_fraction 1,
         name_fraction 1 and component_fraction null and may not declare
-        shock, risk_charge, radius_scale or short_notional_fraction: the
-        sizing caps are gone, and what remains is the cash rule (new reserves
-        within funding less open reserves), the reserve rows, an optional
-        reserve_per_contract floor and the defined-loss structures. The
+        shock, risk_charge or radius_scale: the sizing caps are gone, and what
+        remains is the cash rule (new reserves within funding less open
+        reserves), the reserve rows, the capital-charge floors
+        (short_notional_fraction, 0.2 in both formulations, the value the
+        other formulations use; reserve_per_contract, optional) and the
+        defined-loss structures. The floor is applied by the one `_floor`,
+        to the solver's reserve rows, the books and the ledger alike (a
+        zero-reserve box or reversal hybrid is otherwise free leverage to a
+        growth objective). The
         weekly budget does not apply to it. Wealth is the capital not already
         committed (funding less open reserves), so overlapping weeks do not
         stack. Each week's scenarios are the market moves and the quiet cell:
@@ -1407,7 +1412,7 @@ class WeeklyOptionPortfolioStudy:
     #: tail a normal law lacks, the lowest with a finite variance to match the basket's.
     _KELLY_TAIL_DF = 4
     #: What a kelly method may not also declare: every sizing cap, and the dollar-objective controls.
-    _KELLY_EXCLUDES = ("shock", "risk_charge", "radius_scale", "short_notional_fraction")
+    _KELLY_EXCLUDES = ("shock", "risk_charge", "radius_scale")
     _KELLY_RISK_INPUT = "kelly_risk_input"
     _FILLED_ACCOUNT = "filled_account"
     _OPTIONAL_PARAMS = ("fill_sizing",)
