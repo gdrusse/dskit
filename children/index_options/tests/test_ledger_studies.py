@@ -4128,3 +4128,338 @@ def test_the_move_horizon_is_the_candidate_weighted_mean_dte_not_the_longest():
     study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
     metadata = study._prepare(week["date"])[1]
     assert week["kelly"]["horizon_days"] == ledger_studies.WeeklyOptionPortfolioStudy._mean_dte(metadata)
+
+
+# --- the select-then-size Kelly formulations (ADR-0300) and the top-K one-stage Kelly (ADR-0301) ---------------------
+
+#: Stage 1 is the primary formulation unchanged; stage 2 sizes its books on 1,000 sampled joint settlements at a
+#: quarter Kelly, with ADR-0299's envelope, floor and cash buffer, loadings over the shock's 60-session window.
+SIZER = {"fraction": .25, "scenarios": 1000, "n_tangents": 32, "core": 2., "wealth_floor": .01, "cash_buffer": .05, "exposure": "cash_rule",
+         "beta_lookback": 60, "mean": "nominal", "seed": 20261107}
+SIZED_FORMULATIONS = {
+    "kelly025_sized_lp": {**FORMULATIONS["w1_010_shock10_lp"], "sizer": SIZER},
+    "kelly025_sized_w1_lp": {**FORMULATIONS["w1_010_shock10_lp"], "sizer": {**SIZER, "mean": "w1_worst"}},
+    "kelly050_sized_lp": {**FORMULATIONS["w1_010_shock10_lp"], "sizer": {**SIZER, "fraction": .5}},
+    # The leverage-matched control: the sizer reallocates within the capital stage 1 would have committed.
+    "kelly025_sized_matched_lp": {**FORMULATIONS["w1_010_shock10_lp"], "sizer": {**SIZER, "exposure": "stage1_reserve"}},
+}
+#: ADR-0299's one-stage quarter Kelly restricted to the 100 best groups after the lp screen (ADR-0301).
+TOP_FORMULATIONS = {
+    "kelly025_top100_lp": {**_KELLY_BASE, "kelly": {**KELLY, "fraction": .25, "max_groups": 100}},
+}
+
+
+def _sizer_fixture(mean="nominal", fraction=.25, rho=0., **sizer):
+    """The weekly fixture under a sizer method: week one has no prior session (a hold), week two sizes."""
+    params, inputs = _weekly_portfolio_fixture()
+    params.update(correlation_lookback=5, correlation_min_pairs=2)
+    params["methods"] = [{"id": "sized", **_BASE, "rho": rho,
+                          "sizer": {**SIZER, "fraction": fraction, "mean": mean, "beta_lookback": 3, **sizer}}]
+    return params, inputs
+
+
+def test_the_sized_and_top_formulations_validate_and_differ_only_where_they_say():
+    base = FORMULATIONS["w1_010_shock10_lp"]
+    for name, method in SIZED_FORMULATIONS.items():
+        params, inputs = _weekly_portfolio_fixture()
+        params["methods"] = [{"id": name, **method}]
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+        assert {k: v for k, v in method.items() if k != "sizer"} == base, "stage 1 is the primary, unchanged"
+    assert SIZED_FORMULATIONS["kelly025_sized_w1_lp"]["sizer"] == {**SIZER, "mean": "w1_worst"}
+    assert SIZED_FORMULATIONS["kelly050_sized_lp"]["sizer"] == {**SIZER, "fraction": .5}
+    assert SIZED_FORMULATIONS["kelly025_sized_matched_lp"]["sizer"] == {**SIZER, "exposure": "stage1_reserve"}
+    assert SIZER["exposure"] == "cash_rule" and SIZER["mean"] == "nominal" and len(SIZED_FORMULATIONS) == 4
+    for name, method in TOP_FORMULATIONS.items():
+        params, inputs = _weekly_portfolio_fixture()
+        params["methods"] = [{"id": name, **method}]
+        _for_kelly(params)
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    assert TOP_FORMULATIONS["kelly025_top100_lp"]["kelly"] == {**KELLY_FORMULATIONS["kelly025_lp"]["kelly"],
+                                                               "max_groups": 100}
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda m: m["sizer"].update(fraction=0.),
+    lambda m: m["sizer"].update(fraction=1.5),
+    lambda m: m["sizer"].update(scenarios=1),
+    lambda m: m["sizer"].update(scenarios=100001),
+    lambda m: m["sizer"].update(scenarios=1000.),
+    lambda m: m["sizer"].update(n_tangents=1),
+    lambda m: m["sizer"].update(core=1.),
+    lambda m: m["sizer"].update(wealth_floor=0.),
+    lambda m: m["sizer"].update(wealth_floor=1.),
+    lambda m: m["sizer"].update(cash_buffer=-.01),
+    lambda m: m["sizer"].update(cash_buffer=1.),
+    lambda m: m["sizer"].update(beta_lookback=1),
+    lambda m: m["sizer"].update(mean="robust"),
+    lambda m: m["sizer"].update(exposure="matched"),
+    lambda m: m["sizer"].pop("exposure"),
+    lambda m: m["sizer"].update(seed=-1),
+    lambda m: m["sizer"].update(seed=1.),
+    lambda m: m["sizer"].pop("seed"),
+    lambda m: m["sizer"].update(extra=1),
+    lambda m: m.update(kelly={**KELLY, "fraction": .25}),
+    lambda m: m.update(portfolio_fraction=.04),   # below the cash buffer: the stage-2 cash rule would be negative
+    lambda m: m.update(sizer=None),
+    lambda m: m.update(risk_charge={"measure": "mad", "price": .5}),   # the sized books would carry no charge
+    lambda m: m.update(shock={**SHOCK10, "scope": "filled_account"}),  # its post-fill admission would undo the sizing
+    lambda m: m.update(short_notional_fraction=.1),                     # the floor a growth objective needs (ADR-0299)
+    lambda m: m.pop("short_notional_fraction"),
+])
+def test_a_malformed_sizer_block_is_refused(mutate):
+    params, inputs = _sizer_fixture()
+    mutate(params["methods"][0])
+    with pytest.raises(ValueError):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_a_sizer_needs_as_many_sessions_in_its_window_as_the_study_needs_to_estimate():
+    params, inputs = _sizer_fixture()
+    params["correlation_min_pairs"] = 4   # above the fixture's beta_lookback of 3
+    with pytest.raises(ValueError, match="beta_lookback"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    params["methods"][0]["sizer"]["beta_lookback"] = 4
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_a_stage_two_time_limit_before_any_incumbent_is_a_skipped_week_and_replays_as_recorded(monkeypatch):
+    """A halt before HiGHS finds even the cash point is a timeout certificate, not an error; the week is
+    timeout_skipped with both certificates recorded, and a replay keeps the recorded timeout (the stage-2 limit is
+    forced on the sizer alone, so stage 1 still selects)."""
+    from index_options.kelly_sizer import BookKellySizer
+
+    params, inputs = _sizer_fixture()
+    method = params["methods"][0]
+    monkeypatch.setattr(BookKellySizer, "_solver_options", lambda self: {**BookKellySizer._HIGHS_PINS, "time_limit": 1e-4})
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    weeks = [d for d in result["decisions"] if d.get("sizer", {}).get("status") == "timeout"]
+    assert weeks, "the stage-2 solve cannot finish in a tenth of a millisecond"
+    week = weeks[0]
+    assert week["status"] == "timeout_skipped" and not week["books"] and week["sizer"]["incumbent"] is False
+    assert week["sizer"]["solve"]["termination"] == "maxTimeLimit" and week["sizer"]["solve"]["objective"] is None
+    assert len(week["certificates"]) == 2 and week["certificates"][1] == week["sizer"]["solve"]
+    assert "stage1" in week and week["selection"] == week["stage1"]["selection"], "the stage-1 selection stays recorded"
+    assert result["trades"] == [] and result["unfilled"] == 0
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=result) == result
+    monkeypatch.undo()
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=result) == result, \
+        "a recorded stage-2 timeout is kept as recorded, whatever this host's own limit"
+
+
+@pytest.mark.parametrize("max_groups,ok", [(1, True), (100, True), (0, False), (1., False), (None, False)])
+def test_a_kelly_block_may_cap_the_groups_the_screen_keeps(max_groups, ok):
+    params, inputs = _kelly_fixture(max_groups=max_groups)
+    if ok:
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    else:
+        with pytest.raises(ValueError):
+            ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_a_kelly_week_under_max_groups_records_the_cap_and_keeps_no_more_groups_than_it(monkeypatch):
+    params, inputs = _kelly_fixture(max_groups=1)
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    weeks = [d for d in result["decisions"] if "screen" in d.get("kelly", {}) and d["kelly"]["screen"]]
+    assert weeks, "a solved week records its screen"
+    for week in weeks:
+        assert week["kelly"]["screen"]["keep"] == 1 and week["kelly"]["screen"]["kept"] <= 1
+        assert week["kelly"]["screen"]["rule"] == "lp"
+
+
+def _sized_week(result):
+    """The sized decisions of a result (status selected or cash after stage 2)."""
+    return [d for d in result["decisions"] if d.get("sizer", {}).get("status") == "sized"]
+
+
+def test_a_sizer_week_keeps_the_primary_books_and_resizes_them_by_whole_units(monkeypatch):
+    """Stage 1 is the dollar program under every cap it declares; stage 2 multiplies each book's primitive unit by a
+    whole count within the depth, admitted under the cash rule alone; both certificates are recorded."""
+    seen = _spy_programs(monkeypatch)
+    params, inputs = _sizer_fixture()
+    method = params["methods"][0]
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    result = study._method(method, None)
+    first, second = result["decisions"][0], _sized_week(result)[0]
+    assert first["status"] == "kelly_risk_input" and first["sizer"]["status"] == "insufficient_history"
+    assert not ({"stage1", "selection", "certificates"} & set(first)), "a week that cannot size solves nothing"
+    assert second["sizer"]["status"] == "sized" and second["status"] == "selected"
+    assert len(seen) == 1, "one stage-1 solve: the held week solved nothing"
+    assert min(c[0] for c in seen[0]["caps"]) == pytest.approx(params["weekly_fraction"]*second["funding"]), \
+        "the stage-1 program carries the weekly budget cap"
+    stage1 = second["stage1"]["selection"]
+    assert len(second["certificates"]) == 2 and len(second["stage1"]["certificates"]) == 1
+    assert second["certificates"][0] == second["stage1"]["certificates"][0]
+    assert second["certificates"][1] == second["sizer"]["solve"]
+    units = {u["group"]: u for u in second["sizer"]["units"]}
+    ids = [m["id"] for m in study._prepare(second["date"])[1]]
+    for i, (before, after) in enumerate(zip(stage1["quantities"], second["selection"]["quantities"])):
+        if not any(before):
+            assert not any(after)
+            continue
+        unit = units[ids[i]]
+        g = math.gcd(*before)
+        assert after == [q//g*unit["k"] for q in before], "the sized book is k primitive units of the stage-1 book"
+        assert 0 <= unit["k"] <= unit["k_max"] and unit["units_selected"] == g
+        assert unit["stage1_contracts"] == sum(before) and unit["contracts"] == sum(after)
+        assert unit["mean_target"] == unit["mean_nominal"] and not unit["target_clamped"] and unit["sample_sd"] >= 0
+        assert unit["weighted_mean"] == pytest.approx(unit["mean_target"], abs=1e-6), "the tilt reaches the target"
+        assert -unit["reserve"]-1e-9 <= unit["worst_profit"] <= unit["best_profit"] <= unit["credit"]+1e-9, \
+            "reweighting keeps every sampled profit inside the unit's structural range"
+    assert second["sizer"]["stake_ratio"] == pytest.approx(
+        sum(u["contracts"] for u in second["sizer"]["units"])/sum(u["stage1_contracts"] for u in second["sizer"]["units"]))
+    assert second["sizer"]["reserve_ratio"] == pytest.approx(second["sizer"]["reserve"]/second["sizer"]["stage1_reserve"])
+    assert second["sizer"]["stage1_reserve"] == pytest.approx(sum(stage1["reserves"]))
+    assert second["sizer"]["exposure"] == "cash_rule" and second["sizer"]["cash_limit_applied"] == second["sizer"]["cash_limit"]
+    assert len(second["sizer"]["alternates"]) == 2 and all("k" in a for a in second["sizer"]["alternates"])
+    assert second["sizer"]["tilt"]["effective_scenarios"] <= SIZER["scenarios"] and second["sizer"]["tilt"]["kl"] >= 0
+    assert second["sizer"]["tilt"]["converged"] and second["sizer"]["tilt"]["gap"] <= 1e-9
+    for book in second["books"]:
+        assert book["reserve"] == pytest.approx(sum(second["selection"]["reserves"]), abs=1e-6) or len(second["books"]) > 1
+        assert book["status"] == "selected"
+    assert second["sizer"]["reserve"] <= second["sizer"]["cash_limit"]+1e-6
+    assert second["sizer"]["wealth_min"] >= second["sizer"]["wealth_lo"]-1e-6
+    assert second["sizer"]["names"] == ["X"] and second["sizer"]["correlations"] == {"X": 0.}, \
+        "flat bars: no volatility, no loading"
+    assert second["sizer"]["held"] == []
+    assert result["trades"], "the sized book fills under the cash rule"
+    assert result["unfilled"] == 0
+
+
+def test_a_sizer_week_is_stable_across_seeds_within_one_unit():
+    counts = {}
+    for seed in (1, 2):
+        params, inputs = _sizer_fixture(seed=seed)
+        result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+        counts[seed] = {u["id"]: u["k"] for d in _sized_week(result) for u in d["sizer"]["units"]}
+    assert counts[1] and set(counts[1]) == set(counts[2])
+    assert all(abs(counts[1][k]-counts[2][k]) <= 1 for k in counts[1])
+
+
+def test_the_w1_worst_mean_never_sizes_above_the_nominal_mean():
+    totals = {}
+    for mean in ("nominal", "w1_worst"):
+        # rho .03 on the fixture: the robust mean of the one selected spread is near zero, the nominal is not.
+        params, inputs = _sizer_fixture(mean=mean, rho=.03)
+        result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+        weeks = _sized_week(result)
+        assert weeks
+        for week in weeks:
+            for unit in week["sizer"]["units"]:
+                assert unit["mean_w1_worst"] <= unit["mean_nominal"]+1e-9
+                wanted = unit["mean_nominal" if mean == "nominal" else "mean_w1_worst"]
+                assert unit["mean_target"] == wanted or (unit["target_clamped"] and unit["mean_target"] > wanted)
+                assert unit["weighted_mean"] == pytest.approx(unit["mean_target"], abs=1e-6)
+        totals[mean] = sum(u["contracts"] for d in weeks for u in d["sizer"]["units"])
+    assert totals["w1_worst"] <= totals["nominal"]
+
+
+def test_a_tilt_that_concentrates_the_weight_is_not_sized_on(monkeypatch):
+    """Below the effective-scenario floor the week sizes on the untilted sample and records the refused tilt."""
+    monkeypatch.setattr(ledger_studies.WeeklyOptionPortfolioStudy, "_SIZER_MIN_EFFECTIVE_SHARE", 1.)   # nothing passes
+    params, inputs = _sizer_fixture(mean="w1_worst", rho=.03)
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    week = _sized_week(result)[0]
+    tilt = week["sizer"]["tilt"]
+    assert tilt["applied"] == "untilted_fallback" and set(tilt["refused"]) == {"converged", "gap", "effective_scenarios",
+                                                                              "max_weight", "kl"}
+    assert tilt["effective_scenarios"] == pytest.approx(SIZER["scenarios"]) and tilt["kl"] == pytest.approx(0., abs=1e-9)
+    for unit in week["sizer"]["units"]:
+        assert unit["weighted_mean"] == pytest.approx(unit["sample_mean_raw"]), "the untilted sample's own mean"
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None,
+                                                                            recorded=result) == result
+
+
+def test_the_leverage_matched_arm_commits_no_more_reserve_than_stage_one():
+    params, inputs = _sizer_fixture(exposure="stage1_reserve")
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    weeks = _sized_week(result)
+    assert weeks
+    for week in weeks:
+        s = week["sizer"]
+        assert s["exposure"] == "stage1_reserve" and s["cash_limit_applied"] == pytest.approx(min(s["cash_limit"], s["stage1_reserve"]))
+        assert s["reserve"] <= s["stage1_reserve"]+1e-6 and s["reserve_ratio"] <= 1.+1e-9
+    free = ledger_studies.WeeklyOptionPortfolioStudy(*_sizer_fixture())._method(params["methods"][0] | {"sizer": {**params["methods"][0]["sizer"], "exposure": "cash_rule"}}, None)
+    assert _sized_week(free)[0]["sizer"]["reserve"] >= weeks[0]["sizer"]["reserve"], "the cash rule alone allows at least as much"
+
+
+def test_the_recorded_route_replays_a_sizer_method_and_refuses_a_changed_count():
+    import copy
+
+    params, inputs = _sizer_fixture()
+    method = params["methods"][0]
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    assert _sized_week(result)
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=result) == result
+    changed = copy.deepcopy(result)
+    week = _sized_week(changed)[0]
+    week["selection"]["quantities"] = [[2*q for q in row] for row in week["selection"]["quantities"]]
+    with pytest.raises(ValueError, match="recorded sizer counts"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=changed)
+    forged = copy.deepcopy(result)
+    _sized_week(forged)[0]["sizer"]["solve"]["objective"] += 1.
+    with pytest.raises(ValueError, match="recorded sizer certificate"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=forged)
+    skipped = copy.deepcopy(result)
+    _sized_week(skipped)[0]["sizer"]["status"] = "timeout"   # a traded week dressed as a stage-2 timeout
+    with pytest.raises(ValueError, match="recorded sizer timeout"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=skipped)
+
+
+def test_the_derived_and_policy_routes_refuse_a_sizer_method():
+    params, inputs = _sizer_fixture()
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    method = params["methods"][0]
+    with pytest.raises(ValueError, match="sizer method"):
+        study._method(method, None, derived={"method": method["id"], "weeks": study.weeks, "decisions": {}})
+    with pytest.raises(ValueError, match="sizer method"):
+        next(study.policy_steps(method["id"]))
+
+
+def test_a_sizer_week_models_an_open_book_with_a_current_forecast_and_reserves_the_rest():
+    """An open book whose expiry the week still forecasts enters at its sampled outcomes; one it does not, at its
+    reserve; the Kelly wealth is funding less every open reserve."""
+    import copy
+    from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+
+    params, inputs = _sizer_fixture()
+    method = params["methods"][0]
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    result = study._method(method, None)
+    week = _sized_week(result)[0]
+    day = week["date"]
+    groups, metadata, _ = study._prepare(day)
+    mult = params["bridge"]["solver"]["multiplier"]
+    charge = study._charge(method)
+    configured = [{**g, "radius": method["rho"], "scale": study._group_scale(method, g, meta),
+                   "reserve_rows": g["reserve_rows"]+study._charge_coefficients(charge, meta["items"], mult)}
+                  for g, meta in zip(groups, metadata)]
+    selection = week["stage1"]["selection"]
+    books = study._books(selection, metadata, charge)
+    account = FundedOptionAccount(params["initial"], params["deposit"], params["deposit_every_days"], day)
+    current = {**copy.deepcopy(books[0]), "id": "held-current"}
+    stale = {**copy.deepcopy(books[0]), "id": "held-stale", "expiry": "2019-02-01"}
+    assert account.admit(day, [current, stale], [{"members": ["X"], "upper": 1e9}])
+    record = study._sizer_inputs(day, method, account)
+    assert record["status"] == "estimated"
+    out = study._size_books(day, method, configured, metadata, account, selection, books, mult, record, None)
+    assert out["status"] == "sized" and out["record"] is record
+    assert record["held"] == [{"id": "held-current", "modelled": True, "group": books[0]["id"]},
+                              {"id": "held-stale", "modelled": False}]
+    assert record["open_reserve"] == pytest.approx(current["reserve"]+stale["reserve"])
+    assert record["w0"] == pytest.approx(account.funding-record["open_reserve"])
+    assert record["wealth_lo"] == pytest.approx(method["sizer"]["wealth_floor"]*record["w0"])
+    assert record["cash_limit"] == pytest.approx(max(0., (1.-method["sizer"]["cash_buffer"])*account.funding
+                                                     - record["open_reserve"]))
+    assert record["wealth_min"] >= record["wealth_lo"]-1e-6
+    assert all(u["k"] <= u["k_max"] for u in record["units"])
+    assert out["certificate"]["termination"] == "optimal"
+
+
+def test_a_method_without_the_sizer_key_is_byte_identical_to_the_code_before():
+    """The dollar digests hold: a method without ``sizer`` never reaches the sizer (the radius baselines run elsewhere
+    in this module; here the fixture's own method, with and without a no-op change of the sizer code path)."""
+    params, inputs = _weekly_portfolio_fixture()
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    result = study._method(params["methods"][0], None)
+    assert all("sizer" not in d and "stage1" not in d for d in result["decisions"])
+    assert _timeless_digest(result) == RADIUS_BASELINES["weekly", 0.]

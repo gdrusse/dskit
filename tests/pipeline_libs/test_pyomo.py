@@ -6320,3 +6320,34 @@ def test_a_certification_too_large_to_attempt_stops_at_the_support_incumbent_wit
     certified = TransportPortfolioSolve("loose", loose).run(None, program)["selection"]
     assert "timeout" not in certified, "within the allowance the support incumbent is certified against the relaxation"
     assert certified["certificates"][0]["bound"] == pytest.approx(candidate["bound"])
+
+
+def test_transport_portfolio_group_screen_keep_retains_the_largest_relaxed_values():
+    """ADR-0301: of the live groups only ``group_screen_keep`` with the largest standalone LP value enter the model."""
+    import copy
+
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    groups, _caps = _screen_groups(0.)
+    twin = {**copy.deepcopy(groups[0]), "id": "twin", "credit": [2.5, -4.]}   # live, a smaller edge than "live"
+    groups = [groups[0], twin, groups[1], groups[2]]
+    caps = [{"groups": [g["id"] for g in groups], "upper": 12.}]
+    bounds = [TransportPortfolioSolve._group_lp_bound(g) for g in groups]
+    assert bounds[0] > bounds[1] > 0 >= max(bounds[2:]), "two live groups, the first the better"
+    node = TransportPortfolioSolve("keep", {**_screen_params("lp"), "group_screen_keep": 1})
+    out = node.run(None, {"groups": groups, "caps": caps})["selection"]
+    assert node._active == [0]
+    assert node.last_screen == {"rule": "lp", "candidates": 4, "kept": 1, "screened": 3, "fallback": None, "keep": 1}
+    assert out["quantities"][1:] == [[0, 0], [0, 0], [0]] and out["value"] > 0
+    both = TransportPortfolioSolve("both", {**_screen_params("lp"), "group_screen_keep": 2})
+    both.run(None, {"groups": groups, "caps": caps})
+    assert both._active == [0, 1] and both.last_screen["kept"] == 2 and both.last_screen["keep"] == 2
+    plain = TransportPortfolioSolve("plain", _screen_params("lp"))
+    plain.run(None, {"groups": groups, "caps": caps})
+    assert plain._active == [0, 1] and "keep" not in plain.last_screen, "no keep: the screen alone, its record as before"
+    screen = node.candidate_screen({"groups": groups, "caps": caps})
+    assert screen["active_ids"] == ["live"], "the public screen re-derives the keep"
+    for bad in ({"group_screen_keep": 0}, {"group_screen_keep": 1.}, {"group_screen_keep": "1"},
+                {"group_screen": "none", "group_screen_keep": 1}):
+        assert TransportPortfolioSolve.validate_params({**_screen_params("lp"), **bad})
+    assert not TransportPortfolioSolve.validate_params({**_screen_params("lp"), "group_screen_keep": 3})

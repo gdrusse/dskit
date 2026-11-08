@@ -1383,7 +1383,30 @@ class WeeklyOptionPortfolioStudy:
         dropped). A week without enough strictly prior history, without a
         name with finite history, or without positive uncommitted capital,
         does not trade (kelly_risk_input). Open books enter through the cash
-        rule and that wealth only.
+        rule and that wealth only. A kelly block may add max_groups (int >= 1,
+        ADR-0301): after the lp screen only that many groups, the ones with
+        the largest standalone relaxed value, enter the joint growth program.
+        Optional method key sizer (ADR-0300, exclusive with kelly) keeps the
+        method's dollar program as stage 1, unchanged (its books and leg
+        ratios, under every cap it declares), and sizes the selected books
+        by a sample-average fractional-Kelly program (kelly_sizer): exactly
+        fraction, scenarios (int, 2 to 100000 sampled joint settlements from a
+        one-factor Student t copula over the names, each group's atom drawn
+        from its own forecast), n_tangents, core, wealth_floor, cash_buffer
+        (as the kelly block's), beta_lookback (the loadings' window),
+        mean ("nominal" or "w1_worst": the mean each unit's sampled profits
+        are reweighted to, by the least-relative-entropy tilt; never a shift),
+        exposure ("cash_rule", or "stage1_reserve": the units' total reserve
+        may not exceed the stage-1 selection's, the leverage-matched arm) and
+        seed (int >= 0; hashed with the decision date; two more seeds are
+        solved and recorded beside it). A
+        sizer method declares no risk_charge and no filled_account shock
+        scope, the short-notional floor at 0.2 or more, and a beta_lookback of
+        at least correlation_min_pairs. The
+        fill admits a sizer's books under the cash rule alone. A week without
+        enough strictly prior history or without positive uncommitted
+        capital does not trade (kelly_risk_input, the sizer record says why);
+        a stage-2 solve at its time limit is timeout_skipped.
     inputs : dict
         Per-symbol forecasts, contexts, chain and bars, already bounded before
         materialization. No outcomes are passed to the optimizer.
@@ -1401,13 +1424,36 @@ class WeeklyOptionPortfolioStudy:
                "correlation_threshold", "solver", "methods")
     _METHOD_KEYS = {"id", "rho", "portfolio_fraction", "name_fraction", "component_fraction"}
     _OPTIONAL_METHOD_KEYS = {"reserve_per_contract", "short_notional_fraction", "shock", "risk_charge", "radius_scale",
-                             "kelly"}
+                             "kelly", "sizer"}
     _RADIUS_SCALE = "reference_scale"
     _CHARGE_KEYS = ("reserve_per_contract", "short_notional_fraction")
     _SHOCK_KEYS = {"moves", "loss_fraction", "beta_lookback"}
     _KELLY_KEYS = {"fraction", "n_tangents", "core", "wealth_floor", "moves", "beta_lookback", "cash_buffer",
                    "gap", "time_limit"}
+    #: An optional kelly key (ADR-0301): ``max_groups`` keeps, of the ``lp`` screen's survivors, only that many with
+    #: the largest standalone relaxed value before the joint growth program is built (the solver's group_screen_keep).
+    _KELLY_OPTIONAL_KEYS = {"max_groups"}
     _KELLY_GAP_KEYS = {"absolute", "relative"}
+    #: The select-then-size Kelly method (ADR-0300): the method's own dollar keys select the books (stage 1, the
+    #: locked formulation unchanged) and ``sizer`` sizes them by a sample-average CRRA program over sampled joint
+    #: settlements (stage 2, ``kelly_sizer``). ``mean`` names what each unit's scenario profits are recentred to:
+    #: the forecast's expected profit (``nominal``) or the W1-worst expected profit at the method's own radius
+    #: (``w1_worst``, the stage-1 valuation, so a selected book never sizes on a negative mean).
+    _SIZER_KEYS = {"fraction", "scenarios", "n_tangents", "core", "wealth_floor", "cash_buffer", "beta_lookback",
+                   "mean", "seed", "exposure"}
+    _SIZER_MEANS = ("nominal", "w1_worst")
+    #: What bounds the units' total reserve in stage 2: the cash rule alone, or also the stage-1 selection's own total
+    #: reserve (the leverage-matched arm: the sizer may only reallocate what the dollar program would have committed).
+    _SIZER_EXPOSURES = ("cash_rule", "stage1_reserve")
+    #: Two more seeds whose counts are recorded beside the traded seed's (a record only: how much the sample moves the stake).
+    _SIZER_ALTERNATE_SEEDS = 2
+    #: The least share of the scenarios the tilt may concentrate the weight on (``effective_scenarios / scenarios``): a tilt
+    #: below it, or one that missed its targets, is not sized on; the week sizes on the untilted sample and says so.
+    _SIZER_MIN_EFFECTIVE_SHARE = .1
+    #: The most sampled scenarios a sizer may declare: a cap on the stage-2 program's rows, not a tractability claim.
+    _SIZER_SCENARIO_CEILING = 100000
+    #: The sizer's week-level outcomes beside ``sized``: none trades, and the record names which.
+    _SIZER_HOLDS = ("insufficient_history", "nonpositive_capital")
     #: Degrees of freedom of the Student t that prices the market-move cells (ADR-0299): one fixed constant, the heavy
     #: tail a normal law lacks, the lowest with a finite variance to match the basket's.
     _KELLY_TAIL_DF = 4
@@ -1585,6 +1631,7 @@ class WeeklyOptionPortfolioStudy:
                     or ("radius_scale" in method and (type(method["radius_scale"]) is not str
                                                       or method["radius_scale"] != cls._RADIUS_SCALE))
                     or ("kelly" in method and not cls._kelly_valid(method))
+                    or ("sizer" in method and not cls._sizer_valid(method))
                     or not isinstance(method["id"], str) or not method["id"] or method["id"] in ids
                     or not number_ok(method["rho"]) or method["rho"] < 0
                     or any(not number_ok(method[k]) or not 0 < method[k] <= 1
@@ -1599,6 +1646,9 @@ class WeeklyOptionPortfolioStudy:
             # document has one solver block: a kelly method runs alone.
             raise ValueError("a kelly method runs alone: no non-kelly method in its document")
         for method in p["methods"]:
+            if "sizer" in method and method["sizer"]["beta_lookback"] < p["correlation_min_pairs"]:
+                # Fewer sessions in the loadings' window than the study needs to estimate would hold every week.
+                raise ValueError("a sizer's beta_lookback must be at least correlation_min_pairs")
             if "kelly" in method and not cls._gap_within(p["solver"], method["kelly"]):
                 # The objective is dollars of growth: a 50-dollar gap certifies a weak week as cash and cannot tell
                 # a quarter Kelly from a half. The method states the gap it needs; a looser document refuses.
@@ -1689,7 +1739,8 @@ class WeeklyOptionPortfolioStudy:
     def _kelly_valid(cls, method):
         """Return whether a method's kelly block is well formed and the method declares no sizing cap beside it."""
         kelly = method["kelly"]
-        return (isinstance(kelly, dict) and set(kelly) == cls._KELLY_KEYS
+        return (isinstance(kelly, dict) and set(kelly)-cls._KELLY_OPTIONAL_KEYS == cls._KELLY_KEYS
+                and ("max_groups" not in kelly or (type(kelly["max_groups"]) is int and kelly["max_groups"] >= 1))
                 and number_ok(kelly["fraction"]) and 0 < kelly["fraction"] <= 1
                 and type(kelly["n_tangents"]) is int and kelly["n_tangents"] >= 2
                 and number_ok(kelly["core"]) and kelly["core"] > 1
@@ -1716,6 +1767,38 @@ class WeeklyOptionPortfolioStudy:
     def _kelly(method):
         """Return the method's validated kelly policy, None when undeclared."""
         return method.get("kelly")
+
+    @classmethod
+    def _sizer_valid(cls, method):
+        """Return whether a method's sizer block is well formed (ADR-0300); its dollar keys are stage 1, unchanged.
+
+        A sizer method is not a kelly method (the two objectives are exclusive); it declares no ``risk_charge`` (the
+        sized books would carry none and the unit's mean would ignore the charge stage 1 selected under) and no
+        ``filled_account`` shock scope (its post-fill admission would undo the sizing); it declares the short-notional
+        floor at :attr:`KELLY_SHORT_NOTIONAL_FLOOR` or more (a zero-reserve unit cannot be sized, and a growth objective
+        must not see free leverage, ADR-0299's audit); and its cash buffer must leave the portfolio fraction some room,
+        or the stage-2 cash rule would be negative.
+        """
+        sizer = method["sizer"]
+        return (isinstance(sizer, dict) and set(sizer) == cls._SIZER_KEYS and "kelly" not in method
+                and "risk_charge" not in method and not cls._filled_scope(method.get("shock"))
+                and number_ok(method.get("short_notional_fraction"))
+                and method["short_notional_fraction"] >= cls.KELLY_SHORT_NOTIONAL_FLOOR
+                and number_ok(sizer["fraction"]) and 0 < sizer["fraction"] <= 1
+                and type(sizer["scenarios"]) is int and 2 <= sizer["scenarios"] <= cls._SIZER_SCENARIO_CEILING
+                and type(sizer["n_tangents"]) is int and sizer["n_tangents"] >= 2
+                and number_ok(sizer["core"]) and sizer["core"] > 1
+                and number_ok(sizer["wealth_floor"]) and 0 < sizer["wealth_floor"] < 1
+                and number_ok(sizer["cash_buffer"]) and 0 <= sizer["cash_buffer"] < 1
+                and number_ok(method["portfolio_fraction"]) and sizer["cash_buffer"] < method["portfolio_fraction"]
+                and type(sizer["beta_lookback"]) is int and sizer["beta_lookback"] >= 2
+                and sizer["mean"] in cls._SIZER_MEANS and sizer["exposure"] in cls._SIZER_EXPOSURES
+                and type(sizer["seed"]) is int and sizer["seed"] >= 0)
+
+    @staticmethod
+    def _sizer(method):
+        """Return the method's validated sizer policy, None when undeclared."""
+        return method.get("sizer")
 
     #: HiGHS's ``mip_feasibility_tolerance`` a kelly document must declare, at most: at its 1e-6 default the charge
     #: variable sits under its tangent lines by up to ~0.006 at 300,000 (the tolerance times the lines' intercepts),
@@ -2207,6 +2290,11 @@ class WeeklyOptionPortfolioStudy:
             held_back = kelly["cash_buffer"] if solve else 0.
             return [{"members": symbols,
                      "upper": account.remaining(symbols, method["portfolio_fraction"]-held_back)}]
+        if self._sizer(method) is not None and not solve:
+            # The fill admits a sizer's books under the cash rule alone: the growth program sized them past the dollar
+            # caps on purpose, and a weekly or per-name cap at admission would undo it. The decision's own program
+            # (``solve``) keeps every stage-1 cap, so the selection is the locked formulation's (ADR-0300).
+            return [{"members": symbols, "upper": account.remaining(symbols, method["portfolio_fraction"])}]
         limits = [{"members": symbols, "upper": account.remaining(symbols, method["portfolio_fraction"])},
                   {"members": symbols, "upper": max(0., account.funding)*self.params["weekly_fraction"]}]
         limits.extend({"members": [s], "upper": account.remaining([s], method["name_fraction"])}
@@ -2255,6 +2343,226 @@ class WeeklyOptionPortfolioStudy:
                 # expected stays the uncharged robust value; the charge is its own field.
                 books[-1]["risk_charge"] = selection["risk_charges"][i]
         return books
+
+    def _sizer_inputs(self, day, method, account):
+        """Return the sizer's week record with its risk-input status, before any solve (ADR-0300).
+
+        As the kelly method's estimate, this is read before stage 1 so a week
+        the sizer cannot size (no positive uncommitted capital, or fewer
+        strictly prior sessions than ``correlation_min_pairs``) solves
+        nothing and is ``kelly_risk_input``; only ``estimated`` goes on.
+        """
+        from .kelly_sizer import scenario_seed
+
+        p, sizer = self.params, self._sizer(method)
+        symbols = p["symbols"]
+        w0 = account.remaining(symbols, 1.)
+        record = {"fraction": sizer["fraction"], "gamma": 1./sizer["fraction"], "mean": sizer["mean"],
+                  "scenarios": sizer["scenarios"], "seed": scenario_seed(sizer["seed"], day),
+                  "funding": account.funding, "w0": w0,
+                  "open_reserve": sum(b["reserve"] for b in account.open.values()),
+                  "cash_limit": max(0., account.remaining(symbols, method["portfolio_fraction"]-sizer["cash_buffer"])),
+                  "wealth_lo": sizer["wealth_floor"]*w0,
+                  "observations": self._returns(day, sizer["beta_lookback"])[1], "status": "estimated"}
+        if w0 <= 0:
+            record["status"] = "nonpositive_capital"
+        elif record["observations"] < p["correlation_min_pairs"]:
+            record["status"] = "insufficient_history"
+        return record
+
+    def _size_books(self, day, method, configured, metadata, account, selection, books, mult, record, claimed):
+        """Size the stage-1 books by the sample-average Kelly program (ADR-0300).
+
+        Each selected book becomes one unit (its legs over their gcd, the
+        fill's own primitive unit) with a depth-limited count, the reserve one
+        unit commits and its terminal profit in every sampled joint
+        settlement, recentred to the mean the method names (``nominal`` or
+        ``w1_worst``, both read from the stage-1 program's own valuation).
+        Open books with a current forecast for their expiry enter at their
+        sampled outcomes (a new book that hedges one is credited); the others
+        at their reserve, their largest loss (ADR-0299's treatment). The
+        copula's loadings come from the names' betas and volatilities over
+        ``beta_lookback`` sessions strictly before ``day``.
+
+        ``record`` is :meth:`_sizer_inputs`'s (status ``estimated``), extended
+        in place. Returns ``status`` (``sized`` or ``timeout``), ``record``,
+        ``certificate`` and, for a sized week, ``selection`` (the final
+        quantities valued by the stage-1 program) and ``books``. ``claimed``
+        is a recorded decision in a replay: this host re-solves and requires
+        the same counts, then keeps the recorded certificate so the replay is
+        exact.
+        """
+        import numpy as np
+        from dskit.pipeline.libs.pyomo import TransportActionScore
+        from .kelly_sizer import BookKellySizer, factor_correlations, joint_atoms, scenario_seed, tilt_weights
+
+        p, sizer = self.params, self._sizer(method)
+        tolerance = p["solver"]["parity_tolerance"]
+        symbols = p["symbols"]
+        w0 = record["w0"]
+        if record["status"] != "estimated":
+            raise ValueError("the sizer's risk inputs must be estimated before it sizes")
+        returns, count = self._returns(day, sizer["beta_lookback"])
+        finite = [s for s in symbols if np.all(np.isfinite(returns[s]))]
+        betas = self._fit_betas(returns, finite, count)
+        factor = factor_correlations(returns, {s: betas[s] for s in finite}, finite)
+        # Units: one per stage-1 book, in the book order (the books are in group order).
+        index = {meta["id"]: i for i, meta in enumerate(metadata)}
+        units = []
+        for book in books:
+            i = index[book["id"]]
+            quantities = selection["quantities"][i]
+            g = self._units(book["legs"])
+            unit = [q//g for q in quantities]
+            units.append({"id": book["id"], "group": i, "unit": unit, "units_selected": g,
+                          "k_max": min(cap//u for u, cap in zip(unit, configured[i]["capacity"]) if u)})
+        involved = [u["group"] for u in units]
+        # The stage-1 program's own valuation of a unit (its reserve rows, radius, scale and charge): the scorer needs a
+        # cap over every group, and ``value`` reads none, so one unbounded cap stands in.
+        scorer = TransportActionScore({"groups": [configured[i] for i in involved],
+                                       "caps": [{"groups": [configured[i]["id"] for i in involved], "upper": 1e15}]},
+                                      {"parity_tolerance": tolerance})
+        valued = scorer.value([u["unit"] for u in units])
+        # Scenarios: every unit's group and every open book's current group share their name's draw.
+        masses = {configured[i]["id"]: configured[i]["masses"] for i in involved}
+        symbol_of = {configured[i]["id"]: metadata[i]["symbol"] for i in involved}
+        held_group = {}
+        for key, book in account.open.items():
+            j = next((i for i, m in enumerate(metadata) if m["symbol"] == book["symbol"]
+                      and m["expiry"] == book["expiry"]), None)
+            held_group[key] = j
+            if j is not None:
+                masses[configured[j]["id"]] = configured[j]["masses"]
+                symbol_of[configured[j]["id"]] = metadata[j]["symbol"]
+        names = sorted(set(symbol_of.values()))
+        correlations = {a: factor["correlations"].get(a, 0.) for a in names}   # a nonfinite window loads nothing
+        credit = {u["id"]: float(np.dot(configured[u["group"]]["credit"], u["unit"])) for u in units}
+        loss = {u["id"]: np.asarray(configured[u["group"]]["losses"], dtype=float) @ np.asarray(u["unit"], dtype=float)
+                for u in units}
+        targets = [valued["nominal_values" if sizer["mean"] == "nominal" else "group_values"][slot]
+                   for slot in range(len(units))]
+        held_rows, held_loss, held_exact = [], {}, 0.
+        for key, book in account.open.items():
+            j = held_group[key]
+            if j is None:
+                # No current forecast for its expiry: at its reserve, its largest loss (the reserve is at least that).
+                held_rows.append({"id": key, "modelled": False})
+                held_exact -= book["reserve"]
+            else:
+                group = configured[j]
+                held_loss[key] = np.array([sum(c*leg["quantity"] for c, leg in zip(self._loss_row(book["legs"], s, mult),
+                                                                                   book["legs"])) for s in group["grid"]])
+                held_rows.append({"id": key, "modelled": True, "group": group["id"]})
+                held_exact += book["credit"]-float(np.dot(group["masses"], held_loss[key]))
+
+        def draw(seed):
+            """One sample: each unit's raw profits (units x scenarios), the tilt to the targets, the open books' P&L."""
+            sample = joint_atoms(masses, symbol_of, correlations, sizer["scenarios"], seed)
+            raw = np.array([credit[u["id"]]-loss[u["id"]][sample["atoms"][configured[u["group"]]["id"]]] for u in units])
+            # Reweighting, never a shift: every sampled profit stays inside [-reserve, credit] of its unit.
+            tilt = tilt_weights(raw, targets)
+            tilt["applied"] = "tilt"
+            if (not tilt["converged"]
+                    or tilt["effective_scenarios"] < self._SIZER_MIN_EFFECTIVE_SHARE*sizer["scenarios"]):
+                # A tilt that missed its targets or sits on a handful of draws is not sized on: the untilted sample is,
+                # and the record says so (the lens-2 review's gate).
+                untilted = tilt_weights(raw, raw.mean(axis=1))
+                tilt = {**untilted, "applied": "untilted_fallback", "refused": {k: tilt[k] for k in (
+                    "converged", "gap", "effective_scenarios", "max_weight", "kl")}}
+            held = np.zeros(sizer["scenarios"])
+            for key, book in account.open.items():
+                j = held_group[key]
+                held += (-book["reserve"] if j is None
+                         else book["credit"]-held_loss[key][sample["atoms"][configured[j]["id"]]])
+            return raw, tilt, held
+        raw, tilt, held = draw(record["seed"])
+        rows = []
+        for slot, u in enumerate(units):
+            group = configured[u["group"]]
+            rows.append({"id": u["id"], "group": group["id"], "symbol": symbol_of[group["id"]],
+                         "stage1_contracts": int(sum(selection["quantities"][u["group"]])),
+                         "unit_contracts": int(sum(u["unit"])), "units_selected": u["units_selected"],
+                         "k_max": u["k_max"], "reserve": valued["reserves"][slot], "credit": credit[u["id"]],
+                         "mean_nominal": valued["nominal_values"][slot], "mean_w1_worst": valued["group_values"][slot],
+                         "mean_target": float(tilt["targets"][slot]), "target_clamped": tilt["clamped"][slot],
+                         "weighted_mean": float(tilt["means"][slot]), "sample_mean_raw": float(raw[slot].mean()),
+                         "sample_sd": float(raw[slot].std()), "worst_profit": float(raw[slot].min()),
+                         "best_profit": float(raw[slot].max())})
+        stage1_reserve = float(sum(selection["reserves"]))
+        cash_limit = record["cash_limit"]
+        if sizer["exposure"] == "stage1_reserve":
+            # The leverage-matched arm: stage 2 may only reallocate what the dollar program would have committed.
+            cash_limit = min(cash_limit, stage1_reserve)
+        record.update(sigma_daily=factor["sigma_m"], names=names,
+                      betas={a: betas.get(a) for a in names}, correlations=correlations,
+                      nonfinite=[a for a in names if a not in finite], units=rows, held=held_rows,
+                      held_mean_exact=held_exact, held_mean_weighted=float(held @ tilt["weights"]),
+                      tilt={k: tilt[k] for k in ("kl", "max_weight", "effective_scenarios", "converged", "gap", "applied",
+                                                 *(("refused",) if "refused" in tilt else ()))},
+                      exposure=sizer["exposure"], stage1_reserve=stage1_reserve, cash_limit_applied=cash_limit)
+        claimed_sizer = (claimed or {}).get("sizer") or {}
+        if claimed_sizer.get("status") == "timeout":
+            # A recorded stage-2 timeout is kept as recorded: whether this host would finish in the limit cannot be
+            # told from the record, and a replay that solved would disagree with it by construction. The record must
+            # be a timeout's: a skipped week, a maxTimeLimit certificate, a stated incumbent flag.
+            solve = claimed_sizer.get("solve")
+            if (claimed.get("status") != "timeout_skipped" or not isinstance(solve, dict)
+                    or solve.get("termination") != "maxTimeLimit" or type(claimed_sizer.get("incumbent")) is not bool):
+                raise ValueError("recorded sizer timeout is malformed")
+            record.update(status="timeout", incumbent=claimed_sizer["incumbent"], solve=solve)
+            return {"status": "timeout", "record": record, "certificate": solve}
+        options = {k: v for k, v in (p["solver"].get("solver_options") or {}).items() if k == "time_limit"}
+        node = BookKellySizer("sizer", {"gamma": record["gamma"], "n_tangents": sizer["n_tangents"],
+                                        "core": sizer["core"], "parity_tolerance": tolerance,
+                                        "solver_options": options})
+
+        def solve(raw, tilt, held):
+            return node.run(None, {"units": [{"id": u["id"], "reserve": r["reserve"], "k_max": r["k_max"],
+                                              "profits": raw[slot].tolist()} for slot, (u, r) in enumerate(zip(units, rows))],
+                                   "held": held.tolist(), "weights": tilt["weights"].tolist(),
+                                   "funding": account.funding, "w0": w0, "cash_limit": cash_limit,
+                                   "wealth_lo": record["wealth_lo"]})["selection"]
+        out = solve(raw, tilt, held)
+        if out.get("timeout"):
+            record.update(status="timeout", incumbent=out["incumbent"], solve=out["certificate"])
+            return {"status": "timeout", "record": record, "certificate": out["certificate"]}
+        final = [[0]*len(g["capacity"]) for g in configured]
+        for u in units:
+            final[u["group"]] = [out["k"][u["id"]]*q for q in u["unit"]]
+        scored = scorer.value([final[i] for i in involved])
+        reserves, values, nominal = ([0.]*len(configured) for _ in range(3))
+        for slot, i in enumerate(involved):
+            reserves[i], values[i], nominal[i] = (scored[k][slot] for k in ("reserves", "group_values", "nominal_values"))
+        sized = {"quantities": final, "reserves": reserves, "group_values": values, "nominal_values": nominal,
+                 "value": float(sum(values)), "stage": "sizer"}
+        for row, u in zip(rows, units):
+            row.update(k=out["k"][u["id"]], contracts=int(sum(final[u["group"]])))
+        stage1_contracts = sum(r["stage1_contracts"] for r in rows)
+        # Two more seeds, a record only: how far the sample alone moves the counts (the traded seed is the declared one).
+        alternates = []
+        for extra in range(1, self._SIZER_ALTERNATE_SEEDS+1):
+            seed = scenario_seed(sizer["seed"]+extra, day)
+            other = solve(*draw(seed))
+            alternates.append({"seed": seed, "timeout": True} if other.get("timeout")
+                              else {"seed": seed, "k": other["k"], "reserve": other["reserve"]})
+        certificate = out["certificate"]
+        if claimed is not None:
+            if claimed.get("selection", {}).get("quantities") != final:
+                raise ValueError("recorded sizer counts differ from this host's replay")
+            recorded_cert = (claimed.get("sizer") or {}).get("solve")
+            if (not isinstance(recorded_cert, dict) or not number_ok(recorded_cert.get("objective"))
+                    or abs(recorded_cert["objective"]-out["value"]) > tolerance):
+                raise ValueError("recorded sizer certificate differs from this host's replay")
+            certificate = recorded_cert
+        record.update(status="sized", solve=certificate, value=out["value"], exact=out["exact"],
+                      reserve=out["reserve"], wealth_min=out["wealth_min"], wealth_max=out["wealth_max"],
+                      knots=out["knots"], envelope_error=out["envelope_error"], core_error=out["core_error"],
+                      stake_ratio=(sum(r["contracts"] for r in rows)/stage1_contracts if stage1_contracts else None),
+                      # The diagnostic that matters: how much more (or less) capital the sizer commits than stage 1 did.
+                      reserve_ratio=(out["reserve"]/stage1_reserve if stage1_reserve > 0 else None),
+                      alternates=alternates)
+        return {"status": "sized", "record": record, "selection": sized, "certificate": certificate,
+                "books": self._books(sized, metadata, self._charge(method))}
 
     @staticmethod
     def _units(legs):
@@ -2528,6 +2836,10 @@ class WeeklyOptionPortfolioStudy:
             raise ValueError("; ".join(defects))
         if recorded is not None and derived is not None:
             raise ValueError("recorded replay and derived actions are exclusive")
+        if (derived is not None or policy) and self._sizer(method) is not None:
+            # A foreign worker's actions are the sized counts, which the stage-1 certificate does not cover, and a
+            # policy scores the stage-1 program only: a sizer method solves locally or replays a recorded result.
+            raise ValueError("a sizer method is neither derived from foreign actions nor scored by a policy")
         recorded_decisions = derived_decisions = None
         if recorded is not None:
             import json
@@ -2637,6 +2949,11 @@ class WeeklyOptionPortfolioStudy:
                         "candidates": len(metadata), **weights,
                         "status": (weights["status"] if w0 > 0 else "nonpositive_capital")
                         if metadata or not estimate["dropped"] else "no_candidate_with_history"}
+                sizer = self._sizer(method)
+                if sizer is not None:
+                    # ADR-0300: the sizer's risk inputs are read before stage 1, as the kelly estimate is, so a week
+                    # it cannot size solves nothing.
+                    record["sizer"] = self._sizer_inputs(day, method, account)
                 if any(lim["upper"] < -1e-5 for lim in limits):
                     record["status"] = "existing_cap_breach_cash"
                 elif (self.clocks and (day == self.calendar[-1]
@@ -2645,6 +2962,8 @@ class WeeklyOptionPortfolioStudy:
                 elif "shock" in record and record["shock"]["status"] != "within":
                     record["status"] = ("shock_risk_input" if held is None else "shock_held_breach")
                 elif "kelly" in record and record["kelly"]["status"] != "estimated":
+                    record["status"] = self._KELLY_RISK_INPUT
+                elif "sizer" in record and record["sizer"]["status"] != "estimated":
                     record["status"] = self._KELLY_RISK_INPUT
                 elif not groups or day == self.calendar[-1]:
                     record["status"] = "no_eligible_candidates"
@@ -2656,7 +2975,11 @@ class WeeklyOptionPortfolioStudy:
                                    + self._charge_coefficients(charge, meta["items"], mult),
                                    **({} if risk is None else {"risk_charge": dict(risk)})}
                                   for g, meta in zip(groups, metadata)]
-                    solver = TransportPortfolioSolve("portfolio", p["solver"])
+                    solver_params = p["solver"]
+                    if kelly is not None and "max_groups" in kelly:
+                        # ADR-0301: after the lp screen keep only the best max_groups groups by standalone relaxed value.
+                        solver_params = {**p["solver"], "group_screen_keep": kelly["max_groups"]}
+                    solver = TransportPortfolioSolve("portfolio", solver_params)
                     program = {"groups": configured,
                                "caps": self._caps(self._limits(account, method, components, solve=True), metadata)}
                     if shock is not None:
@@ -2712,16 +3035,38 @@ class WeeklyOptionPortfolioStudy:
                         selection = solver.run(None, program)["selection"]
                     else:
                         claimed = recorded_decisions[day]
-                        if "selection" not in claimed or "certificates" not in claimed:
+                        if sizer is not None and "stage1" in claimed:
+                            # A sized week records stage 1 apart: its selection and certificate are what the stage-1
+                            # program certifies; the sized counts are checked by the sizer's own replay below.
+                            claimed = claimed["stage1"]
+                        if (not isinstance(claimed, dict) or "selection" not in claimed
+                                or "certificates" not in claimed):
                             raise ValueError("eligible decision lacks recorded solve evidence")
                         selection = solver._recorded(program, claimed["selection"], claimed["certificates"])
                     timed_out = "timeout" in selection
                     books = [] if timed_out else self._books(selection, metadata, charge)
-                    record.update(status="timeout_skipped" if timed_out else "selected" if books else "cash",
+                    status = "timeout_skipped" if timed_out else "selected" if books else "cash"
+                    certificates = [{k: v for k, v in c.items() if k != "binding"}
+                                    for c in selection.get("certificates", [])]
+                    if sizer is not None and not timed_out and books:
+                        # ADR-0300: stage 1 (above, the locked formulation's program) chose the books; stage 2 sizes
+                        # them. The stage-1 selection and certificate stay in the record so a replay checks both.
+                        record["stage1"] = {"selection": {k: copy.deepcopy(v) for k, v in selection.items()
+                                                          if k != "certificates"},
+                                            "certificates": copy.deepcopy(certificates)}
+                        claimed = recorded_decisions[day] if recorded_decisions is not None else None
+                        sized = self._size_books(day, method, configured, metadata, account, selection, books, mult,
+                                                 record["sizer"], claimed)
+                        certificates = certificates+[sized["certificate"]]
+                        if sized["status"] == "sized":
+                            selection, books = sized["selection"], sized["books"]
+                            status = "selected" if books else "cash"
+                        else:
+                            books, timed_out, status = [], True, "timeout_skipped"
+                    record.update(status=status,
                                   selection={k: copy.deepcopy(v) for k, v in selection.items()
                                              if k != "certificates"},
-                                  certificates=[{k: v for k, v in c.items() if k != "binding"}
-                                                for c in selection.get("certificates", [])],
+                                  certificates=certificates,
                                   books=copy.deepcopy(books))
                     if shock is not None:
                         losses = ({row["id"].split(":", 1)[1]: None for row in rows} if timed_out
@@ -3215,6 +3560,10 @@ class MIOPacketCompare(StudyNode):
     #: What a comparison row keeps of each kelly decision's ``kelly`` record (``book``: the exact sd, the charge, their
     #: ratio and the fraction the charge applies, ADR-0299).
     _KELLY_ROW_KEYS = ("status", "dropped", "candidates", "screen", "book", "solve")
+    #: What a comparison row keeps of each sizer decision's ``sizer`` record (ADR-0300): how the week was sized and how
+    #: far the counts moved from the stage-1 selection.
+    _SIZER_ROW_KEYS = ("status", "reserve_ratio", "stake_ratio", "value", "exact", "wealth_min", "reserve",
+                       "stage1_reserve", "cash_limit_applied", "exposure", "tilt", "alternates")
 
     @staticmethod
     def _kelly_dropped(decisions):
@@ -3262,7 +3611,9 @@ class MIOPacketCompare(StudyNode):
                         "date", "status", "candidate_books", "candidate_contracts", "eligible_by_pair",
                         "eligible_by_symbol", "fitted", "fallback", "refusals", "cdf_noise_repaired"}}
                         | ({"kelly": {k: decision["kelly"].get(k) for k in self._KELLY_ROW_KEYS}}
-                           if "kelly" in decision else {}) for decision in result["decisions"]]
+                           if "kelly" in decision else {})
+                        | ({"sizer": {k: decision["sizer"].get(k) for k in self._SIZER_ROW_KEYS}}
+                           if "sizer" in decision else {}) for decision in result["decisions"]]
                     if any("kelly" in d for d in result["decisions"]):
                         row["kelly_dropped"] = self._kelly_dropped(result["decisions"])
                     row["net_pnl"] = result["pnl"]

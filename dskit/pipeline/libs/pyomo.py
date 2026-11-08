@@ -3888,6 +3888,10 @@ class _TangentEnvelope:
         return self._largest_error(*self.core)
 
 
+#: The envelope's public name: ``index_options.kelly_sizer`` builds its stage-2 program on it (ADR-0300).
+TangentEnvelope = _TangentEnvelope
+
+
 def _records_agree(claimed, audit, tolerance=1e-9):
     """Whether a recorded value matches this host's: the same type, floats within ``tolerance`` relative (and a small
     absolute floor for values at float noise), dicts and lists element by element, ``None`` only for ``None``."""
@@ -3955,6 +3959,12 @@ class TransportPortfolioSolve(PyomoSolve):
         variable/constraint counts shrink. Replay re-derives the screen.
         Optional utility_solve, read for a utility program only, is
         "relax_fix" (default) or "direct" (:attr:`UTILITY_SOLVES`).
+        Optional group_screen_keep (an int >= 1, with group_screen "lp";
+        ADR-0301) keeps, of the groups the screen leaves live, only that
+        many with the largest standalone relaxed value (ties by index): a
+        further candidate restriction, so the certificate covers the kept
+        program and the objective can only be lower than the unrestricted
+        one. Replay re-derives it with the screen.
         Inputs contain
         groups (id, grid, masses, radius, scale, credit, losses, capacity,
         exclusive, reserve_rows, linear_rows), caps (groups, upper) and
@@ -4025,7 +4035,7 @@ class TransportPortfolioSolve(PyomoSolve):
     outputs = ("selection",)
     _PARAMS = PyomoSolve._PARAMS + (
         "absolute_gap", "relative_gap", "parity_tolerance", "timeout_policy",
-        "group_screen", "utility_solve")
+        "group_screen", "group_screen_keep", "utility_solve")
 
     #: How a utility program is solved (a dollar program ignores it): ``relax_fix`` (the default) solves the LP
     #: relaxation first, finds an incumbent on the integer program reduced to that relaxation's support, then
@@ -4080,6 +4090,9 @@ class TransportPortfolioSolve(PyomoSolve):
         screen = params.get("group_screen", "none")
         if not isinstance(screen, str) or screen not in ("none", "lp"):
             problems.append("group_screen must be none or lp")
+        keep = params.get("group_screen_keep")
+        if keep is not None and (type(keep) is not int or keep < 1 or screen != "lp"):
+            problems.append("group_screen_keep must be an int >= 1 and needs group_screen lp")
         strategy = params.get("utility_solve", cls.UTILITY_SOLVES[0])
         if not isinstance(strategy, str) or strategy not in cls.UTILITY_SOLVES:
             problems.append("utility_solve must be one of "+", ".join(cls.UTILITY_SOLVES))
@@ -4410,6 +4423,11 @@ class TransportPortfolioSolve(PyomoSolve):
                 # Keep the best group so that a solver certificate still exists.
                 fallback = max(range(len(groups)), key=lambda i: bounds[i])
                 active = [fallback]
+            keep = self.params.get("group_screen_keep")
+            if keep is not None and len(active) > keep:
+                # ADR-0301: of the live groups keep the ``keep`` with the largest standalone relaxed value (ties by
+                # index), a candidate restriction like the screen itself; the certificate covers the kept program.
+                active = sorted(sorted(active, key=lambda i: (-bounds[i], i))[:keep])
             self.log.info("group screen kept %d of %d groups", len(active), len(groups))
         else:
             bounds = [None]*len(groups)
@@ -4419,6 +4437,9 @@ class TransportPortfolioSolve(PyomoSolve):
         # The last screen's size, for a caller to record beside its decision (not only the log line above).
         self.last_screen = {"rule": screen, "candidates": len(groups), "kept": len(active),
                             "screened": len(groups)-len(active), "fallback": fallback}
+        if self.params.get("group_screen_keep") is not None:
+            # Only a program that declares the cap records it: a kelly result recorded before ADR-0301 replays unchanged.
+            self.last_screen["keep"] = self.params["group_screen_keep"]
         return {
             "screen": screen,
             "parity_tolerance": self.params["parity_tolerance"],
