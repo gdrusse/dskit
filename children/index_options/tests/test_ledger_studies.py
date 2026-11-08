@@ -3875,7 +3875,8 @@ def test_a_kelly_week_records_the_books_sd_ratio_and_effective_fraction():
         assert book == week["selection"]["utility"]["book"] and set(book) == {"sd", "dispersion", "ratio", "effective_fraction"}
         assert book["effective_fraction"] == pytest.approx(week["kelly"]["fraction"]*book["ratio"]**2)
         assert book["sd"] > 0 and book["dispersion"] > 0
-    assert set(ledger_studies.MIOPacketCompare._KELLY_ROW_KEYS) <= set(solved[0]["kelly"])
+    # `uncertified` is written only by a method that declares accept_uncertified (ADR-0301 amendment); the row reads it with .get.
+    assert set(ledger_studies.MIOPacketCompare._KELLY_ROW_KEYS)-{"uncertified"} <= set(solved[0]["kelly"])
     for week in solved:
         solve = week["kelly"]["solve"]
         assert set(solve) == {"strategy_outcome", "bound_source"} and solve["strategy_outcome"] is not None
@@ -4159,6 +4160,10 @@ FINE_FORMULATIONS = {
 #: ADR-0299's one-stage quarter Kelly restricted to the 100 best groups after the lp screen (ADR-0301).
 TOP_FORMULATIONS = {
     "kelly025_top100_lp": {**_KELLY_BASE, "kelly": {**KELLY, "fraction": .25, "max_groups": 100}},
+    # ADR-0301 amendment (owner, 2026-11-08, option A): the same program, trading the support incumbent of a week whose
+    # certification was declined, with the gap to the relaxation's bound recorded instead of the week skipped.
+    "kelly025_top100_uncert_lp": {**_KELLY_BASE, "kelly": {**KELLY, "fraction": .25, "max_groups": 100,
+                                                          "accept_uncertified": True}},
 }
 
 
@@ -4550,3 +4555,60 @@ def test_a_method_without_the_sizer_key_is_byte_identical_to_the_code_before():
     result = study._method(params["methods"][0], None)
     assert all("sizer" not in d and "stage1" not in d for d in result["decisions"])
     assert _timeless_digest(result) == RADIUS_BASELINES["weekly", 0.]
+
+
+# --- the uncertified support incumbent (ADR-0301 amendment; owner option A, 2026-11-08) ---------------------------------
+
+def _declined_kelly_fixture(**kelly):
+    """A kelly week whose certification is always declined (no action may stay free) under a gap nothing can meet."""
+    params, inputs = _kelly_fixture(fraction=.5, **kelly)
+    params["solver"].update(absolute_gap=1e-9, relative_gap=0.)
+    params["solver"]["solver_options"].update(mip_abs_gap=1e-9, mip_rel_gap=0.)
+    params["methods"][0]["kelly"]["gap"] = {"absolute": 1e-9, "relative": 0.}
+    return params, inputs
+
+
+def test_a_declined_week_trades_its_support_incumbent_only_when_the_method_accepts_uncertified(monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    monkeypatch.setattr(TransportPortfolioSolve, "UTILITY_CERTIFY_ACTIONS", 0)
+    params, inputs = _declined_kelly_fixture()
+    skipped = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    declined = [d for d in skipped["decisions"] if d.get("kelly", {}).get("solve", {}).get("strategy_outcome") == "declined"]
+    assert declined, "the fixture's certification is declined"
+    assert all(d["status"] == "timeout_skipped" and not d["books"] and "uncertified" not in d["kelly"] for d in declined), \
+        "a method without the key carries no field: earlier kelly records stay identical"
+    assert all(d["selection"]["timeout"] == "gap" and d["selection"]["candidate"] is not None for d in declined)
+    params, inputs = _declined_kelly_fixture(accept_uncertified=True)
+    method = params["methods"][0]
+    traded = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    weeks = [d for d in traded["decisions"] if d.get("kelly", {}).get("uncertified")]
+    assert weeks and len(weeks) == len(declined)
+    for week in weeks:
+        u = week["kelly"]["uncertified"]
+        assert u["outcome"] == "declined" and u["gap"] is not None and u["gap"] > 1e-9 and u["bound"] >= u["value"]
+        assert week["status"] in ("selected", "cash") and week["selection"]["timeout"] == "gap", \
+            "the recorded selection stays the timeout envelope; the trade is the candidate"
+        assert week["books"] == ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._books(
+            week["selection"]["candidate"], ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._prepare(week["date"])[1],
+            ledger_studies.WeeklyOptionPortfolioStudy._charge(method)) or week["status"] == "cash"
+        assert week["kelly"]["book"] is not None and week["kelly"]["losses"]
+    assert any(d["status"] == "selected" for d in weeks), "the support incumbent holds a book on the fixture"
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=traded) == traded
+    failed = _declined_kelly_fixture(accept_uncertified=True)
+    monkeypatch.setattr(TransportPortfolioSolve, "_relaxation", lambda self, solver, model, limit: None)
+    result = ledger_studies.WeeklyOptionPortfolioStudy(*failed)._method(failed[0]["methods"][0], None)
+    assert all(d["status"] == "timeout_skipped" and d["kelly"]["uncertified"] is None
+               for d in result["decisions"] if "kelly" in d and "selection" in d), "a failed relaxation still skips"
+
+
+@pytest.mark.parametrize("value,ok", [(True, True), (False, True), (1, False), ("yes", False)])
+def test_accept_uncertified_is_a_boolean_kelly_key(value, ok):
+    params, inputs = _kelly_fixture(accept_uncertified=value)
+    if ok:
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    else:
+        with pytest.raises(ValueError):
+            ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    top = TOP_FORMULATIONS["kelly025_top100_uncert_lp"]["kelly"]
+    assert top == {**TOP_FORMULATIONS["kelly025_top100_lp"]["kelly"], "accept_uncertified": True}

@@ -1432,7 +1432,10 @@ class WeeklyOptionPortfolioStudy:
                    "gap", "time_limit"}
     #: An optional kelly key (ADR-0301): ``max_groups`` keeps, of the ``lp`` screen's survivors, only that many with
     #: the largest standalone relaxed value before the joint growth program is built (the solver's group_screen_keep).
-    _KELLY_OPTIONAL_KEYS = {"max_groups"}
+    _KELLY_OPTIONAL_KEYS = {"max_groups", "accept_uncertified"}
+    #: ``accept_uncertified`` (ADR-0301 amendment): a week whose certification the relax_fix strategy DECLINED (a support
+    #: incumbent exists, too many actions stayed free to certify within the limit) trades that incumbent instead of
+    #: skipping; the gap to the relaxation's bound is recorded (``kelly.uncertified``). A failed relaxation still skips.
     _KELLY_GAP_KEYS = {"absolute", "relative"}
     #: The select-then-size Kelly method (ADR-0300): the method's own dollar keys select the books (stage 1, the
     #: locked formulation unchanged) and ``sizer`` sizes them by a sample-average CRRA program over sampled joint
@@ -1752,6 +1755,7 @@ class WeeklyOptionPortfolioStudy:
         kelly = method["kelly"]
         return (isinstance(kelly, dict) and set(kelly)-cls._KELLY_OPTIONAL_KEYS == cls._KELLY_KEYS
                 and ("max_groups" not in kelly or (type(kelly["max_groups"]) is int and kelly["max_groups"] >= 1))
+                and ("accept_uncertified" not in kelly or type(kelly["accept_uncertified"]) is bool)
                 and number_ok(kelly["fraction"]) and 0 < kelly["fraction"] <= 1
                 and type(kelly["n_tangents"]) is int and kelly["n_tangents"] >= 2
                 and number_ok(kelly["core"]) and kelly["core"] > 1
@@ -3089,7 +3093,19 @@ class WeeklyOptionPortfolioStudy:
                             raise ValueError("eligible decision lacks recorded solve evidence")
                         selection = solver._recorded(program, claimed["selection"], claimed["certificates"])
                     timed_out = "timeout" in selection
-                    books = [] if timed_out else self._books(selection, metadata, charge)
+                    uncertified = None
+                    if (timed_out and kelly is not None and kelly.get("accept_uncertified")
+                            and selection.get("timeout") == "gap" and selection.get("candidate") is not None
+                            and (selection.get("certificates") or [{}])[0].get("strategy_outcome") == "declined"):
+                        # ADR-0301 amendment: the support incumbent of a declined certification is traded, and the
+                        # week says so. The envelope stays the recorded selection, so a replay re-derives the same choice.
+                        candidate = selection["candidate"]
+                        uncertified = {"outcome": "declined", "value": candidate.get("value"),
+                                       "bound": candidate.get("bound"), "gap": candidate.get("gap")}
+                        timed_out = False
+                    else:
+                        candidate = selection
+                    books = [] if timed_out else self._books(candidate, metadata, charge)
                     status = "timeout_skipped" if timed_out else "selected" if books else "cash"
                     certificates = [{k: v for k, v in c.items() if k != "binding"}
                                     for c in selection.get("certificates", [])]
@@ -3113,9 +3129,11 @@ class WeeklyOptionPortfolioStudy:
                                              if k != "certificates"},
                                   certificates=certificates,
                                   books=copy.deepcopy(books))
+                    if uncertified is None:
+                        candidate = selection
                     if shock is not None:
                         losses = ({row["id"].split(":", 1)[1]: None for row in rows} if timed_out
-                                  else self._shock_losses(rows, metadata, selection["quantities"]))
+                                  else self._shock_losses(rows, metadata, candidate["quantities"]))
                         if held is None:
                             record["shock"] = {
                                 "betas": dict(estimate["betas"]), "observations": estimate["observations"],
@@ -3125,13 +3143,16 @@ class WeeklyOptionPortfolioStudy:
                                 move: held[move]+loss for move, loss in losses.items()})
                     if kelly is not None:
                         record["kelly"]["losses"] = ({row["id"].split(":", 1)[1]: None for row in rows} if timed_out
-                                                     else self._shock_losses(rows, metadata, selection["quantities"]))
+                                                     else self._shock_losses(rows, metadata, candidate["quantities"]))
+                        if kelly.get("accept_uncertified"):
+                            # Only a method that declares the key carries the field: earlier kelly records are unchanged.
+                            record["kelly"]["uncertified"] = uncertified
                         # The lp screen is a restriction: it drops candidate groups with no edge that could hedge.
                         # How many it dropped this week is a decision field, not only a log line.
                         record["kelly"]["screen"] = (None if policy else dict(solver.last_screen))
                         # How the charge compares with the book it sized (exact sd, its dispersion, their ratio and the
                         # fraction actually applied): the labelled fraction is nominal. A record only; None when no solve.
-                        record["kelly"]["book"] = None if timed_out else dict(selection["utility"]["book"])
+                        record["kelly"]["book"] = None if timed_out else dict(candidate["utility"]["book"])
                         # How the strategy decided the week and where the bound came from (the termination fields keep
                         # their usual meaning): a failed relaxation is a skipped week that says so here.
                         certificates = selection.get("certificates") or [{}]
@@ -3142,6 +3163,10 @@ class WeeklyOptionPortfolioStudy:
                 decisions.append(record)
                 if events is not None and day in self.weeks:
                     selection = record.get("selection", {})
+                    traded = record.get("kelly", {}).get("uncertified")
+                    if traded and isinstance(selection.get("candidate"), dict):
+                        # An uncertified week trades the envelope's candidate: the event audits what was traded.
+                        selection = selection["candidate"]
                     certs = record.get("certificates", [])
                     audited = {k: selection.get(k) for k in ("value", "bound", "gap")
                                if k in selection}
@@ -3150,7 +3175,8 @@ class WeeklyOptionPortfolioStudy:
                             "candidate_contracts": record["candidate_contracts"],
                             "audited_selection": audited,
                             "timeout": record["status"] == "timeout_skipped",
-                            "timeout_reason": selection.get("timeout"),
+                            "timeout_reason": None if traded else selection.get("timeout"),
+                            **({"uncertified": True} if traded else {}),
                             "selected_books": [{**{k: book.get(k) for k in
                                 ("id", "symbol", "expiry", "credit", "reserve", "contracts")},
                                 "legs": [{k: leg.get(k) for k in ("right", "strike", "sign", "quantity")}
@@ -3604,7 +3630,7 @@ class MIOPacketCompare(StudyNode):
     outputs = ("report",)
     #: What a comparison row keeps of each kelly decision's ``kelly`` record (``book``: the exact sd, the charge, their
     #: ratio and the fraction the charge applies, ADR-0299).
-    _KELLY_ROW_KEYS = ("status", "dropped", "candidates", "screen", "book", "solve")
+    _KELLY_ROW_KEYS = ("status", "dropped", "candidates", "screen", "book", "solve", "uncertified")
     #: What a comparison row keeps of each sizer decision's ``sizer`` record (ADR-0300): how the week was sized and how
     #: far the counts moved from the stage-1 selection.
     _SIZER_ROW_KEYS = ("status", "reserve_ratio", "stake_ratio", "value", "exact", "wealth_min", "reserve",
