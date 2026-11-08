@@ -87,6 +87,83 @@ def test_factor_correlations_follow_the_beta_and_the_two_volatilities():
     assert out["correlations"]["H"] > out["correlations"]["N"]
     assert out["correlations"]["Z"] == 0. and out["correlations"]["X"] == 0.
     assert all(0 <= r <= kelly_sizer.MAX_CORRELATION for r in out["correlations"].values())
+    assert out["component_of"] == {} and out["component_correlations"] == {}, "no components asked for"
+
+
+def test_component_correlations_are_the_members_residual_equicorrelation_and_load_a_second_factor():
+    from index_options.kelly_sizer import component_loadings
+
+    rng = np.random.default_rng(5)
+    market = rng.standard_normal(600)*.01
+    sector = rng.standard_normal(600)*.008
+    returns = {f"S{i}": market+sector+rng.standard_normal(600)*.004 for i in range(3)}
+    returns.update({f"I{i}": market+rng.standard_normal(600)*.009 for i in range(3)})
+    names = sorted(returns)
+    basket = np.mean([returns[s] for s in names], axis=0)
+    betas = {s: float(np.cov(returns[s], basket, bias=True)[0, 1]/np.var(basket)) for s in names}
+    out = factor_correlations(returns, betas, names, [["S0", "S1", "S2"], ["I0", "I1", "I2"], ["Z9"]])
+    assert set(out["component_of"]) == set(names) and len(out["component_correlations"]) == 2
+    sector_rho = out["component_correlations"][out["component_of"]["S0"]]
+    other_rho = out["component_correlations"][out["component_of"]["I0"]]
+    assert .4 < sector_rho <= kelly_sizer.MAX_COMPONENT_CORRELATION and other_rho < .15, (sector_rho, other_rho)
+    loads = component_loadings(out["correlations"], out["component_of"], out["component_correlations"])
+    for name, (index, s) in loads.items():
+        assert index == out["component_of"][name] and 0 <= s and out["correlations"][name]**2+s*s <= .95**2+1e-12
+    r0 = out["correlations"]["S0"]
+    assert loads["S0"][1] == pytest.approx(min(math.sqrt(sector_rho*(1.-r0*r0)), math.sqrt(.95**2-r0*r0)))
+    # The copula's pairwise correlation r_a r_b + s_a s_b is the data's r_a r_b + rho sqrt((1 - r_a^2)(1 - r_b^2))
+    # wherever the .95 ceiling does not cut the loading; where it does, the loading is the ceiling's room.
+    for name in ("S0", "S1", "S2"):
+        r, s = out["correlations"][name], loads[name][1]
+        uncut, room = math.sqrt(sector_rho*(1-r*r)), math.sqrt(.95**2-r*r)
+        assert s == pytest.approx(min(uncut, room)) and (s == pytest.approx(uncut) or s == pytest.approx(room))
+    assert set(out["component_correlations_raw"]) == set(out["component_correlations"])
+    assert out["component_correlations_raw"][out["component_of"]["S0"]] >= sector_rho-1e-12
+    # The second factor raises the concordance of two members beyond what the market loading alone gives.
+    masses = {f"{n}:e": [.5, .5] for n in ("S0", "S1", "I0")}
+    symbol_of = {f"{n}:e": n for n in ("S0", "S1", "I0")}
+    corr = {n: out["correlations"][n] for n in ("S0", "S1", "I0")}
+    with_factor = joint_atoms(masses, symbol_of, corr, 40000, 3, {n: loads[n] for n in corr})
+    without = joint_atoms(masses, symbol_of, corr, 40000, 3)
+    rho = lambda sample, a, b: np.corrcoef(sample["uniforms"][a], sample["uniforms"][b])[0, 1]
+    assert rho(with_factor, "S0", "S1") > rho(without, "S0", "S1")+.05
+    assert abs(rho(with_factor, "S0", "I0")-rho(without, "S0", "I0")) < .05, "across components only the market"
+    assert set(with_factor["component_factors"]) == {loads["S0"][0], loads["I0"][0]} and without["component_factors"] == {}
+    with pytest.raises(ValueError):
+        joint_atoms(masses, symbol_of, corr, 100, 3, {"S0": (0, 1.)})   # r^2 + s^2 past the ceiling
+
+
+def test_stressed_loadings_take_the_larger_window_name_by_name():
+    from index_options.kelly_sizer import stressed
+
+    trailing = {"correlations": {"A": .3, "B": .6}, "sigma_m": .01, "component_of": {"A": 0, "B": 0},
+                "component_correlations": {0: .2}}
+    short = {"correlations": {"A": .8, "B": .4}, "sigma_m": .03, "component_of": {"A": 0, "B": 0},
+             "component_correlations": {0: .5}}
+    out = stressed(trailing, short)
+    assert out["correlations"] == {"A": .8, "B": .6} and out["sigma_m"] == .01 and out["sigma_m_short"] == .03
+    assert out["component_correlations"] == {0: .5} and out["component_of"] == {"A": 0, "B": 0}
+    other = stressed(trailing, {**short, "component_of": {"A": 0}, "component_correlations": {0: .9}})
+    assert other["component_correlations"] == {0: .2}, "a component with other members keeps the trailing value"
+    assert other["unmatched"] == [0] and out["unmatched"] == []
+    exact, _pooled = __import__("index_options.kelly_sizer", fromlist=["shrink_targets"]).shrink_targets(
+        np.array([300.123456789, 100.987654321]), np.array([1000., 3000.]), 0.)
+    assert np.array_equal(exact, np.array([300.123456789, 100.987654321])), "share 0 is exactly the identity"
+
+
+def test_shrink_targets_pool_the_means_per_reserve_by_the_declared_share():
+    from index_options.kelly_sizer import shrink_targets
+
+    targets, reserves = np.array([300., 100.]), np.array([1000., 1000.])
+    shrunk, pooled = shrink_targets(targets, reserves, .5)
+    assert pooled == pytest.approx(.2) and shrunk == pytest.approx([250., 150.])
+    none, _ = shrink_targets(targets, reserves, 0.)
+    assert none == pytest.approx(targets)
+    uneven, pooled2 = shrink_targets(np.array([300., 100.]), np.array([3000., 1000.]), 1-1e-9)
+    assert pooled2 == pytest.approx(.1) and uneven == pytest.approx([300., 100.], rel=1e-6), "equal edges per reserve pool to themselves"
+    for bad in ((targets, reserves, 1.), (targets, np.array([0., 1000.]), .5), (targets, reserves[:1], .5)):
+        with pytest.raises(ValueError):
+            shrink_targets(*bad)
 
 
 def _sizer(gamma, **params):

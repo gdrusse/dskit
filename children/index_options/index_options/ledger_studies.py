@@ -1440,8 +1440,15 @@ class WeeklyOptionPortfolioStudy:
     #: the forecast's expected profit (``nominal``) or the W1-worst expected profit at the method's own radius
     #: (``w1_worst``, the stage-1 valuation, so a selected book never sizes on a negative mean).
     _SIZER_KEYS = {"fraction", "scenarios", "n_tangents", "core", "wealth_floor", "cash_buffer", "beta_lookback",
-                   "mean", "seed", "exposure"}
+                   "mean", "seed", "exposure", "factors", "loadings", "shrink"}
     _SIZER_MEANS = ("nominal", "w1_worst")
+    #: The copula's factors (ADR-0300 amendment): the market alone, or the market plus one factor per correlation
+    #: component (the study's own ``_components``), loaded by the members' residual equicorrelation.
+    _SIZER_FACTORS = ("market", "market_component")
+    #: The loadings' window: the trailing ``beta_lookback`` sessions, or the larger of those and the last
+    #: :attr:`_SIZER_STRESS_LOOKBACK` sessions, name by name (a correlation that jumps within the quarter is seen).
+    _SIZER_LOADINGS = ("trailing", "stressed")
+    _SIZER_STRESS_LOOKBACK = 20
     #: What bounds the units' total reserve in stage 2: the cash rule alone, or also the stage-1 selection's own total
     #: reserve (the leverage-matched arm: the sizer may only reallocate what the dollar program would have committed).
     _SIZER_EXPOSURES = ("cash_rule", "stage1_reserve")
@@ -1649,6 +1656,10 @@ class WeeklyOptionPortfolioStudy:
             if "sizer" in method and method["sizer"]["beta_lookback"] < p["correlation_min_pairs"]:
                 # Fewer sessions in the loadings' window than the study needs to estimate would hold every week.
                 raise ValueError("a sizer's beta_lookback must be at least correlation_min_pairs")
+            if ("sizer" in method and method["sizer"]["loadings"] == "stressed"
+                    and (cls._SIZER_STRESS_LOOKBACK < p["correlation_min_pairs"]
+                         or cls._SIZER_STRESS_LOOKBACK > method["sizer"]["beta_lookback"])):
+                raise ValueError("stressed loadings need the short window within [correlation_min_pairs, beta_lookback]")
             if "kelly" in method and not cls._gap_within(p["solver"], method["kelly"]):
                 # The objective is dollars of growth: a 50-dollar gap certifies a weak week as cash and cannot tell
                 # a quarter Kelly from a half. The method states the gap it needs; a looser document refuses.
@@ -1793,6 +1804,10 @@ class WeeklyOptionPortfolioStudy:
                 and number_ok(method["portfolio_fraction"]) and sizer["cash_buffer"] < method["portfolio_fraction"]
                 and type(sizer["beta_lookback"]) is int and sizer["beta_lookback"] >= 2
                 and sizer["mean"] in cls._SIZER_MEANS and sizer["exposure"] in cls._SIZER_EXPOSURES
+                and sizer["factors"] in cls._SIZER_FACTORS and sizer["loadings"] in cls._SIZER_LOADINGS
+                and number_ok(sizer["shrink"]) and 0 <= sizer["shrink"] < 1
+                # Pooling pulls a unit below the pool up past its own W1-worst mean: the two answers do not combine.
+                and (sizer["shrink"] == 0 or sizer["mean"] == "nominal")
                 and type(sizer["seed"]) is int and sizer["seed"] >= 0)
 
     @staticmethod
@@ -2394,7 +2409,8 @@ class WeeklyOptionPortfolioStudy:
         """
         import numpy as np
         from dskit.pipeline.libs.pyomo import TransportActionScore
-        from .kelly_sizer import BookKellySizer, factor_correlations, joint_atoms, scenario_seed, tilt_weights
+        from .kelly_sizer import (BookKellySizer, component_loadings, factor_correlations, joint_atoms, scenario_seed,
+                                  shrink_targets, stressed, tilt_weights)
 
         p, sizer = self.params, self._sizer(method)
         tolerance = p["solver"]["parity_tolerance"]
@@ -2405,7 +2421,17 @@ class WeeklyOptionPortfolioStudy:
         returns, count = self._returns(day, sizer["beta_lookback"])
         finite = [s for s in symbols if np.all(np.isfinite(returns[s]))]
         betas = self._fit_betas(returns, finite, count)
-        factor = factor_correlations(returns, {s: betas[s] for s in finite}, finite)
+        # The copula's factors: the market, and with ``market_component`` one factor per correlation component of
+        # the study (``_components``, strictly prior sessions), loaded by the members' residual equicorrelation.
+        groups = self._components(day)["groups"] if sizer["factors"] == "market_component" else ()
+        factor = factor_correlations(returns, {s: betas[s] for s in finite}, finite, groups)
+        if sizer["loadings"] == "stressed":
+            # The larger of the trailing loadings and the last _SIZER_STRESS_LOOKBACK sessions', name by name.
+            short_returns, short_count = self._returns(day, self._SIZER_STRESS_LOOKBACK)
+            short_finite = [s for s in symbols if np.all(np.isfinite(short_returns[s]))]
+            short_betas = self._fit_betas(short_returns, short_finite, short_count)
+            factor = stressed(factor, factor_correlations(short_returns, {s: short_betas[s] for s in short_finite},
+                                                          short_finite, groups))
         # Units: one per stage-1 book, in the book order (the books are in group order).
         index = {meta["id"]: i for i, meta in enumerate(metadata)}
         units = []
@@ -2436,11 +2462,20 @@ class WeeklyOptionPortfolioStudy:
                 symbol_of[configured[j]["id"]] = metadata[j]["symbol"]
         names = sorted(set(symbol_of.values()))
         correlations = {a: factor["correlations"].get(a, 0.) for a in names}   # a nonfinite window loads nothing
+        components = component_loadings(correlations, {a: i for a, i in factor["component_of"].items() if a in names},
+                                        factor["component_correlations"])
         credit = {u["id"]: float(np.dot(configured[u["group"]]["credit"], u["unit"])) for u in units}
         loss = {u["id"]: np.asarray(configured[u["group"]]["losses"], dtype=float) @ np.asarray(u["unit"], dtype=float)
                 for u in units}
-        targets = [valued["nominal_values" if sizer["mean"] == "nominal" else "group_values"][slot]
-                   for slot in range(len(units))]
+        unshrunk = [valued["nominal_values" if sizer["mean"] == "nominal" else "group_values"][slot]
+                    for slot in range(len(units))]
+        # Cross-sectional pooling of the selected units' edges per reserve, by the declared share (0: none). A unit
+        # without a positive reserve cannot be pooled (unreachable with the required floor): then no pooling, recorded.
+        if sizer["shrink"] > 0 and all(r > 0 for r in valued["reserves"]):
+            targets, pooled = shrink_targets(unshrunk, valued["reserves"], sizer["shrink"])
+            targets, shrink_applied = [float(t) for t in targets], True
+        else:
+            targets, pooled, shrink_applied = list(unshrunk), None, False
         held_rows, held_loss, held_exact = [], {}, 0.
         for key, book in account.open.items():
             j = held_group[key]
@@ -2457,7 +2492,7 @@ class WeeklyOptionPortfolioStudy:
 
         def draw(seed):
             """One sample: each unit's raw profits (units x scenarios), the tilt to the targets, the open books' P&L."""
-            sample = joint_atoms(masses, symbol_of, correlations, sizer["scenarios"], seed)
+            sample = joint_atoms(masses, symbol_of, correlations, sizer["scenarios"], seed, components)
             raw = np.array([credit[u["id"]]-loss[u["id"]][sample["atoms"][configured[u["group"]]["id"]]] for u in units])
             # Reweighting, never a shift: every sampled profit stays inside [-reserve, credit] of its unit.
             tilt = tilt_weights(raw, targets)
@@ -2484,6 +2519,7 @@ class WeeklyOptionPortfolioStudy:
                          "unit_contracts": int(sum(u["unit"])), "units_selected": u["units_selected"],
                          "k_max": u["k_max"], "reserve": valued["reserves"][slot], "credit": credit[u["id"]],
                          "mean_nominal": valued["nominal_values"][slot], "mean_w1_worst": valued["group_values"][slot],
+                         "mean_unshrunk": unshrunk[slot], "mean_shrunk": targets[slot],
                          "mean_target": float(tilt["targets"][slot]), "target_clamped": tilt["clamped"][slot],
                          "weighted_mean": float(tilt["means"][slot]), "sample_mean_raw": float(raw[slot].mean()),
                          "sample_sd": float(raw[slot].std()), "worst_profit": float(raw[slot].min()),
@@ -2496,6 +2532,15 @@ class WeeklyOptionPortfolioStudy:
         record.update(sigma_daily=factor["sigma_m"], names=names,
                       betas={a: betas.get(a) for a in names}, correlations=correlations,
                       nonfinite=[a for a in names if a not in finite], units=rows, held=held_rows,
+                      factors=sizer["factors"], loadings=sizer["loadings"],
+                      sigma_daily_short=factor.get("sigma_m_short"),
+                      component_loadings={a: {"component": i, "loading": s} for a, (i, s) in components.items()},
+                      component_correlations={str(i): r for i, r in factor["component_correlations"].items()
+                                              if any(c == i for c, _s in components.values())},
+                      component_correlations_raw={str(i): r for i, r in factor["component_correlations_raw"].items()
+                                                  if any(c == i for c, _s in components.values())},
+                      component_stress_unmatched=list(factor.get("unmatched", [])),
+                      shrink=sizer["shrink"], shrink_applied=shrink_applied, pooled_mean_per_reserve=pooled,
                       held_mean_exact=held_exact, held_mean_weighted=float(held @ tilt["weights"]),
                       tilt={k: tilt[k] for k in ("kl", "max_weight", "effective_scenarios", "converged", "gap", "applied",
                                                  *(("refused",) if "refused" in tilt else ()))},

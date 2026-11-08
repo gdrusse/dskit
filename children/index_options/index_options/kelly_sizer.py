@@ -42,8 +42,9 @@ import math
 from dskit.pipeline.libs.pyomo import DEFAULT_SOLVER, PyomoSolve, TangentEnvelope, tangent_utility
 from dskit.pipeline.records import number_ok
 
-__all__ = ["BookKellySizer", "MAX_CORRELATION", "TAIL_DF", "factor_correlations", "joint_atoms", "scenario_seed",
-           "student_t4_cdf", "tilt_weights"]
+__all__ = ["BookKellySizer", "MAX_COMPONENT_CORRELATION", "MAX_CORRELATION", "TAIL_DF", "component_loadings",
+           "factor_correlations", "joint_atoms", "scenario_seed", "shrink_targets", "stressed", "student_t4_cdf",
+           "tilt_weights"]
 
 #: Degrees of freedom of the copula's Student t: the Kelly family's one constant (ADR-0299, the lowest with a
 #: finite variance). :func:`student_t4_cdf` is this law's closed form, so the two are one decision.
@@ -51,6 +52,8 @@ TAIL_DF = 4
 #: The most a name may load on the basket factor: a correlation of one would make a name the market itself and
 #: leave its idiosyncratic draw no weight (and ``sqrt(1 - r^2)`` zero).
 MAX_CORRELATION = .95
+#: The most a correlation component's members may share beyond the market (their residual equicorrelation).
+MAX_COMPONENT_CORRELATION = .9
 
 
 def student_t4_cdf(x):
@@ -76,12 +79,17 @@ def student_t4_cdf(x):
     return .5+x*(x*x+6.)/(2.*(x*x+4.)**1.5)
 
 
-def factor_correlations(returns, betas, names):
+def factor_correlations(returns, betas, names, components=()):
     """Return each name's correlation with the equal-weight basket of ``names``, from its beta and the volatilities.
 
     ``beta_a = r_a sigma_a / sigma_m`` for a regression on the basket, so ``r_a = beta_a sigma_m / sigma_a``;
     clipped to ``[0, MAX_CORRELATION]`` (a negative beta is treated as no loading: the copula has one factor and
     no short names). A name whose volatility is zero or not finite gets 0.
+
+    With ``components`` (lists of names, the study's own correlation components), each component of two or more
+    names also gets a RESIDUAL correlation: the mean pairwise correlation of its members' returns after the basket
+    (``e_a = returns_a - beta_a x basket``), clipped to ``[0, MAX_COMPONENT_CORRELATION]``: an equicorrelation
+    model of what the members share beyond the market, the loading squared of a second, component-level factor.
 
     Parameters
     ----------
@@ -91,12 +99,17 @@ def factor_correlations(returns, betas, names):
         ``name -> beta`` on the basket of ``names`` (``_fit_betas``).
     names : sequence of str
         The basket (the names whose window is finite).
+    components : sequence of sequence of str
+        Optional groups of names (``WeeklyOptionPortfolioStudy._components``); singletons and names outside the
+        basket add nothing.
 
     Returns
     -------
     dict
-        ``correlations`` (``name -> correlation`` for every name in ``betas``) and ``sigma_m`` (the basket's daily
-        volatility, None when it is not finite).
+        ``correlations`` (``name -> correlation`` for every name in ``betas``), ``sigma_m`` (the basket's daily
+        volatility, None when it is not finite), ``component_of`` (``name -> component index`` for the members of a
+        component with at least two basket names) and ``component_correlations`` (``component index -> residual
+        correlation``).
     """
     import numpy as np
 
@@ -108,7 +121,60 @@ def factor_correlations(returns, betas, names):
         sigma_a = float(np.std(returns[name])) if finite else math.nan
         r = beta*sigma_m/sigma_a if math.isfinite(sigma_m) and math.isfinite(sigma_a) and sigma_a > 0 else 0.
         out[name] = float(min(MAX_CORRELATION, max(0., r))) if math.isfinite(r) else 0.
-    return {"correlations": out, "sigma_m": sigma_m if math.isfinite(sigma_m) else None}
+    component_of, component_correlations, raw = {}, {}, {}
+    basket_names = set(names)
+    for group in components:
+        members = [s for s in group if s in basket_names and s in betas]
+        if len(members) < 2 or not math.isfinite(sigma_m):
+            continue
+        residuals = np.array([returns[s]-betas[s]*basket for s in members])
+        if not np.all(np.isfinite(residuals)) or np.any(residuals.std(axis=1) == 0):
+            continue
+        corr = np.corrcoef(residuals)
+        pairs = corr[np.triu_indices(len(members), k=1)]
+        rho = float(np.mean(pairs)) if np.all(np.isfinite(pairs)) else 0.
+        index = len(component_correlations)
+        # The clip at zero is a bias upward on a noisy mean, and the basket's own members make small baskets'
+        # residuals mechanically negative (biased low): the raw mean is kept beside the applied value for the record.
+        component_correlations[index] = float(min(MAX_COMPONENT_CORRELATION, max(0., rho)))
+        raw[index] = rho
+        for s in members:
+            component_of[s] = index
+    return {"correlations": out, "sigma_m": sigma_m if math.isfinite(sigma_m) else None,
+            "component_of": component_of, "component_correlations": component_correlations,
+            "component_correlations_raw": raw}
+
+
+def stressed(trailing, short):
+    """Return the larger of two loading sets, name by name (the trailing window's and a shorter one's).
+
+    The shorter window answers a correlation that jumps within the quarter (a calm 60-session window before a
+    crash would otherwise load the names lightly in the very weeks that test them). The larger of two noisy
+    estimates is biased upward even when nothing changed: a deliberate stress, stated in the ADR, not an unbiased
+    estimate. Component correlations are matched by the trailing set's component index where the short set has
+    exactly the same members, else kept from the trailing set and listed in ``unmatched``.
+    """
+    out = {"correlations": {a: max(trailing["correlations"].get(a, 0.), short["correlations"].get(a, 0.))
+                            for a in set(trailing["correlations"]) | set(short["correlations"])},
+           "sigma_m": trailing["sigma_m"], "sigma_m_short": short["sigma_m"],
+           "component_of": dict(trailing["component_of"]),
+           "component_correlations": dict(trailing["component_correlations"]),
+           "component_correlations_raw": dict(trailing.get("component_correlations_raw", {})),
+           "unmatched": []}
+    short_members = {}
+    for name, index in short["component_of"].items():
+        short_members.setdefault(index, set()).add(name)
+    trailing_members = {}
+    for name, index in trailing["component_of"].items():
+        trailing_members.setdefault(index, set()).add(name)
+    for index, members in sorted(trailing_members.items()):
+        match = [j for j, m in short_members.items() if m == members]
+        if match:
+            out["component_correlations"][index] = max(trailing["component_correlations"][index],
+                                                       short["component_correlations"][match[0]])
+        else:
+            out["unmatched"].append(index)
+    return out
 
 
 def tilt_weights(profits, targets, *, edge=1e-3, tolerance=1e-9):
@@ -196,13 +262,50 @@ def tilt_weights(profits, targets, *, edge=1e-3, tolerance=1e-9):
             "converged": converged, "gap": float(gap[live].max()) if live.any() else 0.}
 
 
+def shrink_targets(targets, reserves, share):
+    """Pool each unit's mean per dollar of reserve toward the week's reserve-weighted pooled mean, by a declared share.
+
+    ``m_u = t_u / R_u``, ``m_bar = sum t_u / sum R_u``, ``t_u' = R_u ((1 - share) m_u + share m_bar)``: the winner's
+    curse of sizing on selected means is blunted by pooling the selected units' edges per reserve toward their
+    common level. The share is DECLARED, not estimated: an empirical-Bayes weight would need the variance of the
+    forecast mean's error, which the study does not have. Returns the shrunk targets and the pooled mean.
+    """
+    import numpy as np
+
+    t, r = np.asarray(targets, dtype=float), np.asarray(reserves, dtype=float)
+    if t.shape != r.shape or t.ndim != 1 or t.size == 0 or not np.all(r > 0) or not number_ok(share) or not 0 <= share < 1:
+        raise ValueError("one positive reserve per target and a share in [0, 1)")
+    pooled = float(t.sum()/r.sum())
+    if share == 0:
+        return t.copy(), pooled   # exactly the identity, not the identity up to an ulp
+    return r*((1.-share)*(t/r)+share*pooled), pooled
+
+
 def scenario_seed(seed, day):
     """Return the sampler's seed for one decision day: a hash of the declared seed and the date, deterministic."""
     digest = hashlib.sha256(f"{int(seed)}:{day}".encode("utf-8")).hexdigest()
     return int(digest[:16], 16)
 
 
-def joint_atoms(masses, symbol_of, correlations, n, seed):
+def component_loadings(correlations, component_of, component_correlations):
+    """Return each name's loading on its component factor, cut so that the market and component loadings together
+    stay under ``MAX_CORRELATION`` (``r^2 + s^2 <= MAX_CORRELATION^2``).
+
+    The residual correlation ``rho`` is measured on what the market leaves (variance ``1 - r_a^2`` of a standardised
+    name), so the copula's pairwise correlation ``r_a r_b + s_a s_b`` matches the data's ``r_a r_b + rho sqrt((1 -
+    r_a^2)(1 - r_b^2))`` when ``s_a = sqrt(rho (1 - r_a^2))`` (the first build used ``sqrt(rho)`` and overstated the
+    residual dependence by ``1 / (1 - r^2)``; the amendment's review caught it).
+    """
+    out = {}
+    for name, index in component_of.items():
+        r = correlations.get(name, 0.)
+        s = math.sqrt(max(0., component_correlations[index])*max(0., 1.-r*r))
+        room = math.sqrt(max(0., MAX_CORRELATION**2-r*r))
+        out[name] = (index, float(min(s, room)))
+    return out
+
+
+def joint_atoms(masses, symbol_of, correlations, n, seed, components=None):
     """Sample ``n`` joint settlements: for every group, the atom of its grid each scenario lands on.
 
     Parameters
@@ -217,17 +320,21 @@ def joint_atoms(masses, symbol_of, correlations, n, seed):
         Scenarios, at least 2.
     seed : int
         The generator's seed (:func:`scenario_seed`).
+    components : dict or None
+        Optional ``name -> (component index, loading)`` (:func:`component_loadings`): a second factor per
+        component, shared by its members, with ``r^2 + s^2 <= MAX_CORRELATION^2``; names absent load none.
 
     Returns
     -------
     dict
         ``atoms`` (``group id -> (n,) int array``), ``uniforms`` (``name -> (n,)``), ``factor`` (the common normal
-        factor, ``(n,)``) and ``mixing`` (the Student t mixing variable ``TAIL_DF / chi2``, ``(n,)``).
+        factor, ``(n,)``), ``mixing`` (the Student t mixing variable ``TAIL_DF / chi2``, ``(n,)``) and
+        ``component_factors`` (``component index -> (n,)``).
 
     Raises
     ------
     ValueError
-        A group names a symbol without a correlation, a correlation is out of range, or ``n`` is below 2.
+        A group names a symbol without a correlation, a correlation or loading is out of range, or ``n`` is below 2.
     """
     import numpy as np
 
@@ -238,21 +345,30 @@ def joint_atoms(masses, symbol_of, correlations, n, seed):
         raise ValueError("correlations must be numbers in [0, MAX_CORRELATION]")
     if any(symbol_of[g] not in correlations for g in masses):
         raise ValueError("every group's name needs a correlation")
+    components = components or {}
+    if any(a not in correlations or not number_ok(s) or s < 0 or correlations[a]**2+s*s > MAX_CORRELATION**2+1e-12
+           for a, (_index, s) in components.items()):
+        raise ValueError("component loadings must be nonnegative and keep r^2 + s^2 within MAX_CORRELATION^2")
     rng = np.random.default_rng(int(seed))
     factor = rng.standard_normal(n)
     mixing = TAIL_DF/rng.chisquare(TAIL_DF, n)
     noise = rng.standard_normal((len(names), n))
+    indices = sorted({index for index, _s in components.values()})
+    component_factors = {index: rng.standard_normal(n) for index in indices}
     root = np.sqrt(mixing)
     uniforms = {}
     for i, name in enumerate(names):
         r = correlations[name]
-        uniforms[name] = student_t4_cdf(root*(r*factor+math.sqrt(1.-r*r)*noise[i]))
+        index, s = components.get(name, (None, 0.))
+        shared = r*factor+(s*component_factors[index] if index is not None else 0.)
+        uniforms[name] = student_t4_cdf(root*(shared+math.sqrt(max(0., 1.-r*r-s*s))*noise[i]))
     atoms = {}
     for key, p in masses.items():
         cumulative = np.cumsum(np.asarray(p, dtype=float))
         cumulative[-1] = 1.   # float noise must not leave a draw past the last atom
         atoms[key] = np.minimum(np.searchsorted(cumulative, uniforms[symbol_of[key]], side="right"), len(p)-1)
-    return {"atoms": atoms, "uniforms": uniforms, "factor": factor, "mixing": mixing}
+    return {"atoms": atoms, "uniforms": uniforms, "factor": factor, "mixing": mixing,
+            "component_factors": component_factors}
 
 
 class BookKellySizer(PyomoSolve):

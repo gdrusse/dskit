@@ -4135,13 +4135,26 @@ def test_the_move_horizon_is_the_candidate_weighted_mean_dte_not_the_longest():
 #: Stage 1 is the primary formulation unchanged; stage 2 sizes its books on 1,000 sampled joint settlements at a
 #: quarter Kelly, with ADR-0299's envelope, floor and cash buffer, loadings over the shock's 60-session window.
 SIZER = {"fraction": .25, "scenarios": 1000, "n_tangents": 32, "core": 2., "wealth_floor": .01, "cash_buffer": .05, "exposure": "cash_rule",
-         "beta_lookback": 60, "mean": "nominal", "seed": 20261107}
+         "beta_lookback": 60, "mean": "nominal", "seed": 20261107, "factors": "market", "loadings": "trailing", "shrink": 0.}
+#: The ADR-0300 amendment's combinable parts (owner ordered 2026-11-08): the component-level factor with stressed
+#: loadings, and the declared pooling of the selected units' edges per reserve toward their common level.
+CFACTOR = {"factors": "market_component", "loadings": "stressed"}
+SHRINK = {"shrink": .5}
 SIZED_FORMULATIONS = {
     "kelly025_sized_lp": {**FORMULATIONS["w1_010_shock10_lp"], "sizer": SIZER},
     "kelly025_sized_w1_lp": {**FORMULATIONS["w1_010_shock10_lp"], "sizer": {**SIZER, "mean": "w1_worst"}},
     "kelly050_sized_lp": {**FORMULATIONS["w1_010_shock10_lp"], "sizer": {**SIZER, "fraction": .5}},
     # The leverage-matched control: the sizer reallocates within the capital stage 1 would have committed.
     "kelly025_sized_matched_lp": {**FORMULATIONS["w1_010_shock10_lp"], "sizer": {**SIZER, "exposure": "stage1_reserve"}},
+    # The amendment's arms: the one consistent drawdown reducer as stage 1; the component factor; the pooled means.
+    "kelly025_sized_comp25_lp": {**FORMULATIONS["w1_010_component25_shock10_lp"], "sizer": SIZER},
+    "kelly025_sized_cfactor_lp": {**FORMULATIONS["w1_010_shock10_lp"], "sizer": {**SIZER, **CFACTOR}},
+    "kelly025_sized_shrunk_lp": {**FORMULATIONS["w1_010_shock10_lp"], "sizer": {**SIZER, **SHRINK}},
+}
+#: The 25-point-grid document (its own arm, as w1_010_shock10_fine_lp is): the plain sizer, and everything combined.
+FINE_FORMULATIONS = {
+    "kelly025_sized_fine_lp": {**FORMULATIONS["w1_010_shock10_lp"], "sizer": SIZER},
+    "kelly025_sized_combo_fine_lp": {**FORMULATIONS["w1_010_component25_shock10_lp"], "sizer": {**SIZER, **CFACTOR, **SHRINK}},
 }
 #: ADR-0299's one-stage quarter Kelly restricted to the 100 best groups after the lp screen (ADR-0301).
 TOP_FORMULATIONS = {
@@ -4159,16 +4172,26 @@ def _sizer_fixture(mean="nominal", fraction=.25, rho=0., **sizer):
 
 
 def test_the_sized_and_top_formulations_validate_and_differ_only_where_they_say():
-    base = FORMULATIONS["w1_010_shock10_lp"]
-    for name, method in SIZED_FORMULATIONS.items():
+    base, comp25 = FORMULATIONS["w1_010_shock10_lp"], FORMULATIONS["w1_010_component25_shock10_lp"]
+    for name, method in {**SIZED_FORMULATIONS, **FINE_FORMULATIONS}.items():
         params, inputs = _weekly_portfolio_fixture()
         params["methods"] = [{"id": name, **method}]
         ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
-        assert {k: v for k, v in method.items() if k != "sizer"} == base, "stage 1 is the primary, unchanged"
+        stage1 = comp25 if name in ("kelly025_sized_comp25_lp", "kelly025_sized_combo_fine_lp") else base
+        assert {k: v for k, v in method.items() if k != "sizer"} == stage1, "stage 1 is a locked formulation, unchanged"
     assert SIZED_FORMULATIONS["kelly025_sized_w1_lp"]["sizer"] == {**SIZER, "mean": "w1_worst"}
     assert SIZED_FORMULATIONS["kelly050_sized_lp"]["sizer"] == {**SIZER, "fraction": .5}
     assert SIZED_FORMULATIONS["kelly025_sized_matched_lp"]["sizer"] == {**SIZER, "exposure": "stage1_reserve"}
-    assert SIZER["exposure"] == "cash_rule" and SIZER["mean"] == "nominal" and len(SIZED_FORMULATIONS) == 4
+    assert SIZED_FORMULATIONS["kelly025_sized_comp25_lp"]["sizer"] == SIZER
+    assert SIZED_FORMULATIONS["kelly025_sized_cfactor_lp"]["sizer"] == {**SIZER, "factors": "market_component",
+                                                                        "loadings": "stressed"}
+    assert SIZED_FORMULATIONS["kelly025_sized_shrunk_lp"]["sizer"] == {**SIZER, "shrink": .5}
+    assert FINE_FORMULATIONS["kelly025_sized_fine_lp"] == SIZED_FORMULATIONS["kelly025_sized_lp"]
+    assert FINE_FORMULATIONS["kelly025_sized_combo_fine_lp"]["sizer"] == {**SIZER, "factors": "market_component",
+                                                                          "loadings": "stressed", "shrink": .5}
+    assert SIZER["exposure"] == "cash_rule" and SIZER["mean"] == "nominal" and SIZER["factors"] == "market"
+    assert SIZER["loadings"] == "trailing" and SIZER["shrink"] == 0.
+    assert len(SIZED_FORMULATIONS) == 7 and len(FINE_FORMULATIONS) == 2
     for name, method in TOP_FORMULATIONS.items():
         params, inputs = _weekly_portfolio_fixture()
         params["methods"] = [{"id": name, **method}]
@@ -4194,6 +4217,13 @@ def test_the_sized_and_top_formulations_validate_and_differ_only_where_they_say(
     lambda m: m["sizer"].update(mean="robust"),
     lambda m: m["sizer"].update(exposure="matched"),
     lambda m: m["sizer"].pop("exposure"),
+    lambda m: m["sizer"].update(factors="sector"),
+    lambda m: m["sizer"].update(loadings="implied"),
+    lambda m: m["sizer"].update(shrink=1.),
+    lambda m: m["sizer"].update(shrink=-.1),
+    lambda m: m["sizer"].pop("shrink"),
+    lambda m: m["sizer"].update(mean="w1_worst", shrink=.5),   # pooling and the haircut do not combine
+    lambda m: m["sizer"].update(loadings="stressed"),   # the fixture's beta_lookback 3 is below the 20-session short window
     lambda m: m["sizer"].update(seed=-1),
     lambda m: m["sizer"].update(seed=1.),
     lambda m: m["sizer"].pop("seed"),
@@ -4367,6 +4397,63 @@ def test_a_tilt_that_concentrates_the_weight_is_not_sized_on(monkeypatch):
         assert unit["weighted_mean"] == pytest.approx(unit["sample_mean_raw"]), "the untilted sample's own mean"
     assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None,
                                                                             recorded=result) == result
+
+
+def _two_name_sizer_fixture(**sizer):
+    """Two names with different spreads on the 100 put, so the units' means differ and a component exists."""
+    import copy
+
+    params, inputs = _sizer_fixture(**sizer)
+    params["symbols"] = ["X", "Y"]
+    inputs["Y"] = copy.deepcopy(inputs["X"])
+    for rows in inputs["Y"].values():
+        for row in rows:
+            row["symbol"] = "Y"
+    for row in inputs["Y"]["chain"]:
+        if row["strike_raw"] == 100.:
+            row["bid"], row["ask"] = 3.4, 3.6   # a smaller credit than X's 4.0 / 4.2: a smaller mean per reserve
+    for row in inputs["X"]["chain"]:
+        if row["strike_raw"] == 100.:
+            row["bid_size"] = row["ask_size"] = 2   # X's depth runs out, so the budget reaches Y too
+    params["weekly_fraction"] = .8                   # room for X's two floored units (4,000) and Y's (2,000 each)
+    return params, inputs
+
+
+def test_the_component_factor_and_stressed_loadings_run_and_are_recorded():
+    """With a component factor and the stressed window the week sizes and records the factor structure (the fixture's
+    flat bars give no loading at all, so the mechanics are the module's tests; here the plumbing and the record)."""
+    params, inputs = _two_name_sizer_fixture(factors="market_component", loadings="stressed", beta_lookback=20)
+    params["correlation_min_pairs"] = 2
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    week = _sized_week(result)[0]
+    s = week["sizer"]
+    assert s["factors"] == "market_component" and s["loadings"] == "stressed"
+    assert set(s["correlations"]) == {"X", "Y"} and all(0 <= r <= .95 for r in s["correlations"].values())
+    assert isinstance(s["component_loadings"], dict) and isinstance(s["component_correlations"], dict)
+    for entry in s["component_loadings"].values():
+        assert set(entry) == {"component", "loading"} and 0 <= entry["loading"] <= .95
+    assert "sigma_daily_short" in s and len(s["units"]) == 2
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None,
+                                                                            recorded=result) == result
+
+
+def test_shrinkage_pools_the_units_means_per_reserve_by_the_declared_share():
+    params, inputs = _two_name_sizer_fixture(shrink=.5)
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    week = _sized_week(result)[0]
+    s = week["sizer"]
+    units = s["units"]
+    assert len(units) == 2 and s["shrink"] == .5
+    pooled = sum(u["mean_unshrunk"] for u in units)/sum(u["reserve"] for u in units)
+    assert s["pooled_mean_per_reserve"] == pytest.approx(pooled)
+    assert units[0]["mean_unshrunk"] != pytest.approx(units[1]["mean_unshrunk"]), "the two names differ"
+    for u in units:
+        assert u["mean_shrunk"] == pytest.approx(u["reserve"]*(.5*u["mean_unshrunk"]/u["reserve"]+.5*pooled))
+        assert u["mean_target"] == pytest.approx(u["mean_shrunk"]) or u["target_clamped"]
+    plain = ledger_studies.WeeklyOptionPortfolioStudy(*_two_name_sizer_fixture())._method(params["methods"][0] | {
+        "sizer": {**params["methods"][0]["sizer"], "shrink": 0.}}, None)
+    for u in _sized_week(plain)[0]["sizer"]["units"]:
+        assert u["mean_shrunk"] == u["mean_unshrunk"], "share 0 pools nothing"
 
 
 def test_the_leverage_matched_arm_commits_no_more_reserve_than_stage_one():
