@@ -4779,7 +4779,7 @@ def test_the_value_transformed_sized_arm_runs_and_replays():
         params["methods"][0]["value_transform"] = VALUE_TRANSFORM
         return params, inputs
 
-    params, inputs, _study, result = _hindsight_run(_sizer_fixture()[0]["methods"][0] | {
+    params, inputs, study, result = _hindsight_run(_sizer_fixture()[0]["methods"][0] | {
         "value_transform": VALUE_TRANSFORM}, fixture)
     staged = [d for d in result["decisions"] if "stage1" in d]
     assert staged, "a week reaches stage 2"
@@ -4788,6 +4788,29 @@ def test_the_value_transformed_sized_arm_runs_and_replays():
         assert "charges" in ledger_studies.MIOPacketCompare._charge_row(decision)
     assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(
         params["methods"][0], None, recorded=copy.deepcopy(result)) == result
+    # ADR-0300: no sizer method has a derived route; the transformed arm is no exception.
+    method = params["methods"][0]
+    with pytest.raises(ValueError, match="sizer method"):
+        study._method(method, None, derived={"method": method["id"], "weeks": study.weeks, "decisions": {}})
+
+
+def test_a_carry_cash_week_replays_recorded_and_derived():
+    """The week C1 leaves in cash replays byte-identically on the recorded route and within last bits on the derived."""
+    import copy
+    from index_options.mio_worker import MIOMethodWorker
+
+    def fixture():
+        params, inputs = _short_dated_fixture()
+        params["methods"][0].update(risk_charge=CARRY, single_leg_charge=SINGLE_LEG)
+        return params, inputs
+
+    params, inputs, study, result = _hindsight_run(fixture()[0]["methods"][0], fixture)
+    assert [d["status"] for d in _solved(result)] == ["cash"] and not result["trades"]
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(
+        params["methods"][0], None, recorded=copy.deepcopy(result)) == result
+    derived = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(
+        params["methods"][0], None, derived=MIOMethodWorker.actions(result, study.weeks))
+    assert _equal_but_last_bits(derived, result)
 
 
 def test_the_hindsight_keys_absent_leave_the_locked_formulations_untouched(monkeypatch):

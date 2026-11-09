@@ -6517,3 +6517,22 @@ def test_transport_hinge_keeps_a_round_trip_that_would_offset_it_binary():
     assert TransportPortfolioSolve._costly_roundtrip(own, 0, 1)
     free = {**gross, "hinge_charge": {"price": 0., "rows": [[-410., -390.]]}}
     assert TransportPortfolioSolve._costly_roundtrip(free, 0, 1)
+
+
+def test_transport_cleanup_gain_counts_the_cancelled_pairs_linear_charges():
+    """A cancelled pair also refunds its contracts' linear charges (every charge name summed); uncharged groups add none."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    program = _straddle(price=None)
+    program["groups"][0]["action_charges"] = {"carry": [3., 5.], "transform": [1., 2.]}
+    program["groups"].append(_one_long("other", 100., 400.))
+    program["caps"][0]["groups"].append("other")
+    solver = TransportPortfolioSolve("gain", _screen_params("none"))
+    solver.run(None, program)
+    cleanup = {"profit_gain": 7., "pairs": [{"group": "s", "pair": [0, 1], "matched_quantity": 2},
+                                            {"group": "other", "pair": [0, 0], "matched_quantity": 3}]}
+    assert solver._model_cleanup_gain(cleanup) == pytest.approx(7.+2*(3.+1.+5.+2.))
+    assert solver._model_cleanup_gain({"profit_gain": 7., "pairs": []}) == 7.
+    plain = TransportPortfolioSolve("plain", _screen_params("none"))
+    plain.run(None, _straddle(price=None))
+    assert plain._model_cleanup_gain({"profit_gain": 7., "pairs": [cleanup["pairs"][0]]}) == 7.

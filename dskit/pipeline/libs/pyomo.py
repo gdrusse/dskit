@@ -5215,8 +5215,10 @@ class TransportPortfolioSolve(PyomoSolve):
             return 0.
         gain = cleanup["profit_gain"]
         if "action_charges" in self._action_keys:
-            # ADR-0305: the model's profit also loses each cancelled contract's linear charges (the hinge reads its
-            # auxiliary, which a cleanup of a pair that cannot lower any hinge row leaves feasible and unchanged).
+            # ADR-0305: the model's profit also loses each cancelled contract's linear charges. The hinge reads its
+            # auxiliary, which the cancellation leaves feasible and unchanged (a relaxed pair's round trip never
+            # lowers a hinge row, so cancelling it never raises one); the audited hinge may fall, which the
+            # one-sided model_over_audit check allows.
             lookup = {g["id"]: g for g in self._groups}
             for pair in cleanup["pairs"]:
                 linear = self._linear_charge(lookup[pair["group"]])
