@@ -329,11 +329,85 @@ def test_the_derived_path_measures_the_same_programs_without_a_path_solve(tmp_pa
     assert _performance(a["rows"]) == _performance(b["rows"])
 
 
-def test_the_sweep_refuses_holdout_weeks_non_kelly_methods_and_foreign_weeks(tmp_path):
+def test_the_sweep_stops_the_path_at_the_last_requested_week(tmp_path, monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    probe, study = _sweep(tmp_path, "probe")
+    measured = [r["week"] for r in probe.run()["rows"] if r["outcome"] != "no_program"]
+    assert len(measured) >= 2
+    target = measured[0]
+    sweep, study = _sweep(tmp_path, "stop", weeks=[target])
+    seen, runs = [], []
+    observe = sweep.observe
+    monkeypatch.setattr(sweep, "observe", lambda day, *a: seen.append(day) or observe(day, *a))
+    run = TransportPortfolioSolve.run
+    monkeypatch.setattr(TransportPortfolioSolve, "run", lambda self, *a, **k: runs.append(1) or run(self, *a, **k))
+    rows = sweep.run()["rows"]
+    assert [r["week"] for r in rows] == [target, target] and all(r["outcome"] != "no_program" for r in rows)
+    assert seen and max(seen) == target, "no week after the last requested one is decided"
+    assert len(runs) == len([d for d in seen if d < target])+2, "the path solved no week from the requested one on"
+
+
+def test_execution_order_rotates_by_week_and_the_table_keeps_the_declared_order(tmp_path):
+    sweep, study = _sweep(tmp_path, "a")
+    ids = [c["id"] for c in sweep.candidates]
+    assert [c["id"] for c in sweep.execution_order(study.weeks[0])] == ids
+    assert [c["id"] for c in sweep.execution_order(study.weeks[1])] == ids[1:]+ids[:1]
+    rows = sweep.run()["rows"]
+    assert [r["candidate"] for r in rows] == ids*len(study.weeks)
+    journal = [json.loads(line) for line in (tmp_path/"a"/highs_config.JOURNAL_FILE).read_text().splitlines()[1:]]
+    for w in {r["week"] for r in journal}:
+        assert [r["candidate"] for r in journal if r["week"] == w] == [c["id"] for c in sweep.execution_order(w)]
+
+
+def test_the_header_binds_the_derived_action_file_so_a_resume_over_another_is_refused(tmp_path):
+    from index_options.mio_worker import MIOMethodWorker
+
+    params, inputs = _kelly_fixture()
+    solved = Study(params, inputs)._method(params["methods"][0], None)
+    actions = MIOMethodWorker.actions(solved, Study(params, inputs).weeks)
+    first, _ = _sweep(tmp_path, "d", derived=actions)
+    table = first.run()
+    assert table["path_digest"] == highs_config._digest(actions) and table["protocol"] == "outside"
+    other = copy.deepcopy(actions)
+    other["tampered"] = True
+    second, _ = _sweep(tmp_path, "d", derived=other)
+    with pytest.raises(ValueError, match="another sweep"):
+        second.run()
+
+
+def _stub(weeks, time_limit=1):
     kelly = {"time_limit": 1, "gap": {"absolute": 1., "relative": .1}}
-    stub = SimpleNamespace(params={"methods": [{"id": "k", "kelly": kelly}, {"id": "n"}],
-                                   "solver": {"solver_options": {"threads": 1}}},
-                           weeks=["2021-06-28", "2021-07-06"])
+    return SimpleNamespace(params={"methods": [{"id": "k", "kelly": kelly}, {"id": "n"}],
+                                   "solver": {"solver_options": {"threads": 1, "time_limit": time_limit}}},
+                           weeks=weeks)
+
+
+def test_validation_weeks_run_only_the_default_against_one_frozen_block(tmp_path):
+    stub, block = _stub(["2021-01-04", "2021-01-11"]), {"random_seed": 1}
+    cands = load_candidates({"candidates": [block]})
+    frozen = {"chosen": candidate_id(block), "highs": block, "quarters": ["2019Q4", "2020Q1"], "method": "k",
+              "time_limit": 1, "gap": {"absolute": 1., "relative": .1}}
+    with pytest.raises(ValueError, match="--frozen"):
+        HighsConfigSweep(stub, "k", cands, ["2021-01-04"], tmp_path)
+    with pytest.raises(ValueError, match="--frozen"):
+        HighsConfigSweep(stub, "k", cands, ["2021-01-04"], tmp_path, frozen={**frozen, "method": "other"})
+    with pytest.raises(ValueError, match="nothing to validate"):
+        HighsConfigSweep(stub, "k", [cands[0]], ["2021-01-04"], tmp_path,
+                         frozen={**frozen, "chosen": DEFAULT_ID, "highs": None})
+    with pytest.raises(ValueError, match="exactly the default and the frozen block"):
+        HighsConfigSweep(stub, "k", load_candidates({"candidates": [block, {"random_seed": 2}]}), ["2021-01-04"],
+                         tmp_path, frozen=frozen)
+    sweep = HighsConfigSweep(stub, "k", cands, ["2021-01-04"], tmp_path, frozen=frozen)
+    assert sweep.header["protocol"] == "validation" and sweep.header["frozen"] == highs_config._digest(frozen)
+    assert highs_config.protocol_of(["2019-10-07", "2020-03-30"]) == "train"
+    assert highs_config.protocol_of(["2019-01-07"]) == "outside"
+    assert highs_config.protocol_of(["2020-01-06", "2021-04-05"]) == "validation"
+
+
+def test_the_sweep_refuses_holdout_weeks_non_kelly_methods_and_foreign_weeks(tmp_path):
+    stub = _stub(["2021-06-28", "2021-07-06"])
+    stub.params["solver"]["solver_options"].pop("time_limit")
     cands = load_candidates({"candidates": [BLOCK]})
     with pytest.raises(ValueError, match="holdout"):
         HighsConfigSweep(stub, "k", cands, ["2021-07-06"], tmp_path)
@@ -347,14 +421,55 @@ def test_the_sweep_refuses_holdout_weeks_non_kelly_methods_and_foreign_weeks(tmp
     stub.params["solver"]["solver_options"] = {}
     with pytest.raises(ValueError, match="threads 1"):
         HighsConfigSweep(stub, "k", [{"id": DEFAULT_ID, "highs": None}], ["2021-06-28"], tmp_path)
+    with pytest.raises(ValueError, match="study holds"):
+        HighsConfigSweep(_stub(["2021-06-21", "2021-07-06"]), "k", cands, ["2021-06-21"], tmp_path)
+    with pytest.raises(ValueError, match="time_limit to equal"):
+        HighsConfigSweep(_stub(["2021-06-21"], time_limit=2), "k", cands, ["2021-06-21"], tmp_path)
 
 
 def _table(rows, candidates, quarter_weeks):
     return {"format": highs_config.SWEEP_FORMAT, "method": "m", "candidates": candidates, "time_limit": 100,
-            "gap": {"absolute": 1., "relative": .1},
+            "gap": {"absolute": 1., "relative": .1}, "protocol": "train",
             "rows": [{"week": w, "quarter": highs_config.quarter_of(w), "candidate": c, "certified": cert,
                       "seconds": s, "outcome": "certified" if cert else "declined"}
                      for (w, c), (cert, s) in rows.items() if w in quarter_weeks]}
+
+
+def test_the_freeze_rule_reads_the_gap_at_the_limit_when_no_candidate_certifies_any_train_week():
+    good, poor = {"random_seed": 1}, {"random_seed": 2}
+    cands = load_candidates({"candidates": [good, poor]})
+    g, p = candidate_id(good), candidate_id(poor)
+    weeks = ["2019-10-07", "2019-10-14", "2020-01-06"]
+
+    def table(gaps):
+        """``gaps``: (week, candidate) -> relative gap at the limit, None for a week without an incumbent."""
+        return {**_table({}, cands, []), "rows": [
+            {"week": w, "quarter": highs_config.quarter_of(w), "candidate": c, "certified": False, "seconds": 100.,
+             "outcome": "relaxation_failed" if gap is None else "declined", "gap": gap,
+             "objective": None if gap is None else 1.} for (w, c), gap in gaps.items()]}
+    base = {**{(w, DEFAULT_ID): .2 for w in weeks}, (weeks[2], DEFAULT_ID): None,
+            **{(w, g): .05 for w in weeks}, (weeks[2], g): None,
+            **{(w, p): .15 for w in weeks}}
+    out = freeze([table(base)])
+    assert out["tier"] == "gap" and out["chosen"] == g and out["highs"] == good
+    assert out["scores"][DEFAULT_ID]["mean_log_time"] == pytest.approx(math.log(100)), "tier 1 cannot discriminate"
+    assert out["scores"][DEFAULT_ID]["mean_log_gap"] == pytest.approx(2*math.log(.2)/3)
+    assert (out["scores"][g]["incumbents"], out["scores"][p]["incumbents"]) == (2, 3)
+    assert freeze([table({**base, (weeks[0], g): .15, (weeks[1], g): .15})])["chosen"] == p, \
+        "the lowest mean log gap wins, a censored week counting at the censor"
+    narrow = {**base, **{(w, p): .2 for w in weeks[:2]}, (weeks[0], g): .15, (weeks[1], g): .15}
+    assert freeze([table(narrow)])["chosen"] == DEFAULT_ID, "within the margin the default stands"
+    fewer = {**base, (weeks[2], DEFAULT_ID): .9}
+    assert freeze([table(fewer)])["chosen"] == p, "fewer weeks with an incumbent than the default never wins"
+    lost = {**base, (weeks[0], g): None, (weeks[1], g): 1e-9}
+    assert freeze([table(lost)])["scores"][g]["incumbents"] == 1, "fewer incumbents than the default"
+    assert freeze([table(lost)])["chosen"] == p
+    one = {**base, (weeks[0], DEFAULT_ID): .2}
+    certified = table(one)
+    certified["rows"][0] = {**certified["rows"][0], "certified": True, "seconds": 90.}
+    assert freeze([certified])["tier"] == "time", "one certified week anywhere switches to tier 1"
+    with pytest.raises(ValueError, match="train-protocol"):
+        freeze([{**table(base), "protocol": "outside"}])
 
 
 def test_the_freeze_rule_needs_a_margin_and_no_fewer_certified_weeks_and_reads_only_train_weeks():
@@ -399,7 +514,10 @@ def test_the_cli_freezes_tables_and_sweeps_a_loaded_study(tmp_path, monkeypatch)
     assert _performance(table["rows"]) == _performance(json.loads(json.dumps(direct["rows"])))
     week = next(r["week"] for r in table["rows"] if r["outcome"] != "no_program")
     rows = [{**r, "week": "2019-10-07", "quarter": "2019Q4"} for r in table["rows"] if r["week"] == week]
-    (tmp_path/"train.json").write_text(json.dumps({**table, "rows": rows}))
+    assert table["protocol"] == "outside"
+    (tmp_path/"train.json").write_text(json.dumps({**table, "rows": rows, "protocol": "train"}))
     assert highs_config.main(["freeze", str(tmp_path/"train.json"), "--out", str(tmp_path/"frozen.json")]) == 0
     frozen = json.loads((tmp_path/"frozen.json").read_text())
     assert frozen["chosen"] in (DEFAULT_ID, candidate_id(BLOCK)) and frozen["quarters"] == ["2019Q4", "2020Q1"]
+    assert frozen["tier"] in ("time", "gap") and frozen["method"] == "kelly"
+    assert frozen["time_limit"] == table["time_limit"] and frozen["gap"] == table["gap"]

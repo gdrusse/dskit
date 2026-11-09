@@ -10,11 +10,15 @@ configuration is complete and the derived and recorded routes stay deterministic
 
 The sweep (:class:`HighsConfigSweep`, CLI ``python -m index_options.highs_config``) measures candidate blocks on
 the weekly programs a study builds at decision time. The study runs one fixed path (the method's own solves, or the
-derived route over a recorded action file, which solves nothing); at every requested week the program it is about to
-decide is handed to :meth:`HighsConfigSweep.observe` (the study's ``program_observer`` seam), which solves a copy under
-each candidate with the method's own gap and time limit and journals one row of solver performance (outcome, time,
-gap, nodes). No row carries a fill, a settlement or a P&L. :func:`freeze` applies the pre-registered rule to the train
-quarters' tables. Weeks from :data:`HOLDOUT_FROM` on are refused outright.
+derived route over a recorded action file, which solves no integer program: one fixed-action LP per week); at every
+requested week the program it is about to decide is handed to :meth:`HighsConfigSweep.observe` (the study's
+``program_observer`` seam), which solves a copy under each candidate with the method's own gap and time limit and
+journals one row of solver performance (outcome, time, gap, nodes). No row carries a fill, a settlement or a P&L; the
+programs themselves sit on the path's capital, which realized fills and settlements shaped (the same fixed programs
+serve every candidate). The path stops once the last requested week is measured. :func:`freeze` applies the
+pre-registered two-tier rule to the train quarters' tables only; a sweep touching a validation-quarter week runs only
+the default and one frozen block (``frozen``, a :func:`freeze` result); a study holding any week from
+:data:`HOLDOUT_FROM` on is refused outright.
 """
 
 import argparse
@@ -78,12 +82,18 @@ HIGHS_EXCLUDED = {
 TRAIN_QUARTERS = ("2019Q4", "2020Q1")
 VALIDATION_QUARTERS = ("2021Q1", "2021Q2")
 HOLDOUT_FROM = "2021-07-01"
-#: The freeze rule's margin: a candidate replaces the default only if its mean log time to certify is at least this
-#: much lower (ln 1.1, a 10% geometric-mean speed-up) and it certifies no fewer train weeks.
+#: The freeze rule's tier-1 margin: a candidate replaces the default only if its mean log time to certify is at least
+#: this much lower (ln 1.1, a 10% geometric-mean speed-up) and it certifies no fewer train weeks.
 FREEZE_MARGIN = math.log(1.1)
+#: The freeze rule's tier 2, used only when no candidate (the default included) certifies any train week: a week's
+#: score is the relative gap at the limit, floored at :data:`GAP_FLOOR` and censored at :data:`GAP_CENSOR` (a week
+#: with no incumbent, or an incumbent 100% or more from its bound, counts as the censor); a candidate replaces the
+#: default only if its mean log gap is at least :data:`GAP_MARGIN` lower (ln 2: the geometric-mean gap halved) and it
+#: ends no fewer train weeks with an incumbent.
+GAP_FLOOR, GAP_CENSOR, GAP_MARGIN = 1e-6, 1., math.log(2.)
 #: The identifier of the absent block (HiGHS's defaults under the document's own solver options).
 DEFAULT_ID = "default"
-SWEEP_FORMAT = "highs-config-sweep-v1"
+SWEEP_FORMAT = "highs-config-sweep-v2"
 JOURNAL_FILE, TABLE_JSON, TABLE_CSV = "journal.jsonl", "table.json", "table.csv"
 COLUMNS = ("week", "quarter", "candidate", "highs", "outcome", "certified", "timeout", "termination", "objective",
            "bound", "gap", "seconds", "solve_seconds", "nodes", "iterations", "solves", "options_verified", "error")
@@ -253,6 +263,26 @@ def _option_value(highs, name):
     return value[1] if isinstance(value, tuple) else value
 
 
+def _digest(value):
+    return None if value is None else hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+
+
+def protocol_of(weeks):
+    """Return a week set's place in ADR-0304's protocol: ``train``, ``validation`` or ``outside``.
+
+    ``validation`` is any set holding a validation-quarter week; ``outside`` holds a week of another pre-holdout
+    quarter (measurable, never read by :func:`freeze`).
+    """
+    quarters = {quarter_of(w) for w in weeks}
+    if quarters & set(VALIDATION_QUARTERS):
+        return "validation"
+    return "train" if quarters <= set(TRAIN_QUARTERS) else "outside"
+
+
+class _SweepDone(Exception):
+    """Raised by the observer past the last requested week: the path stops there (nothing later is built or solved)."""
+
+
 class HighsConfigSweep:
     """Measure candidate HiGHS blocks on the weekly programs one study path builds at decision time.
 
@@ -270,14 +300,18 @@ class HighsConfigSweep:
         Where the journal and the tables go; an existing journal of the same sweep resumes.
     derived : dict or None
         The path: None solves the method's own configuration week by week; a worker action file (or its
-        ``actions`` body) drives the derived route, which solves nothing.
+        ``actions`` body) drives the derived route, which solves no integer program (one fixed-action LP a week).
+        Its digest is in the header, so a resume over another action file is refused.
+    frozen : dict or None
+        A :func:`freeze` result. Required when any requested week is of a validation quarter: the sweep then runs
+        exactly the default and the frozen block (validation is opened once, with the choice fixed beforehand).
     host : str or None
         A label for the table header (one host per sweep: times are compared within it).
     clock : callable
         The wall clock (``time.perf_counter``).
     """
 
-    def __init__(self, study, method_id, candidates, weeks, out_dir, *, derived=None, host=None,
+    def __init__(self, study, method_id, candidates, weeks, out_dir, *, derived=None, frozen=None, host=None,
                  clock=time.perf_counter):
         matches = [m for m in study.params["methods"] if m["id"] == method_id]
         if len(matches) != 1 or "kelly" not in matches[0]:
@@ -297,17 +331,39 @@ class HighsConfigSweep:
             raise ValueError("weeks are distinct decision weeks of the study")
         if any(w >= HOLDOUT_FROM for w in weeks):
             raise ValueError("a week from "+HOLDOUT_FROM+" on is holdout: the sweep never opens it")
+        if any(w >= HOLDOUT_FROM for w in study.weeks):
+            raise ValueError("the study holds a week from "+HOLDOUT_FROM+" on (holdout): the sweep never opens it")
+        kelly = self.method["kelly"]
+        limit = (study.params["solver"].get("solver_options") or {}).get("time_limit")
+        if not number_ok(limit) or limit != kelly["time_limit"]:
+            # relax_fix's budget is the document's time_limit; the rule censors at the method's: they must be one.
+            raise ValueError("the sweep needs the document's solver_options time_limit to equal the method's")
         self.weeks = [w for w in study.weeks if w in set(weeks)]
+        self.protocol = protocol_of(self.weeks)
+        if self.protocol == "validation" or frozen is not None:
+            self._check_frozen(frozen, method_id, kelly)
         if isinstance(derived, dict) and "actions" in derived and "format" in derived:
             derived = derived["actions"]
         self.derived = derived
         self.out = Path(out_dir)
-        kelly = self.method["kelly"]
         self.header = {"format": SWEEP_FORMAT, "method": method_id, "weeks": self.weeks,
                        "candidates": self.candidates, "time_limit": kelly["time_limit"], "gap": kelly["gap"],
-                       "path": "solve" if derived is None else "derived", "host": host,
+                       "path": "solve" if derived is None else "derived", "path_digest": _digest(derived),
+                       "protocol": self.protocol, "frozen": _digest(frozen), "host": host,
                        "solver": {k: v for k, v in study.params["solver"].items()}, "code": _source_digests()}
         self.rows = {}
+
+    def _check_frozen(self, frozen, method_id, kelly):
+        """Refuse a validation sweep that is not exactly the default against one block frozen on the train tables."""
+        if (not isinstance(frozen, dict) or frozen.get("quarters") != list(TRAIN_QUARTERS)
+                or frozen.get("method") != method_id or frozen.get("time_limit") != kelly["time_limit"]
+                or frozen.get("gap") != kelly["gap"]):
+            raise ValueError("a validation-quarter week is measured only against a freeze() result of this method's "
+                             "train sweep (--frozen)")
+        if frozen.get("chosen") == DEFAULT_ID or frozen.get("chosen") != candidate_id(frozen.get("highs")):
+            raise ValueError("the frozen choice is the default (nothing to validate) or not its block's digest")
+        if self.candidates != [{"id": DEFAULT_ID, "highs": None}, {"id": frozen["chosen"], "highs": frozen["highs"]}]:
+            raise ValueError("a validation sweep runs exactly the default and the frozen block, once")
 
     # -- the journal ----------------------------------------------------------------------------------------------
 
@@ -376,10 +432,11 @@ class HighsConfigSweep:
             solver.solve = counted
             return solver
         node._resolve_solver = counted_resolve
+        program = copy.deepcopy(program)   # outside the clock: the copy is the same for every candidate
         start = self.clock()
         selection, error = None, None
         try:
-            selection = node.run(None, copy.deepcopy(program))["selection"]
+            selection = node.run(None, program)["selection"]
         except Exception as exc:  # the class only: a message can carry a value
             error = type(exc).__name__
         seconds = self.clock()-start
@@ -397,13 +454,32 @@ class HighsConfigSweep:
                 "options_verified": None if candidate["highs"] is None else bool(infos) and all(i["verified"] for i in infos),
                 "error": error}
 
+    def execution_order(self, day):
+        """Return the order the candidates are solved in on a requested week.
+
+        It is the declared order rotated by the week's index, so no candidate always runs first (an order effect on
+        wall time); the table keeps the declared order.
+        """
+        k = self.weeks.index(day) % len(self.candidates)
+        return self.candidates[k:]+self.candidates[:k]
+
     def observe(self, day, method, program, solver_params):
-        """Measure every candidate not yet journaled on a requested week (the study's ``program_observer``)."""
-        if method["id"] != self.method["id"] or day not in self.weeks:
+        """Measure every candidate not yet journaled on a requested week (the study's ``program_observer``).
+
+        Past the last requested week, or once it is measured, the path is stopped (:class:`_SweepDone`): no later
+        week is decided, so a solve path solves nothing the sweep did not ask for.
+        """
+        if method["id"] != self.method["id"]:
             return
-        for candidate in self.candidates:
+        if day > self.weeks[-1]:
+            raise _SweepDone(day)
+        if day not in self.weeks:
+            return
+        for candidate in self.execution_order(day):
             if (day, candidate["id"]) not in self.rows:
                 self._append(self.measure(day, program, candidate))
+        if day == self.weeks[-1]:
+            raise _SweepDone(day)
 
     def run(self):
         """Run the path once, measuring every requested week; write and return the ordered table.
@@ -418,6 +494,8 @@ class HighsConfigSweep:
             self.study.program_observer = self.observe
             try:
                 self.study._method(self.method, None, derived=self.derived)
+            except _SweepDone:
+                pass
             finally:
                 self.study.program_observer = previous
         order = {c["id"]: i for i, c in enumerate(self.candidates)}
@@ -438,17 +516,28 @@ class HighsConfigSweep:
         return table
 
 
-def freeze(tables, *, quarters=TRAIN_QUARTERS, margin=FREEZE_MARGIN):
+def freeze(tables, *, quarters=TRAIN_QUARTERS, margin=FREEZE_MARGIN, gap_margin=GAP_MARGIN):
     """Apply the pre-registered freeze rule to train-quarter sweep tables; return the choice and every score.
 
     Every table must be a sweep of the same method, candidates, time limit and gap, and hold only weeks of the
     declared train ``quarters`` (a validation or holdout week refuses: the choice never sees one). Weeks where no
-    candidate had a program are dropped. A week's time to certify is the wall seconds of a certified solve and the
-    method's time limit otherwise (a declined, failed, timed-out or errored week is censored at the limit). A
-    candidate's score is the mean natural log of that time (each floored at one second). The chosen block is the
-    lowest score among the candidates that certify at least as many weeks as the default, if it beats the default's
-    score by at least ``margin``; otherwise the default (no block) stands. Ties go to the earlier-listed candidate.
-    No P&L, objective value or book enters the rule.
+    candidate had a program are dropped.
+
+    *Tier 1* (``time``), when any candidate certifies any train week: a week's time to certify is the wall seconds of
+    a certified solve and the method's time limit otherwise (a declined, failed, timed-out or errored week is censored
+    at the limit). A candidate's score is the mean natural log of that time (each floored at one second). The chosen
+    block is the lowest score among the candidates that certify at least as many weeks as the default, if it beats
+    the default's score by at least ``margin``.
+
+    *Tier 2* (``gap``), when no candidate certifies any train week (tier 1 would score every candidate ln(limit)): a
+    week's score is the relative gap at the limit of the week's incumbent against its bound (the program's own
+    decision-time objective and bound), floored at :data:`GAP_FLOOR` and censored at :data:`GAP_CENSOR` (no
+    incumbent, a failed relaxation or an error count as the censor). The chosen block is the lowest mean log gap among
+    the candidates that end at least as many weeks with an incumbent as the default, if it beats the default's by at
+    least ``gap_margin``.
+
+    Otherwise the default (no block) stands. Ties go to the earlier-listed candidate. Both tiers' scores are reported
+    for every candidate. No P&L, fill, settlement or book enters the rule.
     """
     if not tables:
         raise ValueError("freeze needs at least one train table")
@@ -456,6 +545,8 @@ def freeze(tables, *, quarters=TRAIN_QUARTERS, margin=FREEZE_MARGIN):
     keys = ("format", "method", "candidates", "time_limit", "gap")
     if any(t.get(k) != first.get(k) for t in tables for k in keys) or first.get("format") != SWEEP_FORMAT:
         raise ValueError("the tables are not one sweep (format, method, candidates, time limit or gap differ)")
+    if any(t.get("protocol") != "train" for t in tables):
+        raise ValueError("a table is not a train-protocol sweep")
     rows = [r for t in tables for r in t["rows"]]
     if any(r["quarter"] not in quarters for r in rows):
         raise ValueError("a table holds a week outside the train quarters "+str(list(quarters)))
@@ -468,17 +559,33 @@ def freeze(tables, *, quarters=TRAIN_QUARTERS, margin=FREEZE_MARGIN):
         raise ValueError("no train week carried a program")
     scores = {}
     for c in candidates:
-        times = [by[(w, c["id"])]["seconds"] if by[(w, c["id"])]["certified"] else limit for w in weeks]
-        scores[c["id"]] = {"certified": sum(bool(by[(w, c["id"])]["certified"]) for w in weeks),
+        cells = [by[(w, c["id"])] for w in weeks]
+        times = [r["seconds"] if r["certified"] else limit for r in cells]
+        scores[c["id"]] = {"certified": sum(bool(r["certified"]) for r in cells),
                            "mean_log_time": sum(math.log(max(1., t)) for t in times)/len(times),
+                           "incumbents": sum(_incumbent(r) for r in cells),
+                           "mean_log_gap": sum(math.log(_censored_gap(r)) for r in cells)/len(cells),
                            "weeks": len(weeks)}
+    tier = "time" if any(s["certified"] for s in scores.values()) else "gap"
+    count, score, cut = (("certified", "mean_log_time", margin) if tier == "time"
+                         else ("incumbents", "mean_log_gap", gap_margin))
     default = scores[DEFAULT_ID]
-    eligible = [c for c in candidates[1:] if scores[c["id"]]["certified"] >= default["certified"]]
-    best = min(eligible, key=lambda c: scores[c["id"]]["mean_log_time"], default=None)
-    chosen = (best if best is not None and scores[best["id"]]["mean_log_time"] <= default["mean_log_time"]-margin
-              else candidates[0])
-    return {"chosen": chosen["id"], "highs": chosen["highs"], "scores": scores, "margin": margin,
-            "quarters": list(quarters), "weeks": weeks}
+    eligible = [c for c in candidates[1:] if scores[c["id"]][count] >= default[count]]
+    best = min(eligible, key=lambda c: scores[c["id"]][score], default=None)
+    chosen = best if best is not None and scores[best["id"]][score] <= default[score]-cut else candidates[0]
+    return {"chosen": chosen["id"], "highs": chosen["highs"], "tier": tier, "scores": scores, "margin": margin,
+            "gap_margin": gap_margin, "method": first["method"], "time_limit": first["time_limit"],
+            "gap": first["gap"], "quarters": list(quarters), "weeks": weeks}
+
+
+def _incumbent(row):
+    """Whether a row's week ended with an incumbent of finite gap (the program's own objective against its bound)."""
+    return row.get("objective") is not None and number_ok(row.get("gap"))
+
+
+def _censored_gap(row):
+    """Return a row's tier-2 gap: its relative gap floored at :data:`GAP_FLOOR` and censored at :data:`GAP_CENSOR`."""
+    return min(GAP_CENSOR, max(GAP_FLOOR, float(row["gap"]))) if _incumbent(row) else GAP_CENSOR
 
 
 def main(argv=None):
@@ -492,7 +599,8 @@ def main(argv=None):
     s.add_argument("--weeks", default="all", help="JSON list of decision weeks, or 'all' (every week before holdout)")
     s.add_argument("--work-dir", required=True, help="quote-index work directory")
     s.add_argument("--out", required=True, help="output directory (journal.jsonl, table.json, table.csv); resumes")
-    s.add_argument("--path-actions", help="a worker action file of the same method: the derived path (no path solve)")
+    s.add_argument("--path-actions", help="a worker action file of the same method: the derived path (no integer path solve)")
+    s.add_argument("--frozen", help="a freeze result (JSON); required for validation-quarter weeks")
     s.add_argument("--reuse-root", help="same-device quote-index cache root")
     s.add_argument("--host", help="a host label for the table header")
     f = sub.add_parser("freeze", help="apply the pre-registered rule to train tables")
@@ -503,7 +611,8 @@ def main(argv=None):
         tables = [json.loads(Path(p).read_text(encoding="utf-8")) for p in args.tables]
         result = freeze(tables)
         Path(args.out).write_text(_canonical(result)+"\n", encoding="utf-8")
-        sys.stdout.write(json.dumps({"chosen": result["chosen"], "highs": result["highs"]}, sort_keys=True)+"\n")
+        sys.stdout.write(json.dumps({"chosen": result["chosen"], "highs": result["highs"], "tier": result["tier"]},
+                                    sort_keys=True)+"\n")
         return 0
     from .mio_worker import THREAD_VARIABLES, MIOMethodWorker
 
@@ -520,7 +629,9 @@ def main(argv=None):
         weeks = ([w for w in weekly.weeks if w < HOLDOUT_FROM] if args.weeks == "all"
                  else json.loads(Path(args.weeks).read_text(encoding="utf-8")))
         derived = (json.loads(Path(args.path_actions).read_text(encoding="utf-8")) if args.path_actions else None)
-        table = HighsConfigSweep(weekly, args.method, candidates, weeks, out, derived=derived, host=args.host).run()
+        frozen = json.loads(Path(args.frozen).read_text(encoding="utf-8")) if args.frozen else None
+        table = HighsConfigSweep(weekly, args.method, candidates, weeks, out, derived=derived, frozen=frozen,
+                                 host=args.host).run()
         weekly.close_quote_indexes(verify=True)
     finally:
         if any(type(q).__name__ == "_SQLiteQuoteView" for q in weekly._quotes.values()):
