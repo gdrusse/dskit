@@ -379,7 +379,8 @@ def test_the_parity_bound_still_refuses_a_wrong_objective():
     node = Shifted("sizer", params)
     week = _gme_week()
     clean = node.run(None, week)["selection"]["parity"]
-    for shift in (1.+clean["dropped"], -1.-clean["dropped"]-clean["feasibility"], clean["dropped"]/2-clean["mismatch"]):
+    # (A shortfall below the bound is no longer refused: ADR-0300 amendment 2, tested below.)
+    for shift in (1.+clean["dropped"], clean["dropped"]/2-clean["mismatch"]):
         node.shift = shift
         with pytest.raises(ValueError, match="sizer objective differs from the exact recompute"):
             node.run(None, week)
@@ -391,6 +392,37 @@ def test_the_parity_bound_still_refuses_a_wrong_objective():
     node.shift = 1e-3
     with pytest.raises(ValueError, match="sizer objective differs"):
         node.run(None, small)
+
+
+def test_an_under_claim_beyond_the_bound_trades_the_counts_at_the_exact_value_and_says_uncertified():
+    """ADR-0300 amendment 2: a solver objective BELOW the exact recompute of its own feasible integer counts by more
+    than the bound is not an error: the counts are worth the recompute, which is recorded, and the week is marked
+    uncertified (parity status and certificate), never certified."""
+    import dataclasses
+
+    class Shifted(BookKellySizer):
+        shift = 0.
+
+        def extract(self, model, results):
+            if self.shift:
+                self.solve_record = dataclasses.replace(self.solve_record,
+                                                        objective=self.solve_record.objective+self.shift)
+            return super().extract(model, results)
+
+    node = Shifted("sizer", {"gamma": 4., "n_tangents": 32, "core": 2., "parity_tolerance": 1e-3})
+    week = _gme_week()
+    clean = node.run(None, week)["selection"]
+    assert "status" not in clean["parity"] and "uncertified" not in clean["certificate"]
+    shift = -1.-clean["parity"]["dropped"]-clean["parity"]["feasibility"]
+    node.shift = shift
+    out = node.run(None, week)["selection"]
+    assert out["k"] == clean["k"] and out["value"] == clean["value"], "the exact recompute of the same counts"
+    parity = out["parity"]
+    assert parity["status"] == "under_claim_uncertified" and parity["mismatch"] < -parity["tolerance"]
+    assert {k: v for k, v in parity.items() if k not in ("status", "mismatch")} == {
+        k: v for k, v in clean["parity"].items() if k != "mismatch"}
+    assert out["certificate"]["uncertified"] is True
+    assert out["certificate"]["objective"] == pytest.approx(clean["certificate"]["objective"]+shift)
 
 
 def test_the_tilt_reaches_every_target_by_reweighting_and_never_moves_a_sample():
