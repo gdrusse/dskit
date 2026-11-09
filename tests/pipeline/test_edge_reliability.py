@@ -1172,3 +1172,32 @@ class TestTrailingRegime:
         p = dict(REGIME)
         TrailingRegime(p)
         assert p == REGIME
+
+
+class TestTrailingRegimeDump:
+    """ADR-0311 stage 3: the regime history must survive a checkpoint."""
+
+    def _filled(self):
+        reg = er.TrailingRegime({"regime_lookback_weeks": 4, "regime_min_weeks": 2})
+        day = datetime.date(2020, 1, 3)
+        for k in range(9):
+            for name in ("AA", "BB"):
+                reg.of(name, (day + datetime.timedelta(days=7 * k)).isoformat(), 0.2 + 0.01 * k)
+                reg.add(name, (day + datetime.timedelta(days=7 * k)).isoformat(), 0.2 + 0.01 * k)
+        return reg
+
+    def test_round_trip_continues_identically(self):
+        reg = self._filled()
+        blob = json.loads(json.dumps(reg.to_dict()))
+        back = er.TrailingRegime.from_dict(blob)
+        assert back.to_dict() == reg.to_dict()
+        t = "2020-03-06"
+        assert back.of("AA", t, 0.5) == reg.of("AA", t, 0.5)
+        back.add("AA", t, 0.5)
+        reg.add("AA", t, 0.5)
+        assert back.to_dict() == reg.to_dict()
+        assert back.warmups == reg.warmups
+
+    def test_malformed_dump_refuses(self):
+        with pytest.raises(ValueError):
+            er.TrailingRegime.from_dict({"params": {}})

@@ -296,6 +296,12 @@ from fixed config edges (quantile specs refuse, `bucket_edges_invalid`); `Linear
 and pooled as running sums, expanding or decayed (`lambda`, cluster products `lambda^2`), with one-way (name, date) and
 two-way (name + date - both) CR1 sandwiches, and refuses `state_from_future`.
 
+`libs.edge_walk.EdgeReliabilityWalk` (ADR-0311 stage 3, by import path): replays a decision calendar through four states
+(expanding / decayed x fill / decision price), joins the fill-session quote and settlement level only when a row is
+admitted (`s < t`), writes one map snapshot per week before reading that week's rows, keeps pending rows in on-disk
+shards keyed by settlement date, and checkpoints atomically; a resume is byte-identical or refuses
+(`checkpoint_mismatch`, `state_from_future`, `ram_limit`). Four `@abstractmethod` hooks carry the domain.
+
 `libs.pyomo.TransportPortfolioSolve.actions` and `.derived` (ADR-0297, proposed) move a solved
 decision between hosts as integers: `actions` returns the integer incumbent of a recorded
 selection, `derived` rebuilds a selection from those integers plus a foreign solve certificate,

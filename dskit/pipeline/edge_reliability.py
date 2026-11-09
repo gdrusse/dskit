@@ -561,8 +561,8 @@ class LinearEdgeState:
         gn, gd = len(u.names), len(u.dates)
         if gn < 2 or gd < 2:
             return None
-        by_name = _sandwich_matrix(bread, _outer_from_vectors(u.names.values(), theta), gn, u.rows)
-        by_date = _sandwich_matrix(bread, _outer_from_vectors(u.dates.values(), theta), gd, u.rows)
+        by_name = _sandwich_matrix(bread, _outer_from_vectors((u.names[k] for k in sorted(u.names)), theta), gn, u.rows)
+        by_date = _sandwich_matrix(bread, _outer_from_vectors((u.dates[k] for k in sorted(u.dates)), theta), gd, u.rows)
         cov = [[by_name[p][q] + by_date[p][q] - pair[p][q] for q in range(2)] for p in range(2)]
         rule = "two_way"
         if not (cov[0][0] > 0.0 and cov[1][1] > 0.0 and cov[0][0] * cov[1][1] - cov[0][1] * cov[1][0] > 0.0):
@@ -1364,6 +1364,38 @@ class TrailingRegime:
     def stored(self, name):
         """Return how many values are retained for ``name`` (bounded by the window)."""
         return len(self._vals.get(name, ()))
+
+    def to_dict(self):
+        """Return the retained history as a JSON-safe dict (restorable with :meth:`from_dict`)."""
+        return {
+            "params": {"regime_lookback_weeks": self._lookback, "regime_min_weeks": self._min},
+            "warmups": self.warmups,
+            "names": {k: {"days": list(self._days[k]), "vals": list(self._vals[k]),
+                          "evicted": self._evicted.get(k)} for k in sorted(self._days)},
+        }
+
+    @classmethod
+    def from_dict(cls, blob):
+        """Rebuild from :meth:`to_dict`.
+
+        Raises
+        ------
+        ValueError
+            On a missing key or a malformed blob.
+        """
+        try:
+            reg = cls(blob["params"])
+            reg.warmups = int(blob["warmups"])
+            for k, rec in blob["names"].items():
+                reg._days[k] = [int(x) for x in rec["days"]]
+                reg._vals[k] = [float(x) for x in rec["vals"]]
+                if len(reg._days[k]) != len(reg._vals[k]):
+                    raise ValueError("days and vals differ in length")
+                if rec["evicted"] is not None:
+                    reg._evicted[k] = int(rec["evicted"])
+        except (KeyError, TypeError) as exc:
+            raise ValueError(f"malformed TrailingRegime dump: {exc!r}") from exc
+        return reg
 
     def of(self, name, t, v):
         """Return ``(regime, warmup)`` for ``name`` at ``t`` with annualized scale ``v``.
