@@ -156,6 +156,7 @@ dskit/pipeline/
 │                      volatility, beta, embedded gain, tax cost, break-even return (closed form per tax timing), opportunity cost; portfolio metrics
 │                      a wired table must be a mapping (None refuses; absent = unwired); betas unbounded, volatilities in VOLATILITY_BOUNDS
 ├── hold_verdict.py    HoldVerdict (by import path, ADR-0279 amendment 2026-10-28): summary rows + portfolio metrics -> one markdown verdict page per run
+├── edge_reliability.py SettledBefore (strictly-before admission gate over label_reaches, data-rights window), ReliabilityBuckets (24 fixed-edge buckets), LinearEdgeState (r = a + b e from running sums, expanding or decayed, one- and two-way cluster sandwich; ADR-0311 stage 1)
 ├── fee_mechanics.py   venue-neutral fee mechanics (FeeModel / RoundingPolicy ABCs, CeilToTick, JSON spec); no venue table, ADR-0245
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
 │                      forward delta, ADR-0193) + VolIndexSmileQuotes:

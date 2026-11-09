@@ -290,6 +290,12 @@ legacy stage-list grammar (below).
 
 ## What ships
 
+`edge_reliability` (ADR-0311 stage 1, core): `SettledBefore` admits a row at `t` only if it settled strictly before
+`t` (`label_reaches`) and refuses dates outside the data rights; `ReliabilityBuckets` maps a row to one of 24 buckets
+from fixed config edges (quantile specs refuse, `bucket_edges_invalid`); `LinearEdgeState` keeps `r = a + b e` per bucket
+and pooled as running sums, expanding or decayed (`lambda`, cluster products `lambda^2`), with one-way (name, date) and
+two-way (name + date - both) CR1 sandwiches, and refuses `state_from_future`.
+
 `libs.pyomo.TransportPortfolioSolve.actions` and `.derived` (ADR-0297, proposed) move a solved
 decision between hosts as integers: `actions` returns the integer incumbent of a recorded
 selection, `derived` rebuilds a selection from those integers plus a foreign solve certificate,
@@ -1300,6 +1306,7 @@ dskit/pipeline/
 │                      volatility, beta, embedded gain, tax cost, break-even return (closed form per tax timing), opportunity cost; portfolio metrics
 │                      a wired table must be a mapping (None refuses; absent = unwired); betas unbounded, volatilities in VOLATILITY_BOUNDS
 ├── hold_verdict.py    HoldVerdict (by import path, ADR-0279 amendment 2026-10-28): summary rows + portfolio metrics -> one markdown verdict page per run
+├── edge_reliability.py SettledBefore (strictly-before admission gate over label_reaches, data-rights window), ReliabilityBuckets (24 fixed-edge buckets), LinearEdgeState (r = a + b e from running sums, expanding or decayed, one- and two-way cluster sandwich; ADR-0311 stage 1)
 ├── fee_mechanics.py   venue-neutral fee mechanics: FeeModel + RoundingPolicy ABCs, ProbabilityQuadraticFee,
 │                      ZeroFee, CeilToTick, a JSON spec; no venue table, rates are call arguments (ADR-0245)
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
