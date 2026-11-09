@@ -4612,3 +4612,123 @@ def test_accept_uncertified_is_a_boolean_kelly_key(value, ok):
             ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
     top = TOP_FORMULATIONS["kelly025_top100_uncert_lp"]["kelly"]
     assert top == {**TOP_FORMULATIONS["kelly025_top100_lp"]["kelly"], "accept_uncertified": True}
+
+
+# --- the outer-approximation decomposition of the one-stage Kelly selection (ADR-0303; owner option C) ---------------
+
+#: The pre-registered loop of the ADR-0303 formulations: four tangent rows per scenario to start, ten LP rounds to seed
+#: rows cheaply, then integer masters of at most 1,000 nodes each, 256 cuts a round, thirty masters in all, the
+#: dispersion epigraphs (the program's largest block) out of every master. The seed is HiGHS's, fixed.
+OUTER_APPROX = {"iterations": 30, "initial_tangents": 4, "cuts_per_round": 256, "lp_rounds": 10,
+                "master_node_limit": 1000, "seed": 0, "dispersion": True}
+OA_FORMULATIONS = {
+    "kelly025_oa_lp": {**_KELLY_BASE, "kelly": {**KELLY, "fraction": .25, "outer_approx": OUTER_APPROX}},
+    # = kelly025_top100_uncert_lp solved by outer approximation: an exhausted budget trades its best incumbent.
+    "kelly025_top100_oa_lp": {**_KELLY_BASE, "kelly": {**TOP_FORMULATIONS["kelly025_top100_uncert_lp"]["kelly"],
+                                                      "outer_approx": OUTER_APPROX}},
+}
+#: A loop the small fixture converges in: one row per scenario, a few cuts a round.
+_FIXTURE_OA = {**OUTER_APPROX, "initial_tangents": 1, "cuts_per_round": 4, "lp_rounds": 2, "iterations": 60,
+               "master_node_limit": None}
+
+
+def test_the_outer_approximation_formulations_validate_and_differ_only_in_the_solve():
+    for name, method in OA_FORMULATIONS.items():
+        params, inputs = _weekly_portfolio_fixture()
+        params["methods"] = [{"id": name, **method}]
+        _for_kelly(params)
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    full, top = OA_FORMULATIONS["kelly025_oa_lp"], OA_FORMULATIONS["kelly025_top100_oa_lp"]
+    assert {k: v for k, v in full["kelly"].items() if k != "outer_approx"} == KELLY_FORMULATIONS["kelly025_lp"]["kelly"]
+    assert {k: v for k, v in top["kelly"].items() if k != "outer_approx"} == \
+        TOP_FORMULATIONS["kelly025_top100_uncert_lp"]["kelly"]
+    assert TOP_FORMULATIONS["kelly025_top100_uncert_lp"]["kelly"] == {**KELLY, "fraction": .25, "max_groups": 100,
+                                                                      "accept_uncertified": True}, "untouched"
+
+
+@pytest.mark.parametrize("change", [
+    lambda b: b.update(iterations=0),
+    lambda b: b.update(lp_rounds=30),
+    lambda b: b.update(cuts_per_round=0),
+    lambda b: b.update(master_node_limit=0),
+    lambda b: b.update(seed=-1),
+    lambda b: b.update(dispersion="yes"),
+    lambda b: b.pop("seed"),
+    lambda b: b.update(extra=1),
+])
+def test_a_malformed_outer_approx_block_is_refused(change):
+    params, inputs = _kelly_fixture(outer_approx=dict(OUTER_APPROX))
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    change(params["methods"][0]["kelly"]["outer_approx"])
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_an_outer_approximation_week_selects_what_relax_fix_selects_and_records_the_loop():
+    """On the fixture both strategies certify: the same books week by week, the loop's account recorded only where
+    the key is declared, its bound the certificate's, and every row of the comparison keeps it."""
+    params, inputs = _kelly_fixture()
+    plain = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    params, inputs = _kelly_fixture(outer_approx=dict(_FIXTURE_OA))
+    outer = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert all("outer" not in d.get("kelly", {}) for d in plain["decisions"]), "an earlier method's record is unchanged"
+    solved = [d for d in outer["decisions"] if "selection" in d]
+    assert solved and any(d["status"] == "selected" for d in solved)
+    assert [d["status"] for d in outer["decisions"]] == [d["status"] for d in plain["decisions"]]
+    for a, b in zip(plain["decisions"], outer["decisions"]):
+        if "selection" in a:
+            assert b["selection"]["quantities"] == a["selection"]["quantities"]
+            assert b["selection"]["value"] == pytest.approx(a["selection"]["value"], abs=1e-6)
+            assert b["books"] == a["books"]
+    for week in solved:
+        loop, certificate = week["kelly"]["outer"], week["certificates"][0]
+        assert loop == certificate["outer"] and loop["bound"] == certificate["bound"]
+        assert loop["outcome"] == "certified" and week["kelly"]["solve"] == {
+            "strategy_outcome": "outer_approx_certified", "bound_source": "outer_approx"}
+        assert 1 <= loop["decided_at"] <= loop["iterations"] <= _FIXTURE_OA["iterations"]
+    assert outer["trades"] == plain["trades"] and outer["pnl"] == pytest.approx(plain["pnl"])
+    row_keys = ledger_studies.MIOPacketCompare._KELLY_ROW_KEYS+ledger_studies.MIOPacketCompare._KELLY_OPTIONAL_ROW_KEYS
+    assert "outer" in row_keys and "outer" not in ledger_studies.MIOPacketCompare._KELLY_ROW_KEYS
+
+
+def test_an_outer_approximation_result_replays_through_the_recorded_and_derived_routes():
+    from index_options.mio_worker import MIOMethodWorker
+
+    params, inputs = _kelly_fixture(outer_approx=dict(_FIXTURE_OA))
+    method = params["methods"][0]
+    solved = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    assert any(d.get("status") == "selected" for d in solved["decisions"])
+    actions = MIOMethodWorker.actions(solved, ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).weeks)
+    derived = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, derived=actions)
+    assert _equal_but_last_bits(derived, solved)
+    assert [d.get("kelly", {}).get("outer") for d in derived["decisions"]] == \
+        [d.get("kelly", {}).get("outer") for d in solved["decisions"]], "the loop's account replays exactly"
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=solved) == solved
+    relax = ledger_studies.WeeklyOptionPortfolioStudy(*_kelly_fixture())
+    with pytest.raises(ValueError):
+        relax._method(relax.params["methods"][0], None, recorded=solved)
+
+
+def test_an_exhausted_outer_approximation_budget_skips_or_trades_its_incumbent_as_the_method_declares():
+    """One master under a gap nothing can meet: never certified. Without accept_uncertified the week is skipped; with it
+    the best incumbent is traded and the gap to the master bound recorded; both replay as recorded."""
+    one = {**_FIXTURE_OA, "iterations": 1, "lp_rounds": 0}
+    params, inputs = _declined_kelly_fixture(outer_approx=dict(one))
+    skipped = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    budget = [d for d in skipped["decisions"]
+              if d.get("kelly", {}).get("solve", {}).get("strategy_outcome") == "outer_approx_budget"]
+    assert budget, "one master cannot close a zero gap"
+    for week in budget:
+        assert week["status"] == "timeout_skipped" and not week["books"] and "uncertified" not in week["kelly"]
+        assert week["selection"]["timeout"] == "gap" and week["kelly"]["outer"]["outcome"] == "iterations"
+        assert week["kelly"]["outer"]["iterations"] == 1 and week["kelly"]["outer"]["decided_at"] == 1
+    params, inputs = _declined_kelly_fixture(outer_approx=dict(one), accept_uncertified=True)
+    method = params["methods"][0]
+    traded = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    weeks = [d for d in traded["decisions"] if d.get("kelly", {}).get("uncertified")]
+    assert weeks and len(weeks) == len(budget)
+    for week in weeks:
+        u = week["kelly"]["uncertified"]
+        assert u["outcome"] == "outer_approx_budget" and u["bound"] >= u["value"] and u["gap"] > 1e-9
+        assert u["bound"] == week["kelly"]["outer"]["bound"] and week["status"] in ("selected", "cash")
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=traded) == traded

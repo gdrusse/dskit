@@ -504,6 +504,62 @@ class _UtilitySolveRecord(SolveRecord):
         return self.strategy_outcome in self.OUTCOMES and self.bound_source in self.SOURCES
 
 
+@dataclass(frozen=True)
+class _OuterApproxSolveRecord(_UtilitySolveRecord):
+    """The record of a utility program solved by outer approximation (ADR-0303), with the loop's own account.
+
+    ``strategy_outcome`` is ``outer_approx_certified`` (the best incumbent is within the allowance of the best master
+    bound), ``outer_approx_budget`` (the declared iterations, the time, or the cuts ran out first: the incumbent stands
+    under the master bound, uncertified, with the termination labels a declined certification carries) or
+    ``outer_approx_failed`` (no master gave an integer point: no incumbent). ``bound_source`` is ``outer_approx`` (the
+    least bound any master reported) or ``none``.
+
+    Parameters
+    ----------
+    outer : dict
+        ``iterations`` (masters solved), ``bound`` and ``incumbent`` (the best of each, objective units), ``gap``
+        (their difference, ``None`` without both), ``relative_gap`` (that over ``|bound|``), ``cuts_added``,
+        ``outcome`` (``certified``, ``iterations``, ``time``, ``stalled`` or ``failed``), ``decided_at`` (the
+        iteration whose integer point is the incumbent) and ``history`` (per iteration: the master kind, the running
+        bound and incumbent, the cuts it added).
+    """
+
+    outer: dict
+
+    #: The loop's outcomes, and the strategy outcome each one is recorded under.
+    OUTCOMES = ("outer_approx_certified", "outer_approx_budget", "outer_approx_failed")
+    SOURCES = ("outer_approx", "none")
+    LOOP_OUTCOMES = {"certified": ("outer_approx_certified",),
+                     "iterations": ("outer_approx_budget", "outer_approx_failed"),
+                     "time": ("outer_approx_budget", "outer_approx_failed"),
+                     "stalled": ("outer_approx_budget",), "failed": ("outer_approx_failed",)}
+    OUTER_KEYS = {"iterations", "bound", "incumbent", "gap", "relative_gap", "cuts_added", "outcome", "decided_at",
+                  "history"}
+
+    def to_obj(self):
+        """The JSON body, the loop's account copied (a certificate is never shared with the record it came from)."""
+        import copy
+        obj = super().to_obj()
+        obj["outer"] = copy.deepcopy(self.outer)
+        return obj
+
+    def coherent(self):
+        """Whether the strategy fields and the loop's account agree with each other and with the certificate."""
+        outer = self.outer
+        if (not super().coherent() or not isinstance(outer, dict) or set(outer) != self.OUTER_KEYS
+                or self.strategy_outcome not in self.LOOP_OUTCOMES.get(outer["outcome"], ())
+                or type(outer["iterations"]) is not int or outer["iterations"] < 1
+                or type(outer["cuts_added"]) is not int or outer["cuts_added"] < 0
+                or not isinstance(outer["history"], list) or len(outer["history"]) != outer["iterations"]):
+            return False
+        has_incumbent = self.strategy_outcome != "outer_approx_failed"
+        if has_incumbent != (outer["incumbent"] is not None) or has_incumbent != (type(outer["decided_at"]) is int):
+            return False
+        # The certificate's bound is the loop's bound: the one number a reader checks the gap against.
+        return (self.bound_source == "outer_approx") == (outer["bound"] is not None) and (
+            outer["bound"] is None or self.bound is None or outer["bound"] == self.bound)
+
+
 class PyomoSolve(Node):
     """The abstract doorway: one pyomo program as one pipeline Node.
 
@@ -3958,7 +4014,10 @@ class TransportPortfolioSolve(PyomoSolve):
         parity_tolerance; only the model size and the certificate's
         variable/constraint counts shrink. Replay re-derives the screen.
         Optional utility_solve, read for a utility program only, is
-        "relax_fix" (default) or "direct" (:attr:`UTILITY_SOLVES`).
+        "relax_fix" (default), "direct" or "outer_approx"
+        (:attr:`UTILITY_SOLVES`); "outer_approx" (ADR-0303, appsi_highs
+        only) needs the outer_approx param (:attr:`OUTER_APPROX_KEYS`) and
+        is :meth:`_solve_outer_approx`.
         Optional group_screen_keep (an int >= 1, with group_screen "lp";
         ADR-0301) keeps, of the groups the screen leaves live, only that
         many with the largest standalone relaxed value (ties by index): a
@@ -4035,14 +4094,27 @@ class TransportPortfolioSolve(PyomoSolve):
     outputs = ("selection",)
     _PARAMS = PyomoSolve._PARAMS + (
         "absolute_gap", "relative_gap", "parity_tolerance", "timeout_policy",
-        "group_screen", "group_screen_keep", "utility_solve")
+        "group_screen", "group_screen_keep", "utility_solve", "outer_approx")
 
     #: How a utility program is solved (a dollar program ignores it): ``relax_fix`` (the default) solves the LP
     #: relaxation first, finds an incumbent on the integer program reduced to that relaxation's support, then
     #: certifies on the program with every action the relaxation's reduced costs rule out of any better solution
     #: fixed at zero (exact, so the final bound holds for the whole program); ``direct`` hands HiGHS the whole
-    #: integer program, whose root probing on a hundred thousand interior integer variables never ends.
-    UTILITY_SOLVES = ("relax_fix", "direct")
+    #: integer program, whose root probing on a hundred thousand interior integer variables never ends;
+    #: ``outer_approx`` (ADR-0303, with the ``outer_approx`` param) solves masters that hold only some of each
+    #: scenario's tangent rows and adds the ones the master's point violates (:meth:`_solve_outer_approx`).
+    UTILITY_SOLVES = ("relax_fix", "direct", "outer_approx")
+    #: The ``outer_approx`` param's keys (ADR-0303): ``iterations`` (masters, int >= 1, the deterministic budget),
+    #: ``initial_tangents`` (rows per scenario in the first master, int >= 1), ``cuts_per_round`` (rows added after a
+    #: master, at most, int >= 1), ``lp_rounds`` (how many of the first masters are LP relaxations, int >= 0 and below
+    #: ``iterations``), ``master_node_limit`` (HiGHS ``mip_max_nodes`` per integer master, int >= 1, or None),
+    #: ``seed`` (HiGHS ``random_seed`` for every master, int >= 0) and ``dispersion`` (bool: the masters also leave out
+    #: every group's dispersion epigraph, the program's largest block, holding each dispersion by subgradient cuts).
+    OUTER_APPROX_KEYS = {"iterations", "initial_tangents", "cuts_per_round", "lp_rounds", "master_node_limit", "seed",
+                         "dispersion"}
+    #: A tangent row is a cut only when the master's point violates it by more than this, in objective units
+    #: (``w0 x weight x violation``): below it the row cannot move the gap the allowance is read against.
+    OUTER_APPROX_CUT_TOLERANCE = 1e-7
     #: Share of the time limit the incumbent search (the support-reduced program) may take before certification.
     UTILITY_INCUMBENT_SHARE = .4
     #: A relaxed action below this many contracts is outside the incumbent search's support.
@@ -4096,6 +4168,41 @@ class TransportPortfolioSolve(PyomoSolve):
         strategy = params.get("utility_solve", cls.UTILITY_SOLVES[0])
         if not isinstance(strategy, str) or strategy not in cls.UTILITY_SOLVES:
             problems.append("utility_solve must be one of "+", ".join(cls.UTILITY_SOLVES))
+        if strategy == "outer_approx" or "outer_approx" in params:
+            if strategy != "outer_approx":
+                problems.append("the outer_approx param needs utility_solve outer_approx")
+            problems.extend(cls.outer_approx_problems(params.get("outer_approx")))
+            if params.get("solver", DEFAULT_SOLVER) != "appsi_highs":
+                problems.append("utility_solve outer_approx requires appsi_highs")
+        return problems
+
+    @classmethod
+    def outer_approx_problems(cls, block):
+        """Return the defects of an ``outer_approx`` block (:attr:`OUTER_APPROX_KEYS`); empty when it is well formed.
+
+        Parameters
+        ----------
+        block : object
+            The proposed block.
+
+        Returns
+        -------
+        list of str
+        """
+        def count(key, least):
+            return type(block[key]) is int and block[key] >= least
+
+        if not isinstance(block, dict) or set(block) != cls.OUTER_APPROX_KEYS:
+            return ["outer_approx must hold exactly "+", ".join(sorted(cls.OUTER_APPROX_KEYS))]
+        problems = [f"outer_approx {key} must be an int >= {least}"
+                    for key, least in (("iterations", 1), ("initial_tangents", 1), ("cuts_per_round", 1),
+                                       ("lp_rounds", 0), ("seed", 0)) if not count(key, least)]
+        if count("iterations", 1) and count("lp_rounds", 0) and block["lp_rounds"] >= block["iterations"]:
+            problems.append("outer_approx lp_rounds must leave at least one integer master")
+        if block["master_node_limit"] is not None and not count("master_node_limit", 1):
+            problems.append("outer_approx master_node_limit must be an int >= 1 or None")
+        if type(block["dispersion"]) is not bool:
+            problems.append("outer_approx dispersion must be a bool")
         return problems
 
     def _checked(self, inputs):
@@ -4548,18 +4655,25 @@ class TransportPortfolioSolve(PyomoSolve):
         m.charges = ConstraintList()
         m.wealth.add(m.mean == sum(float(c)*m.x[i, j] for i in active
                                    for j, c in enumerate(expected[i]) if c != 0))
+        # Which tangent each row is, per scenario (plain attributes, no component: the model is unchanged); the
+        # outer-approximation strategy (ADR-0303) activates only some of them in each master.
+        m._transport_envelope, m._transport_tangents = envelope, {}
+        m._transport_weights = [weight for _id, weight, _terms in scenarios]
         for s, (_id, _weight, terms) in enumerate(scenarios):
             m.wealth.add(m.W[s] == utility["w0"]+m.mean+sum(
                 float(c)*m.x[i, j] for i, row in terms.items() if i in active
                 for j, c in enumerate(row) if c != 0))
-            for j in envelope.live(*bounds[s]):
-                m.tangent.add(m.U[s] <= float(envelope.intercept[j])+float(envelope.slope[j])*m.W[s])
+            m._transport_tangents[s] = [
+                (j, m.tangent.add(m.U[s] <= float(envelope.intercept[j])+float(envelope.slope[j])*m.W[s]))
+                for j in envelope.live(*bounds[s])]
         spread = {}
+        m._transport_plan, m._transport_dispersion = plan, {}
         for i in active:
             if i in plan["rows"]:
                 # The charge on the chosen book: |cell_k . x - mean| at the group's K cells, S_g = 1.25 x their MAD.
                 cells = [sum(float(c)*m.x[i, j] for j, c in enumerate(row) if c != 0) for row in plan["rows"][i]]
-                spread[i] = plan["charge"][i].attach(m, cells, f"dispersion_{i}").cost
+                m._transport_dispersion[i] = plan["charge"][i].attach(m, cells, f"dispersion_{i}")
+                spread[i] = m._transport_dispersion[i].cost
         for name in names:
             live = [i for i in plan["members"][name] if i in active]
             if len(live) == 1:
@@ -4664,6 +4778,9 @@ class TransportPortfolioSolve(PyomoSolve):
         if (getattr(self, "_utility", None) is not None
                 and self.params.get("utility_solve", self.UTILITY_SOLVES[0]) == "relax_fix"):
             return self._solve_relax_fix(solver, model)
+        if (getattr(self, "_utility", None) is not None
+                and self.params.get("utility_solve") == "outer_approx"):
+            return self._solve_outer_approx(solver, model)
         if getattr(self, "_utility", None) is not None:
             model._transport_outcome, model._transport_bound_source = "direct", "solver"
         return self._solve_once(solver, model)
@@ -4857,6 +4974,300 @@ class TransportPortfolioSolve(PyomoSolve):
         return result
 
     @staticmethod
+    def _initial_tangents(envelope, live, count):
+        """The first master's rows of one scenario: the tangent at ``w0`` (cash is worth exactly zero) and ``count``
+        evenly spaced among the scenario's live tangents, by position (deterministic)."""
+        import numpy as np
+
+        if count >= len(live):
+            return set(live)
+        chosen = {live[int(k)] for k in np.round(np.linspace(0, len(live)-1, count))}
+        at_w0 = int(np.flatnonzero(envelope.knots == envelope.w0)[0])
+        return chosen | ({at_w0} if at_w0 in live else set())
+
+    def _master_quantities(self, model):
+        """The master's integer point as one quantity list per group (zero for a screened-out group)."""
+        from pyomo.environ import value
+
+        quantities = []
+        for i, g in enumerate(self._groups):
+            if i not in self._active:
+                quantities.append([0]*len(g["capacity"]))
+                continue
+            raw = [value(model.x[i, j]) for j in range(len(g["capacity"]))]
+            if any(not number_ok(v) or abs(v-round(v)) > 1e-5 for v in raw):
+                raise ValueError("nonintegral master point")
+            quantities.append([int(round(v)) for v in raw])
+        return quantities
+
+    @staticmethod
+    def _dispersion_cut(measure, payoff, quantities):
+        """Return ``(D, g)``: a book's deviation ``D`` (:class:`_AtomDeviation`) and a subgradient row ``g`` with
+        ``D(y) >= g . y`` for EVERY book ``y`` of the group and equality at ``quantities``.
+
+        ``D`` is the largest of the pieces ``sum_k c_k |v_k(y)|`` (nonnegative ``c``, ``v(y) = A y - p . A y`` the
+        payoff's deviation at each atom, ``A`` the atoms' payoff rows): the mean absolute deviation and the tails' and
+        single atoms' Cauchy-Schwarz bounds. With ``s = sign(v(quantities))`` and ``c`` the largest piece there,
+        ``sum_k c_k s_k v_k(y) <= sum_k c_k |v_k(y)| <= D(y)`` for every ``y`` (a valid cut), and equals ``D`` at
+        ``quantities``. ``g = A' (c s) - (sum c s) A' p``.
+        """
+        import numpy as np
+
+        A, p, price = np.asarray(payoff, dtype=float), measure.masses, measure.price
+        m = len(p)
+        cells = A @ np.asarray(quantities, dtype=float)
+        v = cells-float(p @ cells)
+        t, s = np.abs(v), np.sign(v)
+        pieces = [p.copy()]
+        low, high = np.cumsum(p), np.cumsum(p[::-1])
+        for j in range(m-1):
+            c = np.zeros(m)
+            c[:j+1] = p[:j+1]/(price*np.sqrt(low[j]))
+            pieces.append(c)
+            c = np.zeros(m)
+            c[m-1-j:] = p[m-1-j:]/(price*np.sqrt(high[j]))
+            pieces.append(c)
+        for k in range(1, m-1):
+            c = np.zeros(m)
+            c[k] = np.sqrt(p[k])/price
+            pieces.append(c)
+        values = [float(c @ t) for c in pieces]
+        best = pieces[int(np.argmax(values))]
+        weights = best*s
+        return max(values), A.T @ weights-float(weights.sum())*(A.T @ p)
+
+    def _outer_cuts(self, model, active, quantities, limit):
+        """The rows the master's loaded point violates most, at most ``limit`` of them (multi-cut), in objective units.
+
+        A tangent cut is the envelope's least tangent at the master's wealth ``W[s]`` (a row of the program), weighed
+        ``w0 x weight x (U[s] - tangent(W[s]))``. A dispersion cut (when the master holds no dispersion epigraph) is
+        :meth:`_dispersion_cut` at the master's book, weighed by how far it would raise its name's charge lines. The
+        largest are taken, ties by kind and index. Every cut is valid for the whole program, so every master stays a
+        relaxation of it.
+        """
+        import numpy as np
+        from pyomo.environ import value
+
+        envelope, w0, plan = model._transport_envelope, self._utility["w0"], model._transport_plan
+        found = []
+        for s, rows in model._transport_tangents.items():
+            wealth, height = value(model.W[s], exception=False), value(model.U[s], exception=False)
+            if not number_ok(wealth) or not number_ok(height):
+                continue
+            j, line = min(((j, float(envelope.intercept[j])+float(envelope.slope[j])*wealth) for j, _row in rows),
+                          key=lambda pair: (pair[1], pair[0]))
+            weighed = w0*model._transport_weights[s]*(height-line)
+            if weighed > self.OUTER_APPROX_CUT_TOLERANCE and j not in active["tangent"][s]:
+                found.append((-weighed, 0, s, j, None))
+        if active["dispersion"] is not None:
+            held = {i: value(block.aux[len(block.aux)-1], exception=False)
+                    for i, block in model._transport_dispersion.items()}
+            for name, indices in sorted(plan["members"].items()):
+                live = [i for i in indices if i in model._transport_dispersion]
+                if not live or any(not number_ok(held[i]) for i in live):
+                    continue
+                lines = plan["lines"][name]
+                master = sum(plan["charge"][i].price*held[i] for i in live)
+                for i in live:
+                    measure = plan["charge"][i]
+                    deviation, row = self._dispersion_cut(measure, plan["rows"][i], quantities[i])
+                    shortfall = measure.price*(deviation-held[i])
+                    weighed = lines.value(master+max(0., shortfall))-lines.value(master)
+                    if shortfall > 0 and weighed > self.OUTER_APPROX_CUT_TOLERANCE:
+                        found.append((-weighed, 1, i, len(active["dispersion"][i]), np.asarray(row, dtype=float)))
+        return [(kind, key, j, row) for _w, kind, key, j, row in sorted(found, key=lambda f: f[:4])[:limit]]
+
+    def _cash_start(self, model):
+        """Load the cash point (nothing held, every scenario wealth at ``w0``): feasible for every master."""
+        from pyomo.environ import Var
+
+        for variable in model.component_data_objects(Var, active=True):
+            if not variable.fixed:
+                variable.set_value(self._utility["w0"] if variable.parent_component() is model.W else 0)
+
+    def _repair_start(self, model, active, quantities):
+        """Keep the master's point feasible for the next master: each ``U`` under its active rows, each held
+        dispersion at the book's own (at least every cut), each charge on its lines."""
+        from pyomo.environ import value
+
+        envelope, plan = model._transport_envelope, model._transport_plan
+        for s in model._transport_tangents:
+            wealth = value(model.W[s])
+            model.U[s].set_value(min(float(envelope.intercept[j])+float(envelope.slope[j])*wealth
+                                     for j in active["tangent"][s]))
+        if active["dispersion"] is None:
+            return
+        for i, block in model._transport_dispersion.items():
+            block.aux[len(block.aux)-1].set_value(plan["charge"][i].deviation(plan["rows"][i] @ quantities[i]))
+        for name, indices in plan["members"].items():
+            live = [i for i in indices if i in model._transport_dispersion]
+            if not live:
+                continue
+            total = sum(value(model._transport_dispersion[i].cost) for i in live)
+            if name in model.total:
+                model.total[name].set_value(total)
+            model.charge[name].set_value(plan["lines"][name].value(total))
+
+    def _solve_outer_approx(self, solver, model):
+        """The outer-approximation strategy (ADR-0303): masters with few epigraph rows, cut at their points.
+
+        The objective is ``w0 x sum_s weight_s x U[s]`` (``U[s]`` under every live tangent of scenario ``s``) less
+        the names' charges (each on its lines over the summed dispersions, each dispersion ``1.25 x D`` of its book
+        through its group's epigraph). A master keeps every row over the actions, the wealths, the charge lines,
+        and only some tangent rows; with ``dispersion`` it also drops every group's epigraph rows, its dispersion
+        then held only by subgradient cuts (:meth:`_dispersion_cut`, valid for every book). Dropping rows and
+        adding valid cuts only enlarges the feasible set, so a master's optimum, and any bound HiGHS reports for it,
+        is at least the program's (fewer tangents over-estimate a concave utility, fewer pieces under-estimate a
+        convex charge): the least master bound is a valid upper bound on the whole program. A master's integer
+        point satisfies every row over the actions, so it is feasible for the program; :class:`TransportActionScore`
+        values it exactly under the program's envelope and charges (a lower bound). After each master the most
+        violated rows at its point are added (:meth:`_outer_cuts`) and the next master starts from that point,
+        repaired to stay feasible (:meth:`_repair_start`). The first ``lp_rounds`` masters are LP relaxations:
+        their cuts are valid and their optimum bounds the integer master, so they only seed rows. The loop stops
+        certified once the best incumbent is within the allowance (``max(absolute_gap, relative_gap x
+        |incumbent|)``, the test :meth:`extract` applies) of the best bound; at the declared iterations, at the
+        time limit, or when an integer master's point violates nothing (stalled: the master's own gap is what
+        remains) it stops uncertified, the best incumbent under the best bound, with the termination labels a
+        declined certification carries. No incumbent at all is a no-incumbent timeout. On return every row is
+        active again and every cut removed (the model is the one :meth:`build_model` built) and the incumbent is
+        priced with its actions fixed (:meth:`_price_duals`), so the model's value is the program's at it.
+        Iterations, node limits and the seed are deterministic; the time limit is not.
+        """
+        import math as _math
+        from types import SimpleNamespace
+        from pyomo.environ import ConstraintList
+
+        config = self.params["outer_approx"]
+        rows, envelope = model._transport_tangents, model._transport_envelope
+        budget = float(self.params.get("solver_options", {}).get("time_limit", 0) or 0)
+        clock = time.perf_counter()
+        remaining = lambda: None if not budget else max(1., budget-(time.perf_counter()-clock))
+        lookup = {s: dict(lst) for s, lst in rows.items()}
+        active = {"tangent": {s: self._initial_tangents(envelope, [j for j, _row in lst], config["initial_tangents"])
+                              for s, lst in rows.items()},
+                  "dispersion": {i: [] for i in model._transport_dispersion} if config["dispersion"] else None}
+        for s, lst in rows.items():
+            for j, row in lst:
+                (row.activate if j in active["tangent"][s] else row.deactivate)()
+        model.outer_cuts = ConstraintList()
+        if config["dispersion"]:
+            for block in model._transport_dispersion.values():
+                block.rows.deactivate()
+        scorer = TransportActionScore(self._program(), {"parity_tolerance": max(self.params["parity_tolerance"], 1e-6)})
+        bound, incumbent, best, decided = _math.inf, None, None, None
+        history, added, outcome = [], 0, "iterations"
+        pinned = {"random_seed": config["seed"]}
+        if config["master_node_limit"] is not None:
+            pinned["mip_max_nodes"] = config["master_node_limit"]
+        saved = {key: solver.options.get(key) for key in pinned}
+        solver.options.update(pinned)
+        lp_left, start_from_cash = config["lp_rounds"], True
+        try:
+            for iteration in range(1, config["iterations"]+1):
+                quantities = None
+                if lp_left:
+                    lp_left -= 1
+                    kind, relaxed = "lp", self._relaxation(solver, model, remaining())
+                    master, point = (None, False) if relaxed is None else (relaxed[0], True)
+                    if point:
+                        quantities = [[0.]*len(g["capacity"]) if i not in self._active else
+                                      [float(model.x[i, j].value or 0.) for j in range(len(g["capacity"]))]
+                                      for i, g in enumerate(self._groups)]
+                else:
+                    kind = "mip"
+                    if start_from_cash:
+                        self._cash_start(model)
+                    with self._search_gaps(solver):
+                        result = self._solve_once(solver, model, remaining())
+                    master = SolveRecord._bound(result, -1)
+                    point = not getattr(model, "_transport_no_incumbent", False)
+                    if point:
+                        quantities = self._master_quantities(model)
+                        scored = float(scorer.value(quantities)["value"])
+                        if incumbent is None or scored > incumbent:
+                            incumbent, best, decided = scored, quantities, iteration
+                if master is not None:
+                    bound = min(bound, float(master))
+                cuts = self._outer_cuts(model, active, quantities, config["cuts_per_round"]) if point else []
+                for kind_of, key, j, row in cuts:
+                    if kind_of == 0:
+                        active["tangent"][key].add(j)
+                        lookup[key][j].activate()
+                    else:
+                        block = model._transport_dispersion[key]
+                        active["dispersion"][key].append(j)
+                        model.outer_cuts.add(block.aux[len(block.aux)-1] >= sum(
+                            float(c)*model.x[key, n] for n, c in enumerate(row) if c != 0))
+                added += len(cuts)
+                history.append({"master": kind, "bound": bound if _math.isfinite(bound) else None,
+                                "incumbent": incumbent, "cuts": len(cuts)})
+                if incumbent is not None and bound-incumbent <= max(
+                        self.params["absolute_gap"], self.params["relative_gap"]*abs(incumbent)):
+                    outcome = "certified"
+                    break
+                if kind == "lp":
+                    # A relaxed point violating nothing is the relaxation's own optimum: the integer masters follow.
+                    lp_left = lp_left if (point and cuts) else 0
+                    continue
+                if not point:
+                    # An integer master with no point: out of time, or its node limit found none (no row to add).
+                    outcome = ("time" if budget and time.perf_counter()-clock >= budget
+                               else "failed" if incumbent is None else "stalled")
+                    break
+                if not cuts:
+                    outcome = "stalled"
+                    break
+                if budget and time.perf_counter()-clock >= budget:
+                    outcome = "time"
+                    break
+                start_from_cash = False
+                self._repair_start(model, active, quantities)
+        finally:
+            for key, old in saved.items():
+                if old is None:
+                    solver.options.pop(key, None)
+                else:
+                    solver.options[key] = old
+            for lst in rows.values():
+                for _j, row in lst:
+                    row.activate()
+            for block in model._transport_dispersion.values():
+                block.rows.activate()
+            model.del_component(model.outer_cuts)
+        bound = bound if _math.isfinite(bound) else None
+        gap = None if incumbent is None or bound is None else bound-incumbent
+        model._transport_outer = {
+            "iterations": len(history), "bound": bound, "incumbent": incumbent, "gap": gap,
+            "relative_gap": None if gap is None else gap/max(abs(bound), _GAP_FLOOR),
+            "cuts_added": added, "outcome": outcome, "decided_at": decided, "history": history}
+        model._transport_bound, model._transport_outside, model._transport_declined = bound, None, False
+        model._transport_bound_source = "none" if bound is None else "outer_approx"
+        self.log.info("outer approximation: %d masters, %d cuts, outcome %s, decided at %s, %.0fs, peak rss %.2f GB",
+                      len(history), added, outcome, decided, time.perf_counter()-clock, self._peak_rss())
+        if incumbent is None:
+            from pyomo.environ import Var
+            for variable in model.component_data_objects(Var):
+                variable.set_value(None)
+            model._transport_no_incumbent = True
+            model._transport_outcome = "outer_approx_failed"
+            return SimpleNamespace(solver=SimpleNamespace(status="aborted", termination_condition="maxTimeLimit"),
+                                   problem=[SimpleNamespace(upper_bound=bound, lower_bound=None)], solution=())
+        for i in self._active:
+            for j, quantity in enumerate(best[i]):
+                model.x[i, j].set_value(quantity)
+        try:
+            self._price_duals(model)   # every row active: the continuous variables are the program's at the incumbent
+        finally:
+            for variable in model.x.values():
+                variable.unfix()
+        model._transport_no_incumbent = False
+        certified = outcome == "certified"
+        model._transport_outcome = "outer_approx_certified" if certified else "outer_approx_budget"
+        return SimpleNamespace(solver=SimpleNamespace(status="ok" if certified else "aborted",
+                                                      termination_condition="optimal" if certified else "maxTimeLimit"),
+                               problem=[SimpleNamespace(upper_bound=bound, lower_bound=None)], solution=(1,))
+
+    @staticmethod
     def _peak_rss():
         """This process's peak resident set in GB (0 where the platform does not report it)."""
         try:
@@ -4877,7 +5288,13 @@ class TransportPortfolioSolve(PyomoSolve):
     def _build_solve_record(solver, model, results, name, seconds):
         """Do not represent an unloaded warm start as a native incumbent; a relaxation bound tightens the record's."""
         from dataclasses import replace
-        record = PyomoSolve._build_solve_record(solver, model, results, name, seconds)
+        outer = getattr(model, "_transport_outer", None)
+        if outer is None:
+            record = PyomoSolve._build_solve_record(solver, model, results, name, seconds)
+        else:
+            # The loop's last HiGHS solve was a master with rows inactive and another point: its row slacks are not
+            # this model's, so every row is evaluated through pyomo at the incumbent.
+            record = SolveRecord.from_solve(model, results, name, seconds)
         if getattr(model, "_transport_no_incumbent", False):
             record = replace(record, objective=None, gap=None, binding=())
         relaxed = getattr(model, "_transport_bound", None)
@@ -4895,9 +5312,11 @@ class TransportPortfolioSolve(PyomoSolve):
                 record = replace(record, termination="maxTimeLimit", status="aborted")
         outcome = getattr(model, "_transport_outcome", None)
         if outcome is not None:
-            record = _UtilitySolveRecord(**{name: getattr(record, name) for name in SolveRecord.field_names()},
-                                         strategy_outcome=outcome,
-                                         bound_source=getattr(model, "_transport_bound_source", "none"))
+            import copy
+            extra = {} if outer is None else {"outer": copy.deepcopy(outer)}
+            record = (_UtilitySolveRecord if outer is None else _OuterApproxSolveRecord)(
+                **{name: getattr(record, name) for name in SolveRecord.field_names()},
+                strategy_outcome=outcome, bound_source=getattr(model, "_transport_bound_source", "none"), **extra)
         return record
 
     def _timeout_reason(self, certificate, value):
@@ -4997,10 +5416,16 @@ class TransportPortfolioSolve(PyomoSolve):
             program["utility"] = self._utility
         return program
 
-    @staticmethod
-    def _certificate_fields(utility):
+    def _record_class(self, utility):
+        """The record a certificate is read as: a dollar program's, a utility program's, or (ADR-0303) one solved by
+        outer approximation, which carries the loop's account as well."""
+        if not utility:
+            return SolveRecord
+        return _OuterApproxSolveRecord if self.params.get("utility_solve") == "outer_approx" else _UtilitySolveRecord
+
+    def _certificate_fields(self, utility):
         """The keys of a certificate: a utility program's carries ``strategy_outcome`` and ``bound_source`` too."""
-        return set((_UtilitySolveRecord if utility else SolveRecord).field_names())-{"binding"}
+        return set(self._record_class(utility).field_names())-{"binding"}
 
     def _cash(self):
         """Return the audited cash selection: nothing held, nothing reserved, nothing earned."""
@@ -5118,7 +5543,7 @@ class TransportPortfolioSolve(PyomoSolve):
                 or not isinstance(certificates[0], dict) or set(certificates[0]) != fields):
             raise RecordedCheckRefusal("incomplete recorded certificate", "certificate_fields", "certificate")
         certificate = certificates[0]
-        if "strategy_outcome" in fields and not _UtilitySolveRecord(
+        if "strategy_outcome" in fields and not self._record_class(True)(
                 **{**certificate, "binding": ()}).coherent():
             raise RecordedCheckRefusal("contradictory recorded certificate", "certificate_strategy", "certificate")
         if certificate["solver"] != self.params.get("solver", DEFAULT_SOLVER):
@@ -5164,7 +5589,7 @@ class TransportPortfolioSolve(PyomoSolve):
                 for j, quantity in enumerate(group):
                     model.x[i, j].set_value(quantity)
             self._price_duals(model)
-        self.solve_record = (_UtilitySolveRecord if self._utility is not None else SolveRecord)(
+        self.solve_record = self._record_class(self._utility is not None)(
             **{**certificate, "binding": ()})
         return self.extract(model, None)
 
@@ -5213,7 +5638,7 @@ class TransportPortfolioSolve(PyomoSolve):
         fields = self._certificate_fields(isinstance(inputs, dict) and inputs.get("utility") is not None)
         if not isinstance(certificate, dict) or set(certificate) != fields:
             raise ValueError("incomplete recorded certificate")
-        if "strategy_outcome" in fields and not _UtilitySolveRecord(**{**certificate, "binding": ()}).coherent():
+        if "strategy_outcome" in fields and not self._record_class(True)(**{**certificate, "binding": ()}).coherent():
             raise ValueError("contradictory recorded certificate")
         statuses = (("ok", "warning") if certificate["termination"] == "optimal"
                     else ("ok", "warning", "aborted")

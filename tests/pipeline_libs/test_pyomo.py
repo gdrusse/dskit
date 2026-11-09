@@ -6351,3 +6351,243 @@ def test_transport_portfolio_group_screen_keep_retains_the_largest_relaxed_value
                 {"group_screen": "none", "group_screen_keep": 1}):
         assert TransportPortfolioSolve.validate_params({**_screen_params("lp"), **bad})
     assert not TransportPortfolioSolve.validate_params({**_screen_params("lp"), "group_screen_keep": 3})
+
+
+# --- the outer-approximation utility strategy (ADR-0303) ---------------------------------------------------------------
+
+#: A loop that converges on the fixtures: one row per scenario at the start, a few cuts a round, no LP rounds.
+OUTER = {"iterations": 40, "initial_tangents": 1, "cuts_per_round": 2, "lp_rounds": 0, "master_node_limit": None,
+         "seed": 0, "dispersion": False}
+
+
+def _outer_params(**outer):
+    return _strategy_params("outer_approx", outer_approx={**OUTER, **outer})
+
+
+def _three_scenario_program():
+    """The hedged program with a second, milder move: three scenarios, so the cuts are spread over them."""
+    dip = {"id": "d", "weight": .15, "terms": {"a": [-120.], "b": [-90.], "hedge": [150.]}}
+    crash = {"id": "m", "weight": .05, "terms": {"a": [-250.], "b": [-250.], "hedge": [600.]}}
+    hedge = {**_bet_group("hedge", p=.5, credit=-20., loss=0., capacity=50), "reserve_rows": [[20.]]}
+    return _kelly_program([_bet_group("a"), _bet_group("b", p=.8), hedge], fraction=.5,
+                          joint=[{**QUIET, "weight": .8}, dip, crash])
+
+
+@pytest.mark.parametrize("make", [_hedged_program, _three_scenario_program,
+                                  lambda: _kelly_program([_bet_group("a")], fraction=.25)])
+@pytest.mark.parametrize("lp_rounds", [0, 3])
+@pytest.mark.parametrize("dispersion", [False, True])
+def test_outer_approx_certifies_the_optimum_the_monolithic_program_certifies(make, lp_rounds, dispersion):
+    """Same selection, same value, a bound valid for the whole program, the same model dimensions: the decomposition
+    certifies the program relax_fix certifies, from masters that began with one tangent row per scenario (and, with
+    dispersion, no dispersion epigraph at all)."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    program = make()
+    mono = TransportPortfolioSolve("mono", _strategy_params("relax_fix")).run(None, program)["selection"]
+    outer = TransportPortfolioSolve("outer", _outer_params(lp_rounds=lp_rounds, dispersion=dispersion)).run(
+        None, program)["selection"]
+    assert "timeout" not in mono and "timeout" not in outer
+    assert outer["quantities"] == mono["quantities"] and outer["value"] == pytest.approx(mono["value"], abs=1e-6)
+    certificate = outer["certificates"][0]
+    assert (certificate["strategy_outcome"], certificate["bound_source"]) == ("outer_approx_certified", "outer_approx")
+    assert certificate["termination"] == "optimal" and certificate["bound"] >= mono["value"]-1e-6
+    assert certificate["variables"] == mono["certificates"][0]["variables"], "every tangent row is back: the same model"
+    assert certificate["constraints"] == mono["certificates"][0]["constraints"]
+    loop = certificate["outer"]
+    assert loop["outcome"] == "certified" and loop["bound"] == certificate["bound"]
+    assert loop["incumbent"] == pytest.approx(outer["value"], abs=1e-6) and 1 <= loop["decided_at"] <= loop["iterations"]
+    assert loop["cuts_added"] == sum(h["cuts"] for h in loop["history"])
+    kinds = [h["master"] for h in loop["history"]]
+    assert kinds[0] == ("lp" if lp_rounds else "mip") and kinds[-1] == "mip", "LP rounds first, an integer master last"
+    assert kinds.count("lp") <= lp_rounds and kinds == sorted(kinds), "no LP master after an integer one"
+
+
+@pytest.mark.parametrize("dispersion", [False, True])
+def test_outer_approx_needs_cuts_and_its_bounds_are_monotone_and_valid(dispersion):
+    """One row per scenario over-estimates the envelope: the first master's bound is above the optimum, the cuts bring
+    it down. The running bound never rises, the running incumbent never falls, and every bound covers the optimum."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    program = _three_scenario_program()
+    optimum = TransportPortfolioSolve("mono", _strategy_params("relax_fix")).run(None, program)["selection"]["value"]
+    outer = TransportPortfolioSolve("outer", _outer_params(cuts_per_round=1, dispersion=dispersion)).run(
+        None, program)["selection"]
+    loop = outer["certificates"][0]["outer"]
+    assert loop["iterations"] > 2 and loop["cuts_added"] >= 2, "the fixture needs several masters"
+    bounds = [h["bound"] for h in loop["history"]]
+    found = [h["incumbent"] for h in loop["history"] if h["incumbent"] is not None]
+    assert bounds[0] > optimum+1., "the first master over-estimates the utility"
+    assert all(b2 <= b1 for b1, b2 in zip(bounds, bounds[1:])), "the upper bound is non-increasing"
+    assert all(i2 >= i1 for i1, i2 in zip(found, found[1:])), "the incumbent is non-decreasing"
+    assert all(b >= optimum-1e-6 for b in bounds), "every master bounds the whole program"
+    assert all(i <= optimum+1e-6 for i in found), "every incumbent is a feasible point of the program"
+    assert all(h["cuts"] <= 1 for h in loop["history"]), "cuts_per_round caps each round"
+
+
+def test_a_master_without_the_dispersion_epigraphs_is_a_looser_relaxation_cut_back_to_the_same_optimum(monkeypatch):
+    """With dispersion the first master holds no dispersion row (its charge is free to be zero), so its bound is at
+    least the tangent-only master's; the subgradient cuts bring it to the same certified optimum."""
+    from pyomo.environ import Constraint
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    program = _three_scenario_program()
+    rows, original = [], TransportPortfolioSolve._solve_once
+
+    def spy(self, solver, model, time_limit=None):
+        rows.append(sum(1 for _ in model.component_data_objects(Constraint, active=True)))
+        return original(self, solver, model, time_limit)
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", spy)
+    runs = {}
+    for dispersion in (False, True):
+        rows.clear()
+        selection = TransportPortfolioSolve("o", _outer_params(dispersion=dispersion)).run(None, program)["selection"]
+        runs[dispersion] = (selection, rows[0], selection["certificates"][0]["outer"])
+    (plain, plain_rows, plain_loop), (cut, cut_rows, cut_loop) = runs[False], runs[True]
+    assert cut_rows < plain_rows, "the first master leaves every dispersion epigraph out"
+    assert cut_loop["history"][0]["bound"] >= plain_loop["history"][0]["bound"]-1e-6
+    assert cut["quantities"] == plain["quantities"] and cut["value"] == pytest.approx(plain["value"], abs=1e-6)
+    assert cut["certificates"][0]["constraints"] == plain["certificates"][0]["constraints"], "every cut is removed"
+
+
+def test_a_dispersion_cut_is_tight_at_its_book_and_below_the_deviation_of_every_other():
+    """The cut's validity is the master's bound: ``D(y) >= g . y`` for every book, equality at the book it was cut at."""
+    import numpy as np
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve, _AtomDeviation
+
+    rng = np.random.default_rng(3)
+    masses = rng.dirichlet(np.ones(7))
+    measure = _AtomDeviation(masses, TransportPortfolioSolve.SD_PER_MAD)
+    payoff = rng.normal(0., 100., (7, 5))
+    for _ in range(20):
+        q = rng.integers(0, 9, 5)
+        deviation, row = TransportPortfolioSolve._dispersion_cut(measure, payoff, q)
+        assert deviation == pytest.approx(measure.deviation(payoff @ q), rel=1e-12, abs=1e-9)
+        assert float(row @ q) == pytest.approx(deviation, rel=1e-9, abs=1e-9)
+        for y in rng.normal(0., 5., (50, 5)):
+            assert float(row @ y) <= measure.deviation(payoff @ y)+1e-9
+
+
+def test_an_exhausted_outer_approx_budget_is_an_honest_timeout_with_its_incumbent():
+    """One master and no more: the incumbent stands under that master's (loose, valid) bound as a gap timeout, never
+    certified; the recorded and derived routes replay it; outside `return` mode it is refused."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    program = _three_scenario_program()
+    optimum = TransportPortfolioSolve("mono", _strategy_params("relax_fix")).run(None, program)["selection"]["value"]
+    params = _outer_params(iterations=1)
+    selection = TransportPortfolioSolve("budget", params).run(None, program)["selection"]
+    assert selection["timeout"] == "gap" and selection["candidate"] is not None
+    certificate = selection["certificates"][0]
+    assert (certificate["strategy_outcome"], certificate["bound_source"]) == ("outer_approx_budget", "outer_approx")
+    assert (certificate["termination"], certificate["status"]) == ("maxTimeLimit", "aborted")
+    assert certificate["outer"]["outcome"] == "iterations" and certificate["outer"]["iterations"] == 1
+    candidate = selection["candidate"]
+    assert candidate["bound"] >= optimum-1e-6 and candidate["value"] <= optimum+1e-6
+    assert candidate["bound"]-candidate["value"] > 1e-3, "the gap is real: nothing is certified"
+    envelope = {k: v for k, v in selection.items() if k != "certificates"}
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in selection["certificates"]]
+    replayed = TransportPortfolioSolve("replay", params)._recorded(program, envelope, certificates)
+    assert {k: v for k, v in replayed.items() if k != "certificates"} == envelope
+    derived = TransportPortfolioSolve("derived", params).derived(
+        program, TransportPortfolioSolve.actions(selection), certificates)["selection"]
+    assert derived["timeout"] == "gap" and derived["candidate"]["quantities"] == candidate["quantities"]
+    assert derived["certificates"][0]["outer"] == certificate["outer"]
+    with pytest.raises(ValueError, match="uncertified"):
+        TransportPortfolioSolve("raise", {**params, "timeout_policy": "raise"}).run(None, program)
+
+
+def test_an_outer_approx_week_replays_through_the_recorded_and_derived_routes():
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    program = _hedged_program()
+    params = _outer_params()
+    selection = TransportPortfolioSolve("outer", params).run(None, program)["selection"]
+    recorded = {k: v for k, v in selection.items() if k != "certificates"}
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in selection["certificates"]]
+    replayed = TransportPortfolioSolve("replay", params)._recorded(program, recorded, certificates)
+    assert {k: v for k, v in replayed.items() if k != "certificates"} == recorded
+    derived = TransportPortfolioSolve("derived", params).derived(
+        program, TransportPortfolioSolve.actions(selection), certificates)["selection"]
+    assert derived["quantities"] == selection["quantities"] and derived["value"] == pytest.approx(selection["value"])
+    assert derived["certificates"][0]["outer"] == selection["certificates"][0]["outer"]
+    forged = [{**certificates[0], "outer": {**certificates[0]["outer"], "outcome": "iterations"}}]
+    with pytest.raises(ValueError, match="contradictory"):
+        TransportPortfolioSolve("forged", params)._recorded(program, recorded, forged)
+    relaxed = [{**certificates[0], "outer": {**certificates[0]["outer"], "bound": certificates[0]["bound"]*1.5}}]
+    with pytest.raises(ValueError, match="contradictory"):
+        TransportPortfolioSolve("forged", params).derived(program, TransportPortfolioSolve.actions(selection), relaxed)
+    with pytest.raises(ValueError):
+        TransportPortfolioSolve("other", _strategy_params("relax_fix"))._recorded(program, recorded, certificates)
+
+
+def test_an_outer_approx_loop_without_any_integer_point_is_a_no_incumbent_timeout(monkeypatch):
+    from pyomo.environ import Var
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    original = TransportPortfolioSolve._solve_once
+
+    def empty(self, solver, model, time_limit=None):
+        result = original(self, solver, model, time_limit)
+        model._transport_no_incumbent = True
+        for variable in model.component_data_objects(Var):
+            variable.set_value(None)
+        return result
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", empty)
+    program = _hedged_program()
+    selection = TransportPortfolioSolve("empty", _outer_params()).run(None, program)["selection"]
+    assert selection["timeout"] == "no_incumbent" and selection["candidate"] is None
+    certificate = selection["certificates"][0]
+    assert certificate["strategy_outcome"] == "outer_approx_failed" and certificate["outer"]["outcome"] == "failed"
+    assert certificate["outer"]["incumbent"] is None and certificate["outer"]["decided_at"] is None
+    replayed = TransportPortfolioSolve("replay", _outer_params())._recorded(
+        program, {k: v for k, v in selection.items() if k != "certificates"}, selection["certificates"])
+    assert replayed["timeout"] == "no_incumbent"
+
+
+def test_outer_approx_pins_the_seed_and_node_limit_on_masters_and_restores_the_options(monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    seen, original = [], TransportPortfolioSolve._solve_once
+
+    def spy(self, solver, model, time_limit=None):
+        seen.append((solver.options.get("random_seed"), solver.options.get("mip_max_nodes"),
+                     solver.options["mip_rel_gap"], solver))
+        return original(self, solver, model, time_limit)
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", spy)
+    params = _outer_params(seed=7, master_node_limit=50)
+    params["solver_options"] = {**params["solver_options"], "mip_rel_gap": .05}
+    node = TransportPortfolioSolve("pins", params)
+    node.run(None, _hedged_program())
+    assert seen and all(s[:3] == (7, 50, TransportPortfolioSolve.UTILITY_SEARCH_REL_GAP) for s in seen), \
+        "every integer master: the seed, the node limit and the strategy's own tight gap"
+    solver = seen[0][3]
+    assert "random_seed" not in solver.options and "mip_max_nodes" not in solver.options
+    assert solver.options["mip_rel_gap"] == .05, "the document's options are restored"
+
+
+@pytest.mark.parametrize("change", [
+    {"outer_approx": None},
+    {"outer_approx": {**OUTER, "iterations": 0}},
+    {"outer_approx": {**OUTER, "iterations": 2.}},
+    {"outer_approx": {**OUTER, "initial_tangents": 0}},
+    {"outer_approx": {**OUTER, "cuts_per_round": 0}},
+    {"outer_approx": {**OUTER, "lp_rounds": -1}},
+    {"outer_approx": {**OUTER, "lp_rounds": 40}},     # no integer master would remain
+    {"outer_approx": {**OUTER, "master_node_limit": 0}},
+    {"outer_approx": {**OUTER, "master_node_limit": 10.}},
+    {"outer_approx": {**OUTER, "seed": -1}},
+    {"outer_approx": {k: v for k, v in OUTER.items() if k != "seed"}},
+    {"outer_approx": {**OUTER, "extra": 1}},
+    {"outer_approx": {**OUTER, "dispersion": 1}},
+    {"solver": "glpk"},
+    {"utility_solve": "relax_fix"},                    # the block without the strategy
+])
+def test_a_malformed_outer_approx_configuration_is_refused(change):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params = {**_outer_params(), **change}
+    if change == {"outer_approx": None}:
+        params.pop("outer_approx")
+    assert TransportPortfolioSolve.validate_params(params)
+    assert not TransportPortfolioSolve.validate_params(_outer_params())

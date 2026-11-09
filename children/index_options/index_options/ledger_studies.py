@@ -1386,6 +1386,11 @@ class WeeklyOptionPortfolioStudy:
         rule and that wealth only. A kelly block may add max_groups (int >= 1,
         ADR-0301): after the lp screen only that many groups, the ones with
         the largest standalone relaxed value, enter the joint growth program.
+        It may add outer_approx (ADR-0303; iterations, initial_tangents,
+        cuts_per_round, lp_rounds, master_node_limit, seed): the program is
+        solved by outer approximation instead of relax_fix, certified only
+        when the best incumbent is within the gap of the least master bound,
+        and the week records the loop as kelly.outer.
         Optional method key sizer (ADR-0300, exclusive with kelly) keeps the
         method's dollar program as stage 1, unchanged (its books and leg
         ratios, under every cap it declares), and sizes the selected books
@@ -1432,7 +1437,19 @@ class WeeklyOptionPortfolioStudy:
                    "gap", "time_limit"}
     #: An optional kelly key (ADR-0301): ``max_groups`` keeps, of the ``lp`` screen's survivors, only that many with
     #: the largest standalone relaxed value before the joint growth program is built (the solver's group_screen_keep).
-    _KELLY_OPTIONAL_KEYS = {"max_groups", "accept_uncertified"}
+    _KELLY_OPTIONAL_KEYS = {"max_groups", "accept_uncertified", "outer_approx"}
+    #: ``outer_approx`` (ADR-0303): the growth program is solved by outer approximation (the solver's ``utility_solve``
+    #: ``outer_approx`` with this block, :attr:`TransportPortfolioSolve.OUTER_APPROX_KEYS`) instead of relax_fix: masters
+    #: holding few tangent rows per scenario, cut at their integer points, certified when the best incumbent is within
+    #: the gap of the least master bound. The week records the loop (``kelly.outer``); a budget that runs out first is
+    #: an uncertified week (``outer_approx_budget``), skipped, or traded under ``accept_uncertified``.
+    #: The strategy outcomes whose incumbent ``accept_uncertified`` trades: a declined certification (relax_fix) and an
+    #: outer-approximation budget that ran out before the gap closed (ADR-0303).
+    _UNCERTIFIED_OUTCOMES = ("declined", "outer_approx_budget")
+    #: What ``kelly.outer`` keeps of the loop's account on the certificate (all of it: ``decided_at`` is the iteration
+    #: whose integer point was traded, ``history`` the running bound and incumbent per master).
+    _KELLY_OUTER_KEYS = ("iterations", "bound", "incumbent", "gap", "relative_gap", "cuts_added", "outcome",
+                         "decided_at", "history")
     #: ``accept_uncertified`` (ADR-0301 amendment): a week whose certification the relax_fix strategy DECLINED (a support
     #: incumbent exists, too many actions stayed free to certify within the limit) trades that incumbent instead of
     #: skipping; the gap to the relaxation's bound is recorded (``kelly.uncertified``). A failed relaxation still skips.
@@ -1756,6 +1773,7 @@ class WeeklyOptionPortfolioStudy:
         return (isinstance(kelly, dict) and set(kelly)-cls._KELLY_OPTIONAL_KEYS == cls._KELLY_KEYS
                 and ("max_groups" not in kelly or (type(kelly["max_groups"]) is int and kelly["max_groups"] >= 1))
                 and ("accept_uncertified" not in kelly or type(kelly["accept_uncertified"]) is bool)
+                and ("outer_approx" not in kelly or not cls._outer_approx_problems(kelly["outer_approx"]))
                 and number_ok(kelly["fraction"]) and 0 < kelly["fraction"] <= 1
                 and type(kelly["n_tangents"]) is int and kelly["n_tangents"] >= 2
                 and number_ok(kelly["core"]) and kelly["core"] > 1
@@ -1782,6 +1800,13 @@ class WeeklyOptionPortfolioStudy:
     def _kelly(method):
         """Return the method's validated kelly policy, None when undeclared."""
         return method.get("kelly")
+
+    @staticmethod
+    def _outer_approx_problems(block):
+        """Return the defects of a kelly ``outer_approx`` block: the solver's own check, one home (ADR-0303)."""
+        from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+        return TransportPortfolioSolve.outer_approx_problems(block)
 
     @classmethod
     def _sizer_valid(cls, method):
@@ -3028,6 +3053,10 @@ class WeeklyOptionPortfolioStudy:
                     if kelly is not None and "max_groups" in kelly:
                         # ADR-0301: after the lp screen keep only the best max_groups groups by standalone relaxed value.
                         solver_params = {**p["solver"], "group_screen_keep": kelly["max_groups"]}
+                    if kelly is not None and "outer_approx" in kelly:
+                        # ADR-0303: the growth program by outer approximation, the method's declared loop budget.
+                        solver_params = {**solver_params, "utility_solve": "outer_approx",
+                                         "outer_approx": dict(kelly["outer_approx"])}
                     solver = TransportPortfolioSolve("portfolio", solver_params)
                     program = {"groups": configured,
                                "caps": self._caps(self._limits(account, method, components, solve=True), metadata)}
@@ -3094,13 +3123,15 @@ class WeeklyOptionPortfolioStudy:
                         selection = solver._recorded(program, claimed["selection"], claimed["certificates"])
                     timed_out = "timeout" in selection
                     uncertified = None
+                    outcome = (selection.get("certificates") or [{}])[0].get("strategy_outcome")
                     if (timed_out and kelly is not None and kelly.get("accept_uncertified")
                             and selection.get("timeout") == "gap" and selection.get("candidate") is not None
-                            and (selection.get("certificates") or [{}])[0].get("strategy_outcome") == "declined"):
+                            and outcome in self._UNCERTIFIED_OUTCOMES):
                         # ADR-0301 amendment: the support incumbent of a declined certification is traded, and the
-                        # week says so. The envelope stays the recorded selection, so a replay re-derives the same choice.
+                        # week says so; ADR-0303: so is the best incumbent of an outer-approximation loop whose budget
+                        # ran out. The envelope stays the recorded selection, so a replay re-derives the same choice.
                         candidate = selection["candidate"]
-                        uncertified = {"outcome": "declined", "value": candidate.get("value"),
+                        uncertified = {"outcome": outcome, "value": candidate.get("value"),
                                        "bound": candidate.get("bound"), "gap": candidate.get("gap")}
                         timed_out = False
                     else:
@@ -3158,6 +3189,12 @@ class WeeklyOptionPortfolioStudy:
                         certificates = selection.get("certificates") or [{}]
                         record["kelly"]["solve"] = {k: certificates[0].get(k)
                                                     for k in ("strategy_outcome", "bound_source")}
+                        if "outer_approx" in kelly:
+                            # ADR-0303, only for a method that declares the key: the loop's account, read off the
+                            # certificate (so the recorded and derived routes write the same field); None with no solve.
+                            outer = certificates[0].get("outer")
+                            record["kelly"]["outer"] = None if outer is None else {
+                                k: copy.deepcopy(outer[k]) for k in self._KELLY_OUTER_KEYS}
                     if books:
                         pending = {"books": books, "components": components, "record": record}
                 decisions.append(record)
@@ -3631,6 +3668,8 @@ class MIOPacketCompare(StudyNode):
     #: What a comparison row keeps of each kelly decision's ``kelly`` record (``book``: the exact sd, the charge, their
     #: ratio and the fraction the charge applies, ADR-0299).
     _KELLY_ROW_KEYS = ("status", "dropped", "candidates", "screen", "book", "solve", "uncertified")
+    #: Kelly record keys a row keeps only when the decision carries them (ADR-0303's ``outer``): an earlier row is unchanged.
+    _KELLY_OPTIONAL_ROW_KEYS = ("outer",)
     #: What a comparison row keeps of each sizer decision's ``sizer`` record (ADR-0300): how the week was sized and how
     #: far the counts moved from the stage-1 selection.
     _SIZER_ROW_KEYS = ("status", "reserve_ratio", "stake_ratio", "value", "exact", "wealth_min", "reserve",
@@ -3681,7 +3720,10 @@ class MIOPacketCompare(StudyNode):
                     row["decisions"] = [{k: v for k, v in decision.items() if k in {
                         "date", "status", "candidate_books", "candidate_contracts", "eligible_by_pair",
                         "eligible_by_symbol", "fitted", "fallback", "refusals", "cdf_noise_repaired"}}
-                        | ({"kelly": {k: decision["kelly"].get(k) for k in self._KELLY_ROW_KEYS}}
+                        | ({"kelly": {k: decision["kelly"].get(k) for k in self._KELLY_ROW_KEYS}
+                                 # ADR-0303: the loop's account only where the method declared outer_approx.
+                                 | {k: decision["kelly"][k] for k in self._KELLY_OPTIONAL_ROW_KEYS
+                                    if k in decision["kelly"]}}
                            if "kelly" in decision else {})
                         | ({"sizer": {k: decision["sizer"].get(k) for k in self._SIZER_ROW_KEYS}}
                            if "sizer" in decision else {}) for decision in result["decisions"]]
