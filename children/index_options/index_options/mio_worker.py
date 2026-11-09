@@ -692,30 +692,11 @@ class MIOMethodWorker:
         ValueError
             Verification, intake or the solve refuses; nothing is written then.
         """
-        from .ledger_studies import MIOPacketStudy, WeeklyOptionPortfolioStudy
-        from .mio_contract import MIOStudyContract
+        from .ledger_studies import MIOPacketStudy
 
-        study, plan, manifest = self.verify()
-        d = study["domain"]
-        matches = [m for m in d["params"]["methods"] if m["id"] == self.spec["method"]]
-        if len(matches) != 1:
-            raise ValueError("unknown or ambiguous method: "+str(self.spec["method"]))
-        method = matches[0]
-        work = Path(self.spec["work_dir"])
-        work.mkdir(parents=True, exist_ok=True)
-        Path(self.spec["out"]).parent.mkdir(parents=True, exist_ok=True)
-        reuse = self.spec.get("reuse_root")
-        with Heartbeat(self._heartbeat, self.HEARTBEAT_SECONDS, self.HEARTBEAT_MAX_SECONDS):
-            bounded = MIOPacketInputs.read_bounded(  # a cold quote-index build is minutes of silence
-                study, plan["read_bounds"], MIOStudyContract.packet(study),
-                work / "artifacts" / "mio-quotes", Path(reuse) if reuse else None)
-        # The bundle may pin cut copies of the source files; the action file names the ORIGINAL pins the
-        # WSL document holds, which identity.json (a verified bundle file) records.
-        identity = json.loads((self.root / MIOMethodBundle.IDENTITY_FILE).read_text(encoding="utf-8"))
-        for data in bounded["inputs"].values():
-            data["chain_index"]["source_pin"] = identity["pins"]["chain"]
-        params = {**d["params"], "selected_pairs": d["pairs"], "clocks": bounded["clocks"]}
-        weekly = WeeklyOptionPortfolioStudy(params, bounded["inputs"], adjustments=bounded.get("adjustments"))
+        loaded = self.load()
+        study, manifest, identity = loaded["study"], loaded["manifest"], loaded["identity"]
+        plan, method, bounded, weekly = loaded["plan"], loaded["method"], loaded["bounded"], loaded["weekly"]
         started = time.perf_counter()
         try:
             result = weekly._method(method, lambda mid, done, total, status: self._progress(done, total, status))
@@ -743,6 +724,44 @@ class MIOMethodWorker:
         atomic_write(Path(str(out) + ".sha256"), (_sha256_bytes(raw) + "  " + out.name + "\n").encode("utf-8"))
         atomic_write(Path(str(out) + ".done"), b"done\n")
         return body
+
+    def load(self):
+        """Verify the bundle and read its bounded inputs into the study the worker would solve; solve nothing.
+
+        Returns
+        -------
+        dict
+            ``study`` (the verified bundled study), ``plan``, ``manifest``, ``identity``, ``method`` (the spec's
+            method), ``bounded`` (the bounded inputs) and ``weekly`` (the ``WeeklyOptionPortfolioStudy``). The
+            caller closes ``weekly``'s quote indexes. :meth:`run` and the HiGHS configuration sweep
+            (``index_options.highs_config``, ADR-0304) read a bundle through this one path.
+        """
+        from .ledger_studies import WeeklyOptionPortfolioStudy
+        from .mio_contract import MIOStudyContract
+
+        study, plan, manifest = self.verify()
+        d = study["domain"]
+        matches = [m for m in d["params"]["methods"] if m["id"] == self.spec["method"]]
+        if len(matches) != 1:
+            raise ValueError("unknown or ambiguous method: "+str(self.spec["method"]))
+        method = matches[0]
+        work = Path(self.spec["work_dir"])
+        work.mkdir(parents=True, exist_ok=True)
+        Path(self.spec["out"]).parent.mkdir(parents=True, exist_ok=True)
+        reuse = self.spec.get("reuse_root")
+        with Heartbeat(self._heartbeat, self.HEARTBEAT_SECONDS, self.HEARTBEAT_MAX_SECONDS):
+            bounded = MIOPacketInputs.read_bounded(  # a cold quote-index build is minutes of silence
+                study, plan["read_bounds"], MIOStudyContract.packet(study),
+                work / "artifacts" / "mio-quotes", Path(reuse) if reuse else None)
+        # The bundle may pin cut copies of the source files; the action file names the ORIGINAL pins the
+        # WSL document holds, which identity.json (a verified bundle file) records.
+        identity = json.loads((self.root / MIOMethodBundle.IDENTITY_FILE).read_text(encoding="utf-8"))
+        for data in bounded["inputs"].values():
+            data["chain_index"]["source_pin"] = identity["pins"]["chain"]
+        params = {**d["params"], "selected_pairs": d["pairs"], "clocks": bounded["clocks"]}
+        weekly = WeeklyOptionPortfolioStudy(params, bounded["inputs"], adjustments=bounded.get("adjustments"))
+        return {"study": study, "plan": plan, "manifest": manifest, "identity": identity, "method": method,
+                "bounded": bounded, "weekly": weekly}
 
 
 def main(argv=None):

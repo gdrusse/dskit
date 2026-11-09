@@ -77,6 +77,7 @@ from dskit.pipeline.runs import NODES_DIR, RESULT_FILE, WALKFORWARD_FILE, walk_f
 from dskit.pipeline.stats import lower_tail_mean, max_drawdown
 
 from .contracts import CONDOR_LEGS, STRUCTURES, structure_max_loss
+from . import highs_config as _highs_config
 from .nodes import CDFQuoteOptionSelect as _CDFQuoteOptionSelect
 from .nodes import (
     _iso_day,
@@ -1386,6 +1387,11 @@ class WeeklyOptionPortfolioStudy:
         rule and that wealth only. A kelly block may add max_groups (int >= 1,
         ADR-0301): after the lp screen only that many groups, the ones with
         the largest standalone relaxed value, enter the joint growth program.
+        It may add highs (ADR-0304): a block of HiGHS options from
+        highs_config.HIGHS_OPTIONS (random_seed required; no tolerance, gap,
+        time limit or thread knob; the document must declare threads 1 and
+        none of the block's options), merged into every solve of the week
+        and recorded as kelly.highs.
         Optional method key sizer (ADR-0300, exclusive with kelly) keeps the
         method's dollar program as stage 1, unchanged (its books and leg
         ratios, under every cap it declares), and sizes the selected books
@@ -1432,7 +1438,9 @@ class WeeklyOptionPortfolioStudy:
                    "gap", "time_limit"}
     #: An optional kelly key (ADR-0301): ``max_groups`` keeps, of the ``lp`` screen's survivors, only that many with
     #: the largest standalone relaxed value before the joint growth program is built (the solver's group_screen_keep).
-    _KELLY_OPTIONAL_KEYS = {"max_groups", "accept_uncertified"}
+    _KELLY_OPTIONAL_KEYS = {"max_groups", "accept_uncertified", "highs"}
+    #: ``highs`` (ADR-0304): a declared HiGHS options block (``highs_config.HIGHS_OPTIONS``, ``random_seed`` required, no
+    #: tolerance, gap, time limit or thread knob) merged into the week's solver options and recorded as ``kelly.highs``.
     #: ``accept_uncertified`` (ADR-0301 amendment): a week whose certification the relax_fix strategy DECLINED (a support
     #: incumbent exists, too many actions stayed free to certify within the limit) trades that incumbent instead of
     #: skipping; the gap to the relaxation's bound is recorded (``kelly.uncertified``). A failed relaxation still skips.
@@ -1672,6 +1680,12 @@ class WeeklyOptionPortfolioStudy:
                                  "solver_options mip_feasibility_tolerance is undeclared or above "
                                  f"{cls.KELLY_MIP_FEASIBILITY_TOLERANCE}, or parity_tolerance is below "
                                  f"{cls.KELLY_PARITY_FLOOR}, or group_screen is not {cls.KELLY_GROUP_SCREEN}")
+            if "kelly" in method and "highs" in method["kelly"]:
+                block = method["kelly"]["highs"]
+                problems = _highs_config.highs_problems(block)
+                problems = problems or _highs_config.document_problems(p["solver"], block)
+                if problems:
+                    raise ValueError("invalid kelly.highs block: "+"; ".join(problems))
         for symbol in symbols:
             problems = _AllQuotedOptionContext.validate_params({**p["bridge"], "symbol": symbol})
             if problems:
@@ -1782,6 +1796,29 @@ class WeeklyOptionPortfolioStudy:
     def _kelly(method):
         """Return the method's validated kelly policy, None when undeclared."""
         return method.get("kelly")
+
+    #: A callable ``(day, method, program, solver_params)`` handed each week's program just before it is decided
+    #: (solved, replayed or derived), or None. The HiGHS configuration sweep (ADR-0304) measures candidate blocks on
+    #: copies of the program here; it must not mutate the program and nothing it returns is read.
+    program_observer = None
+
+    @staticmethod
+    def _kelly_solver_params(solver, kelly):
+        """Return the week's ``TransportPortfolioSolve`` params: the document's, plus the kelly method's own knobs.
+
+        ``max_groups`` becomes ``group_screen_keep`` (ADR-0301); a ``highs`` block (ADR-0304) is merged into
+        ``solver_options`` (validation refuses an option the document already sets). Without either the document's
+        own block is returned unchanged, so a method without them builds the solver it always did.
+        """
+        if kelly is None:
+            return solver
+        params = solver
+        if "max_groups" in kelly:
+            params = {**params, "group_screen_keep": kelly["max_groups"]}
+        if "highs" in kelly:
+            params = {**params, "solver_options": {**(params.get("solver_options") or {}),
+                                                   **_highs_config.solver_options(kelly["highs"])}}
+        return params
 
     @classmethod
     def _sizer_valid(cls, method):
@@ -2998,6 +3035,9 @@ class WeeklyOptionPortfolioStudy:
                         "candidates": len(metadata), **weights,
                         "status": (weights["status"] if w0 > 0 else "nonpositive_capital")
                         if metadata or not estimate["dropped"] else "no_candidate_with_history"}
+                    if "highs" in kelly:
+                        # ADR-0304: the HiGHS options the week's solves were given; only a method declaring them has it.
+                        record["kelly"]["highs"] = dict(kelly["highs"])
                 sizer = self._sizer(method)
                 if sizer is not None:
                     # ADR-0300: the sizer's risk inputs are read before stage 1, as the kelly estimate is, so a week
@@ -3024,10 +3064,9 @@ class WeeklyOptionPortfolioStudy:
                                    + self._charge_coefficients(charge, meta["items"], mult),
                                    **({} if risk is None else {"risk_charge": dict(risk)})}
                                   for g, meta in zip(groups, metadata)]
-                    solver_params = p["solver"]
-                    if kelly is not None and "max_groups" in kelly:
-                        # ADR-0301: after the lp screen keep only the best max_groups groups by standalone relaxed value.
-                        solver_params = {**p["solver"], "group_screen_keep": kelly["max_groups"]}
+                    # ADR-0301: after the lp screen keep only the best max_groups groups by standalone relaxed value;
+                    # ADR-0304: a declared HiGHS block reaches every solve of the week through solver_options.
+                    solver_params = self._kelly_solver_params(p["solver"], kelly)
                     solver = TransportPortfolioSolve("portfolio", solver_params)
                     program = {"groups": configured,
                                "caps": self._caps(self._limits(account, method, components, solve=True), metadata)}
@@ -3052,6 +3091,8 @@ class WeeklyOptionPortfolioStudy:
                             "aggregate": {meta["id"]: meta["symbol"] for meta in metadata},
                             "joint": self._centred_scenarios(terms, kelly["moves"], record["kelly"]["weights"],
                                                              record["kelly"]["quiet"])}
+                    if self.program_observer is not None:
+                        self.program_observer(day, method, program, solver_params)
                     if policy:
                         from dskit.pipeline.libs.pyomo import TransportActionScore
 
@@ -3091,6 +3132,9 @@ class WeeklyOptionPortfolioStudy:
                         if (not isinstance(claimed, dict) or "selection" not in claimed
                                 or "certificates" not in claimed):
                             raise ValueError("eligible decision lacks recorded solve evidence")
+                        if (kelly is not None and "highs" in kelly
+                                and (recorded_decisions[day].get("kelly") or {}).get("highs") != kelly["highs"]):
+                            raise ValueError("the recorded week's HiGHS configuration differs from the method's")
                         selection = solver._recorded(program, claimed["selection"], claimed["certificates"])
                     timed_out = "timeout" in selection
                     uncertified = None

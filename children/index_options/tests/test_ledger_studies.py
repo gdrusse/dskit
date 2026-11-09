@@ -4165,6 +4165,15 @@ TOP_FORMULATIONS = {
     "kelly025_top100_uncert_lp": {**_KELLY_BASE, "kelly": {**KELLY, "fraction": .25, "max_groups": 100,
                                                           "accept_uncertified": True}},
 }
+#: ADR-0304: the HiGHS block of ``kelly025_top100_cfg_lp``, TO BE FROZEN FROM THE TRAIN SWEEP (2019Q4 and 2020Q1, the
+#: pre-registered rule of ``index_options.highs_config.freeze``). Until then it is a placeholder holding only HiGHS's own
+#: default seed, so the formulation solves exactly as kelly025_top100_uncert_lp does; no tuned value is invented here.
+KELLY_HIGHS_FROZEN = {"random_seed": 0}
+CFG_FORMULATIONS = {
+    "kelly025_top100_cfg_lp": {**TOP_FORMULATIONS["kelly025_top100_uncert_lp"],
+                               "kelly": {**TOP_FORMULATIONS["kelly025_top100_uncert_lp"]["kelly"],
+                                         "highs": KELLY_HIGHS_FROZEN}},
+}
 
 
 def _sizer_fixture(mean="nominal", fraction=.25, rho=0., **sizer):
