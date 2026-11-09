@@ -4701,3 +4701,212 @@ def test_accept_uncertified_is_a_boolean_kelly_key(value, ok):
             ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
     top = TOP_FORMULATIONS["kelly025_top100_uncert_lp"]["kelly"]
     assert top == {**TOP_FORMULATIONS["kelly025_top100_lp"]["kelly"], "accept_uncertified": True}
+
+
+# --- the one-stage Kelly local search (ADR-0307) ---------------------------------------------------------------------
+
+#: Budgets of the search, and the dollar program it starts from: the sized arms' stage 1 (`w1_010_shock10_lp`'s radius and shock).
+LOCAL_SEARCH = {"moves": 200, "adds_evaluated": 64, "swaps_evaluated": 64, "restarts": 0, "seed": 20261109,
+                "start": {"rho": FORMULATIONS["w1_010_shock10_lp"]["rho"], "shock": SHOCK10}}
+LOCAL_FORMULATIONS = {
+    "kelly025_ls_lp": {**_KELLY_BASE, "kelly": {**KELLY, "fraction": .25, "local_search": LOCAL_SEARCH}},
+    "kelly050_ls_lp": {**_KELLY_BASE, "kelly": {**KELLY, "fraction": .5, "local_search": LOCAL_SEARCH}},
+}
+
+
+def _local_world(search=None, fraction=.5):
+    """The overlapping two-week kelly world, under a local-search method."""
+    params, data, method = _overlapping_kelly_world()
+    method = {"id": "ls", **_KELLY_BASE, "kelly": {**method["kelly"], "fraction": fraction,
+                                                  "local_search": {**LOCAL_SEARCH, **(search or {})}}}
+    params["methods"] = [method]
+    return params, data, method
+
+
+def test_the_local_search_formulations_validate_and_differ_from_the_kelly_ones_only_by_the_key():
+    for name, method in LOCAL_FORMULATIONS.items():
+        params, inputs = _weekly_portfolio_fixture()
+        params["methods"] = [{"id": name, **method}]
+        _for_kelly(params)
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    for ls, plain in (("kelly025_ls_lp", "kelly025_lp"), ("kelly050_ls_lp", "kelly050_lp")):
+        assert {k: v for k, v in LOCAL_FORMULATIONS[ls]["kelly"].items() if k != "local_search"} == \
+            KELLY_FORMULATIONS[plain]["kelly"]
+        assert {k: v for k, v in LOCAL_FORMULATIONS[ls].items() if k != "kelly"} == \
+            {k: v for k, v in KELLY_FORMULATIONS[plain].items() if k != "kelly"}
+    assert LOCAL_SEARCH["start"] == {"rho": .10, "shock": SHOCK10}
+
+
+@pytest.mark.parametrize("change", [
+    {"moves": 0}, {"adds_evaluated": 0}, {"swaps_evaluated": -1}, {"restarts": 1.5}, {"seed": True},
+    {"start": None}, {"start": {"rho": -1., "shock": SHOCK10}}, {"start": {"rho": .1}},
+    {"start": {"rho": .1, "shock": {**SHOCK10, "scope": "filled_account"}}},
+    {"start": {"rho": .1, "shock": {"moves": [], "loss_fraction": .1, "beta_lookback": 60}}},
+    {"extra": 1}])
+def test_a_malformed_local_search_declaration_is_refused(change):
+    params, _data, _method = _local_world(change)
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+@pytest.mark.parametrize("key,value", [("max_groups", 100), ("accept_uncertified", True), ("search", {"x": 1}),
+                                       ("warm_start", {"node_limit": 1}), ("outer_approx", {"x": 1})])
+def test_the_local_search_refuses_the_keys_that_steer_the_integer_program(key, value):
+    params, _data, method = _local_world()
+    method["kelly"][key] = value
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_a_method_without_the_local_search_key_keeps_its_records_and_limits():
+    """No `local` field, no `stage1`, the kelly limits as before; `stage1=True` is a local-search method's own asking."""
+    params, data, method = _overlapping_kelly_world()
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)
+    for week in result["decisions"]:
+        assert "local" not in week.get("kelly", {}) and "stage1" not in week
+    from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    account = FundedOptionAccount(10000., 0., 14, "2019-01-02")
+    assert len(study._limits(account, method, {"groups": []}, solve=True)) == 1
+    assert len(study._limits(account, method, {"groups": []}, solve=True, stage1=True)) == 2+len(params["symbols"])
+
+
+def _local_result(**kw):
+    params, data, method = _local_world(**kw)
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    return params, data, method, study, study._method(method, None)
+
+
+def test_a_local_search_week_trades_the_search_and_records_its_evidence():
+    _params, _data, _method, _study, result = _local_result()
+    week = result["decisions"][0]
+    assert week["status"] == "selected" and week["books"]
+    local = week["kelly"]["local"]
+    assert set(local) == {"start_kind", "start_value", "end_value", "start_contracts", "end_contracts", "moves",
+                          "evaluations", "local_optimum", "budget_exhausted", "restarts", "restarts_skipped",
+                          "move_counts"}
+    assert local["start_kind"] == "stage1" and local["end_value"] >= local["start_value"]
+    assert local["end_contracts"] == sum(sum(row) for row in week["selection"]["quantities"]) > 0
+    assert week["selection"]["utility"]["exact"] == pytest.approx(local["end_value"], rel=1e-9, abs=1e-9)
+    assert week["kelly"]["solve"] == {"strategy_outcome": "local_search", "bound_source": None}
+    certificate = week["certificates"][-1]
+    assert certificate["strategy_outcome"] == "local_search" and certificate["certified"] is False
+    assert certificate["bound"] is None and certificate["gap"] is None and certificate["seconds"] is None
+    assert week["stage1"]["certificates"] == week["certificates"][:-1] and week["stage1"]["selection"]["quantities"]
+    assert "uncertified" not in week["kelly"]
+    assert sum(b["contracts"] for b in week["books"]) == local["end_contracts"]
+
+
+def test_the_local_search_builds_no_integer_program_and_starts_from_the_dollar_selection(monkeypatch):
+    """The solver is handed the stage-one DOLLAR program (radius, shock rows, dollar caps) and never a utility program."""
+    seen = _spy_utility_programs(monkeypatch)
+    _params, _data, _method, _study, result = _local_result()
+    assert seen and all("utility" not in program for program in seen)
+    first = seen[0]
+    assert all(g["radius"] == .10 for g in first["groups"])
+    assert [row["id"] for row in first["joint_rows"]] == [f"shock:{m}" for m in SHOCK10["moves"]]
+    assert len(first["caps"]) > 1 and max(c["upper"] for c in first["caps"]) <= 10000.
+    # The W1 radius and the shock gate take this fixture's whole edge: stage one holds cash, the search still climbs.
+    week = result["decisions"][0]
+    assert not any(q for row in week["stage1"]["selection"]["quantities"] for q in row)
+    assert week["kelly"]["local"]["start_contracts"] == 0 and week["kelly"]["local"]["end_contracts"] > 0
+    # A nominal start (no radius, a shock gate wide open) trades, and the search starts from what it selected.
+    loose = {"start": {"rho": 0., "shock": {**SHOCK10, "loss_fraction": 1.}}}
+    _p, _d, _m, _s, nominal = _local_result(search=loose)
+    start = nominal["decisions"][0]["stage1"]["selection"]["quantities"]
+    local = nominal["decisions"][0]["kelly"]["local"]
+    assert any(q for row in start for q in row) and local["start_contracts"] == sum(sum(r) for r in start) > 0
+    assert local["start_kind"] == "stage1" and local["end_value"] >= local["start_value"]
+
+
+def test_a_local_search_week_is_deterministic_and_the_recorded_route_replays_it_exactly():
+    import copy
+
+    params, data, method, _study, result = _local_result()
+    again = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)
+    # Two live runs differ only in the stage-one solver's own wall-clock seconds; the decision does not read the clock.
+    for first, second in zip(result["decisions"], again["decisions"]):
+        for key in ("status", "selection", "books", "kelly"):
+            assert first.get(key) == second.get(key), key
+        assert first.get("certificates", [])[-1:] == second.get("certificates", [])[-1:]
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, recorded=result) == result
+    changed = copy.deepcopy(result)
+    week = changed["decisions"][0]
+    week["selection"]["quantities"] = [[q+1 if q else 0 for q in row] for row in week["selection"]["quantities"]]
+    with pytest.raises(ValueError, match="recorded local-search selection"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, recorded=changed)
+    forged = copy.deepcopy(result)
+    forged["decisions"][0]["kelly"]["local"]["end_value"] += 1.
+    with pytest.raises(ValueError, match="differs from authoritative replay"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, recorded=forged)
+    lacking = copy.deepcopy(result)
+    del lacking["decisions"][0]["stage1"]
+    with pytest.raises(ValueError, match="lacks recorded solve evidence"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, recorded=lacking)
+
+
+def _derived_from(result, study, method):
+    """A foreign worker's claim for each eligible week: the final actions, the search's certificate, the stage one."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    decisions = {}
+    for week in result["decisions"]:
+        if "stage1" in week:
+            decisions[week["date"]] = {
+                "actions": week["selection"]["quantities"], "certificates": week["certificates"][-1:],
+                "stage1": {"actions": TransportPortfolioSolve.actions(week["stage1"]["selection"]),
+                           "certificates": week["stage1"]["certificates"]}}
+    return {"method": method["id"], "weeks": study.weeks, "decisions": decisions}
+
+
+def test_the_derived_route_reruns_the_search_and_refuses_actions_it_does_not_reach():
+    import copy
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal
+
+    params, data, method, study, result = _local_result()
+    derived = _derived_from(result, study, method)
+    replay = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, derived=derived)
+    assert [w.get("selection") for w in replay["decisions"]] == [w.get("selection") for w in result["decisions"]]
+    assert [w.get("books") for w in replay["decisions"]] == [w.get("books") for w in result["decisions"]]
+    forged = copy.deepcopy(derived)
+    day = next(iter(forged["decisions"]))
+    forged["decisions"][day]["actions"] = [[0]*len(row) for row in forged["decisions"][day]["actions"]]
+    with pytest.raises(RecordedCheckRefusal, match="local-search actions"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, derived=forged)
+    bare = copy.deepcopy(derived)
+    del bare["decisions"][day]["stage1"]
+    with pytest.raises(ValueError, match="derived method or decision calendar differs"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, derived=bare)
+    bad_stage = copy.deepcopy(derived)
+    bad_stage["decisions"][day]["stage1"] = {"actions": 1}
+    with pytest.raises(ValueError, match="stage-one evidence"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, derived=bad_stage)
+
+
+def test_the_policy_route_refuses_a_local_search_method():
+    params, data, method = _local_world()
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    with pytest.raises(ValueError, match="local-search method"):
+        next(study.policy_steps(method["id"]))
+
+
+def test_a_stage_one_timeout_starts_the_search_from_cash_and_says_so(monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    run = TransportPortfolioSolve.run
+
+    def timed_out(self, ctx, inputs):
+        selection = run(self, ctx, inputs)["selection"]
+        return {"selection": {"timeout": "no_incumbent", "candidate": None,
+                              "certificates": selection["certificates"]}}
+    monkeypatch.setattr(TransportPortfolioSolve, "run", timed_out)
+    _params, _data, _method, _study, result = _local_result()
+    week = result["decisions"][0]
+    assert week["kelly"]["local"]["start_kind"] == "stage1_timeout_cash" and week["kelly"]["local"]["start_contracts"] == 0
+    assert week["status"] in ("selected", "cash")
+
+
+def test_the_move_budget_binds_and_is_recorded():
+    _params, _data, _method, _study, tight = _local_result(search={"moves": 1})
+    local = tight["decisions"][0]["kelly"]["local"]
+    assert local["moves"] <= 1 and (local["budget_exhausted"] or local["local_optimum"])
