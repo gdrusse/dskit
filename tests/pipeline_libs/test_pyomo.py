@@ -6536,3 +6536,160 @@ def test_transport_cleanup_gain_counts_the_cancelled_pairs_linear_charges():
     plain = TransportPortfolioSolve("plain", _screen_params("none"))
     plain.run(None, _straddle(price=None))
     assert plain._model_cleanup_gain({"profit_gain": 7., "pairs": [cleanup["pairs"][0]]}) == 7.
+
+
+# ---------------------------------------------------------------------------
+# ADR-0305 amendment 1: the derived route prices its fixed actions as a pure LP
+# ---------------------------------------------------------------------------
+
+def _hinged_book(carry=False, vt=False, hinge=True, radius=.005, pc=3., pp=3.5):
+    """One near-spot book: a call, a put and the put sold, with every ADR-0305 charge switchable.
+
+    Outcomes 80, 100 and 140 with masses .25, .5 and .25. The put and its sale are one exclusive pair; with the
+    hinge declared that pair keeps its binary side (a round trip of it would lower the call right's row), without
+    it the pair is a free cancellation and no binary is left. The straddle (3 calls, 3 puts) is the optimum under
+    every combination, so each charge is active in the selection (hinge 75, carry 520, transform 735 or 567).
+    """
+    mult = 100.
+    group = {"id": "h", "grid": [80., 100., 140.], "masses": [.25, .5, .25], "radius": radius, "scale": 100.,
+             "credit": [-pc*mult, -pp*mult, pp*.97*mult],
+             "losses": [[0., -2000., 2000.], [0., 0., 0.], [-4000., 0., 0.]],
+             "capacity": [3, 3, 3], "exclusive": [[1, 2]],
+             "reserve_rows": [[pc*mult, pp*mult, 2000.]], "linear_rows": []}
+    named = {}
+    if carry:
+        named["carry"] = [.4*(20./30.)*pc*mult, .4*(20./30.)*pp*mult, 0.]
+    if hinge:
+        a_c, a_p = [pc*mult, -pp*mult, -pp*.97*mult], [-pc*mult, pp*mult, -pp*.97*mult]
+        group["hinge_charge"] = {"price": .5, "rows": [a_c, a_p, [x+y for x, y in zip(a_c, a_p)]]}
+    if vt:
+        from dskit.pipeline.libs.pyomo import ValueTransform
+
+        named["transform"] = ValueTransform.from_spec(_VT).action_charges(group, named.get("carry"))
+    if named:
+        group["action_charges"] = named
+    return {"groups": [group], "caps": [{"groups": ["h"], "upper": 1e5}]}
+
+
+_HINDSIGHT_ARMS = [(True, False, True), (False, True, True), (True, True, True), (False, False, True),
+                   (True, False, False), (False, True, False)]
+_ARM_IDS = ["carry+single", "vt+single", "carry+vt+single", "single", "carry", "vt"]
+
+
+def _solved_and_certified(program, params):
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    chosen = TransportPortfolioSolve("live", params).run(None, copy.deepcopy(program))["selection"]
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in chosen["certificates"]]
+    return chosen, certificates
+
+
+@pytest.mark.parametrize("carry,vt,hinge", _HINDSIGHT_ARMS, ids=_ARM_IDS)
+def test_transport_derived_replays_every_hindsight_charge_where_it_is_active(carry, vt, hinge):
+    """Carry, single-leg hinge and value transform each bite in the selection and the derived route re-derives it."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params = _screen_params("none")
+    program = _hinged_book(carry, vt, hinge)
+    chosen, certificates = _solved_and_certified(program, params)
+    assert chosen["quantities"] == [[3, 3, 0]]
+    charges = chosen.get("action_charges", {})
+    if hinge:
+        assert chosen["hinge_charges"] == [pytest.approx(75.)]
+    else:
+        assert "hinge_charges" not in chosen
+    if carry:
+        assert charges["carry"] == [pytest.approx(520.)]
+    else:
+        assert "carry" not in charges
+    if vt:
+        assert charges["transform"][0] > 100.
+    else:
+        assert "transform" not in charges
+    derived = TransportPortfolioSolve("derived", params).derived(
+        program, TransportPortfolioSolve.actions(chosen), certificates)["selection"]
+    assert derived["quantities"] == chosen["quantities"]
+    assert derived["value"] == pytest.approx(chosen["value"], abs=1e-9)
+    assert derived.get("action_charges") == pytest.approx(chosen.get("action_charges"))
+    assert derived.get("hinge_charges") == pytest.approx(chosen.get("hinge_charges"))
+    assert derived["model_value"] == pytest.approx(chosen["model_value"], abs=1e-9)
+
+
+@pytest.mark.parametrize("carry,vt,hinge", _HINDSIGHT_ARMS, ids=_ARM_IDS)
+def test_transport_derived_pricing_leaves_no_integer_column_free(monkeypatch, carry, vt, hinge):
+    """With the actions fixed the exclusive sides are fixed too, so the pricing is an LP and no MIP gap applies."""
+    from pyomo.environ import Var
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params = _screen_params("none")
+    program = _hinged_book(carry, vt, hinge)
+    chosen, certificates = _solved_and_certified(program, params)
+    node = TransportPortfolioSolve("derived", params)
+    real, seen = node._resolve_solver, []
+
+    class Spy:
+        def __init__(self, solver):
+            self.solver = solver
+
+        def solve(self, model, *args, **kwargs):
+            seen.append(([v.name for v in model.component_data_objects(Var, active=True)
+                          if v.is_integer() and not v.fixed],
+                         {k: v.value for k, v in model.side.items()}))
+            return self.solver.solve(model, *args, **kwargs)
+
+    monkeypatch.setattr(node, "_resolve_solver", lambda: Spy(real()))
+    node.derived(program, TransportPortfolioSolve.actions(chosen), certificates)
+    assert [free for free, _sides in seen] == [[]], "a free side would leave a MIP, exact only to the solver gap"
+    # The pair's side follows its first action: held (3 puts) is 1 whenever the pair keeps a side at all.
+    assert [sides for _free, sides in seen] == [{(0, 0): 1} if hinge else {}]
+
+
+@pytest.mark.parametrize("carry,vt", [(True, False), (False, True), (True, True), (False, False)],
+                         ids=["carry+single", "vt+single", "carry+vt+single", "single"])
+def test_transport_derived_prices_exactly_under_a_gap_tolerant_solver(monkeypatch, carry, vt):
+    """A solver that stops inside its MIP gap leaves the hinge above its least value; derived must not let it.
+
+    The pricing solver here returns the continuous optimum and then, only if an integer column is still free,
+    raises every hinge auxiliary by 27 (feasible, 13.5 dollars worse at the price .5): what a 1 percent gap
+    allows on a MIP. The fixed sides leave nothing for it to do; with the sides free the same fixture is the
+    ``certificate_objective`` refusal of the replay (ratio 13,500 at the study tolerance of 1e-3).
+    """
+    from pyomo.environ import Var
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
+
+    params = {**_screen_params("none"), "parity_tolerance": 1e-3}
+    program = _hinged_book(carry, vt, True)
+    chosen, certificates = _solved_and_certified(program, params)
+    node = TransportPortfolioSolve("derived", params)
+    real = node._resolve_solver
+
+    class GapTolerant:
+        def __init__(self, solver):
+            self.solver = solver
+
+        def solve(self, model, *args, **kwargs):
+            results = self.solver.solve(model, *args, **kwargs)
+            if any(v.is_integer() and not v.fixed for v in model.component_data_objects(Var, active=True)):
+                for variable in model.hinge.values():
+                    variable.set_value(variable.value+27.)
+            return results
+
+    monkeypatch.setattr(node, "_resolve_solver", lambda: GapTolerant(real()))
+    derived = node.derived(program, TransportPortfolioSolve.actions(chosen), certificates)["selection"]
+    assert derived["value"] == pytest.approx(chosen["value"], abs=1e-9)
+    # The same solver on a model whose sides were left free is the refusal the Mac replay raised.
+    original = TransportPortfolioSolve._price_duals
+
+    def unfixed(self, model):
+        for variable in model.component_data_objects(Var, active=True):
+            if variable.parent_component() is model.x:
+                variable.fix()
+        self._resolve_solver().solve(model)
+
+    monkeypatch.setattr(TransportPortfolioSolve, "_price_duals", unfixed)
+    with pytest.raises(RecordedCheckRefusal) as caught:
+        node.derived(program, TransportPortfolioSolve.actions(chosen), certificates)
+    assert (caught.value.check, caught.value.category) == ("certificate_objective", "numeric")
+    assert caught.value.ratio == pytest.approx(13500., rel=1e-3)
+    monkeypatch.setattr(TransportPortfolioSolve, "_price_duals", original)

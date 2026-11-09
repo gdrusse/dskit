@@ -4970,3 +4970,49 @@ def test_the_hindsight_keys_absent_leave_the_locked_formulations_untouched(monke
     assert count and programs[count:] == programs[:count]
     assert [_without_seconds(d) for d in same["decisions"]] == [_without_seconds(d) for d in base["decisions"]]
     assert same["trades"] == base["trades"]
+
+
+def _charged_short_dated_fixture(**keys):
+    """The short-dated week with a put cheap enough to trade under every charge, each one active and nonzero.
+
+    A 1.4 / 1.5 put against a forecast worth about four: the carry (5 DTE of 30), the single-leg hinge (half the
+    uncovered premium) and the value transform (the put is worth more than its reserve) all take something and
+    the week is still traded, so a derived replay re-prices a real book under each charge.
+    """
+    params, inputs = _short_dated_fixture()
+    for quote in inputs["X"]["chain"]:
+        quote["bid"], quote["ask"] = 1.4, 1.5
+    params["methods"][0].update(id="h", **keys)
+    return params, inputs
+
+
+@pytest.mark.parametrize("keys", [
+    {"risk_charge": CARRY}, {"single_leg_charge": SINGLE_LEG}, {"value_transform": VALUE_TRANSFORM},
+    {"risk_charge": CARRY, "value_transform": VALUE_TRANSFORM},
+    {"risk_charge": CARRY, "single_leg_charge": SINGLE_LEG, "value_transform": VALUE_TRANSFORM},
+], ids=["carry", "single", "vt", "carry_vt", "carry_single_vt"])
+def test_a_traded_week_under_each_hindsight_charge_replays_on_the_derived_route(keys):
+    """ADR-0305 amendment 1: a real book with its carry, hinge and transform charges nonzero re-derives from its actions.
+
+    Weeks the charges leave in cash replay trivially (no integer action to price); the other derived tests above
+    are cash weeks only, so this is the first coverage of the derived route on a traded week under these charges.
+    """
+    import copy
+    from index_options.mio_worker import MIOMethodWorker
+
+    params, inputs, study, result = _hindsight_run(_charged_short_dated_fixture(**keys)[0]["methods"][0],
+                                                   lambda: _charged_short_dated_fixture(**keys))
+    week = _solved(result)[0]
+    assert week["status"] == "selected" and week["books"], "the week trades under the charges"
+    selection = week["selection"]
+    charges = selection.get("action_charges", {})
+    assert ("carry" in keys.get("risk_charge", {}).get("measure", "")) == ("carry" in charges)
+    assert (("hinge_charges" in selection) == ("single_leg_charge" in keys)
+            and (not selection.get("hinge_charges") or all(h > 0 for h in selection["hinge_charges"])))
+    assert ("transform" in charges) == ("value_transform" in keys)
+    assert all(c > 0 for values in charges.values() for c in values), "every declared charge is active"
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(
+        params["methods"][0], None, recorded=copy.deepcopy(result)) == result
+    derived = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(
+        params["methods"][0], None, derived=MIOMethodWorker.actions(result, study.weeks))
+    assert _equal_but_last_bits(derived, result)

@@ -5417,12 +5417,24 @@ class TransportPortfolioSolve(PyomoSolve):
         actions as if the ambiguity were zero. With every action fixed what remains is a linear
         program whose optimum is those actions' worst-case cost; the foreign integer solve is not
         repeated.
+
+        The exclusive-pair sides are integer decisions too (ADR-0305 amendment 1): with the actions fixed a side is
+        fixed by them (1 when the pair's first action is held, else 0), so no integer column is left and the
+        pricing is a pure LP whatever MIP gap the solver options carry. A pair that keeps its binary side (one a
+        hinge row would not let cancel) otherwise leaves a MIP here, and a solver that stops inside its configured
+        gap (the study's 50 dollars and 1 percent) may return duals or hinge auxiliaries above their least values:
+        a re-priced objective off the recorded one by up to the gap, refused as ``certificate_objective``. A pair
+        held on both sides stays infeasible, as before.
         """
         from pyomo.environ import Var
 
         for variable in model.component_data_objects(Var, active=True):
             if variable.parent_component() is model.x:
                 variable.fix()
+        sides = model.component("side")
+        if sides is not None:
+            for (i, k), variable in sides.items():
+                variable.fix(1 if model.x[i, self._groups[i]["exclusive"][k][0]].value else 0)
         name = self.params.get("solver", DEFAULT_SOLVER)
         try:
             results = self._resolve_solver().solve(model)
