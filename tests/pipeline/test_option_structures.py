@@ -257,3 +257,78 @@ def test_option_strategy_preserves_arbitrary_finite_integer_strikes():
         [("call", 1), ("call", -2), ("call", 1)], [large, large+1, large+2])
     assert got["name"] == "long_call_butterfly" and got["variant"] == "equal_wings"
     assert [leg["strike"] for leg in got["legs"]] == [large, large+1, large+2]
+
+
+# ---- hedge keyword (ADR-0312 S1) ---------------------------------------------------------
+# A hedge is ``(h, reference)``: ``h`` shares of the underlying per option unit (the leg signs'
+# scale, so negative = sold shares), settling against ``reference``. Payoff gains h x (S - ref).
+LONG_CALL = (("call", 1),)
+LONG_PUT = (("put", 1),)
+SHORT_CALL = (("call", -1),)
+SYNTH_LONG = (("put", -1), ("call", 1))
+
+
+def test_hedged_payoff_is_the_payoff_plus_h_times_the_move_from_the_reference():
+    # put spread at 93: -(95-93) = -2 ; sold half a share against 100: -0.5 x (93-100) = +3.5
+    assert structure_payoff(PUT_SPREAD, 93.0, (90.0, 95.0), hedge=(-0.5, 100.0)) == pytest.approx(1.5)
+    assert structure_payoff(PUT_SPREAD, 93.0, (90.0, 95.0), hedge=(0.25, 100.0)) == pytest.approx(-3.75)
+
+
+def test_hedged_payoff_keeps_decimal_exact():
+    out = structure_payoff(PUT_SPREAD, Decimal("93"), (Decimal("90"), Decimal("95")),
+                           hedge=(Decimal("-0.5"), Decimal("100")))
+    assert out == Decimal("1.5") and isinstance(out, Decimal)
+
+
+@pytest.mark.parametrize("level", [0.0, 80.0, 93.0, 100.0, 120.0])
+def test_no_hedge_and_a_zero_hedge_give_the_unhedged_payoff(level):
+    strikes = (90.0, 95.0)
+    base = structure_payoff(PUT_SPREAD, level, strikes)
+    assert structure_payoff(PUT_SPREAD, level, strikes, hedge=None) == base
+    assert structure_payoff(PUT_SPREAD, level, strikes, hedge=(0.0, 100.0)) == base
+
+
+def test_hedged_max_loss_of_a_debit_call_is_larger_at_the_strike():
+    # long call 100 for a 500 debit, 100 shares a contract; sold 0.5 per unit against 98:
+    # at the strike the hedge loses 100 x 0.5 x 2 = 100, so the loss is 600 (unhedged 500)
+    assert structure_max_loss(LONG_CALL, (100.0,), -500.0, 100) == pytest.approx(500.0)
+    assert structure_max_loss(LONG_CALL, (100.0,), -500.0, 100, hedge=(-0.5, 98.0)) == pytest.approx(600.0)
+
+
+def test_hedged_max_loss_of_a_synthetic_long_is_lower_than_unhedged():
+    # short put + long call at 100, zero credit: floor loss is 100 x 100 unhedged; sold half a
+    # share against 100 recovers 100 x 0.5 x 100 of it at spot 0
+    assert structure_max_loss(SYNTH_LONG, (100.0, 100.0), 0.0, 100) == pytest.approx(10000.0)
+    assert structure_max_loss(SYNTH_LONG, (100.0, 100.0), 0.0, 100, hedge=(-0.5, 100.0)) == pytest.approx(5000.0)
+
+
+def test_a_hedge_that_makes_the_slope_above_the_top_strike_negative_is_unbounded():
+    assert structure_max_loss(LONG_PUT, (100.0,), -300.0, 100) == pytest.approx(300.0)
+    assert structure_max_loss(LONG_PUT, (100.0,), -300.0, 100, hedge=(-0.5, 100.0)) == math.inf
+    # calls net 1, sold half a share: slope +0.5, still bounded
+    assert math.isfinite(structure_max_loss(LONG_CALL, (100.0,), -500.0, 100, hedge=(-0.5, 100.0)))
+
+
+def test_a_hedge_can_bound_a_naked_short_call_and_a_zero_slope_is_bounded():
+    assert structure_max_loss(SHORT_CALL, (100.0,), 200.0, 100) == math.inf
+    # long a full share against 100 flattens the slope above the strike to 0: loss at spot 0
+    assert structure_max_loss(SHORT_CALL, (100.0,), 200.0, 100, hedge=(1.0, 100.0)) == pytest.approx(9800.0)
+    assert structure_max_loss(SHORT_CALL, (100.0,), 200.0, 100, hedge=(0.5, 100.0)) == math.inf
+
+
+def test_no_hedge_and_a_zero_hedge_leave_the_max_loss_unchanged():
+    base = structure_max_loss(CONDOR_LEGS_H, (90.0, 95.0, 105.0, 115.0), 150.0, 100)
+    assert structure_max_loss(CONDOR_LEGS_H, (90.0, 95.0, 105.0, 115.0), 150.0, 100, hedge=None) == base
+    assert structure_max_loss(CONDOR_LEGS_H, (90.0, 95.0, 105.0, 115.0), 150.0, 100, hedge=(0.0, 100.0)) == base == 850.0
+
+
+CONDOR_LEGS_H = (("put", 1), ("put", -1), ("call", -1), ("call", 1))
+
+
+@pytest.mark.parametrize("hedge", [(1.0,), "x", (float("nan"), 100.0), (0.5, 0.0), (0.5, -1.0),
+                                   (0.5, float("inf")), (True, 100.0), (0.5, None)])
+def test_a_malformed_hedge_is_refused_in_both_functions(hedge):
+    with pytest.raises(ValueError, match="hedge"):
+        structure_payoff(LONG_CALL, 100.0, (100.0,), hedge=hedge)
+    with pytest.raises(ValueError, match="hedge"):
+        structure_max_loss(LONG_CALL, (100.0,), -500.0, 100, hedge=hedge)

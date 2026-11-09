@@ -1312,6 +1312,8 @@ dskit/pipeline/
 │                      spot-term Greeks per book, delta-equivalent stock vs residual P&L split, static delta-hedge P&L (costs, short borrow, dividends; params required), per-cell shares, beta-weighted exposure by DTE bucket;
 │                      BookGreeksReport (kind book_greeks_report, by import path): composes all of them over books/quotes/bars via four hooks (_load_books, _load_quotes, _cell_key, and the optional _hedge_dividend);
 │                      option_pricing also gains black76_gamma + black76_theta (per year, forward fixed)
+├── hedge_overlay.py   HedgeOverlay (abstract), NullHedgeOverlay, FixedDeltaForwardHedge (ADR-0312): a hedge attached to any option formulation by one config block
+│                      (units, reference, floor_rows, legs, settle, mark, record); structure_payoff/structure_max_loss take hedge=(h, reference), None = unchanged
 ├── option_structures.py leg-set algebra graduated from the index_options child (ADR-0265):
 │                      structure_credit (shorts at the bid, longs at the ask), structure_payoff,
 │                      structure_max_loss, leg_intrinsic, quote_defect (coded quote refusals);
