@@ -4046,13 +4046,14 @@ class TransportPortfolioSolve(PyomoSolve):
     UTILITY_WARM_START_KEYS = ("node_limit",)
     #: The keys of the two records (``last_search`` and ``last_warm_start``) the strategy leaves for its caller.
     SEARCH_RECORD_KEYS = ("seed", "iterations", "improved", "value_before", "value_after", "accepted_neighbourhoods",
-                          "budget_exhausted", "halted_by", "failed", "seconds")
+                          "budget_exhausted", "halted_by", "failed", "seconds", "allowance")
     WARM_START_RECORD_KEYS = ("supplied", "accepted", "over_cap", "termination", "value_before", "value_after", "kept")
     #: ADR-0302 fix round 1: the share of the document's time limit the incumbent search may take, ON TOP of the week's
     #: budget (the certification's remaining time is measured with the search's seconds left out, so it sees what the
     #: arm without the search would see). The clock can only halt the search: a neighbourhood the clock stops is
     #: discarded and the search ends (``halted_by`` "clock"), so the traded point is always the deterministic search's
-    #: result after the recorded number of neighbourhoods.
+    #: result after the recorded number of neighbourhoods. The search record's ``allowance`` is that share in seconds
+    #: (None: no clock), recorded beside the ``seconds`` it took (fix round 2).
     UTILITY_SEARCH_SHARE = .25
     #: The terminations of a node-limited solve that do not depend on the clock: a solve that ended so is a
     #: deterministic function of its inputs and budgets (HiGHS maps a node limit to ``maxIterations``).
@@ -4888,7 +4889,9 @@ class TransportPortfolioSolve(PyomoSolve):
         best, before = self._snapshot(model), self._exact_utility(model)
         record = {"seed": search["seed"], "iterations": 0, "improved": False, "value_before": before,
                   "value_after": before, "accepted_neighbourhoods": [], "budget_exhausted": False,
-                  "halted_by": None, "failed": 0, "seconds": 0.}
+                  "halted_by": None, "failed": 0, "seconds": 0.,
+                  "allowance": (None if seconds is None or not math.isfinite(seconds)
+                                else round(float(seconds), 3))}
         if before is None:
             return record
         rng = random.Random(search["seed"])

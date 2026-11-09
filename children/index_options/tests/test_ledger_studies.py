@@ -4782,7 +4782,7 @@ def test_the_search_improves_a_poor_incumbent_by_exact_utility_and_records_how(m
     for week in weeks:
         s = week["kelly"]["search"]
         assert set(s) == {"seed", "iterations", "improved", "value_before", "value_after", "accepted_neighbourhoods",
-                          "budget_exhausted", "halted_by", "failed", "seconds"}
+                          "budget_exhausted", "halted_by", "failed", "seconds", "allowance"}
         assert s["seed"] == SEARCH["seed"] and 0 <= s["iterations"] <= SEARCH["iterations"]
         assert s["halted_by"] is None and s["failed"] == 0 and s["seconds"] >= 0
         assert s["value_before"] == pytest.approx(_traded(before[week["date"]])["value"], abs=1e-6)
@@ -4919,7 +4919,7 @@ def test_the_clock_only_halts_the_search_and_never_shortens_the_certification(mo
     for week in _solved_weeks(halted):
         s = week["kelly"]["search"]
         assert s["halted_by"] == "clock" and s["iterations"] == 0 and not s["improved"] and not s["budget_exhausted"]
-        assert s["value_after"] == s["value_before"]
+        assert s["value_after"] == s["value_before"] and s["allowance"] == 0.
     assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(
         params["methods"][0], None, recorded=halted) == halted
     monkeypatch.undo()
@@ -4973,7 +4973,14 @@ def test_a_failed_neighbourhood_is_counted_and_a_missing_search_record_refused(m
     def halted_by_wall(forged):
         next(d for d in forged["decisions"] if d.get("kelly", {}).get("search"))["kelly"]["search"]["halted_by"] = "wall"
 
-    for edit in (missing, overcounted, halted_by_wall):
+    def clock_halt_without_allowance(forged):
+        s = next(d for d in forged["decisions"] if d.get("kelly", {}).get("search"))["kelly"]["search"]
+        s["halted_by"], s["budget_exhausted"], s["allowance"] = "clock", False, None
+
+    def negative_allowance(forged):
+        next(d for d in forged["decisions"] if d.get("kelly", {}).get("search"))["kelly"]["search"]["allowance"] = -1.
+
+    for edit in (missing, overcounted, halted_by_wall, clock_halt_without_allowance, negative_allowance):
         _forged_refused(params, inputs, method, result, edit)
 
 

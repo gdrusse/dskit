@@ -2407,7 +2407,8 @@ class WeeklyOptionPortfolioStudy:
         over-cap warm start kept a better incumbent, the value that warm start began from); on a certified week the
         certification started from it, so the traded value is no worse. A week whose relaxation solved always has a
         search record (one that never ran has no value before); ``halted_by`` is None or "clock" (then the budget
-        is not exhausted), ``failed`` counts neighbourhoods within those run, ``seconds`` is finite and nonnegative.
+        is not exhausted), ``failed`` counts neighbourhoods within those run, ``seconds`` is finite and nonnegative,
+        ``allowance`` (the search's clock share) None or finite and nonnegative, and never None on a clock halt.
         The warm start: present only when a certification ran (so a certified week has one, a relaxation-decided week
         none); a declined week that ran one ran it above the action limit; nothing accepted that was not supplied;
         ``kept`` only on a declined over-cap week stopped deterministically, whose kept value beats its start and is
@@ -2435,6 +2436,8 @@ class WeeklyOptionPortfolioStudy:
                     or s["halted_by"] not in (None, "clock") or (s["budget_exhausted"] and s["halted_by"] is not None)
                     or type(s["failed"]) is not int or not 0 <= s["failed"] <= s["iterations"]
                     or not number_ok(s["seconds"]) or s["seconds"] < 0
+                    or (s["allowance"] is not None and (not number_ok(s["allowance"]) or s["allowance"] < 0))
+                    or (s["halted_by"] == "clock" and s["allowance"] is None)
                     or not isinstance(s["accepted_neighbourhoods"], list)
                     or s["improved"] != bool(s["accepted_neighbourhoods"]) or outcome == "relaxation_failed"):
                 raise bad
