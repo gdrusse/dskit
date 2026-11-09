@@ -134,6 +134,7 @@ __all__ = [
     "WassersteinDual",
     "TransportActionScore",
     "TransportPortfolioSolve",
+    "ValueTransform",
     "register",
     "tangent_utility",
 ]
@@ -3744,6 +3745,140 @@ class _AtomDeviation(DeviationCharge):
 _DEVIATION_CHARGES = {cls.measure: cls for cls in (MeanAbsoluteDeviation,)}
 
 
+class ValueTransform:
+    """A concave piecewise-linear transform ``u`` of value per reserve, priced per action (ADR-0305).
+
+    ``u(t)`` has slope ``slopes[0] = 1`` up to ``breaks[0]``, slope ``slopes[i]`` between ``breaks[i-1]`` and
+    ``breaks[i]``, and ``slopes[-1]`` beyond the last break; it is continuous with ``u(t) = t`` for ``t`` at or
+    below the first break, so ``u(t) <= t`` everywhere and a value at or under the first break is untouched.
+
+    The book-level form ``r_g u(v_g / r_g)`` is not a mixed-integer LP in a program whose actions are legs: the
+    reserve ``r_g`` is the largest of the reserve rows (convex in the counts) and the perspective rises with it,
+    so a solver would inflate the free reserve variable. :meth:`action_charges` therefore prices the transform
+    separably: each action is charged the excess of its own one-contract robust value over its one-contract
+    reserve times ``u``, ``v_j - r_j u(v_j / r_j)`` (nonnegative), a linear coefficient. A one-leg book gets exactly
+    ``r u(v / r)``; a multi-leg book is charged the sum of its legs' standalone excesses. An action whose
+    standalone reserve is zero or negative is not transformed (charge 0, its raw value).
+
+    Parameters
+    ----------
+    breaks : sequence of float
+        Strictly increasing positive breakpoints of value per reserve.
+    slopes : sequence of float
+        ``len(breaks) + 1`` nonincreasing nonnegative slopes, the first exactly 1.
+
+    Examples
+    --------
+    The ADR-0305 declaration (slope 1 to 1x reserve, 0.3 to 3x, flat beyond)::
+
+        ValueTransform.from_spec({"breaks": [1., 3.], "slopes": [1., .3, 0.]}).u(5.)  # 1.6
+    """
+
+    def __init__(self, breaks, slopes):
+        self.check_spec({"breaks": breaks, "slopes": slopes})
+        self.breaks = [float(b) for b in breaks]
+        self.slopes = [float(s) for s in slopes]
+
+    @staticmethod
+    def check_spec(spec):
+        """Refuse a malformed declaration ``{"breaks": [...], "slopes": [...]}``.
+
+        Parameters
+        ----------
+        spec : object
+            Proposed declaration.
+
+        Returns
+        -------
+        dict
+            The declaration, unchanged.
+
+        Raises
+        ------
+        ValueError
+            Keys differ, a break is not positive or not strictly increasing, the slopes are not one more than the
+            breaks, the first slope is not 1, or a slope rises or is negative.
+        """
+        message = ("value_transform must be {breaks: strictly increasing positive numbers, slopes: one more "
+                   "nonincreasing numbers >= 0, the first 1}")
+        if (not isinstance(spec, dict) or set(spec) != {"breaks", "slopes"}
+                or not isinstance(spec["breaks"], list) or not isinstance(spec["slopes"], list)
+                or not spec["breaks"] or len(spec["slopes"]) != len(spec["breaks"])+1
+                or any(isinstance(v, bool) or not number_ok(v) for v in spec["breaks"]+spec["slopes"])):
+            raise ValueError(message)
+        breaks, slopes = spec["breaks"], spec["slopes"]
+        if (breaks[0] <= 0 or any(b <= a for a, b in zip(breaks, breaks[1:])) or slopes[0] != 1
+                or any(b > a for a, b in zip(slopes, slopes[1:])) or slopes[-1] < 0):
+            raise ValueError(message)
+        return spec
+
+    @classmethod
+    def from_spec(cls, spec):
+        """Return the transform a declaration accepted by :meth:`check_spec` names."""
+        cls.check_spec(spec)
+        return cls(spec["breaks"], spec["slopes"])
+
+    def u(self, t):
+        """Return ``u(t)``: ``t`` up to the first break, then the declared slopes."""
+        t = float(t)
+        if t <= self.breaks[0]:
+            return t
+        value, left = self.breaks[0], self.breaks[0]
+        for slope, right in zip(self.slopes[1:], self.breaks[1:]+[math.inf]):
+            if t <= right:
+                return value+slope*(t-left)
+            value, left = value+slope*(right-left), right
+        return value   # unreachable: the last segment is unbounded
+
+    def excess(self, value, reserve):
+        """Return ``value - reserve u(value / reserve)`` (0 at a nonpositive reserve: the raw value stands)."""
+        if reserve <= 0:
+            return 0.
+        return max(0., float(value)-float(reserve)*self.u(float(value)/float(reserve)))
+
+    def action_charges(self, group, deductions=None):
+        """Return each action's transform charge in a transport group, one contract at a time.
+
+        Parameters
+        ----------
+        group : dict
+            A :class:`TransportPortfolioSolve` group (credit, losses, grid, masses, radius, scale, reserve_rows).
+        deductions : sequence of float or None
+            Per-contract charges already taken from each action's value (a carry charge), subtracted before
+            the ratio is formed so the transform reads the charged value.
+
+        Returns
+        -------
+        list of float
+            ``v_j - r_j u(v_j / r_j)`` per action: ``v_j`` its credit less its W1-worst expected loss at the
+            group's own radius and scale (less its deduction), ``r_j`` the largest of the reserve rows at one
+            contract of it alone (0 when none is positive). An action whose nominal value is already at or
+            under the first break times its reserve is charged 0 without a worst-case solve (the robust value
+            is never above the nominal one).
+        """
+        import numpy as np
+
+        credit = np.asarray(group["credit"], dtype=float)
+        losses = np.asarray(group["losses"], dtype=float)
+        rows = np.asarray(group["reserve_rows"], dtype=float)
+        n = len(credit)
+        cut = np.zeros(n) if deductions is None else np.asarray(deductions, dtype=float)
+        if cut.shape != (n,) or not np.isfinite(cut).all():
+            raise ValueError("transform deductions must be one finite number per action")
+        reserve = np.maximum(0., rows.max(axis=0)) if rows.size else np.zeros(n)
+        nominal = credit-np.asarray(group["masses"], dtype=float) @ losses-cut
+        dual, charges = None, []
+        for j in range(n):
+            if reserve[j] <= 0 or nominal[j] <= self.breaks[0]*reserve[j]:
+                charges.append(0.)
+                continue
+            if dual is None:
+                dual = WassersteinDual(group["grid"], group["masses"], group["radius"], group["scale"])
+            worst = float(dual.distribution.worst_expected_loss(losses[:, j], group["radius"], group["scale"]))
+            charges.append(self.excess(float(credit[j])-worst-float(cut[j]), float(reserve[j])))
+        return charges
+
+
 class RecordedCheckRefusal(ValueError):
     """A foreign solve's evidence failed one named check on this host.
 
@@ -4021,6 +4156,20 @@ class TransportPortfolioSolve(PyomoSolve):
         scenario, so the certificate covers the restricted program.
         ``last_screen`` reports how many groups the last screen kept and
         dropped.
+        A group may also add action_charges (ADR-0305), a nonempty map from a
+        charge name to one finite nonnegative per-contract cost per action
+        (a carry charge, a separable :class:`ValueTransform` charge), and
+        hinge_charge {"price": s >= 0, "rows": [one coefficient per action,
+        ...]}, which costs ``s * max(0, max_r row_r . x)`` through one
+        nonnegative auxiliary per group. Both are subtracted from the
+        group's value; group_values stay credit minus the W1-worst loss. The
+        selection then adds action_charges ({name: one charge per group})
+        and hinge_charges (one per group), each only when some group
+        declares it, and value is the group values less every charge. The
+        LP screen subtracts the linear charges and leaves the hinge out (a
+        looser but valid bound). An exclusive pair stays a binary side when
+        a round trip of it could lower a hinge row. Neither key combines
+        with a utility.
 
     Examples
     --------
@@ -4122,7 +4271,7 @@ class TransportPortfolioSolve(PyomoSolve):
         required = {"id", "grid", "masses", "radius", "scale", "credit",
                     "losses", "capacity", "exclusive", "reserve_rows", "linear_rows"}
         for g in groups:
-            if not isinstance(g, dict) or set(g)-{"risk_charge"} != required:
+            if not isinstance(g, dict) or set(g)-{"risk_charge", *cls._ACTION_CHARGE_KEYS} != required:
                 raise ValueError("group fields differ from contract")
             if not isinstance(g["id"], str) or not g["id"] or g["id"] in ids:
                 raise ValueError("group identities must be unique")
@@ -4152,6 +4301,9 @@ class TransportPortfolioSolve(PyomoSolve):
                         or len(row["coefficients"]) != n
                         or any(not number_ok(c) for c in row["coefficients"])):
                     raise ValueError("invalid linear row or cash infeasible")
+            cls._checked_action_charges(g, n)
+        if inputs.get("utility") is not None and any(k in g for g in groups for k in cls._ACTION_CHARGE_KEYS):
+            raise ValueError("action_charges and hinge_charge do not combine with a utility")
         for cap in caps:
             if (not isinstance(cap, dict) or set(cap) != {"groups", "upper"}
                     or not isinstance(cap["groups"], list) or not cap["groups"]
@@ -4173,6 +4325,55 @@ class TransportPortfolioSolve(PyomoSolve):
             return None
         charge = DeviationCharge.from_spec(group["risk_charge"], group["masses"])
         return charge if charge.active else None
+
+    #: The optional per-action charge keys of a group (ADR-0305): named linear costs and one priced hinge.
+    _ACTION_CHARGE_KEYS = ("action_charges", "hinge_charge")
+
+    @staticmethod
+    def _checked_action_charges(group, n):
+        """Normalize a group's action_charges and hinge_charge in place; refuse a malformed one."""
+        import numpy as np
+
+        if "action_charges" in group:
+            named = group["action_charges"]
+            if (not isinstance(named, dict) or not named
+                    or any(not isinstance(k, str) or not k for k in named)):
+                raise ValueError("action_charges must be a nonempty map of named per-action costs")
+            for name, row in named.items():
+                a = np.asarray(row, dtype=float) if isinstance(row, (list, tuple)) else None
+                if a is None or a.shape != (n,) or not np.isfinite(a).all() or (a < 0).any():
+                    raise ValueError("each action charge must be one finite nonnegative cost per action")
+                named[name] = a.tolist()
+        if "hinge_charge" in group:
+            hinge = group["hinge_charge"]
+            if (not isinstance(hinge, dict) or set(hinge) != {"price", "rows"}
+                    or isinstance(hinge["price"], bool) or not number_ok(hinge["price"]) or hinge["price"] < 0
+                    or not isinstance(hinge["rows"], list) or not hinge["rows"]):
+                raise ValueError("hinge_charge must be {price: a finite number >= 0, rows: a nonempty list}")
+            rows = np.asarray(hinge["rows"], dtype=float)
+            if rows.ndim != 2 or rows.shape[1] != n or not np.isfinite(rows).all():
+                raise ValueError("each hinge row must be one finite coefficient per action")
+            hinge["price"], hinge["rows"] = float(hinge["price"]), rows.tolist()
+
+    @staticmethod
+    def _linear_charge(group):
+        """Return the group's summed per-action linear charge, None when it declares none."""
+        import numpy as np
+
+        if "action_charges" not in group:
+            return None
+        return np.sum([np.asarray(row, dtype=float) for row in group["action_charges"].values()], axis=0)
+
+    @staticmethod
+    def _declared_action_keys(groups):
+        """Return the selection keys the ADR-0305 charges add: action_charges and/or hinge_charges, when declared."""
+        return tuple(key for key, field in (("action_charges", "action_charges"), ("hinge_charges", "hinge_charge"))
+                     if any(field in g for g in groups))
+
+    @staticmethod
+    def _hinged(group):
+        """Return whether the group carries a priced hinge (one auxiliary in the model)."""
+        return "hinge_charge" in group and group["hinge_charge"]["price"] > 0
 
     @staticmethod
     def _checked_terms(terms, sizes, what):
@@ -4385,7 +4586,10 @@ class TransportPortfolioSolve(PyomoSolve):
             rows[r, :n] = np.asarray(row["coefficients"], dtype=float)
             rhs.append(float(row["upper"]))
             r += 1
-        cost = np.r_[-np.asarray(group["credit"], dtype=float),
+        linear = TransportPortfolioSolve._linear_charge(group)
+        # A linear action charge (ADR-0305) only lowers every book's value; the hinge, nonnegative, is left out.
+        action = -np.asarray(group["credit"], dtype=float)
+        cost = np.r_[action if linear is None else action+linear,
                      np.asarray(group["masses"], dtype=float), float(group["radius"])]
         bounds = ([(0., float(c)) for c in group["capacity"]]
                   + [(None, None)]*m + [(0., None)])
@@ -4490,8 +4694,12 @@ class TransportPortfolioSolve(PyomoSolve):
         ``joint`` holds the group's coefficient lists from every joint row:
         a pair that loosens one (a negative pair sum) is not a pure cost.
         """
+        # A hinge row a round trip lowers (ADR-0305: a near-spot leg offsets the other right's premium) could pay
+        # for the round trip, so that pair keeps its binary side; the linear action charges are nonnegative.
+        hinge = group.get("hinge_charge", {}).get("rows", ()) if group.get("hinge_charge", {}).get("price") else ()
         return (all(row[a] == -row[b] for row in group["losses"])
                 and group["credit"][a] < -group["credit"][b]
+                and all(float(row[a]) >= -float(row[b]) for row in hinge)
                 and all(float(row[a]) >= -float(row[b]) for row in group["reserve_rows"])
                 and all(float(row["coefficients"][a]) >= -float(row["coefficients"][b])
                         for row in group["linear_rows"])
@@ -4600,6 +4808,7 @@ class TransportPortfolioSolve(PyomoSolve):
         self._groups, self._caps, self._duals, self._joint = groups, caps, duals, joint
         self._charges, self._utility = charges, utility
         self._charged = any(charge is not None for charge in charges)
+        self._action_keys = self._declared_action_keys(groups)
         self._active = active = self._screened(groups)
         m = ConcreteModel()
         indices = [(i, j) for i in active for j in range(len(groups[i]["capacity"]))]
@@ -4612,6 +4821,10 @@ class TransportPortfolioSolve(PyomoSolve):
         pairs = [(i, k) for i in active for k in range(len(groups[i]["exclusive"]))
                  if (i, k) not in self._redundant]
         m.side = Var(pairs, domain=Binary)
+        hinged = [i for i in active if self._hinged(groups[i])]
+        if hinged:
+            # ADR-0305: one nonnegative auxiliary per hinged group, at least every hinge row (its least value is the max).
+            m.hinge = Var(hinged, domain=NonNegativeReals)
         m.rows = ConstraintList()
         values = []
         for i in active:
@@ -4638,6 +4851,14 @@ class TransportPortfolioSolve(PyomoSolve):
             value = dot(g["credit"])-cost
             if charges[i] is not None:
                 value = value-charges[i].attach(m, losses, name=f"risk_{i}").cost
+            linear = self._linear_charge(g)
+            if linear is not None:
+                value = value-dot(linear.tolist())
+            if self._hinged(g):
+                for row in g["hinge_charge"]["rows"]:
+                    expr = dot(row)
+                    m.rows.add(m.hinge[i] >= expr)
+                value = value-g["hinge_charge"]["price"]*m.hinge[i]
             values.append(value)
         lookup = {g["id"]: i for i, g in enumerate(groups)}
         for cap in caps:
@@ -4976,6 +5197,8 @@ class TransportPortfolioSolve(PyomoSolve):
                    "canonicalization": cleanup}
         if self._charged:
             audited["risk_charges"] = scored["risk_charges"]
+        for key in self._action_keys:
+            audited[key] = scored[key]
         if self._utility is not None:
             audited["utility"] = scored["utility"]
         return audited
@@ -4988,7 +5211,19 @@ class TransportPortfolioSolve(PyomoSolve):
         not touch, so the model's own change is zero; the dollar gain is then no part of the
         comparison and the audit (``model_over_audit``) values what the cleanup bought.
         """
-        return 0. if self._utility is not None else cleanup["profit_gain"]
+        if self._utility is not None:
+            return 0.
+        gain = cleanup["profit_gain"]
+        if "action_charges" in self._action_keys:
+            # ADR-0305: the model's profit also loses each cancelled contract's linear charges (the hinge reads its
+            # auxiliary, which a cleanup of a pair that cannot lower any hinge row leaves feasible and unchanged).
+            lookup = {g["id"]: g for g in self._groups}
+            for pair in cleanup["pairs"]:
+                linear = self._linear_charge(lookup[pair["group"]])
+                if linear is not None:
+                    a, b = pair["pair"]
+                    gain += pair["matched_quantity"]*float(linear[a]+linear[b])
+        return gain
 
     def _program(self):
         """Return the checked program the built model stands for."""
@@ -5009,6 +5244,10 @@ class TransportPortfolioSolve(PyomoSolve):
                   "group_values": [0.]*len(zero), "value": 0.}
         if self._charged:
             chosen["risk_charges"] = [0.]*len(zero)
+        if "action_charges" in self._action_keys:
+            chosen["action_charges"] = {name: [0.]*len(zero) for name in TransportActionScore._charge_names(self._groups)}
+        if "hinge_charges" in self._action_keys:
+            chosen["hinge_charges"] = [0.]*len(zero)
         if self._utility is not None:
             chosen["utility"] = TransportActionScore(
                 self._program(), {"parity_tolerance": self.params["parity_tolerance"]}).value(zero)["utility"]
@@ -5206,7 +5445,8 @@ class TransportPortfolioSolve(PyomoSolve):
         json.dumps([selection, certificates], allow_nan=False)
         required = {"quantities", "reserves", "group_values", "value", "model_value",
                     "bound", "gap", "canonicalization", "primary_quantities"}
-        if (not isinstance(selection, dict) or set(selection)-{"risk_charges", "utility"} != required
+        if (not isinstance(selection, dict)
+                or set(selection)-{"risk_charges", "utility", "action_charges", "hinge_charges"} != required
                 or not isinstance(certificates, list) or len(certificates) != 1):
             raise ValueError("incomplete recorded selection")
         certificate = certificates[0]
@@ -5249,6 +5489,8 @@ class TransportPortfolioSolve(PyomoSolve):
             raise ValueError("recorded risk charges differ from the program")
         if ("utility" in selection) != (self._utility is not None):
             raise ValueError("recorded utility differs from the program")
+        if any((key in selection) != (key in self._action_keys) for key in ("action_charges", "hinge_charges")):
+            raise ValueError("recorded action charges differ from the program")
         for key, component in (("variables", Var), ("constraints", Constraint)):
             expected = sum(1 for _ in model.component_data_objects(component, active=True))
             if type(certificate[key]) is not int or certificate[key] != expected:
@@ -5294,17 +5536,21 @@ class TransportPortfolioSolve(PyomoSolve):
                 or (not missing_bound and (certificate["bound"] < certificate["objective"]-tol
                     or certificate["bound"] < audited["value"]-tol))):
             raise ValueError("invalid recorded primary valuation")
-        charged = ("risk_charges",) if self._charged else ()
+        charged = (("risk_charges",) if self._charged else ())+tuple(k for k in self._action_keys if k != "action_charges")
         if audited["value"] <= 0:
             audited.update(self._cash())
+        named = selection.get("action_charges", {})
         if (not isinstance(selection["quantities"], list)
                 or any(not isinstance(q, list) or any(type(v) is not int for v in q)
                        for q in selection["quantities"])
                 or any(not isinstance(selection[k], list)
                        or any(not number_ok(v) for v in selection[k])
-                       for k in ("reserves", "group_values", *charged))):
+                       for k in ("reserves", "group_values", *charged))
+                or not isinstance(named, dict)
+                or any(not isinstance(v, list) or any(not number_ok(c) for c in v) for v in named.values())):
             raise ValueError("invalid recorded final audit types")
         audited_keys = ("quantities", "reserves", "group_values", "value", *charged,
+                        *(("action_charges",) if "action_charges" in self._action_keys else ()),
                         *(("utility",) if self._utility is not None else ()))
         for key in audited_keys:
             claimed, audit = selection[key], audited[key]
@@ -5630,6 +5876,11 @@ class TransportActionScore:
             return {"feasible": False, "reason": str(exc)}
         return {"feasible": True, "reason": None}
 
+    @staticmethod
+    def _charge_names(groups):
+        """Return every action-charge name any group declares, sorted (ADR-0305)."""
+        return sorted({name for g in groups for name in g.get("action_charges", {})})
+
     def _value_components(self, quantities, reserves):
         """Calculate economic components for normalized integer quantities."""
         import numpy as np
@@ -5654,6 +5905,25 @@ class TransportActionScore:
             "value": float(sum(group_values)-sum(risk_charges)),
             "program_identity": self.program_identity,
         }
+        keys = TransportPortfolioSolve._declared_action_keys(self.groups)
+        if keys:
+            # ADR-0305: the raw robust group values stay as they are; each charge is its own field and net_values is
+            # what the objective counts per group (group value less its risk, action and hinge charges).
+            names = self._charge_names(self.groups)
+            named = {name: [float(np.dot(group.get("action_charges", {}).get(name, [0.]*len(action)), action))
+                            for group, action in zip(self.groups, quantities)] for name in names}
+            hinges = [float(group["hinge_charge"]["price"]*max(0., *(np.asarray(group["hinge_charge"]["rows"]) @
+                                                                   np.asarray(action, dtype=float))))
+                      if "hinge_charge" in group else 0. for group, action in zip(self.groups, quantities)]
+            net = [float(v-r-sum(named[name][i] for name in names)-hinges[i])
+                   for i, (v, r) in enumerate(zip(group_values, risk_charges))]
+            if "action_charges" in keys:
+                result["action_charges"] = named
+            if "hinge_charges" in keys:
+                result["hinge_charges"] = hinges
+            result["net_values"] = net
+            result["value"] = float(sum(group_values)-sum(risk_charges)
+                                    - sum(sum(v) for v in named.values())-sum(hinges))
         if self.utility is not None:
             # The objective is the W0-scaled expected envelope utility less the charges; the dollar group values
             # stay beside it.

@@ -6351,3 +6351,169 @@ def test_transport_portfolio_group_screen_keep_retains_the_largest_relaxed_value
                 {"group_screen": "none", "group_screen_keep": 1}):
         assert TransportPortfolioSolve.validate_params({**_screen_params("lp"), **bad})
     assert not TransportPortfolioSolve.validate_params({**_screen_params("lp"), "group_screen_keep": 3})
+
+
+# ---------------------------------------------------------------------------
+# ADR-0305: per-action charges (carry, separable value transform) and the priced hinge
+# ---------------------------------------------------------------------------
+
+_VT = {"breaks": [1., 3.], "slopes": [1., .3, 0.]}
+
+
+def _one_long(gid, premium, payoff):
+    """One long option: costs ``premium``, pays ``payoff`` in the up outcome of two equally likely ones."""
+    return {"id": gid, "grid": [0., 1.], "masses": [.5, .5], "radius": 0., "scale": 1.,
+            "credit": [-float(premium)], "losses": [[0.], [-float(payoff)]], "capacity": [1],
+            "exclusive": [], "reserve_rows": [[float(premium)]], "linear_rows": []}
+
+
+def _calibration_pair():
+    """A lottery valued 5x its reserve and a book valued 1.2x; the shared cap holds only one."""
+    return {"groups": [_one_long("lottery", 300., 3600.), _one_long("modest", 1000., 4400.)],
+            "caps": [{"groups": ["lottery", "modest"], "upper": 1000.}]}
+
+
+@pytest.mark.parametrize("spec", [
+    {"breaks": [3., 1.], "slopes": [1., .3, 0.]}, {"breaks": [0., 3.], "slopes": [1., .3, 0.]},
+    {"breaks": [1., 3.], "slopes": [.9, .3, 0.]}, {"breaks": [1., 3.], "slopes": [1., .3, .5]},
+    {"breaks": [1., 3.], "slopes": [1., .3, -.1]}, {"breaks": [1., 3.], "slopes": [1., .3]},
+    {"breaks": [], "slopes": [1.]}, {"breaks": [1., 3.], "slopes": [True, .3, 0.]},
+    {"breaks": [1., float("nan")], "slopes": [1., .3, 0.]}, {"breaks": [1.], "slopes": [1., 0.], "k": 1},
+    None, [1., 3.],
+])
+def test_transport_value_transform_refuses_bad_breaks_and_slopes(spec):
+    from dskit.pipeline.libs.pyomo import ValueTransform
+
+    with pytest.raises(ValueError, match="value_transform"):
+        ValueTransform.from_spec(spec)
+
+
+def test_transport_value_transform_u_and_separable_excess():
+    """u is the identity to 1x, slope .3 to 3x, flat beyond; a one-leg book's charge is v - r u(v / r)."""
+    from dskit.pipeline.libs.pyomo import ValueTransform
+
+    u = ValueTransform.from_spec(_VT)
+    assert [u.u(t) for t in (-2., .5, 1., 2., 3., 5., 1e6)] == pytest.approx([-2., .5, 1., 1.3, 1.6, 1.6, 1.6])
+    assert u.excess(1500., 300.) == pytest.approx(1500.-300.*1.6)
+    assert u.excess(500., 0.) == 0. and u.excess(-50., 100.) == 0.
+    pair = _calibration_pair()
+    assert u.action_charges(pair["groups"][0]) == [pytest.approx(1020.)]
+    assert u.action_charges(pair["groups"][1]) == [pytest.approx(1200.-1060.)]
+    # A carry deduction is taken before the ratio: (1500 - 300) / 300 = 4x -> 1200 - 480.
+    assert u.action_charges(pair["groups"][0], [300.]) == [pytest.approx(720.)]
+    radius = {**pair["groups"][0], "radius": .2}
+    # The charge reads the robust value: radius .2 moves .2 of the mass off the payoff, 780 = 2.6x -> 300 u(2.6) = 444.
+    assert u.action_charges(radius) == [pytest.approx(780.-444.)]
+
+
+def test_transport_value_transform_prefers_the_calibrated_book_and_scores_raw_and_net():
+    """Raw value buys the 5x lottery; the transform's charges buy the 1.2x book; both values are reported."""
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportActionScore, TransportPortfolioSolve, ValueTransform
+
+    params = _screen_params("none")
+    raw = TransportPortfolioSolve("raw", params).run(None, _calibration_pair())["selection"]
+    assert raw["quantities"] == [[1], [0]] and raw["value"] == pytest.approx(1500.)
+    assert "action_charges" not in raw and "hinge_charges" not in raw
+    program = _calibration_pair()
+    u = ValueTransform.from_spec(_VT)
+    for group in program["groups"]:
+        group["action_charges"] = {"transform": u.action_charges(group)}
+    chosen = TransportPortfolioSolve("transformed", params).run(None, copy.deepcopy(program))["selection"]
+    assert chosen["quantities"] == [[0], [1]]
+    assert chosen["group_values"] == [0., pytest.approx(1200.)], "group_values stay raw"
+    assert chosen["action_charges"] == {"transform": [0., pytest.approx(140.)]}
+    assert chosen["value"] == pytest.approx(1060.)
+    score = TransportActionScore(program, {"parity_tolerance": 1e-9})
+    for quantities, net in (([[1], [0]], [480., 0.]), ([[0], [1]], [0., 1060.])):
+        scored = score.value(quantities)
+        assert scored["net_values"] == [pytest.approx(v) for v in net]
+        assert scored["value"] == pytest.approx(sum(net))
+        assert sum(scored["group_values"]) == pytest.approx(1500. if quantities[0][0] else 1200.)
+    claimed = {k: v for k, v in chosen.items() if k != "certificates"}
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in chosen["certificates"]]
+    replay = TransportPortfolioSolve("replay", params)._recorded(program, claimed, certificates)
+    assert {k: v for k, v in replay.items() if k != "certificates"} == claimed
+    derived = TransportPortfolioSolve("derived", params).derived(
+        program, TransportPortfolioSolve.actions(chosen), certificates)["selection"]
+    assert {k: v for k, v in derived.items() if k not in ("certificates",)}["action_charges"] == chosen["action_charges"]
+    assert derived["quantities"] == chosen["quantities"] and derived["value"] == pytest.approx(chosen["value"])
+    bad = copy.deepcopy(claimed)
+    bad["action_charges"]["transform"][1] += 1.
+    with pytest.raises(ValueError, match="differs: action_charges"):
+        TransportPortfolioSolve("replay", params)._recorded(program, bad, certificates)
+    with pytest.raises(ValueError, match="action charges differ"):
+        TransportPortfolioSolve("replay", params)._recorded(
+            program, {k: v for k, v in claimed.items() if k != "action_charges"}, certificates)
+    with pytest.raises(ValueError, match="action charges differ"):
+        TransportPortfolioSolve("replay", params)._recorded(_calibration_pair(), claimed, certificates)
+
+
+def _straddle(put_premium=520., price=.5):
+    """A long call and a long put at the money; the call alone is worth 100, the pair 80 (the put loses 20)."""
+    group = {"id": "s", "grid": [80., 100., 120.], "masses": [.25, .5, .25], "radius": 0., "scale": 100.,
+             "credit": [-400., -float(put_premium)], "losses": [[0., -2000.], [0., 0.], [-2000., 0.]],
+             "capacity": [1, 1], "exclusive": [], "reserve_rows": [[400., float(put_premium)]], "linear_rows": []}
+    if price is not None:
+        # Each right's net long premium less the other right's near-spot premium: max(0, a_c) + max(0, a_p).
+        a_c, a_p = [400., -float(put_premium)], [-400., float(put_premium)]
+        group["hinge_charge"] = {"price": price, "rows": [a_c, a_p, [x+y for x, y in zip(a_c, a_p)]]}
+    return {"groups": [group], "caps": [{"groups": ["s"], "upper": 1e4}]}
+
+
+def test_transport_hinge_charge_moves_the_single_call_to_the_straddle_and_replays():
+    """The hinge charges the call alone half its premium and the balanced pair almost nothing."""
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportActionScore, TransportPortfolioSolve
+
+    params = _screen_params("none")
+    plain = TransportPortfolioSolve("plain", params).run(None, _straddle(price=None))["selection"]
+    assert plain["quantities"] == [[1, 0]] and plain["value"] == pytest.approx(100.)
+    program = _straddle()
+    chosen = TransportPortfolioSolve("hinged", params).run(None, copy.deepcopy(program))["selection"]
+    assert chosen["quantities"] == [[1, 1]]
+    assert chosen["hinge_charges"] == [pytest.approx(.5*120.)] and "action_charges" not in chosen
+    assert chosen["group_values"] == [pytest.approx(80.)] and chosen["value"] == pytest.approx(20.)
+    score = TransportActionScore(program, {"parity_tolerance": 1e-9})
+    alone = score.value([[1, 0]])
+    assert alone["hinge_charges"] == [pytest.approx(200.)] and alone["net_values"] == [pytest.approx(-100.)]
+    assert score.value([[1, 1]])["hinge_charges"] == [pytest.approx(60.)]
+    claimed = {k: v for k, v in chosen.items() if k != "certificates"}
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in chosen["certificates"]]
+    replay = TransportPortfolioSolve("replay", params)._recorded(program, claimed, certificates)
+    assert {k: v for k, v in replay.items() if k != "certificates"} == claimed
+    bad = copy.deepcopy(claimed)
+    bad["hinge_charges"][0] = 0.
+    with pytest.raises(ValueError, match="recorded"):
+        TransportPortfolioSolve("replay", params)._recorded(program, bad, certificates)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("action_charges", {}), ("action_charges", {"carry": [-1., 0.]}), ("action_charges", {"carry": [1.]}),
+    ("action_charges", {"": [0., 0.]}), ("action_charges", {"carry": [float("inf"), 0.]}), ("action_charges", [0., 0.]),
+    ("hinge_charge", {"price": -1., "rows": [[0., 0.]]}), ("hinge_charge", {"price": 1., "rows": []}),
+    ("hinge_charge", {"price": 1., "rows": [[0.]]}), ("hinge_charge", {"price": True, "rows": [[0., 0.]]}),
+    ("hinge_charge", {"price": 1.}),
+])
+def test_transport_action_charges_refuse_malformed_declarations(field, value):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    program = _straddle(price=None)
+    program["groups"][0][field] = value
+    with pytest.raises(ValueError):
+        TransportPortfolioSolve("bad", _screen_params("none")).run(None, program)
+
+
+def test_transport_hinge_keeps_a_round_trip_that_would_offset_it_binary():
+    """A buy and a sell of one near-spot put both offset the call's premium: that pair is not cancelled freely."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    group = {"credit": [-410., 390.], "losses": [[-5., 5.], [0., 0.]], "reserve_rows": [[410., -390.]],
+             "linear_rows": []}
+    assert TransportPortfolioSolve._costly_roundtrip(group, 0, 1)
+    gross = {**group, "hinge_charge": {"price": .5, "rows": [[-410., -390.]]}}
+    assert not TransportPortfolioSolve._costly_roundtrip(gross, 0, 1)
+    own = {**group, "hinge_charge": {"price": .5, "rows": [[410., -390.]]}}   # the put's own right: buy minus sell
+    assert TransportPortfolioSolve._costly_roundtrip(own, 0, 1)
+    free = {**gross, "hinge_charge": {"price": 0., "rows": [[-410., -390.]]}}
+    assert TransportPortfolioSolve._costly_roundtrip(free, 0, 1)

@@ -1333,7 +1333,25 @@ class WeeklyOptionPortfolioStudy:
         instead of the spot, so rho is a radius in volatility units; the
         solver, the LP screen, the certificates and the derived and recorded
         replays all read that one scale. An absent key leaves every group and
-        every result unchanged. Optional method key kelly (ADR-0299) replaces
+        every result unchanged. ADR-0305 (hindsight stage-one candidates, IN-SAMPLE
+        on the four selection quarters): risk_charge {"measure": "carry",
+        "price": c0, "horizon": D0} charges every bought leg c0 x max(0,
+        (D0 - DTE)/D0) x its premium (DTE in calendar days), in place of a
+        deviation charge; optional single_leg_charge s (a fraction of premium
+        dollars) charges s x max(0, a_call) + s x max(0, a_put), a_r the right's
+        net long premium less the premium of every leg of the other right
+        within 10% of spot (one hinge auxiliary per group; an exclusive pair a
+        round trip could use to offset keeps its binary side); optional
+        value_transform {"breaks": [...], "slopes": [...]} charges each leg
+        the excess of its one-contract robust value (less its carry) over its
+        one-contract reserve times the concave u (pyomo ValueTransform, the
+        separable form: a one-leg book gets exactly reserve x u(value /
+        reserve)). Each passes to the solver groups as action_charges
+        (carry, transform) and hinge_charge; each selected book records
+        carry_charge, transform_charge and single_leg_charge beside its raw
+        expected, only when declared, and the weekly_decision event's
+        audited_selection adds raw_value and the charge totals. A zero price
+        or absent key leaves the program and records unchanged. Optional method key kelly (ADR-0299) replaces
         the dollar objective by a fractional-Kelly growth objective of account
         wealth: exactly fraction (0 to 1, the Kelly fraction; the solver's
         gamma is its reciprocal, CRRA, roughly fraction times the Kelly stake),
@@ -1424,7 +1442,12 @@ class WeeklyOptionPortfolioStudy:
                "correlation_threshold", "solver", "methods")
     _METHOD_KEYS = {"id", "rho", "portfolio_fraction", "name_fraction", "component_fraction"}
     _OPTIONAL_METHOD_KEYS = {"reserve_per_contract", "short_notional_fraction", "shock", "risk_charge", "radius_scale",
-                             "kelly", "sizer"}
+                             "kelly", "sizer", "single_leg_charge", "value_transform"}
+    #: ADR-0305: the risk_charge measure that prices a long leg's premium by its horizon (``c0 max(0, (D0 - DTE)/D0)``,
+    #: DTE in calendar days to expiry as the metadata measures it) instead of a deviation of the book's loss.
+    _CARRY = "carry"
+    #: ADR-0305: a leg of the other right within this fraction of spot offsets a right's net long premium.
+    _SINGLE_LEG_NEAR = .10
     _RADIUS_SCALE = "reference_scale"
     _CHARGE_KEYS = ("reserve_per_contract", "short_notional_fraction")
     _SHOCK_KEYS = {"moves", "loss_fraction", "beta_lookback"}
@@ -1468,7 +1491,7 @@ class WeeklyOptionPortfolioStudy:
     #: tail a normal law lacks, the lowest with a finite variance to match the basket's.
     _KELLY_TAIL_DF = 4
     #: What a kelly method may not also declare: every sizing cap, and the dollar-objective controls.
-    _KELLY_EXCLUDES = ("shock", "risk_charge", "radius_scale")
+    _KELLY_EXCLUDES = ("shock", "risk_charge", "radius_scale", "single_leg_charge", "value_transform")
     #: The least ``short_notional_fraction`` a kelly method must declare, the value the other formulations use: without
     #: the margin a zero-reserve box or reversal hybrid is free leverage to a growth objective (ADR-0299 audit).
     KELLY_SHORT_NOTIONAL_FLOOR = .2
@@ -1638,6 +1661,10 @@ class WeeklyOptionPortfolioStudy:
                     or any(not number_ok(v) or v < 0 for v in cls._charge(method).values())
                     or ("shock" in method and not cls._shock_valid(method["shock"]))
                     or ("risk_charge" in method and not cls._risk_charge_valid(method["risk_charge"]))
+                    or ("single_leg_charge" in method and (isinstance(method["single_leg_charge"], bool)
+                                                           or not number_ok(method["single_leg_charge"])
+                                                           or method["single_leg_charge"] < 0))
+                    or ("value_transform" in method and not cls._value_transform_valid(method["value_transform"]))
                     or ("radius_scale" in method and (type(method["radius_scale"]) is not str
                                                       or method["radius_scale"] != cls._RADIUS_SCALE))
                     or ("kelly" in method and not cls._kelly_valid(method))
@@ -1860,17 +1887,71 @@ class WeeklyOptionPortfolioStudy:
         """Return whether a risk_charge declaration is one the solver accepts."""
         from dskit.pipeline.libs.pyomo import DeviationCharge
 
+        if isinstance(spec, dict) and spec.get("measure") == WeeklyOptionPortfolioStudy._CARRY:
+            # ADR-0305: {measure: carry, price: c0 >= 0 (share of a long leg's premium at DTE 0), horizon: D0 > 0}.
+            return (set(spec) == {"measure", "price", "horizon"}
+                    and all(not isinstance(spec[k], bool) and number_ok(spec[k]) for k in ("price", "horizon"))
+                    and spec["price"] >= 0 and spec["horizon"] > 0)
         try:
             DeviationCharge.check_spec(spec)
         except ValueError:
             return False
         return True
 
-    @staticmethod
-    def _risk_charge(method):
-        """Return the method's priced risk_charge, None when undeclared or kappa is 0."""
+    @classmethod
+    def _risk_charge(cls, method):
+        """Return the method's priced deviation risk_charge, None when undeclared, kappa is 0 or it is the carry."""
         spec = method.get("risk_charge")
-        return spec if spec is not None and spec["price"] > 0 else None
+        return spec if spec is not None and spec["measure"] != cls._CARRY and spec["price"] > 0 else None
+
+    @classmethod
+    def _carry(cls, method):
+        """Return the method's priced carry declaration (ADR-0305), None when undeclared or c0 is 0."""
+        spec = method.get("risk_charge")
+        return spec if spec is not None and spec["measure"] == cls._CARRY and spec["price"] > 0 else None
+
+    @staticmethod
+    def _value_transform_valid(spec):
+        """Return whether a value_transform declaration is one :class:`ValueTransform` accepts (ADR-0305)."""
+        from dskit.pipeline.libs.pyomo import ValueTransform
+
+        try:
+            ValueTransform.check_spec(spec)
+        except ValueError:
+            return False
+        return True
+
+    @classmethod
+    def _hindsight_terms(cls, method, group, meta, mult):
+        """Return the ADR-0305 group keys a method's carry, single-leg charge and value transform add (or none).
+
+        Carry: every bought leg costs ``c0 max(0, (D0 - DTE)/D0)`` times its premium (price x multiplier, the
+        haircut price the solver pays). Single leg: ``s max(0, a_call) + s max(0, a_put)`` through one hinge,
+        ``a_r`` the right's net long premium (bought less sold) less the premium of every leg, bought or sold, of
+        the other right within :attr:`_SINGLE_LEG_NEAR` of spot. Value transform: each leg's separable
+        :meth:`ValueTransform.action_charges` on its one-contract robust value less its carry, at the method's
+        radius and scale (``group`` is the configured group). A zero price is no key: the program is unchanged.
+        """
+        from dskit.pipeline.libs.pyomo import ValueTransform
+
+        items, extra, named = meta["items"], {}, {}
+        carry = cls._carry(method)
+        if carry is not None:
+            rate = carry["price"]*max(0., (carry["horizon"]-meta["dte"])/carry["horizon"])
+            named["carry"] = [rate*i["price"]*mult if i["sign"] > 0 else 0. for i in items]
+        single = method.get("single_leg_charge", 0)
+        if single > 0:
+            near = cls._SINGLE_LEG_NEAR*meta["spot"]
+            rows = [[(i["sign"]*i["price"]*mult if i["right"] == right
+                      else -i["price"]*mult if abs(i["strike"]-meta["spot"]) <= near else 0.) for i in items]
+                    for right in ("call", "put")]
+            extra["hinge_charge"] = {"price": single, "rows": rows+[[a+b for a, b in zip(*rows)]]}
+        if "value_transform" in method:
+            named["transform"] = ValueTransform.from_spec(method["value_transform"]).action_charges(
+                group, named.get("carry"))
+        if named:
+            extra["action_charges"] = named
+        return extra
 
     @staticmethod
     def _loss_row(items, spot, mult):
@@ -2361,6 +2442,11 @@ class WeeklyOptionPortfolioStudy:
             if "risk_charges" in selection:
                 # expected stays the uncharged robust value; the charge is its own field.
                 books[-1]["risk_charge"] = selection["risk_charges"][i]
+            for name, charges in selection.get("action_charges", {}).items():
+                # ADR-0305: carry_charge and transform_charge beside the raw expected, only when declared.
+                books[-1][name+"_charge"] = charges[i]
+            if "hinge_charges" in selection:
+                books[-1]["single_leg_charge"] = selection["hinge_charges"][i]
         return books
 
     def _sizer_inputs(self, day, method, account):
@@ -3024,6 +3110,9 @@ class WeeklyOptionPortfolioStudy:
                                    + self._charge_coefficients(charge, meta["items"], mult),
                                    **({} if risk is None else {"risk_charge": dict(risk)})}
                                   for g, meta in zip(groups, metadata)]
+                    # ADR-0305: carry, single-leg and value-transform charges, only when the method declares them.
+                    configured = [{**g, **self._hindsight_terms(method, g, meta, mult)}
+                                  for g, meta in zip(configured, metadata)]
                     solver_params = p["solver"]
                     if kelly is not None and "max_groups" in kelly:
                         # ADR-0301: after the lp screen keep only the best max_groups groups by standalone relaxed value.
@@ -3170,6 +3259,14 @@ class WeeklyOptionPortfolioStudy:
                     certs = record.get("certificates", [])
                     audited = {k: selection.get(k) for k in ("value", "bound", "gap")
                                if k in selection}
+                    if "action_charges" in selection or "hinge_charges" in selection:
+                        # ADR-0305: value is the charged objective; raw_value is the uncharged robust value it came
+                        # from, and each charge's total says how far apart they are.
+                        audited["raw_value"] = sum(selection.get("group_values", []))
+                        audited["charges"] = {
+                            **({"risk": sum(selection["risk_charges"])} if "risk_charges" in selection else {}),
+                            **{name: sum(v) for name, v in selection.get("action_charges", {}).items()},
+                            **({"single_leg": sum(selection["hinge_charges"])} if "hinge_charges" in selection else {})}
                     events({"type": "weekly_decision", "method": method["id"], "date": day,
                             "status": record["status"], "candidate_books": record["candidate_books"],
                             "candidate_contracts": record["candidate_contracts"],
@@ -3637,6 +3734,20 @@ class MIOPacketCompare(StudyNode):
                        "stage1_reserve", "cash_limit_applied", "exposure", "tilt", "alternates")
 
     @staticmethod
+    def _charge_row(decision):
+        """Return a decision's ADR-0305 charge totals for its comparison row, or nothing when none was declared.
+
+        ``raw_value`` is the uncharged robust value of the selection (or of a sized week's stage 1, where the charges
+        were applied), beside each declared charge's total; the reading of a hindsight arm needs both.
+        """
+        selection = decision.get("stage1", {}).get("selection") or decision.get("selection", {})
+        if "action_charges" not in selection and "hinge_charges" not in selection:
+            return {}
+        return {"charges": {"raw_value": sum(selection["group_values"]),
+                            **{name: sum(v) for name, v in sorted(selection.get("action_charges", {}).items())},
+                            **({"single_leg": sum(selection["hinge_charges"])} if "hinge_charges" in selection else {})}}
+
+    @staticmethod
     def _kelly_dropped(decisions):
         """Return the names a kelly method dropped for a bad bar and the weeks of each (ADR-0299).
 
@@ -3684,7 +3795,8 @@ class MIOPacketCompare(StudyNode):
                         | ({"kelly": {k: decision["kelly"].get(k) for k in self._KELLY_ROW_KEYS}}
                            if "kelly" in decision else {})
                         | ({"sizer": {k: decision["sizer"].get(k) for k in self._SIZER_ROW_KEYS}}
-                           if "sizer" in decision else {}) for decision in result["decisions"]]
+                           if "sizer" in decision else {})
+                        | self._charge_row(decision) for decision in result["decisions"]]
                     if any("kelly" in d for d in result["decisions"]):
                         row["kelly_dropped"] = self._kelly_dropped(result["decisions"])
                     row["net_pnl"] = result["pnl"]

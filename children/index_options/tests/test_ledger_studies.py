@@ -4612,3 +4612,195 @@ def test_accept_uncertified_is_a_boolean_kelly_key(value, ok):
             ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
     top = TOP_FORMULATIONS["kelly025_top100_uncert_lp"]["kelly"]
     assert top == {**TOP_FORMULATIONS["kelly025_top100_lp"]["kelly"], "accept_uncertified": True}
+
+
+# --- ADR-0305: hindsight stage-one candidates (IN-SAMPLE on the four selection quarters) ---------------------------------
+
+#: C1: a long leg's premium costs c0 = 0.4 at DTE 0, falling linearly to 0 at D0 = 30 calendar days; an uncovered net
+#: long premium costs s = 0.5 of itself. C2: value per reserve is kept to 1x, 0.3 of it to 3x, none beyond.
+CARRY = {"measure": "carry", "price": .4, "horizon": 30}
+SINGLE_LEG = .5
+VALUE_TRANSFORM = {"breaks": [1., 3.], "slopes": [1., .3, 0.]}
+HINDSIGHT_FORMULATIONS = {
+    "w1_010_shock10_carry_lp": {**FORMULATIONS["w1_010_shock10_lp"], "risk_charge": CARRY,
+                                "single_leg_charge": SINGLE_LEG},
+    "w1_010_shock10_vt_lp": {**FORMULATIONS["w1_010_shock10_lp"], "value_transform": VALUE_TRANSFORM},
+    "w1_010_shock10_carry_vt_lp": {**FORMULATIONS["w1_010_shock10_lp"], "risk_charge": CARRY,
+                                   "single_leg_charge": SINGLE_LEG, "value_transform": VALUE_TRANSFORM},
+    # The carry_sized arm is not declared: carry is a risk_charge measure and ADR-0300's sizer refuses risk_charge.
+    "w1_010_shock10_vt_sized_lp": {**FORMULATIONS["w1_010_shock10_lp"], "value_transform": VALUE_TRANSFORM,
+                                   "sizer": SIZER},
+}
+
+
+def test_the_hindsight_formulations_validate_and_add_only_their_keys():
+    base = FORMULATIONS["w1_010_shock10_lp"]
+    for name, method in HINDSIGHT_FORMULATIONS.items():
+        params, _inputs = _weekly_portfolio_fixture()
+        params["methods"] = [{"id": name, **method}]
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+        assert {k: v for k, v in method.items() if k in base} == base, "the parent's keys are unchanged"
+    assert len(HINDSIGHT_FORMULATIONS) == 4 and len(FORMULATIONS) == 9
+    assert HINDSIGHT_FORMULATIONS["w1_010_shock10_vt_sized_lp"] == {**HINDSIGHT_FORMULATIONS["w1_010_shock10_vt_lp"],
+                                                                    "sizer": SIZER}
+    params, _inputs = _weekly_portfolio_fixture()
+    params["methods"] = [{"id": "carry_sized", **HINDSIGHT_FORMULATIONS["w1_010_shock10_carry_lp"], "sizer": SIZER}]
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+@pytest.mark.parametrize("key,value", [
+    ("risk_charge", {"measure": "carry", "price": -.1, "horizon": 30}),
+    ("risk_charge", {"measure": "carry", "price": .4, "horizon": 0}),
+    ("risk_charge", {"measure": "carry", "price": .4}),
+    ("risk_charge", {"measure": "carry", "price": .4, "horizon": 30, "floor": 0}),
+    ("risk_charge", {"measure": "carry", "price": True, "horizon": 30}),
+    ("single_leg_charge", -.5), ("single_leg_charge", "0.5"), ("single_leg_charge", True),
+    ("single_leg_charge", float("nan")),
+    ("value_transform", {"breaks": [3., 1.], "slopes": [1., .3, 0.]}),
+    ("value_transform", {"breaks": [1., 3.], "slopes": [1., .5, .6]}),
+    ("value_transform", {"breaks": [1., 3.], "slopes": [.8, .3, 0.]}),
+    ("value_transform", {"breaks": [1.], "slopes": [1., .3, 0.]}),
+])
+def test_the_hindsight_keys_refuse_bad_prices_breaks_and_slopes(key, value):
+    params, inputs = _weekly_portfolio_fixture()
+    params["methods"][0][key] = value
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+
+
+def test_the_hindsight_keys_are_refused_beside_kelly():
+    for key, value in (("single_leg_charge", .5), ("value_transform", VALUE_TRANSFORM), ("risk_charge", CARRY)):
+        params, _inputs = _kelly_fixture()
+        params["methods"][0][key] = value
+        with pytest.raises(ValueError):
+            ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def _short_dated_fixture():
+    """One decision five calendar days before expiry, one quoted put that the forecast makes worth buying alone."""
+    params, inputs = _weekly_portfolio_fixture()
+    expiry = "2019-01-07"
+    params["bridge"]["target_dte"] = 5
+    x = inputs["X"]
+    x["forecasts"] = [{**f, "expiry": expiry} for f in x["forecasts"] if f["quote_date"] == "2019-01-02"]
+    x["contexts"] = [{**c, "expiry": expiry, "settlement_date": expiry, "reference_scale": .1}
+                     for c in x["contexts"] if c["quote_date"] == "2019-01-02"]
+    first = {q["date"]: q for q in x["chain"] if q["expiration"] == "2019-02-01" and q["date"] <= expiry}
+    x["chain"] = [{**q, "expiration": expiry, "strike": 100., "strike_raw": 100., "bid": 2., "ask": 2.1}
+                  for q in first.values()]
+    return params, inputs
+
+
+def test_the_carry_and_single_leg_charge_starve_a_short_dated_single_option(monkeypatch):
+    """Same universe: no charge buys ten 5-DTE puts alone; the C1 charges leave the week in cash, each priced exactly."""
+    import copy
+
+    params, inputs = _short_dated_fixture()
+    plain = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    week = _solved(plain)[0]
+    assert week["status"] == "selected" and [b["strategy"]["name"] for b in week["books"]] == ["long_put"]
+    assert not any(k in week["books"][0] for k in ("carry_charge", "single_leg_charge", "transform_charge"))
+    assert "action_charges" not in week["selection"] and "hinge_charges" not in week["selection"]
+    premium = sum(leg["price"]*100*leg["quantity"] for leg in week["books"][0]["legs"])
+    expected = week["books"][0]["expected"]
+    charged = copy.deepcopy(params)
+    charged["methods"][0].update(risk_charge=CARRY, single_leg_charge=SINGLE_LEG)
+    programs = _capture_programs(monkeypatch)
+    result = ledger_studies.WeeklyOptionPortfolioStudy(charged, inputs).run()["methods"][0]
+    assert _solved(result)[0]["status"] == "cash" and not result["trades"]
+    group = programs[0]["groups"][0]
+    assert "risk_charge" not in group, "carry is not a deviation charge"
+    rate = .4*(30-5)/30
+    leg = next(j for j, item in enumerate(group["credit"]) if item < 0)   # the bought put
+    assert group["action_charges"]["carry"][leg] == pytest.approx(rate*premium/10)
+    # The book alone would cost its carry and half its uncovered premium: more than its robust value.
+    assert rate*premium+SINGLE_LEG*premium > expected
+    for key in ("risk_charge", "single_leg_charge"):   # each half alone still trades, cheaper by its charge
+        one = copy.deepcopy(params)
+        one["methods"][0][key] = charged["methods"][0][key]
+        sel = _solved(ledger_studies.WeeklyOptionPortfolioStudy(one, inputs).run()["methods"][0])[0]
+        book = sel["books"][0]
+        name = "carry_charge" if key == "risk_charge" else "single_leg_charge"
+        assert book[name] == pytest.approx((rate if key == "risk_charge" else SINGLE_LEG)*premium)
+        assert book["expected"] == expected and sel["selection"]["value"] == pytest.approx(expected-book[name])
+
+
+def _hindsight_run(method, fixture=_weekly_portfolio_fixture):
+    params, inputs = fixture()
+    params["methods"] = [{"id": "h", **method}]
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    return params, inputs, study, study._method(params["methods"][0], None)
+
+
+@pytest.mark.parametrize("name", ["w1_010_shock10_carry_lp", "w1_010_shock10_vt_lp", "w1_010_shock10_carry_vt_lp"])
+def test_a_hindsight_method_records_its_charges_and_replays_recorded_and_derived(name):
+    import copy
+    from index_options.mio_worker import MIOMethodWorker
+
+    method = {**HINDSIGHT_FORMULATIONS[name], "shock": {**SHOCK10, "beta_lookback": 2}}
+    params, inputs, study, result = _hindsight_run(method)
+    solved = _solved(result)
+    assert solved, "the fixture decides under the hindsight method"
+    names = {"carry"} if "carry" in name else set()
+    names |= {"transform"} if "vt" in name else set()
+    for decision in solved:
+        selection = decision["selection"]
+        assert set(selection.get("action_charges", {})) == names
+        assert ("hinge_charges" in selection) == ("carry" in name)
+        charges = sum(sum(v) for v in selection["action_charges"].values())+sum(selection.get("hinge_charges", []))
+        assert selection["value"] == pytest.approx(sum(selection["group_values"])-charges, abs=1e-9)
+        for book in decision["books"]:
+            assert {n+"_charge" for n in names} <= set(book)
+            assert ("single_leg_charge" in book) == ("carry" in name)
+        row = ledger_studies.MIOPacketCompare._charge_row(decision)
+        assert row["charges"]["raw_value"] == pytest.approx(sum(selection["group_values"]))
+        assert set(row["charges"]) == {"raw_value", *names, *({"single_leg"} if "carry" in name else set())}
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(
+        params["methods"][0], None, recorded=copy.deepcopy(result)) == result
+    actions = MIOMethodWorker.actions(result, study.weeks)
+    derived = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None,
+                                                                               derived=actions)
+    assert _equal_but_last_bits(derived, result)
+    bad = copy.deepcopy(result)
+    k = result["decisions"].index(solved[0])
+    bad["decisions"][k]["selection"]["action_charges"][sorted(names)[0]][0] += 1.
+    with pytest.raises(ValueError, match="recorded"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None, recorded=bad)
+    assert ledger_studies.MIOPacketCompare._charge_row({"selection": {"group_values": [1.]}}) == {}
+
+
+def test_the_value_transformed_sized_arm_runs_and_replays():
+    """Stage 1 carries the transform charges (recorded under stage1); stage 2 sizes on its own mean."""
+    import copy
+
+    def fixture():
+        params, inputs = _sizer_fixture()
+        params["methods"][0]["value_transform"] = VALUE_TRANSFORM
+        return params, inputs
+
+    params, inputs, _study, result = _hindsight_run(_sizer_fixture()[0]["methods"][0] | {
+        "value_transform": VALUE_TRANSFORM}, fixture)
+    staged = [d for d in result["decisions"] if "stage1" in d]
+    assert staged, "a week reaches stage 2"
+    for decision in staged:
+        assert set(decision["stage1"]["selection"]["action_charges"]) == {"transform"}
+        assert "charges" in ledger_studies.MIOPacketCompare._charge_row(decision)
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(
+        params["methods"][0], None, recorded=copy.deepcopy(result)) == result
+
+
+def test_the_hindsight_keys_absent_leave_the_locked_formulations_untouched(monkeypatch):
+    """Zero prices are no key: the program the solver sees and every record are the parent's."""
+    import copy
+
+    params, inputs = _weekly_portfolio_fixture()
+    programs = _capture_programs(monkeypatch)
+    base = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    free = copy.deepcopy(params)
+    free["methods"][0].update(risk_charge={**CARRY, "price": 0.}, single_leg_charge=0.)
+    count = len(programs)
+    same = ledger_studies.WeeklyOptionPortfolioStudy(free, inputs).run()["methods"][0]
+    assert count and programs[count:] == programs[:count]
+    assert [_without_seconds(d) for d in same["decisions"]] == [_without_seconds(d) for d in base["decisions"]]
+    assert same["trades"] == base["trades"]
