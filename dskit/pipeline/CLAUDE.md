@@ -158,12 +158,15 @@ dskit/pipeline/
 ├── hold_verdict.py    HoldVerdict (by import path, ADR-0279 amendment 2026-10-28): summary rows + portfolio metrics -> one markdown verdict page per run
 ├── fee_mechanics.py   venue-neutral fee mechanics (FeeModel / RoundingPolicy ABCs, CeilToTick, JSON spec); no venue table, ADR-0245
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
-│                      forward delta, ADR-0193) + VolIndexSmileQuotes:
+│                      forward delta, ADR-0193) + black76_gamma / black76_theta (per year,
+│                      forward fixed, ADR-0310) + VolIndexSmileQuotes:
 │                      proxy leg bid/ask from a vol-index close, IV clamped
 │                      to [floor, ceiling], a smile that dips below zero refused
 │                      (ADR-0182 tier placement); black76_implied_vol (safeguarded Newton, ADR-0265);
 │                      OptionScenarioReprice (JSON book, named full-repricing shocks;
 │                      opt-in stable_tail_v1 with normal-tail and dollar-error refusals)
+├── option_exposure.py ParityForward, LegGreeks, BookGreeks, StockEquivalent, StaticDeltaHedge, CellAttribution, ExposureSnapshot, fit_betas, BookGreeksReport (kind book_greeks_report, by import path; ADR-0310):
+│                      chain-implied forward, spot-term Greeks, delta-equivalent stock vs residual P&L split, beta-weighted exposure by DTE bucket; static delta-hedge P&L; four hooks (incl. _hedge_dividend)
 ├── option_structures.py leg-set algebra (credit, payoff, max loss, quote_defect) graduated from
 │                      the index_options child (ADR-0265); classify_option_strategy adds post-solve
 │                      anatomy/quantity labels without selection templates (ADR-0276)
