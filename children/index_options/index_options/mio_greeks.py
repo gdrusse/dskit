@@ -24,14 +24,17 @@ Refusals carry stable codes (:class:`GreeksRefusal`): ``window_outside_data_righ
 ``input_not_closed``, ``pnl_recompute_mismatch``, ``beta_lookback_mismatch``,
 ``beta_min_pairs_mismatch`` (the run's ``correlation_min_pairs``), ``symbols_missing`` and
 ``multiplier_mismatch`` (the config's ``multiplier`` must equal the run's own solver
-multiplier). The per-book and per-day codes are the core's. Import cost: stdlib, plus pyarrow when a chain or
-bar file is read.
+multiplier). The per-book and per-day codes are the core's, hedge flags included. The static delta-hedge column's dividends come from the pinned bar
+files' ``dividend_amount`` column when it exists (:meth:`MIOGreeksDiagnostics._hedge_dividend`
+through :func:`~index_options.contracts.dividends_paid`), else every row is flagged
+``dividends_absent``. Import cost: stdlib, plus pyarrow when a chain or bar file is read.
 """
 
 import csv
 import hashlib
 import io
 import json
+import math
 import os
 from collections import Counter, OrderedDict
 from datetime import date
@@ -39,9 +42,10 @@ from pathlib import Path
 
 from dskit.onboarding.artifacts import PinnedPayloadSource
 from dskit.pipeline.node import atomic_write, check_int_param
-from dskit.pipeline.option_exposure import BookGreeksReport
+from dskit.pipeline.option_exposure import BookGreeksReport, StaticDeltaHedge
 from dskit.pipeline.option_structures import structure_payoff
 
+from .contracts import dividends_paid
 from .mio_run_events import MioBookOutcomes
 
 __all__ = ["ChainQuotes", "CellRank", "GreeksRefusal", "MIOGreeksDiagnostics"]
@@ -455,6 +459,42 @@ class MIOGreeksDiagnostics(BookGreeksReport):
                 flags[method] = self.FLAG_MATCHES
         return flags
 
+    def _read_dividends(self, block, symbols):
+        """Return ``{symbol: rows}`` of the bar files that carry ``dividend_amount``.
+
+        Rows are ``date, close, dividend_amount``, read below the seal from the pinned files
+        (sha256 verified).
+
+        Sets :attr:`hedge_dividend_source` to ``absent``, ``bars`` or ``partial``.
+        """
+        import pyarrow.parquet as pq
+
+        source = PinnedPayloadSource(block["pin"])
+        found = {}
+        for symbol in sorted(symbols):
+            path = source.file(block["files"][symbol], verify=True)
+            if "dividend_amount" in pq.read_schema(path).names:
+                found[symbol] = pq.read_table(
+                    path, columns=["date", "close", "dividend_amount"],
+                    filters=[("date", "<", self._seal())]).to_pylist()
+        self.hedge_dividend_source = ("absent" if not found else
+                                      "bars" if len(found) == len(set(symbols)) else "partial")
+        return found
+
+    def _hedge_dividend(self, book):
+        """Return ``(cash per share in (fill, expiry], hedge_status)`` from the pinned bars.
+
+        ``dividends_absent`` when the name's bar file has no ``dividend_amount`` column;
+        ``dividend_missing`` when :func:`dividends_paid` refuses a session in the window.
+        """
+        rows = self._dividend_rows.get(book["symbol"])
+        if rows is None:
+            return None, self.DIVIDENDS_ABSENT
+        try:
+            return dividends_paid(rows, book["fill_date"], book["expiry"]), self.HEDGE_OK
+        except ValueError:
+            return None, self.DIVIDEND_MISSING
+
     def _read_bars(self, table, symbols):
         """Return ``(bars, shas)`` read below the seal through the one existing bar reader."""
         reader = MioBookOutcomes("bars", {"cohort": "greeks", "methods": ["_"], "end_before": self._seal(),
@@ -498,6 +538,7 @@ class MIOGreeksDiagnostics(BookGreeksReport):
             self._guard_dates((f"{method}|{t.get('id')}", t) for r in table["results"]
                               if r["id"] == method for t in r["result"]["trades"])
         bars, bar_shas = self._read_bars(table, symbols)
+        self._dividend_rows = self._read_dividends(table["plan"]["source_pins"]["bars"], symbols)
         quotes = ChainQuotes(table["plan"]["source_pins"]["chain"], self._seal(),
                              p["chain_cache_days"])
         merged = {"books": [], "cells": [], "exposure": []}
@@ -519,6 +560,7 @@ class MIOGreeksDiagnostics(BookGreeksReport):
     def _run_summary(self, summaries, flags, shas):
         """Return the run-level summary: inputs, params hash, per-method counts and totals."""
         identity = {k: v for k, v in self.params.items() if k not in _NON_IDENTITY}
+        hedged = [s["hedged_pnl_usd"] for s in summaries.values()]
         return {
             "inputs": dict(sorted(shas.items())),
             "params_hash": hashlib.sha256(json.dumps(
@@ -529,6 +571,11 @@ class MIOGreeksDiagnostics(BookGreeksReport):
             "refusals": dict(sorted(sum((Counter(s["refusals"]) for s in summaries.values()),
                                         Counter()).items())),
             "forward_spot": sum(s["forward_spot"] for s in summaries.values()),
+            "hedged_pnl_usd": None if None in hedged else math.fsum(hedged),
+            "hedge_status": dict(sorted(sum((Counter(s["hedge_status"]) for s in summaries.values()),
+                                            Counter()).items())),
+            "hedge_dividend_source": self.hedge_dividend_source,
+            "hedge_params": {k: self.params[k] for k in StaticDeltaHedge._PARAMS},
             "open_leg_unmarked": sum(s["open_leg_unmarked"] for s in summaries.values()),
             "iv_disagree_legs": sum(s["iv_disagree_legs"] for s in summaries.values()),
             "beta_dropped_name_days": sum(s["beta_dropped_name_days"] for s in summaries.values()),

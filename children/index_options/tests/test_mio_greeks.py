@@ -130,7 +130,8 @@ def _block(base, folder, frames):
                                     "files": digests}}
 
 
-def build_run(root, *, mutate=None, drop_chain=(), calls_only=(), no_iv=(), extra_methods=None):
+def build_run(root, *, mutate=None, drop_chain=(), calls_only=(), no_iv=(), extra_methods=None,
+              dividends=None):
     """Write a closed run, bars and chains under ``root``; return ``(run_dir, base)``."""
     base = Path(root) / "source"
     base.mkdir(parents=True, exist_ok=True)
@@ -140,6 +141,8 @@ def build_run(root, *, mutate=None, drop_chain=(), calls_only=(), no_iv=(), extr
             "MMM": _closes(100.0, 1.0, {FILL: MMM_SPOT, MONTHLY_EXPIRY: 105.0})}
     bar_frames = {s: pd.DataFrame({"symbol": s, "date": list(v), "close": list(v.values())})
                   for s, v in bars.items()}
+    for symbol, by_day in (dividends or {}).items():     # a dividend_amount column, 0.0 by default
+        bar_frames[symbol]["dividend_amount"] = [by_day.get(d, 0.0) for d in bars[symbol]]
     chains = {}
     for symbol, forward, vol, strikes in (("BLK", BLK_FORWARD, BLK_VOL, range(440, 470, 5)),
                                           ("MMM", MMM_FORWARD, MMM_VOL, range(90, 112, 2))):
@@ -186,6 +189,7 @@ PARAMS = {
     "max_pair_spread_frac": 0.5, "cell_by": ["symbol", "rank"], "min_total_usd": 1.0,
     "dte_edges": [0, 7, 14, 28, 60], "top_k": 1, "exposure_days": "both",
     "beta_lookback": 3, "beta_min_pairs": 2, "chain_cache_days": 8,
+    "hedge_fee_per_share": 0.005, "hedge_half_spread_bps": 5.0, "hedge_borrow_rate": 0.005,
 }
 
 
@@ -240,6 +244,102 @@ def test_blk_book_end_to_end_with_hand_computed_stock_pnl_and_residual(world):
     assert row["stock_pnl"] + row["residual"] == pytest.approx(pnl, abs=1e-9)
     assert (row["symbol"], row["rank"], row["cadence"], row["method"]) == (
         "BLK", 2, "weekly", METHOD)
+
+
+# ---- the static delta-hedge column (ADR-0310 Amendment 1, A2) -----------------------------------
+BLK_ID = f"{METHOD}|2021-04-05:BLK:2021-04-16"
+
+
+def _blk_delta():
+    years = 10 / 365
+    d450 = black76_delta("call", BLK_FORWARD, 450.0, BLK_VOL, years)
+    d455 = black76_delta("call", BLK_FORWARD, 455.0, BLK_VOL, years)
+    return 100 * (5 * d450 + d455) * (BLK_FORWARD / BLK_SPOT)
+
+
+def _hedged(delta, pnl, s_fill, s_settle, days, dividend):
+    """The amendment's formula, restated independently of the core."""
+    costs = abs(delta) * (2 * 0.005 + (s_fill + s_settle) * 5.0 / 1e4)
+    borrow = max(delta, 0.0) * s_fill * 0.005 * days / 365
+    return pnl - delta * (s_settle - s_fill) - costs - borrow - delta * dividend
+
+
+def test_blk_hedged_pnl_equals_the_formula_restated_from_black76_deltas(world):
+    run_dir, out_dir = world(dividends={"BLK": {}, "MMM": {}})
+    row = rows_by(run_node(run_dir, out_dir))[BLK_ID]
+    delta = _blk_delta()
+    assert row["hedge_status"] == "ok" and row["dividend_adjust"] == 0.0
+    assert row["hedge_sh"] == pytest.approx(-delta, rel=1e-9) and row["hedge_days"] == 10
+    assert row["hedged_pnl"] == pytest.approx(_hedged(delta, -938.90, 452.0, 448.0, 10, 0.0),
+                                              rel=1e-9)
+
+
+def test_dividend_in_the_window_is_delta_times_the_cash_and_the_fill_day_is_not_counted(world):
+    run_dir, out_dir = world(dividends={"BLK": {FILL: 5.0, "2021-04-09": 1.0, EXPIRY: 0.5},
+                                        "MMM": {}})
+    row = rows_by(run_node(run_dir, out_dir))[BLK_ID]
+    delta = _blk_delta()
+    assert row["dividend_adjust"] == pytest.approx(delta * 1.5, rel=1e-9)   # 04-09 and the expiry day
+    assert row["hedged_pnl"] == pytest.approx(_hedged(delta, -938.90, 452.0, 448.0, 10, 1.5),
+                                              rel=1e-9)
+
+
+def test_bars_without_dividend_amount_flag_every_row_and_the_summary(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)
+    assert {r["hedge_status"] for r in out["books"]} == {"dividends_absent"}
+    assert all(r["dividend_adjust"] is None and r["hedged_pnl"] is not None for r in out["books"])
+    summary = out["summary"]
+    assert summary["hedge_dividend_source"] == "absent"
+    assert summary["hedge_status"] == {"dividends_absent": 3}
+    assert summary["hedge_params"] == {"hedge_fee_per_share": 0.005,
+                                       "hedge_half_spread_bps": 5.0, "hedge_borrow_rate": 0.005}
+    assert summary["methods"][METHOD]["hedge_dividend_source"] == "absent"
+    disk = json.loads((out_dir / "greeks-summary.json").read_text())
+    assert disk["hedge_status"] == {"dividends_absent": 3}
+    header = (out_dir / "books.csv").read_text().splitlines()[0].split(",")
+    assert {"hedge_sh", "hedge_days", "stock_costs", "short_borrow", "dividend_adjust",
+            "hedged_pnl", "hedge_status"} <= set(header)
+
+
+def test_bars_with_dividend_amount_report_the_source_and_status_ok(world):
+    run_dir, out_dir = world(dividends={"BLK": {}, "MMM": {}})
+    out = run_node(run_dir, out_dir)
+    assert {r["hedge_status"] for r in out["books"]} == {"ok"}
+    assert out["summary"]["hedge_dividend_source"] == "bars"
+    assert out["summary"]["hedge_status"] == {"ok": 3}
+
+
+def test_a_null_dividend_amount_in_the_window_is_dividend_missing_and_nulls_the_cell(world):
+    run_dir, out_dir = world(dividends={"BLK": {"2021-04-08": None}, "MMM": {}})
+    out = run_node(run_dir, out_dir)
+    row = rows_by(out)[BLK_ID]
+    assert row["hedge_status"] == "dividend_missing"
+    assert row["hedged_pnl"] is None and row["dividend_adjust"] is None
+    blk = next(c for c in out["cells"] if c["symbol"] == "BLK")
+    assert blk["hedged_pnl_usd"] is None and blk["n_hedged"] == 0
+    mmm = next(c for c in out["cells"] if c["symbol"] == "MMM")
+    assert mmm["n_hedged"] == mmm["n"] == 2
+    assert mmm["hedged_pnl_usd"] == pytest.approx(
+        sum(r["hedged_pnl"] for r in out["books"] if r["symbol"] == "MMM"))
+    assert out["summary"]["hedge_status"] == {"dividend_missing": 1, "ok": 2}
+    assert out["summary"]["hedged_pnl_usd"] is None
+
+
+def test_a_dividend_outside_the_window_is_ignored_and_nothing_past_the_seal_is_read(world):
+    run_dir, out_dir = world(dividends={"BLK": {"2021-04-05": 9.0, "2021-04-20": 9.0}, "MMM": {}})
+    row = rows_by(run_node(run_dir, out_dir))[BLK_ID]
+    assert row["dividend_adjust"] == 0.0
+
+
+def test_the_hedge_params_are_required_and_validated_by_the_child():
+    for key in ("hedge_fee_per_share", "hedge_half_spread_bps", "hedge_borrow_rate"):
+        short = {k: v for k, v in PARAMS.items() if k != key}
+        problems = MIOGreeksDiagnostics.validate_params(
+            {**short, "run_dir": "/a", "out_dir": "/b"})
+        assert any(key in p for p in problems)
+    bad = {**PARAMS, "run_dir": "/a", "out_dir": "/b", "hedge_borrow_rate": 1.0}
+    assert any("hedge_borrow_rate" in p for p in MIOGreeksDiagnostics.validate_params(bad))
 
 
 def test_the_four_files_are_written_atomically_with_inputs_and_counts(world):
@@ -754,4 +854,8 @@ def test_the_template_validates_and_ends_before_the_seal():
                                  "w1_003_shock10_mad050_lp", "nominal_lp"]
     assert "PLACEHOLDER" in params["run_dir"] and "PLACEHOLDER" in params["out_dir"]
     assert MIOGreeksDiagnostics.validate_params(params) == []
+    assert {k: params[k] for k in ("hedge_fee_per_share", "hedge_half_spread_bps",
+                                   "hedge_borrow_rate")} == {
+        "hedge_fee_per_share": 0.005, "hedge_half_spread_bps": 5.0, "hedge_borrow_rate": 0.005}
+    assert "hedge_" in node["notes"] and "no default" in node["notes"]
     assert not (set(range(2022, 2026)) & {int(params["window"][k][:4]) for k in ("start", "end")})

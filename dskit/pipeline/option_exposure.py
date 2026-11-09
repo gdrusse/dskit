@@ -11,6 +11,8 @@ accounting, so no P&L, mark, reserve or size is computed from a Greek.
 * :class:`BookGreeks` — a frozen row summing a book's legs.
 * :class:`StockEquivalent` — splits a book's P&L into the delta-equivalent
   stock part and a residual that holds everything else.
+* :class:`StaticDeltaHedge` — the book's entry delta hedged once with stock, with
+  costs, short borrow and dividends: the P&L left once the delta is gone.
 * :class:`CellAttribution` — sums and shares of those parts per cell, with a
   gross share that cannot explode and a net share that is ``None`` near zero.
 * :class:`ExposureSnapshot` — beta-weighted dollar delta, vega and dollar
@@ -43,7 +45,7 @@ from dskit.pipeline.option_pricing import (
 from dskit.pipeline.records import number_ok, price_ok
 
 __all__ = ["BookGreeks", "BookGreeksReport", "CellAttribution", "ExposureSnapshot", "LegGreeks",
-           "ParityForward", "StockEquivalent", "fit_betas"]
+           "ParityForward", "StaticDeltaHedge", "StockEquivalent", "fit_betas"]
 
 #: Calendar days per year: the one divisor for years-to-expiry and per-day theta.
 DAYS_PER_YEAR = 365
@@ -448,10 +450,100 @@ class StockEquivalent(_Configured):
         return entry_delta_sh * (s_fill - forward_fill)
 
 
+class StaticDeltaHedge(_Configured):
+    """Hedge a book's entry delta once with stock and report the P&L left over.
+
+    The hedge is ``-entry_delta_sh`` shares, traded at the fill close ``s_fill``,
+    held to expiry and unwound at the settlement close ``s_settle``::
+
+        hedged = book_pnl - delta x (s_settle - s_fill) - stock_costs - short_borrow
+                 - delta x dividends_per_share
+        stock_costs = |delta| x (2 x fee + (s_fill + s_settle) x half_spread_bps / 1e4)
+        short_borrow = max(delta, 0) x s_fill x borrow_rate x hedge_days / 365
+
+    The hedge is short stock exactly when the book's delta is long, so only
+    then is borrow paid and a dividend owed; a long hedge receives it. The
+    price-plus-dividend leg is :class:`StockEquivalent`'s, not restated here.
+    Diagnostics only: no financing of long stock, no interest on short proceeds.
+
+    Parameters
+    ----------
+    params : dict
+        ``hedge_fee_per_share`` (>= 0, dollars per share per trade),
+        ``hedge_half_spread_bps`` (>= 0, per trade), ``hedge_borrow_rate``
+        (annual, >= 0 and < 1). All required: a default would hide a cost.
+
+    Examples
+    --------
+    A book long 290 delta shares, the stock down 4 over 10 days::
+
+        h = StaticDeltaHedge({"hedge_fee_per_share": 0.005, "hedge_half_spread_bps": 5.0,
+                              "hedge_borrow_rate": 0.005})
+        h.of(-938.90, 290.0, 452.0, 448.0, 10, 0.0)["hedged_pnl"]   # -> 69.74
+    """
+
+    _PARAMS = ("hedge_fee_per_share", "hedge_half_spread_bps", "hedge_borrow_rate")
+    _BPS = 1e4
+
+    @classmethod
+    def _check(cls, problems, params):
+        for name in ("hedge_fee_per_share", "hedge_half_spread_bps"):
+            if name in params:
+                check_number_param(problems, name, params[name], lower=0.0, upper=_INF)
+        if "hedge_borrow_rate" in params:
+            check_number_param(problems, "hedge_borrow_rate", params["hedge_borrow_rate"],
+                               lower=0.0, upper=1.0)
+            if params["hedge_borrow_rate"] == 1.0:
+                problems.append("hedge_borrow_rate must be below 1, got 1.0")
+        _required(problems, params, cls._PARAMS)
+
+    def of(self, book_pnl, entry_delta_sh, s_fill, s_settle, hedge_days, dividends_per_share):
+        """Return ``stock_costs``, ``short_borrow``, ``dividend_adjust`` and ``hedged_pnl``.
+
+        Parameters
+        ----------
+        book_pnl, entry_delta_sh, s_fill, s_settle : float
+            As :meth:`StockEquivalent.split`.
+        hedge_days : float
+            Calendar days from the fill to expiry (>= 0).
+        dividends_per_share : float or None
+            Cash per share with ex-date in ``(fill, expiry]``; ``None`` when the
+            inputs carry no dividends (computed as 0, ``dividend_adjust`` is ``None``).
+
+        Returns
+        -------
+        dict
+            ``dividend_adjust = entry_delta_sh x D``; ``hedged_pnl`` is the book
+            less the stock leg, costs and borrow.
+
+        Raises
+        ------
+        ValueError
+            On a bad ``hedge_days`` or a non-finite or non-positive input.
+        """
+        if not number_ok(hedge_days) or hedge_days < 0:
+            raise ValueError(f"hedge_days must be a finite number >= 0, got {hedge_days!r}")
+        dividend = 0.0 if dividends_per_share is None else dividends_per_share
+        equivalent = StockEquivalent()
+        price_stock, _ = equivalent.split(book_pnl, entry_delta_sh, s_fill, s_settle)
+        total_stock, residual = equivalent.split(book_pnl, entry_delta_sh, s_fill, s_settle,
+                                                 dividends_per_share=dividend)
+        p = self.params
+        costs = abs(entry_delta_sh) * (2 * p["hedge_fee_per_share"]
+                                       + (s_fill + s_settle) * p["hedge_half_spread_bps"] / self._BPS)
+        borrow = (max(entry_delta_sh, 0.0) * s_fill * p["hedge_borrow_rate"] * hedge_days
+                  / DAYS_PER_YEAR)
+        return {"stock_costs": costs, "short_borrow": borrow,
+                "dividend_adjust": None if dividends_per_share is None else total_stock - price_stock,
+                "hedged_pnl": residual - costs - borrow}
+
+
 class CellAttribution(_Configured):
     """Sums and shares of the stock/residual split per cell.
 
-    Per cell: ``n``, ``pnl_usd``, ``stock_pnl_usd``, ``residual_usd``; the net
+    Per cell: ``n``, ``pnl_usd``, ``stock_pnl_usd``, ``residual_usd``; the
+    optional row field ``hedged_pnl`` is summed to ``hedged_pnl_usd`` (``None``
+    when any row's is ``None`` or absent) with ``n_hedged`` rows counted; the net
     shares ``stock_share_net`` / ``residual_share_net`` (part over the cell
     total, ``None`` when ``|total| < min_total_usd``); and ``gross_pnl_usd``
     (``sum |pnl|``) with ``stock_share_gross`` / ``residual_share_gross`` (part
@@ -477,6 +569,7 @@ class CellAttribution(_Configured):
     PNL_NOT_FINITE = "pnl_not_finite"
     REFUSALS = (CELL_FIELD_MISSING, PNL_NOT_FINITE)
     _FIELDS = ("pnl", "stock_pnl", "residual")
+    _OPTIONAL = "hedged_pnl"
 
     @classmethod
     def _check(cls, problems, params):
@@ -509,8 +602,11 @@ class CellAttribution(_Configured):
             missing = [f for f in by if f not in row]
             if missing:
                 raise ValueError(f"{self.CELL_FIELD_MISSING}: row lacks {missing}")
-            if not all(number_ok(row.get(f)) for f in self._FIELDS):
-                raise ValueError(f"{self.PNL_NOT_FINITE}: {[row.get(f) for f in self._FIELDS]}")
+            hedged = row.get(self._OPTIONAL)
+            if not all(number_ok(row.get(f)) for f in self._FIELDS) or (
+                    hedged is not None and not number_ok(hedged)):
+                raise ValueError(f"{self.PNL_NOT_FINITE}: "
+                                 f"{[row.get(f) for f in (*self._FIELDS, self._OPTIONAL)]}")
             cells.setdefault(tuple(row[f] for f in by), []).append(row)
         return [self._cell(by, key, group)
                 for key, group in sorted(cells.items(), key=lambda kv: tuple(map(str, kv[0])))]
@@ -519,10 +615,14 @@ class CellAttribution(_Configured):
         """Return one cell's row."""
         total, stock, resid = (math.fsum(r[f] for r in group) for f in self._FIELDS)
         gross = math.fsum(abs(r["pnl"]) for r in group)
+        hedged = [r.get(self._OPTIONAL) for r in group]
+        n_hedged = sum(h is not None for h in hedged)
         net_ok = abs(total) >= self.params["min_total_usd"] and total != 0
         return {
             **dict(zip(by, key)), "n": len(group), "pnl_usd": total,
             "stock_pnl_usd": stock, "residual_usd": resid,
+            "hedged_pnl_usd": math.fsum(hedged) if n_hedged == len(group) else None,
+            "n_hedged": n_hedged,
             "stock_share_net": stock / total if net_ok else None,
             "residual_share_net": resid / total if net_ok else None,
             "gross_pnl_usd": gross,
@@ -694,8 +794,8 @@ class BookGreeksReport(Node):
     """Greeks, stock-equivalent attribution and exposure of settled option books.
 
     Composes :class:`ParityForward`, :class:`LegGreeks`, :class:`BookGreeks`,
-    :class:`StockEquivalent`, :class:`CellAttribution`, :class:`ExposureSnapshot`
-    and :func:`fit_betas`; no arithmetic of theirs is repeated here. A subclass
+    :class:`StockEquivalent`, :class:`StaticDeltaHedge`, :class:`CellAttribution`,
+    :class:`ExposureSnapshot` and :func:`fit_betas`; no arithmetic of theirs is repeated here. A subclass
     maps its own saved files to the generic inputs by three hooks
     (:meth:`_load_books`, :meth:`_load_quotes`, :meth:`_cell_key`) and may
     refuse a read through :meth:`_guard_window`.
@@ -719,6 +819,8 @@ class BookGreeksReport(Node):
         Every knob of :class:`LegGreeks` (``rate``, ``iv_source``,
         ``multiplier``, ``min_years``, ``vol_floor``), :class:`ParityForward`
         (``parity_strikes``, ``min_pairs``, ``max_pair_spread_frac``),
+        :class:`StaticDeltaHedge` (``hedge_fee_per_share``, ``hedge_half_spread_bps``,
+        ``hedge_borrow_rate``; dividends come from the :meth:`_hedge_dividend` hook),
         :class:`CellAttribution` (``cell_by``, ``min_total_usd``) and
         :class:`ExposureSnapshot` (``dte_edges``, ``top_k``), plus
         ``exposure_days`` (``"decision"``, ``"fill"`` or ``"both"``),
@@ -762,12 +864,17 @@ class BookGreeksReport(Node):
     role = "transform"
     kind = "book_greeks_report"
     outputs = ("books", "cells", "exposure", "summary")
-    _OWNERS = (LegGreeks, ParityForward, CellAttribution, ExposureSnapshot)
+    _OWNERS = (LegGreeks, ParityForward, CellAttribution, ExposureSnapshot, StaticDeltaHedge)
     _OWN_PARAMS = ("exposure_days", "beta_lookback", "beta_min_pairs")
     _PARAMS = tuple(dict.fromkeys(name for owner in _OWNERS for name in owner._PARAMS)) + _OWN_PARAMS
     EXPOSURE_DAYS = ("decision", "fill", "both")
     BASIS_CHANGED = "basis_changed"
     NO_SPOT = "no_spot"
+    HEDGE_OK, DIVIDENDS_ABSENT, DIVIDEND_MISSING, NOT_ATTRIBUTED = (
+        "ok", "dividends_absent", "dividend_missing", "not_attributed")
+    HEDGE_STATUSES = (HEDGE_OK, DIVIDENDS_ABSENT, DIVIDEND_MISSING, NOT_ATTRIBUTED)
+    #: Where the dividends come from; a subclass that reads them sets its own name.
+    hedge_dividend_source = "absent"
     DUPLICATE_QUOTE = ParityForward.DUPLICATE_QUOTE
     NO_SETTLEMENT_BAR = "no_settlement_bar"
     OPEN_LEG_UNMARKED = "open_leg_unmarked"
@@ -776,10 +883,13 @@ class BookGreeksReport(Node):
     #: The columns each output has (a row list that is empty still has them).
     BOOK_COLUMNS = ("id", "symbol", "decision_date", "fill_date", "expiry", "pnl", "status",
                     "forward", "forward_source", "s_fill", "s_settle", *_GREEK_FIELDS,
-                    "stock_pnl", "residual", "basis_usd", "iv_disagree_legs")
+                    "stock_pnl", "residual", "basis_usd", "iv_disagree_legs", "hedge_sh",
+                    "hedge_days", "stock_costs", "short_borrow", "dividend_adjust", "hedged_pnl",
+                    "hedge_status")
     EXPOSURE_COLUMNS = ("date", "bucket", "dte_min", "dte_max", "n_books", "beta_delta_usd",
                         "vega_usd_per_pt", "gamma_usd_per_1pct", "top_k_share", "excluded")
-    CELL_COLUMNS = ("n", "pnl_usd", "stock_pnl_usd", "residual_usd", "stock_share_net",
+    CELL_COLUMNS = ("n", "pnl_usd", "stock_pnl_usd", "residual_usd", "hedged_pnl_usd", "n_hedged",
+                    "stock_share_net",
                     "residual_share_net", "gross_pnl_usd", "stock_share_gross",
                     "residual_share_gross")
 
@@ -844,6 +954,16 @@ class BookGreeksReport(Node):
     def _guard_window(self, books):
         """Refuse books outside the data a caller may read (default: accept all)."""
 
+    def _hedge_dividend(self, book):
+        """Return ``(per_share, hedge_status)``: dividends a stock holder gets in ``(fill, expiry]``.
+
+        ``per_share`` is on the ``bars`` basis (the core divides it by the book's
+        ``factor``). The default carries no dividends: ``(None, "dividends_absent")``.
+        A subclass returns ``(amount, "ok")`` or ``(None, "dividend_missing")`` when a
+        session in the window has no usable value.
+        """
+        return None, self.DIVIDENDS_ABSENT
+
     # -- the run -----------------------------------------------------------
 
     def run(self, ctx, inputs):
@@ -871,12 +991,12 @@ class BookGreeksReport(Node):
         quotes = self._load_quotes(inputs["quotes"])
         self._guard_window(books)
         owned = {owner: owner({k: v for k, v in p.items() if k in owner._PARAMS})
-                 for owner in (LegGreeks, ParityForward, CellAttribution, ExposureSnapshot)}
+                 for owner in self._OWNERS}
         self._tools = owned
         rows = [self._book_row(book, quotes, bars) for book in books]
         attributed = [r for r in rows if r["stock_pnl"] is not None]
         cells = owned[CellAttribution].summarize(
-            [{k: r[k] for k in (*p["cell_by"], "pnl", "stock_pnl", "residual") if k in r}
+            [{k: r[k] for k in (*p["cell_by"], "pnl", "stock_pnl", "residual", "hedged_pnl") if k in r}
              for r in attributed])
         exposure, unmarked, all_one_days, dropped = self._exposure(books, quotes, bars)
         return {"books": rows, "cells": cells, "exposure": exposure,
@@ -916,7 +1036,10 @@ class BookGreeksReport(Node):
                "expiry": book["expiry"], "pnl": book["pnl"], "status": None,
                "forward": None, "forward_source": None, "s_fill": None, "s_settle": None,
                **dict.fromkeys(self._GREEK_FIELDS), "stock_pnl": None, "residual": None,
-               "basis_usd": None, "iv_disagree_legs": None}
+               "basis_usd": None, "iv_disagree_legs": None,
+               **dict.fromkeys(("hedge_sh", "hedge_days", "stock_costs", "short_borrow",
+                                "dividend_adjust", "hedged_pnl")),
+               "hedge_status": self.NOT_ATTRIBUTED}
         if book["factor"] != book["end_factor"]:
             row["status"] = self.BASIS_CHANGED
             return row
@@ -935,8 +1058,25 @@ class BookGreeksReport(Node):
                    stock_pnl=stock, residual=residual,
                    basis_usd=StockEquivalent().basis_usd(greeks.delta_sh, s_fill, greeks.forward),
                    iv_disagree_legs=greeks.iv_disagree)
+        row.update(self._hedge_columns(book, greeks.delta_sh, s_fill, s_settle))
         row.update(self._cell_key(book, quotes))
         return row
+
+    def _hedge_columns(self, book, delta_sh, s_fill, s_settle):
+        """Return the static-hedge columns of an attributed book."""
+        per_share, status = self._hedge_dividend(book)
+        if status == self.DIVIDEND_MISSING:
+            per_share = None
+        elif per_share is not None:
+            per_share = per_share / book["factor"]
+        days = (date.fromisoformat(book["expiry"]) - date.fromisoformat(book["fill_date"])).days
+        hedge = self._tools[StaticDeltaHedge].of(
+            book["pnl"], delta_sh, s_fill, s_settle, days, per_share)
+        missing = status == self.DIVIDEND_MISSING
+        return {"hedge_sh": 0.0 - delta_sh, "hedge_days": days,
+                "stock_costs": hedge["stock_costs"], "short_borrow": hedge["short_borrow"],
+                "dividend_adjust": hedge["dividend_adjust"],
+                "hedged_pnl": None if missing else hedge["hedged_pnl"], "hedge_status": status}
 
     def _betas(self, bars, day):
         """Return ``(betas, all_one, dropped)``: the class docstring's beta rule at ``day``."""
@@ -1006,12 +1146,18 @@ class BookGreeksReport(Node):
         refusals = Counter(r["status"] for r in rows if r["stock_pnl"] is None)
         good = math.fsum(r["pnl"] for r in attributed)
         bad = math.fsum(r["pnl"] for r in rows if r["stock_pnl"] is None)
+        hedged = [r["hedged_pnl"] for r in attributed]
+        hedge_params = {k: self.params[k] for k in StaticDeltaHedge._PARAMS}
         return {"books": len(rows), "attributed": len(attributed),
                 "unattributed": len(rows) - len(attributed),
                 "attributed_pnl_usd": good, "unattributed_pnl_usd": bad,
                 "total_pnl_usd": math.fsum(r["pnl"] for r in rows),
                 "refusals": dict(sorted(refusals.items())),
                 "forward_spot": sum(r["status"] == BookGreeks.FORWARD_SPOT for r in rows),
+                "hedged_pnl_usd": None if None in hedged else math.fsum(hedged),
+                "hedge_status": dict(sorted(Counter(r["hedge_status"] for r in rows).items())),
+                "hedge_dividend_source": self.hedge_dividend_source,
+                "hedge_params": hedge_params,
                 "exposure_days": len({r["date"] for r in exposure}),
                 "open_leg_unmarked": unmarked, "beta_all_one_days": all_one_days,
                 "beta_dropped_name_days": dropped_days,

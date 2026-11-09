@@ -1308,8 +1308,8 @@ dskit/pipeline/
 │                      to [floor, ceiling], a smile that dips below zero refused
 │                      (ADR-0182 tier placement); black76_implied_vol: the vol that
 │                      reprices a price, None outside the model's range (ADR-0265)
-├── option_exposure.py ParityForward, LegGreeks, BookGreeks, StockEquivalent, CellAttribution, ExposureSnapshot, fit_betas (ADR-0310): chain-implied forward,
-│                      spot-term Greeks per book, delta-equivalent stock vs residual P&L split, per-cell shares, beta-weighted exposure by DTE bucket;
+├── option_exposure.py ParityForward, LegGreeks, BookGreeks, StockEquivalent, StaticDeltaHedge, CellAttribution, ExposureSnapshot, fit_betas (ADR-0310): chain-implied forward,
+│                      spot-term Greeks per book, delta-equivalent stock vs residual P&L split, static delta-hedge P&L (costs, short borrow, dividends; params required), per-cell shares, beta-weighted exposure by DTE bucket;
 │                      BookGreeksReport (kind book_greeks_report, by import path): composes all of them over books/quotes/bars via three hooks (_load_books, _load_quotes, _cell_key);
 │                      option_pricing also gains black76_gamma + black76_theta (per year, forward fixed)
 ├── option_structures.py leg-set algebra graduated from the index_options child (ADR-0265):

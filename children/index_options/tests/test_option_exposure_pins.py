@@ -87,7 +87,8 @@ def _node():
         "rate": 0.0, "multiplier": 100, "min_years": 0.001, "vol_floor": 0.01, "parity_strikes": 3,
         "min_pairs": 2, "max_pair_spread_frac": 0.5, "cell_by": ["symbol"], "min_total_usd": 1.0,
         "dte_edges": [0, 7], "top_k": 1, "exposure_days": "fill", "beta_lookback": 20,
-        "beta_min_pairs": 5})
+        "beta_min_pairs": 5, "hedge_fee_per_share": 0.0, "hedge_half_spread_bps": 0.0,
+        "hedge_borrow_rate": 0.0})
 
 
 def test_betas_with_a_late_start_name_equal_the_shock_gates_kelly_estimate():

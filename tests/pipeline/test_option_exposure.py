@@ -14,9 +14,10 @@ from dskit.pipeline import option_exposure as ox
 from dskit.pipeline.base import ConfigError
 from dskit.pipeline.option_exposure import (
     BookGreeks, CellAttribution, ExposureSnapshot, LegGreeks, ParityForward,
-    StockEquivalent, fit_betas)
+    StaticDeltaHedge, StockEquivalent, fit_betas)
 from dskit.pipeline.option_pricing import black76, black76_delta, black76_gamma
 
+HEDGE = {"hedge_fee_per_share": 0.005, "hedge_half_spread_bps": 5.0, "hedge_borrow_rate": 0.005}
 PARITY = {"parity_strikes": 3, "min_pairs": 2, "max_pair_spread_frac": 0.5}
 LEG = {"rate": 0.0, "multiplier": 100, "min_years": 0.001, "vol_floor": 0.01}
 
@@ -34,7 +35,7 @@ def chain(forward, strikes, vol=0.2, years=30 / 365, half=0.05):
 def test_all_exports():
     assert sorted(ox.__all__) == sorted(
         ["ParityForward", "LegGreeks", "BookGreeks", "StockEquivalent", "CellAttribution",
-         "ExposureSnapshot", "fit_betas", "BookGreeksReport"])
+         "ExposureSnapshot", "fit_betas", "BookGreeksReport", "StaticDeltaHedge"])
 
 
 # ---- parity forward -------------------------------------------------------------------
@@ -314,6 +315,7 @@ CASES = [
     (ParityForward, PARITY), (LegGreeks, LEG), (CellAttribution,
      {"cell_by": ["symbol"], "min_total_usd": 1.0}),
     (ExposureSnapshot, {"dte_edges": [0, 7], "top_k": 1}),
+    (StaticDeltaHedge, HEDGE),
 ]
 
 
@@ -350,6 +352,14 @@ def test_params_reject_unknown_keys_and_missing_keys(cls, good):
     (ExposureSnapshot, CASES[3][1], {"dte_edges": [0, "7"]}),
     (ExposureSnapshot, CASES[3][1], {"top_k": 0}),
     (ExposureSnapshot, CASES[3][1], {"top_k": 1.5}),
+    (StaticDeltaHedge, HEDGE, {"hedge_fee_per_share": -0.001}),
+    (StaticDeltaHedge, HEDGE, {"hedge_fee_per_share": float("nan")}),
+    (StaticDeltaHedge, HEDGE, {"hedge_half_spread_bps": -1.0}),
+    (StaticDeltaHedge, HEDGE, {"hedge_half_spread_bps": float("inf")}),
+    (StaticDeltaHedge, HEDGE, {"hedge_half_spread_bps": True}),
+    (StaticDeltaHedge, HEDGE, {"hedge_borrow_rate": -0.01}),
+    (StaticDeltaHedge, HEDGE, {"hedge_borrow_rate": 1.0}),
+    (StaticDeltaHedge, HEDGE, {"hedge_borrow_rate": "x"}),
 ])
 def test_params_reject_bad_types_and_values(cls, good, bad):
     assert cls.validate_params({**good, **bad}) != []
@@ -370,7 +380,7 @@ REPORT = {
     "parity_strikes": 3, "min_pairs": 2, "max_pair_spread_frac": 0.5,
     "cell_by": ["symbol", "tag"], "min_total_usd": 1.0,
     "dte_edges": [0, 7, 14, 28], "top_k": 1, "exposure_days": "both",
-    "beta_lookback": 3, "beta_min_pairs": 2,
+    "beta_lookback": 3, "beta_min_pairs": 2, **HEDGE,
 }
 FILL, DECISION, EXPIRY = "2021-03-02", "2021-03-01", "2021-03-19"
 FORWARD, SPOT, VOL = 101.5, 100.0, 0.2
@@ -631,6 +641,8 @@ def test_report_run_is_deterministic():
     ({"rate": "zero"}, "rate"),
     ({"dte_edges": [5, 1]}, "dte_edges"),
     ({"cell_by": []}, "cell_by"),
+    ({"hedge_borrow_rate": 1.0}, "hedge_borrow_rate"),
+    ({"hedge_fee_per_share": -1.0}, "hedge_fee_per_share"),
 ])
 def test_report_params_are_default_deny(change, fragment):
     problems = Mem.validate_params({**REPORT, **change})
@@ -773,4 +785,191 @@ def test_declared_columns_match_the_rows_the_report_writes():
     out = run_report([make_book()], exposure_days="fill")
     assert set(BookGreeksReport.BOOK_COLUMNS) <= set(out["books"][0])
     assert list(out["exposure"][0]) == list(BookGreeksReport.EXPOSURE_COLUMNS)
-    assert list(out["cells"][0])[-9:] == list(BookGreeksReport.CELL_COLUMNS)
+    n = len(BookGreeksReport.CELL_COLUMNS)
+    assert list(out["cells"][0])[-n:] == list(BookGreeksReport.CELL_COLUMNS)
+
+
+# ---- static delta hedge (ADR-0310 Amendment 1, A2) ------------------------------------
+# docs/explanations/mio-glossary.md BLK book: 5 calls at 450 bought at 1.65, 1 call at 455 bought
+# at 1.10, both bought, book_pnl -938.90; illustrative deltas 0.50 and 0.40 -> 290 shares.
+BLK_DELTA = 100 * (5 * 0.50 + 1 * 0.40)
+BLK = dict(book_pnl=-938.90, entry_delta_sh=BLK_DELTA, s_fill=452.0, s_settle=448.0, hedge_days=10)
+BLK_COSTS = 290 * (2 * 0.005 + 900 * 0.0005)                 # 290 x 0.46
+BLK_BORROW = 290 * 452 * 0.005 * 10 / 365
+
+
+def test_hedge_blk_book_by_hand_without_a_dividend():
+    out = StaticDeltaHedge(HEDGE).of(**BLK, dividends_per_share=0.0)
+    assert BLK_DELTA == 290.0 and BLK_COSTS == pytest.approx(133.40)
+    assert out["stock_costs"] == pytest.approx(133.40, abs=1e-9)
+    assert out["short_borrow"] == pytest.approx(17.956164, abs=1e-6)
+    assert out["dividend_adjust"] == 0.0
+    assert out["hedged_pnl"] == pytest.approx(69.743836, abs=1e-6)
+    assert round(out["hedged_pnl"], 2) == 69.74
+
+
+def test_hedge_blk_book_with_a_one_dollar_dividend_is_owed_by_the_short_hedge():
+    out = StaticDeltaHedge(HEDGE).of(**BLK, dividends_per_share=1.0)
+    assert out["dividend_adjust"] == pytest.approx(290.0)
+    assert out["hedged_pnl"] == pytest.approx(-220.256164, abs=1e-6)
+    assert round(out["hedged_pnl"], 2) == -220.26
+
+
+def test_hedge_without_dividend_input_computes_with_zero_and_leaves_the_adjust_null():
+    out = StaticDeltaHedge(HEDGE).of(**BLK, dividends_per_share=None)
+    assert out["dividend_adjust"] is None
+    assert out["hedged_pnl"] == pytest.approx(69.743836, abs=1e-6)
+
+
+def test_hedge_short_delta_book_pays_no_borrow_and_receives_the_dividend():
+    book = {**BLK, "book_pnl": 938.90, "entry_delta_sh": -290.0}
+    out = StaticDeltaHedge(HEDGE).of(**book, dividends_per_share=1.0)
+    assert out["short_borrow"] == 0.0
+    assert out["dividend_adjust"] == pytest.approx(-290.0)
+    assert out["stock_costs"] == pytest.approx(133.40)      # costs use |delta|
+    # hedge is long 290: gains 290 x (448 - 452 + 1) = -870 on the stock leg
+    assert out["hedged_pnl"] == pytest.approx(938.90 - (-290 * (-4 + 1)) - 133.40, abs=1e-9)
+
+
+def test_hedge_long_delta_pays_borrow_and_short_delta_does_not_for_the_same_size():
+    h = StaticDeltaHedge(HEDGE)
+    assert h.of(**BLK, dividends_per_share=0.0)["short_borrow"] > 0.0
+    assert h.of(**{**BLK, "entry_delta_sh": -290.0}, dividends_per_share=0.0)["short_borrow"] == 0.0
+
+
+def test_hedge_zero_delta_book_is_unchanged_and_costs_nothing():
+    out = StaticDeltaHedge(HEDGE).of(**{**BLK, "entry_delta_sh": 0.0}, dividends_per_share=2.0)
+    assert out["hedged_pnl"] == BLK["book_pnl"]
+    assert (out["stock_costs"], out["short_borrow"], out["dividend_adjust"]) == (0.0, 0.0, 0.0)
+
+
+@pytest.mark.parametrize("delta,dividend", [(290.0, 0.0), (290.0, 1.0), (-290.0, 1.0),
+                                              (-37.25, 0.3), (12.5, None)])
+def test_hedge_parts_add_back_to_the_book_pnl(delta, dividend):
+    book = {**BLK, "entry_delta_sh": delta}
+    out = StaticDeltaHedge(HEDGE).of(**book, dividends_per_share=dividend)
+    stock, _ = StockEquivalent().split(book["book_pnl"], delta, 452.0, 448.0)
+    total = (out["hedged_pnl"] + stock + out["stock_costs"] + out["short_borrow"]
+             + (out["dividend_adjust"] or 0.0))
+    assert total == pytest.approx(book["book_pnl"], abs=1e-9)
+
+
+def test_hedge_with_zero_costs_and_rate_reduces_to_the_residual():
+    zero = {"hedge_fee_per_share": 0.0, "hedge_half_spread_bps": 0.0, "hedge_borrow_rate": 0.0}
+    out = StaticDeltaHedge(zero).of(**BLK, dividends_per_share=0.0)
+    assert out["hedged_pnl"] == StockEquivalent().split(-938.90, 290.0, 452.0, 448.0)[1]
+
+
+def test_hedge_inputs_are_checked():
+    h = StaticDeltaHedge(HEDGE)
+    with pytest.raises(ValueError, match="hedge_days"):
+        h.of(**{**BLK, "hedge_days": -1}, dividends_per_share=0.0)
+    with pytest.raises(ValueError, match="s_fill"):
+        h.of(**{**BLK, "s_fill": 0.0}, dividends_per_share=0.0)
+    with pytest.raises(ValueError, match="dividends_per_share"):
+        h.of(**BLK, dividends_per_share=float("nan"))
+
+
+def test_hedge_params_are_required_without_defaults():
+    for key in HEDGE:
+        trimmed = {k: v for k, v in HEDGE.items() if k != key}
+        assert any("missing" in p and key in p for p in StaticDeltaHedge.validate_params(trimmed))
+    assert StaticDeltaHedge._PARAMS == tuple(HEDGE)
+    assert StaticDeltaHedge in BookGreeksReport._OWNERS
+
+
+# ---- the report's hedge columns --------------------------------------------------------
+class DivMem(Mem):
+    """Mem with a settable dividend hook result."""
+
+    result = (None, "dividends_absent")
+
+    def _hedge_dividend(self, book):
+        return self.result
+
+
+def run_div(result, books=None, **kw):
+    node = DivMem("report", REPORT)
+    node.result = result
+    return node.run(None, {"books": books or [make_book()],
+                           "quotes": {("AAA", FILL, EXPIRY): priced_chain()}, "bars": make_bars()})
+
+
+def expected_hedge(row, dividend):
+    delta, fill, settle = row["delta_sh"], row["s_fill"], row["s_settle"]
+    costs = abs(delta) * (2 * 0.005 + (fill + settle) * 5.0 / 1e4)
+    borrow = max(delta, 0.0) * fill * 0.005 * 17 / 365
+    return row["pnl"] - delta * (settle - fill) - costs - borrow - delta * dividend, costs, borrow
+
+
+def test_report_default_hook_flags_every_row_dividends_absent_and_uses_zero():
+    out = run_report([make_book()])
+    (row,) = out["books"]
+    want, costs, borrow = expected_hedge(row, 0.0)
+    assert row["hedge_status"] == "dividends_absent" and row["dividend_adjust"] is None
+    assert row["hedge_sh"] == pytest.approx(-row["delta_sh"], rel=1e-15) and row["hedge_days"] == 17
+    assert row["stock_costs"] == pytest.approx(costs, rel=1e-12)
+    assert row["short_borrow"] == pytest.approx(borrow, rel=1e-12)
+    assert row["hedged_pnl"] == pytest.approx(want, rel=1e-12)
+    summary = out["summary"]
+    assert summary["hedge_status"] == {"dividends_absent": 1}
+    assert summary["hedge_dividend_source"] == "absent"
+    assert summary["hedge_params"] == HEDGE
+    assert summary["hedged_pnl_usd"] == pytest.approx(want, rel=1e-12)
+
+
+def test_report_with_a_dividend_adjusts_by_delta_times_the_per_share_over_the_factor():
+    out = run_div((1.0, "ok"), books=[make_book(factor=2.0, end_factor=2.0)])
+    (row,) = out["books"]
+    # factor 2 halves spots (bars 100 -> 50), the dividend on the bars basis halves too
+    want, _, _ = expected_hedge(row, 0.5)
+    assert row["s_fill"] == 50.0 and row["hedge_status"] == "ok"
+    assert row["dividend_adjust"] == pytest.approx(row["delta_sh"] * 0.5, rel=1e-12)
+    assert row["hedged_pnl"] == pytest.approx(want, rel=1e-12)
+    assert out["summary"]["hedge_status"] == {"ok": 1}
+
+
+def test_report_dividend_missing_nulls_the_hedged_pnl_and_is_counted():
+    out = run_div((None, "dividend_missing"))
+    (row,) = out["books"]
+    assert row["hedge_status"] == "dividend_missing"
+    assert row["hedged_pnl"] is None and row["dividend_adjust"] is None
+    assert out["summary"]["hedge_status"] == {"dividend_missing": 1}
+    assert out["summary"]["hedged_pnl_usd"] is None
+
+
+def test_report_unattributed_book_has_null_hedge_columns_and_not_attributed_status():
+    out = run_report([make_book(pnl=7.0, factor=2.0, end_factor=1.0)])
+    (row,) = out["books"]
+    assert row["status"] == "basis_changed" and row["hedge_status"] == "not_attributed"
+    assert all(row[k] is None for k in ("hedge_sh", "hedge_days", "stock_costs", "short_borrow",
+                                       "dividend_adjust", "hedged_pnl"))
+    assert out["summary"]["hedge_status"] == {"not_attributed": 1}
+
+
+def test_report_cell_hedged_sum_adds_up_and_is_null_when_any_row_is_null():
+    books = [make_book("b1", pnl=150.0), make_book("b2", pnl=-40.0)]
+    out = run_report(books)
+    (cell,) = out["cells"]
+    rows = out["books"]
+    assert cell["n_hedged"] == 2
+    assert cell["hedged_pnl_usd"] == pytest.approx(sum(r["hedged_pnl"] for r in rows))
+    ca = CellAttribution({"cell_by": ["symbol"], "min_total_usd": 1.0})
+    base = {"symbol": "A", "pnl": 1.0, "stock_pnl": 0.5, "residual": 0.5}
+    (cell,) = ca.summarize([{**base, "hedged_pnl": 0.25}, {**base, "hedged_pnl": None}])
+    assert cell["hedged_pnl_usd"] is None and cell["n_hedged"] == 1 and cell["n"] == 2
+    (cell,) = ca.summarize([{**base, "hedged_pnl": 0.25}, {**base, "hedged_pnl": 0.5}])
+    assert cell["hedged_pnl_usd"] == 0.75 and cell["n_hedged"] == 2
+    with pytest.raises(ValueError, match="pnl_not_finite"):
+        ca.summarize([{**base, "hedged_pnl": float("nan")}])
+
+
+def test_report_declares_the_hedge_columns():
+    names = ("hedge_sh", "hedge_days", "stock_costs", "short_borrow", "dividend_adjust",
+             "hedged_pnl", "hedge_status")
+    assert set(names) <= set(BookGreeksReport.BOOK_COLUMNS)
+    assert {"hedged_pnl_usd", "n_hedged"} <= set(BookGreeksReport.CELL_COLUMNS)
+    out = run_report([make_book()])
+    assert set(BookGreeksReport.BOOK_COLUMNS) <= set(out["books"][0])
+    assert BookGreeksReport.HEDGE_STATUSES == (
+        "ok", "dividends_absent", "dividend_missing", "not_attributed")
