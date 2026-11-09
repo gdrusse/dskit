@@ -4838,14 +4838,16 @@ class TransportPortfolioSolve(PyomoSolve):
             with self._search_gaps(solver):
                 # HiGHS stops once its incumbent is within the search gaps of the relaxation bound, a bound no
                 # solution can beat (ADR-0299 objective-target amendment; HiGHS has no ``mip_dual_bound`` option).
-                model._transport_target = self._certification_target(solver.options, bound)
-                solver.options["objective_target"] = model._transport_target[0]
+                target = self._certification_target(solver.options, bound)
+                solver.options["objective_target"] = target[0]
                 result = self._solve_once(solver, model, remaining())
         finally:
             if "objective_target" in solver.options:
                 del solver.options["objective_target"]
             for key in fixed:
                 model.x[key].setub(capacity[key])
+        # Paired with this solve's own results: _build_solve_record reads the target for these results only.
+        model._transport_target = (target, result)
         if support is not None and getattr(model, "_transport_no_incumbent", False):
             # The certification found no solution in its time: the support incumbent it started from still stands.
             for variable, value in support:
@@ -4897,13 +4899,17 @@ class TransportPortfolioSolve(PyomoSolve):
         record = PyomoSolve._build_solve_record(solver, model, results, name, seconds)
         if getattr(model, "_transport_no_incumbent", False):
             record = replace(record, objective=None, gap=None, binding=())
-        target, relaxed = getattr(model, "_transport_target", None), getattr(model, "_transport_bound", None)
-        if (target is not None and relaxed is not None and record.termination == "minFunctionValue"
+        held, relaxed = getattr(model, "_transport_target", None), getattr(model, "_transport_bound", None)
+        if (held is not None and held[1] is results and relaxed is not None
+                and record.termination == "minFunctionValue"
                 and record.objective is not None and number_ok(record.objective)):
-            # HiGHS's objective-target stop (appsi's objectiveLimit, legacy minFunctionValue): an incumbent within
-            # the certification's own gaps of the relaxation bound is the stop HiGHS reports as optimal at its gap,
-            # and is labelled so; any other objective-limit ending keeps its label, which the certificate refuses.
-            _, rel, absolute = target
+            # HiGHS's objective-target stop (appsi's objectiveLimit, legacy minFunctionValue) of the certification
+            # solve that set the target (its own results, never another solve's): an incumbent within the
+            # certification's own gaps of the relaxation bound is the stop HiGHS reports as optimal at its gap, and is
+            # labelled so; any other objective-limit ending keeps its label, which the certificate refuses. The test
+            # uses the relaxation bound alone, never a tighter solver bound: conservative, it can refuse, never
+            # over-certify.
+            (_, rel, absolute), _ = held
             slack = 1e-9*max(1., abs(relaxed))
             if relaxed-record.objective <= max(absolute, rel*abs(record.objective))+slack:
                 record = replace(record, termination="optimal", status="ok")

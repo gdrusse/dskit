@@ -6339,6 +6339,22 @@ def test_an_objective_limit_ending_outside_the_gaps_is_refused_never_certified(m
         _target_stop_run(monkeypatch, lambda options, bound: (1e-6, 0., 1e-9))
 
 
+def test_a_target_stop_is_relabelled_only_for_the_certification_solve_that_set_it(monkeypatch):
+    """The relabel reads the target paired with the certification's own results: a target held for any other
+    results object (stale state) relabels nothing, so the same within-gaps stop is refused."""
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
+
+    real, original = TransportPortfolioSolve._certification_target, TransportPortfolioSolve._solve_relax_fix
+
+    def stale(self, solver, model):
+        result = original(self, solver, model)
+        model._transport_target = (model._transport_target[0], object())
+        return result
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_relax_fix", stale)
+    with pytest.raises(RecordedCheckRefusal, match="invalid primary solver certificate"):
+        _target_stop_run(monkeypatch, lambda options, bound: real({"mip_rel_gap": .01, "mip_abs_gap": 1e-9}, bound))
+
+
 def test_the_certification_target_is_within_the_gaps_of_the_bound():
     """Any incumbent at or above the target is within max(a, r|v|) of the bound, whatever the bound's sign."""
     from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
