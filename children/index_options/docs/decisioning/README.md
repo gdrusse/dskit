@@ -43,7 +43,6 @@ Display only: `actions.csv` remains the complete, append-only journal.
 
 | ID | Category | Step | Execution Date | Relevant Inputs | Relevant Outputs | Database Location | Notes |
 |---|---|---|---|---|---|---|---|
-| A1405 | execute | quarterly-scores-2021q3 | 2026-11-06T01:47:37+00:00 | quarterly-scores-2021q3 | /mnt/d/full-span-rerun-20261105/quarterly/scores/runs/2021Q3/quarterly-scores-2021q3-2023-12-31-e7466420 | /mnt/d/full-span-rerun-20261105/quarterly/scores/runs/2021Q3/quarterly-scores-2021q3-2023-12-31-e7466420 | state=ran hash=e7466420 asof=2023-12-31 |
 | A1406 | execute | quarterly-scores-2021q4 | 2026-11-06T01:49:39+00:00 | quarterly-scores-2021q4 | /mnt/d/full-span-rerun-20261105/quarterly/scores/runs/2021Q4/quarterly-scores-2021q4-2023-12-31-51beb33d | /mnt/d/full-span-rerun-20261105/quarterly/scores/runs/2021Q4/quarterly-scores-2021q4-2023-12-31-51beb33d | state=ran hash=51beb33d asof=2023-12-31 |
 | A1407 | execute | quarterly-scores-2022q1 | 2026-11-06T01:54:14+00:00 | quarterly-scores-2022q1 | /mnt/d/full-span-rerun-20261105/quarterly/scores/runs/2022Q1/quarterly-scores-2022q1-2023-12-31-5fd79e73 | /mnt/d/full-span-rerun-20261105/quarterly/scores/runs/2022Q1/quarterly-scores-2022q1-2023-12-31-5fd79e73 | state=ran hash=5fd79e73 asof=2023-12-31 |
 | A1408 | execute | quarterly-scores-2022q2 | 2026-11-06T01:56:29+00:00 | quarterly-scores-2022q2 | /mnt/d/full-span-rerun-20261105/quarterly/scores/runs/2022Q2/quarterly-scores-2022q2-2023-12-31-1233f491 | /mnt/d/full-span-rerun-20261105/quarterly/scores/runs/2022Q2/quarterly-scores-2022q2-2023-12-31-1233f491 | state=ran hash=1233f491 asof=2023-12-31 |
@@ -53,6 +52,7 @@ Display only: `actions.csv` remains the complete, append-only journal.
 | A1412 | execute | quarterly-scores-2023q2 | 2026-11-06T02:10:28+00:00 | quarterly-scores-2023q2 | /mnt/d/full-span-rerun-20261105/quarterly/scores/runs/2023Q2/quarterly-scores-2023q2-2023-12-31-f08ed857 | /mnt/d/full-span-rerun-20261105/quarterly/scores/runs/2023Q2/quarterly-scores-2023q2-2023-12-31-f08ed857 | state=ran hash=f08ed857 asof=2023-12-31 |
 | A1413 | execute | quarterly-scores-2023q3 | 2026-11-06T02:14:30+00:00 | quarterly-scores-2023q3 | /mnt/d/full-span-rerun-20261105/quarterly/scores/runs/2023Q3/quarterly-scores-2023q3-2023-12-31-de67ecea | /mnt/d/full-span-rerun-20261105/quarterly/scores/runs/2023Q3/quarterly-scores-2023q3-2023-12-31-de67ecea | state=ran hash=de67ecea asof=2023-12-31 |
 | A1414 | execute | quarterly-scores-2023q4 | 2026-11-06T02:17:03+00:00 | quarterly-scores-2023q4 | /mnt/d/full-span-rerun-20261105/quarterly/scores/runs/2023Q4/quarterly-scores-2023q4-2023-12-31-5db1a5a1 | /mnt/d/full-span-rerun-20261105/quarterly/scores/runs/2023Q4/quarterly-scores-2023q4-2023-12-31-5db1a5a1 | state=ran hash=5db1a5a1 asof=2023-12-31 |
+| A1415 | research | distribution-modeling/2026-11-09-delta-hedging-design | 2026-11-09T19:42:52+00:00 | Delta hedging design for the weekly MIO study: static forward hedge first | docs/research/distribution-modeling/2026-11-09-delta-hedging-design.md | docs/research/distribution-modeling/2026-11-09-delta-hedging-design.md |  |
 
 ## Path to Production
 
