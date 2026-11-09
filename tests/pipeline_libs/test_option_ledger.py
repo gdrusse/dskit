@@ -750,3 +750,169 @@ def test_standard_split_refuses_nonstandard_or_inconsistent_event(change):
     event.update(change)
     with pytest.raises(ValueError, match="unsupported"):
         StandardSplitAdjustment.parse([event], 100)
+
+
+# -- the fixed forward hedge (ADR-0312 S2) -----------------------------------------------------
+
+FIXED = {"rebalance": "fixed", "instrument": "forward", "rate": RATE}
+
+
+def _open_units(path, ratio=1.0):
+    """Independent Black-76 open hedge: units and the reference forward at day 0."""
+    years = DAYS / 365
+    forward = path[0] * math.exp(RATE * years)
+    delta = sum(black76_delta(r, forward, 100.0, SIGMA, years, RATE) for r in ("put", "call"))
+    return -ratio * 100 * delta * math.exp(RATE * years), forward
+
+
+def test_absent_fixed_forward_options_leave_every_existing_output_byte_identical(ctx):
+    """Parity: hashes of full outputs (trades, marks, summary) pinned on the pre-S2 base c38bea7."""
+    import hashlib
+    import json
+
+    def digest(out):
+        return hashlib.sha256(json.dumps(out, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    chain, _ = hedge_world(up_days=21)
+    pinned = {
+        "none": (None, "2de2a3131d18d75e"),
+        "daily": ({"rebalance": "daily", "rate": RATE}, "ae9a156883627877"),
+        "every_n": ({"rebalance": "every_n", "every_n": 5, "rate": RATE}, "45830ca1aaa03a24"),
+        "threshold": ({"rebalance": "threshold", "threshold": 5.0, "rate": RATE,
+                       "fee_per_share": 0.01}, "e0f51fabc05ba6c6")}
+    for name, (hedge, want) in pinned.items():
+        over = {"hedge": hedge} if hedge else {}
+        assert digest(run(ctx, chain, [HEDGE_ORDER], **over)) == want, name
+    assert digest(run(ctx, spread_chain(), [order()])) == "d0419059f207beaa"
+
+
+def test_a_fixed_forward_hedge_settles_units_times_settle_minus_reference_with_no_entry_cash(ctx):
+    chain, path = hedge_world(up_days=21)
+    base = dict(contracts=1, fee_per_contract=0.0)
+    plain = run(ctx, chain, [HEDGE_ORDER], **base)
+    out = run(ctx, chain, [HEDGE_ORDER], **base, hedge=FIXED)
+    units, ref = _open_units(path)
+    trade = out["trades"][0]
+    assert units != 0.0
+    assert trade["hedge_pnl_usd"] == pytest.approx(units * (path[-1] - ref), rel=1e-9)
+    assert trade["hedge_dividend_usd"] == 0.0
+    assert trade["premium_usd"] == plain["trades"][0]["premium_usd"]      # no cash at entry
+    assert trade["option_pnl_usd"] == pytest.approx(plain["trades"][0]["option_pnl_usd"])
+    assert out["marks"][0]["hedge_pnl_usd"] == pytest.approx(units * (path[0] - ref))   # spot mark
+    assert trade["pnl_usd"] == pytest.approx(trade["option_pnl_usd"] + trade["hedge_pnl_usd"])
+
+
+def test_a_fixed_hedge_trades_once_and_never_rebalances_between_entry_and_settlement(ctx):
+    chain, path = hedge_world(up_days=18, seed=5)
+    out = run(ctx, chain, [HEDGE_ORDER], contracts=1, fee_per_contract=0.0, hedge=FIXED)
+    units, _ = _open_units(path)
+    held = [m["hedge_shares"] for m in out["marks"][:-1]]
+    assert held == pytest.approx([units] * DAYS, abs=1e-9)
+    assert out["marks"][-1]["hedge_shares"] == 0.0                       # settled
+    assert out["summary"]["hedge"]["rebalances"] == 1
+    assert out["summary"]["hedge"]["skipped"] == {}
+
+
+def test_the_fixed_forward_is_marked_at_spot_against_the_reference(ctx):
+    chain, path = hedge_world(up_days=18, seed=5)
+    out = run(ctx, chain, [HEDGE_ORDER], contracts=1, fee_per_contract=0.0, hedge=FIXED)
+    units, ref = _open_units(path)
+    for i, m in enumerate(out["marks"]):
+        assert m["hedge_pnl_usd"] == pytest.approx(units * (path[i] - ref), rel=1e-9, abs=1e-9)
+    assert out["marks"][-1]["hedge_pnl_usd"] == out["trades"][0]["hedge_pnl_usd"]
+
+
+def test_a_fixed_forward_pays_no_dividend_cash_the_carry_is_inside_the_forward(ctx):
+    chain, _ = hedge_world(up_days=18, seed=5)
+    kw = dict(contracts=1, fee_per_contract=0.0, hedge=FIXED)
+    plain = run(ctx, chain, [HEDGE_ORDER], **kw)
+    paid = OptionStructureLedger("ledger", {**BASE, **kw}).run(
+        ctx, {"chain": chain, "orders": [HEDGE_ORDER],
+              "dividends": [{"symbol": "ABC", "date": day(10).isoformat(), "dividend_amount": 0.5}]})
+    assert paid["trades"][0]["hedge_pnl_usd"] == plain["trades"][0]["hedge_pnl_usd"]
+    assert paid["trades"][0]["hedge_dividend_usd"] == 0.0
+
+
+def test_the_ratio_scales_the_forward_and_zero_is_a_zero_unit_hedge(ctx):
+    chain, path = hedge_world(up_days=21)
+    kw = dict(contracts=1, fee_per_contract=0.0)
+    half = run(ctx, chain, [HEDGE_ORDER], **kw, hedge={**FIXED, "ratio": 0.5})["trades"][0]
+    units, ref = _open_units(path, ratio=0.5)
+    assert half["hedge_pnl_usd"] == pytest.approx(units * (path[-1] - ref), rel=1e-9)
+    zero = run(ctx, chain, [HEDGE_ORDER], **kw, hedge={**FIXED, "ratio": 0})
+    plain = run(ctx, chain, [HEDGE_ORDER], **kw)
+    assert zero["trades"][0]["hedge_pnl_usd"] == 0.0
+    assert zero["trades"][0]["pnl_usd"] == plain["trades"][0]["pnl_usd"]
+
+
+def test_fixed_forward_costs_are_per_unit_at_fill_only(ctx):
+    chain, path = hedge_world(up_days=21)
+    kw = dict(contracts=1, fee_per_contract=0.0)
+    free = run(ctx, chain, [HEDGE_ORDER], **kw, hedge=FIXED)["trades"][0]
+    paid = run(ctx, chain, [HEDGE_ORDER], **kw, hedge={**FIXED, "fee_per_share": 0.02})["trades"][0]
+    units, _ = _open_units(path)
+    assert paid["hedge_fees_usd"] == pytest.approx(0.02 * abs(units))     # nothing at settlement
+    assert paid["pnl_usd"] == pytest.approx(free["pnl_usd"] - paid["hedge_fees_usd"])
+    assert paid["fees_usd"] == pytest.approx(paid["hedge_fees_usd"])
+
+
+def test_round_units_trades_whole_shares(ctx):
+    chain, path = hedge_world(up_days=21)
+    out = run(ctx, chain, [HEDGE_ORDER], contracts=1, fee_per_contract=0.0,
+              hedge={**FIXED, "round_units": True})
+    units, ref = _open_units(path)
+    whole = round(units)
+    assert out["marks"][0]["hedge_shares"] == whole != units
+    assert out["trades"][0]["hedge_pnl_usd"] == pytest.approx(whole * (path[-1] - ref), rel=1e-9)
+
+
+def test_a_book_that_cannot_be_priced_at_entry_stays_unhedged_and_is_counted(ctx):
+    chain, _ = hedge_world(up_days=21)
+    chain = [{**r, "bid": 0.001, "ask": 0.002} if (r["date"] == day(0).isoformat()
+                                                    and r["right"] == "call") else r
+             for r in chain]                                        # a mid below intrinsic: no iv
+    out = run(ctx, chain, [HEDGE_ORDER], contracts=1, fee_per_contract=0.0, hedge=FIXED)
+    assert out["summary"]["hedge"]["skipped"] == {"no_implied_vol": 1}
+    assert out["summary"]["hedge"]["rebalances"] == 0
+    assert all(m["hedge_shares"] == 0.0 for m in out["marks"])
+    assert out["trades"][0]["hedge_pnl_usd"] == 0.0
+
+
+def test_a_fixed_forward_exit_unwinds_at_the_exit_day_spot_for_no_fee(ctx):
+    chain, path = hedge_world(up_days=21)
+    out = run(ctx, chain, [order(strikes=(100, 100), structure="straddle", expiration=DAYS,
+                                 exit=day(12).isoformat())],
+              contracts=1, fee_per_contract=0.0, close_rule="exit",
+              order_fields={**ORDER_FIELDS, "exit": "exit"}, hedge=FIXED)
+    units, ref = _open_units(path)
+    assert out["trades"][0]["reason_closed"] == "exit"
+    assert out["trades"][0]["hedge_pnl_usd"] == pytest.approx(units * (path[12] - ref), rel=1e-9)
+    assert out["trades"][0]["hedge_fees_usd"] == 0.0
+
+
+@pytest.mark.parametrize("hedge", [
+    {"rebalance": "fixed"},                                             # fixed needs the forward
+    {"rebalance": "daily", "instrument": "forward"},                    # a forward is held fixed
+    {"rebalance": "fixed", "instrument": "swap"},
+    {**FIXED, "every_n": 3}, {**FIXED, "threshold": 1.0},
+    {**FIXED, "ratio": -0.1}, {**FIXED, "ratio": 1.5}, {**FIXED, "ratio": "1"},
+    {**FIXED, "ratio": True}, {**FIXED, "round_units": "yes"}, {**FIXED, "bogus": 1},
+    {"rebalance": "daily", "ratio": 0.5}, {"rebalance": "daily", "round_units": True},
+    {"rebalance": "daily", "instrument": "stock", "bogus": 1}])
+def test_fixed_forward_params_are_rejected(hedge):
+    assert OptionStructureLedger.validate_params({**BASE, "hedge": hedge})
+    with pytest.raises(ConfigError):
+        OptionStructureLedger("ledger", {**BASE, "hedge": hedge})
+
+
+def test_the_stock_instrument_named_explicitly_is_the_existing_hedge(ctx):
+    chain, _ = hedge_world(up_days=21)
+    a = run(ctx, chain, [HEDGE_ORDER], hedge={"rebalance": "daily", "rate": RATE})
+    b = run(ctx, chain, [HEDGE_ORDER],
+            hedge={"rebalance": "daily", "instrument": "stock", "rate": RATE})
+    assert a == b
+
+
+def test_the_documented_fixed_forward_block_validates_clean():
+    assert OptionStructureLedger.validate_params({**BASE, "hedge": FIXED}) == []
+    assert OptionStructureLedger.validate_params(
+        {**BASE, "hedge": {**FIXED, "ratio": 0.5, "round_units": True, "fee_per_share": 0.01}}) == []

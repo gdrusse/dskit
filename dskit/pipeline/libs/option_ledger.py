@@ -27,6 +27,12 @@ The rules, fixed by the node and not by the data:
   (:func:`~dskit.pipeline.option_pricing.black76_implied_vol`, forward ``S exp(rate T)``), the
   hedge held in the underlying column's price and rebalanced by a declared rule. The hedge pays no
   financing; its P&L is ``shares held * (raw price change + ex-date cash dividend)``.
+  ``hedge: {"rebalance": "fixed", "instrument": "forward"}`` (ADR-0312) instead opens ONE cash-settled
+  forward at the open: ``ratio`` times the open's mid-implied delta, at the reference forward
+  ``S exp(rate T)``, no cash at entry, held to the close with no rebalance. Its P&L is
+  ``units * (S - F_ref)``, marked at spot (the ADR's owner option), settled at the expiry
+  underlying (an ``exit`` close unwinds at that day's spot); no dividend cash (the carry is inside
+  the forward) and the per-share fee is paid once, at the fill.
 
 The calendar is the union of dates the chain shows for the ordered symbols. When rows of one symbol and day
 disagree on the underlying, the first in input order is used and the disagreement is counted. The chain is read once
@@ -60,7 +66,7 @@ from dskit.pipeline.option_structures import (
 )
 from dskit.pipeline.records import number_ok, price_ok
 
-__all__ = ["CHAIN_FIELDS", "EXIT_ZERO_BID", "FILLS", "NODE_KINDS", "ORDER_FIELDS", "REBALANCES",
+__all__ = ["CHAIN_FIELDS", "EXIT_ZERO_BID", "FILLS", "INSTRUMENTS", "NODE_KINDS", "ORDER_FIELDS", "REBALANCES",
            "OptionStructureLedger", "FundedOptionAccount", "StandardSplitAdjustment"]
 
 NODE_KINDS = ()
@@ -72,7 +78,9 @@ ORDER_FIELDS = ("date", "symbol", "expiration", "strikes", "structure", "exit")
 #: The fill models: the NBBO sides (default) or the mid.
 FILLS = ("nbbo", "mid")
 #: The hedge rebalance rules.
-REBALANCES = ("daily", "every_n", "threshold")
+REBALANCES = ("daily", "every_n", "threshold", "fixed")
+#: The hedge instruments: the underlying stock (default) or a cash-settled forward (``fixed`` only).
+INSTRUMENTS = ("stock", "forward")
 #: What an exit does with a long leg that has no bid: refuse (default) or close it at nothing.
 EXIT_ZERO_BID = ("refuse", "allow")
 _CLOSE_RULES = ("expiry", "exit")
@@ -272,6 +280,10 @@ class _Hedge:
         self.dividend_amounts = tuple(amount for _day, amount in dividends)
         self.last_day = None
 
+    def _forward(self, under, years):
+        """Return the forward ``S exp(rate T)`` the deltas are taken on."""
+        return under * math.exp(self.rate * years)
+
     def accrue(self, day, under):
         """Book raw stock movement and ex-date cash on shares held before ``day``.
 
@@ -316,7 +328,7 @@ class _Hedge:
             return None, "no_time_to_expiry"
         if not price_ok(under):
             return None, "no_underlying"
-        forward = under * math.exp(self.rate * years)
+        forward = self._forward(under, years)
         total = 0.0
         for (right, sign), strike, mid in zip(legs, strikes, mids, strict=True):
             vol = black76_implied_vol(right, mid, forward, strike, years, self.rate)
@@ -326,6 +338,60 @@ class _Hedge:
                 self.rate * years)
             total += sign * spot_delta
         return -total * self.scale, None
+
+
+class _FixedForwardHedge(_Hedge):
+    """ADR-0312: one cash-settled forward struck at the open's reference forward, never rebalanced.
+
+    Hooks over :class:`_Hedge`: the target is ``ratio`` times the stock hedge's open delta (rounded
+    to whole units on ``round_units``), taken once; P&L is ``units * (S - F_ref)`` marked at spot
+    with no dividend cash; closing pays no fee.
+    """
+
+    def __init__(self, spec, year_days, multiplier, contracts, dividends=()):
+        super().__init__(spec, year_days, multiplier, contracts, dividends)
+        self.ratio = float(spec.get("ratio", 1.0))
+        self.round_units = bool(spec.get("round_units", False))
+        self.entered = False
+        self.reference = None
+        self._pending = None
+
+    def accrue(self, day, under):
+        """Mark the forward at spot against its reference; no stock path, no dividend cash."""
+        self.last_day = day
+        if under is not None:
+            self.last_under = under
+            self.pnl = self.shares * (under - self.reference) if self.shares else self.pnl
+
+    def delta(self, legs, strikes, expiration, day, under, mids):
+        """Return the one entry target, else the units already held (entry is never retried)."""
+        if self.entered:
+            return self.shares, None
+        self.entered = True
+        target, reason = super().delta(legs, strikes, expiration, day, under, mids)
+        if target is None:
+            return None, reason
+        self._pending = self._forward(under, (expiration - day).days / self.year_days)
+        target *= self.ratio
+        return (float(round(target)) if self.round_units else target), None
+
+    def due(self, target):
+        """Trade only at a priced entry, when no reference is struck yet."""
+        return self._pending is not None and self.reference is None
+
+    def rebalance(self, target):
+        """Strike the forward at the pending reference and pay the fee once."""
+        self.reference = self._pending
+        super().rebalance(target)
+        self.pnl = self.shares * (self.last_under - self.reference)
+
+    def flatten(self):
+        """Cash-settle: the P&L is booked, no fee, no units left."""
+        self.shares = 0.0
+
+
+#: The hedge classes by ``hedge.instrument`` (absent is the stock hedge).
+_HEDGES = {"stock": _Hedge, "forward": _FixedForwardHedge}
 
 
 class _Trade:
@@ -345,9 +411,9 @@ class _Trade:
                           for (right, _sign), k in zip(self.legs, self.strikes, strict=True))
         self.adjustment = adjustment if adjustment and adjustment.applies(order.opened, order.expiration) else None
         self.applied_adjustments = []
-        self.hedge = (_Hedge(self.p["hedge"], int(self.p.get("year_days", 365)), self.mult, self.n,
-                             chain.dividends.get(order.symbol, ()))
-                      if self.p.get("hedge") else None)
+        self.hedge = (_HEDGES[self.p["hedge"].get("instrument", "stock")](
+            self.p["hedge"], int(self.p.get("year_days", 365)), self.mult, self.n,
+            chain.dividends.get(order.symbol, ())) if self.p.get("hedge") else None)
         self.marks = []
         self.premium = 0.0
         self.open_fees = 0.0
@@ -669,7 +735,9 @@ class OptionStructureLedger(Node):
         ``year_days`` (int >= 1, default 365), ``exit_zero_bid`` (one of :data:`EXIT_ZERO_BID`, default
         ``refuse``) and ``hedge``: ``{"rebalance": one of
         :data:`REBALANCES`, "every_n": int (with ``every_n``), "threshold": shares (with
-        ``threshold``), "rate": float, "fee_per_share": >= 0}``.
+        ``threshold``), "rate": float, "fee_per_share": >= 0, "instrument": one of
+        :data:`INSTRUMENTS` (``forward`` goes with ``fixed``, and only it takes ``ratio`` in [0, 1],
+        default 1, and ``round_units``, default false)}``.
 
     Examples
     --------
@@ -696,7 +764,8 @@ class OptionStructureLedger(Node):
                "fee_per_contract", "settle_fee_per_contract", "fill", "close_rule", "year_days",
                "hedge", "exit_zero_bid")
     _REQUIRED = ("chain_fields", "order_fields", "structures", "multiplier")
-    _HEDGE_KEYS = ("rebalance", "every_n", "threshold", "rate", "fee_per_share")
+    _HEDGE_KEYS = ("rebalance", "every_n", "threshold", "rate", "fee_per_share", "instrument",
+                   "ratio", "round_units")
 
     @staticmethod
     def _fields_problems(name, value, allowed, required):
@@ -761,6 +830,26 @@ class OptionStructureLedger(Node):
         fee = hedge.get("fee_per_share", 0.0)
         if not (number_ok(fee) and fee >= 0):
             problems.append(f"hedge.fee_per_share must be a number >= 0, got {fee!r}")
+        problems += cls._instrument_problems(hedge, rule)
+        return problems
+
+    @staticmethod
+    def _instrument_problems(hedge, rule):
+        """Problems with ``instrument``, ``ratio`` and ``round_units`` (``fixed`` is the forward's rule)."""
+        instrument = hedge.get("instrument", "stock")
+        if instrument not in INSTRUMENTS:
+            return [f"hedge.instrument must be one of {list(INSTRUMENTS)}, got {instrument!r}"]
+        problems = []
+        if (rule == "fixed") != (instrument == "forward"):
+            problems.append("hedge: rebalance 'fixed' and instrument 'forward' go together")
+        for key in ("ratio", "round_units"):
+            if key in hedge and instrument != "forward":
+                problems.append(f"hedge.{key} is only for instrument 'forward'")
+        ratio = hedge.get("ratio", 1.0)
+        if not (number_ok(ratio) and not isinstance(ratio, bool) and 0 <= ratio <= 1):
+            problems.append(f"hedge.ratio must be a number in [0, 1], got {ratio!r}")
+        if not isinstance(hedge.get("round_units", False), bool):
+            problems.append(f"hedge.round_units must be a bool, got {hedge['round_units']!r}")
         return problems
 
     @classmethod
