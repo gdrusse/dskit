@@ -1424,8 +1424,12 @@ class WeeklyOptionPortfolioStudy:
                "correlation_threshold", "solver", "methods")
     _METHOD_KEYS = {"id", "rho", "portfolio_fraction", "name_fraction", "component_fraction"}
     _OPTIONAL_METHOD_KEYS = {"reserve_per_contract", "short_notional_fraction", "shock", "risk_charge", "radius_scale",
-                             "kelly", "sizer"}
+                             "kelly", "sizer", "exit"}
     _RADIUS_SCALE = "reference_scale"
+    #: The exit rule's keys (ADR-0306): a take-profit on open books, priced at the side a close executes on. There is
+    #: no stop-loss key: the hindsight study showed a stop sells the convexity that is the whole return.
+    _EXIT_KEYS = {"take_profit_multiple", "side"}
+    _EXIT_SIDES = ("executable",)
     _CHARGE_KEYS = ("reserve_per_contract", "short_notional_fraction")
     _SHOCK_KEYS = {"moves", "loss_fraction", "beta_lookback"}
     _KELLY_KEYS = {"fraction", "n_tangents", "core", "wealth_floor", "moves", "beta_lookback", "cash_buffer",
@@ -1633,8 +1637,12 @@ class WeeklyOptionPortfolioStudy:
         if not isinstance(p["methods"], list) or not p["methods"]:
             raise ValueError("methods must be a nonempty declared list")
         for method in p["methods"]:
+            if (isinstance(method, dict) and isinstance(method.get("exit"), dict)
+                    and any("stop" in str(k).lower() for k in method["exit"])):
+                raise ValueError("a stop-loss exit is refused: the exit rule is a take-profit only (ADR-0306)")
             if (not isinstance(method, dict)
                     or set(method)-cls._OPTIONAL_METHOD_KEYS != cls._METHOD_KEYS
+                    or ("exit" in method and not cls._exit_valid(method["exit"]))
                     or any(not number_ok(v) or v < 0 for v in cls._charge(method).values())
                     or ("shock" in method and not cls._shock_valid(method["shock"]))
                     or ("risk_charge" in method and not cls._risk_charge_valid(method["risk_charge"]))
@@ -1818,6 +1826,74 @@ class WeeklyOptionPortfolioStudy:
     def _sizer(method):
         """Return the method's validated sizer policy, None when undeclared."""
         return method.get("sizer")
+
+    @classmethod
+    def _exit_valid(cls, spec):
+        """Return whether an exit block is a take-profit above 1x reserve at a known side (ADR-0306)."""
+        return (isinstance(spec, dict) and set(spec) == cls._EXIT_KEYS
+                and type(spec["take_profit_multiple"]) in (int, float) and number_ok(spec["take_profit_multiple"])
+                and spec["take_profit_multiple"] > 1
+                and isinstance(spec["side"], str) and spec["side"] in cls._EXIT_SIDES)
+
+    @staticmethod
+    def _exit(method):
+        """Return the method's validated exit rule, None when undeclared (every book is held to expiry)."""
+        return method.get("exit")
+
+    def _take_profits(self, account, day, rule):
+        """Decide this session's take-profit closes from this session's quotes only (ADR-0306).
+
+        For every open book filled before ``day`` and maturing after it, the close is priced at the executable
+        side of today's quotes on its held legs: a bought leg is sold at the bid, a sold leg bought back at the
+        ask, the entry's per-contract fee charged again. ``pnl`` is the book's realized profit if closed now (its
+        fill credit plus the close cash less the close fees); the book closes when ``pnl`` is at least
+        ``take_profit_multiple`` times the reserve it committed at fill. A book with any held leg unquoted, or
+        quoted on a side a close cannot trade (the ledger's exit rules: no bid on a long, no ask on a short,
+        nonfinite, negative or crossed), is held, and so is a book with no committed reserve or one a split
+        converted (the shared ledger replays a split on the expiry close only). Returns the exit rows (book
+        order) and ``{id: reason}`` for the books that could not be priced (``leg_not_quoted``,
+        ``basis_changed``, ``split_adjusted``); a book priced below the multiple is simply held.
+        """
+        from dskit.pipeline.option_structures import quote_defects
+
+        mult = self.params["bridge"]["solver"]["multiplier"]
+        fee = self.params["bridge"]["solver"]["fee_per_contract_usd"]
+        exits, unpriced = [], {}
+        for key in sorted(account.open):
+            book = account.open[key]
+            if not book["fill_date"] < day < book["expiry"]:
+                continue
+            if book.get("applied_adjustments"):
+                unpriced[key] = "split_adjusted"
+                continue
+            active, factor = self._active_position(book)
+            if not math.isclose(self._factors[book["symbol"]].get(day, math.nan), factor, rel_tol=1e-9):
+                unpriced[key] = "basis_changed"
+                continue
+            cash = 0.
+            for leg in active:
+                raw = self._quotes[book["symbol"]].get((day, book["expiry"], leg["right"], leg["strike"]))
+                if raw is None:
+                    cash = None
+                    break
+                bid, ask = raw["bid"], raw["ask"]
+                if not (number_ok(bid) and number_ok(ask)):
+                    cash = None
+                    break
+                bid, ask = bid/factor, ask/factor
+                if quote_defects(bid, ask, "sell" if leg["sign"] > 0 else "buy", locked_ok=True):
+                    cash = None
+                    break
+                cash += (bid if leg["sign"] > 0 else -ask)*mult*leg["quantity"]
+            if cash is None:
+                unpriced[key] = "leg_not_quoted"
+                continue
+            fees = book["contracts"]*fee
+            pnl = book["credit"]+cash-fees
+            if book["reserve"] > 0 and pnl >= rule["take_profit_multiple"]*book["reserve"]:
+                exits.append({"book": key, "week": day, "multiple_realised": pnl/book["reserve"],
+                              "proceeds": cash, "fees": fees, "pnl": pnl, "reserve": book["reserve"]})
+        return exits, unpriced
 
     #: HiGHS's ``mip_feasibility_tolerance`` a kelly document must declare, at most: at its 1e-6 default the charge
     #: variable sits under its tangent lines by up to ~0.006 at 300,000 (the tolerance times the lines' intercepts),
@@ -2710,7 +2786,48 @@ class WeeklyOptionPortfolioStudy:
         return result
 
     def _ledger(self, trades, charge=None):
-        """Delegate fills, daily mid marks and terminal cashflow to the shared ledger."""
+        """Delegate fills, daily mid marks and terminal cashflow to the shared ledger.
+
+        Books a take-profit closed early (ADR-0306) run on the ledger's ``exit`` close rule at their exit date, the
+        others on ``expiry``; the two answers are merged back into the account's trade order. Without an early exit
+        this is the one expiry ledger, unchanged.
+        """
+        exited = [i for i, t in enumerate(trades) if t.get("exit")]
+        if not exited:
+            return self._ledger_run(trades, charge)
+        held = [i for i in range(len(trades)) if not trades[i].get("exit")]
+        rows, marks, summary = [None]*len(trades), [], {}
+        for rule, indexes in (("expiry", held), ("exit", exited)):
+            if not indexes:
+                continue
+            part = self._ledger_run([trades[i] for i in indexes], charge, exiting=rule == "exit")
+            for row in part["trades"]:
+                rows[indexes[row["order_index"]]] = {**row, "order_index": indexes[row["order_index"]]}
+            marks.extend({**m, "order_index": indexes[m["order_index"]]} for m in part["marks"])
+            summary[rule] = part["summary"]
+        return {"trades": rows, "marks": marks, "summary": self._merged_summary(summary)}
+
+    @staticmethod
+    def _merged_summary(parts):
+        """One ledger summary over the expiry and exit runs: the counts summed, each run's own report kept."""
+        def add(a, b):
+            if isinstance(a, dict):
+                return {k: add(a.get(k, 0), b.get(k, 0)) for k in (*a, *(k for k in b if k not in a))}
+            return a+b
+
+        counted = ("orders_in", "orders_opened", "orders_refused", "refused_at_open", "closed", "open_at_end",
+                   "unsettled", "exit_refused", "exit_zero_bid_long", "marks", "marks_carried", "totals")
+        runs = list(parts.values())
+        out = {"stage": "; ".join(p["stage"] for p in runs)}
+        for key in counted:
+            value = runs[0][key]
+            for other in runs[1:]:
+                value = add(value, other[key])
+            out[key] = value
+        return {**out, "parts": parts}
+
+    def _ledger_run(self, trades, charge=None, exiting=False):
+        """Run the shared ledger over one set of books under one close rule, checking it against the account."""
         from dskit.pipeline.libs.option_ledger import OptionStructureLedger
 
         if not trades:
@@ -2748,19 +2865,27 @@ class WeeklyOptionPortfolioStudy:
                                  "underlying": underlying}
         fields = ("symbol", "date", "expiration", "strike", "right", "bid", "ask", "underlying")
         order_fields = ("date", "symbol", "expiration", "strikes", "structure")
+        if exiting:
+            # ADR-0306: the take-profit closes replay on the ledger's own exit path (sell longs at the bid, buy back
+            # shorts at the ask on the exit date); a split-adjusted book never takes profit, so none is passed.
+            order_fields = (*order_fields, "exit")
+            for order, b in zip(orders, trades):
+                order["exit"] = b["exit"]["week"]
         ledger_inputs = {"chain": list(rows.values()), "orders": orders}
-        if self.adjustments:
+        if self.adjustments and not exiting:
             ledger_inputs["adjustments"] = [event.record() for event in self.adjustments.values()]
         ledger = OptionStructureLedger("ledger", {
             "chain_fields": {k: k for k in fields}, "order_fields": {k: k for k in order_fields},
             "structures": structures, "multiplier": self.params["bridge"]["solver"]["multiplier"],
             "fee_per_contract": self.params["bridge"]["solver"]["fee_per_contract_usd"],
-            "fill": "nbbo", "close_rule": "expiry"}).run(None, ledger_inputs)
+            "fill": "nbbo", "close_rule": "exit" if exiting else "expiry"}).run(None, ledger_inputs)
         if len(ledger["trades"]) != len(trades):
             raise ValueError("shared ledger refused an admitted book")
         for book, row in zip(trades, ledger["trades"]):
             if row["status"] != "closed" or abs(row["pnl_usd"]-book["pnl"]) > 1e-6:
                 raise ValueError("shared ledger/chronological account PnL mismatch")
+            if exiting and (row["reason_closed"] != "exit" or row["close_date"] != book["close_date"]):
+                raise ValueError("shared ledger/chronological take-profit exit mismatch")
             expected = self._floor(max(0., row["max_loss_usd"], -row["credit_usd"]),
                                    charge or self._charge({}), book["legs"],
                                    self.params["bridge"]["solver"]["multiplier"])
@@ -2914,6 +3039,7 @@ class WeeklyOptionPortfolioStudy:
             p["initial"], p["deposit"], p["deposit_every_days"], self.calendar[0],
             deposit_end_before=self.clocks["entry_end_before"] if self.clocks else None)
         charge = self._charge(method)
+        exit_rule = self._exit(method)
         decisions, rejected, snapshots, pending = [], [], [], None
         for day in self.calendar:
             self._apply_adjustments(account, day, charge)
@@ -2940,6 +3066,19 @@ class WeeklyOptionPortfolioStudy:
                     rejected.extend({**b, "status": "unfilled", "reason": "repriced_shared_cap"} for b in survivors)
                 pending = None
             if day in self.weeks:
+                exits = unpriced = None
+                if exit_rule is not None:
+                    # ADR-0306: the week's take-profits close first, from today's quotes, so the decision below sees
+                    # the released reserve and the realized profit in its funding, budget and open-reserve fields.
+                    exits, unpriced = self._take_profits(account, day, exit_rule)
+                    if recorded_decisions is not None and (
+                            recorded_decisions[day].get("exits") != exits
+                            or recorded_decisions[day].get("exit_unpriced") != unpriced):
+                        raise ValueError("recorded exits differ from the re-derived take-profits: "+day)
+                    for row in exits:
+                        account.open[row["book"]]["exit"] = {k: row[k] for k in (
+                            "week", "multiple_realised", "proceeds", "fees")}
+                    account.close_early(day, {row["book"]: row["pnl"] for row in exits})
                 groups, metadata, refusals = self._prepare(day)
                 components = self._components(day) if method["component_fraction"] is not None else {"groups": []}
                 limits = self._limits(account, method, components)
@@ -2948,7 +3087,10 @@ class WeeklyOptionPortfolioStudy:
                           "eligible_by_symbol": dict(Counter(m["symbol"] for m in metadata)),
                           "refusals": refusals, "components": components, "funding": account.funding,
                           "open_reserve": sum(b["reserve"] for b in account.open.values())}
-                repaired = {m["id"]: m["cdf_noise_raised"] for m in metadata if "cdf_noise_raised" in m}
+                if exit_rule is not None:
+                    # Only a method that declares the exit carries the fields: every other record is unchanged.
+                    record["exits"], record["exit_unpriced"] = exits, unpriced
+                repaired ={m["id"]: m["cdf_noise_raised"] for m in metadata if "cdf_noise_raised" in m}
                 if repaired:
                     # Only a repaired week carries the key, so a monotone forecast's record is unchanged.
                     record["cdf_noise_repaired"] = {"rows": len(repaired), "largest": max(repaired.values()),
@@ -3184,6 +3326,7 @@ class WeeklyOptionPortfolioStudy:
                                 for book in record.get("books", [])],
                             "solver_certificates": [{k: cert.get(k)
                                 for k in ("objective", "bound", "gap", "seconds")} for cert in certs],
+                            **({"exits": copy.deepcopy(record["exits"])} if "exits" in record else {}),
                             "provisional": True})
                 if progress is not None:
                     progress(method["id"], len(decisions), len(self.weeks), record["status"])
@@ -3202,6 +3345,10 @@ class WeeklyOptionPortfolioStudy:
             raise ValueError("unprocessed order at study end")
         if derived_decisions is not None and set(derived_decisions) != consumed:
             raise ValueError("derived actions for an ineligible week")
+        if exit_rule is not None:
+            # A declared exit gives every settlement row the field: None for a book held to expiry.
+            for trade in account.closed:
+                trade.setdefault("exit", None)
         result = self._finish(method, account, decisions, rejected, snapshots)
         if events is not None:
             for point in result["curve"]:

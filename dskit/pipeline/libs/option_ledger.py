@@ -1183,6 +1183,38 @@ class FundedOptionAccount:
         self.day = day
         return contributed
 
+    def close_early(self, day, closes):
+        """Close open books before their maturity on the current session, with the expiry close's accounting.
+
+        A declared exit rule (for example a take-profit at the executable side) decides which books close and
+        what each realizes; the account only books it: the realized profit, including the original credit, moves
+        into ``realized`` and the book's reserve is no longer committed, exactly as a settlement does.
+
+        Parameters
+        ----------
+        day : str
+            The account's current session (after :meth:`advance` for that day).
+        closes : dict
+            Book ID to total realized profit, including its original credit.
+
+        Raises
+        ------
+        ValueError
+            The day is not the current session, a book is not open or matures today or earlier, or a profit is
+            not finite or below the book's reserved loss. Nothing is closed then.
+        """
+        self._day(day)
+        if (day != self.day or not isinstance(closes, dict)
+                or any(key not in self.open or self.open[key]["expiry"] <= day for key in closes)
+                or any(not number_ok(pnl) or pnl < -self.open[key]["reserve"]-1e-5
+                       for key, pnl in closes.items())):
+            raise ValueError("early closes must be open books before maturity within reserved losses")
+        for key, pnl in closes.items():
+            book = self.open.pop(key)
+            self.cash += float(pnl)-book["credit"]
+            self.realized += float(pnl)
+            self.closed.append({**book, "pnl": float(pnl), "close_date": day})
+
     def remaining(self, members, fraction):
         """Return headroom after all open reserves for the supplied names.
 

@@ -4612,3 +4612,298 @@ def test_accept_uncertified_is_a_boolean_kelly_key(value, ok):
             ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
     top = TOP_FORMULATIONS["kelly025_top100_uncert_lp"]["kelly"]
     assert top == {**TOP_FORMULATIONS["kelly025_top100_lp"]["kelly"], "accept_uncertified": True}
+
+
+# --- hindsight stage two (ADR-0306): the executable-side take-profit exit (C3) and the vol-unit radius sized (C4) ------
+
+#: The note's primary take-profit (3x the reserve committed at fill, closed at the executable side) and its declared
+#: alternative (2x). Both are declared before any holdout is read; no stop-loss key exists.
+TP3 = {"take_profit_multiple": 3.0, "side": "executable"}
+TP2 = {"take_profit_multiple": 2.0, "side": "executable"}
+HINDSIGHT2_FORMULATIONS = {
+    "w1_010_shock10_tp3_lp": {**FORMULATIONS["w1_010_shock10_lp"], "exit": TP3},
+    "w1_010_shock10_tp2_lp": {**FORMULATIONS["w1_010_shock10_lp"], "exit": TP2},
+    "kelly025_sized_tp3_lp": {**SIZED_FORMULATIONS["kelly025_sized_lp"], "exit": TP3},
+    # C4: the vol-unit radius arm as stage 1, ADR-0300's sizer attached exactly as kelly025_sized_lp attaches it.
+    "w1_010z_shock10_sized_lp": {**FORMULATIONS["w1_010z_shock10_lp"], "sizer": SIZER},
+}
+
+_TP_BOOK = "2019-01-02:X:2019-02-01"      # the week-one long put spread, debit 1,113, reserve 1,113
+_TP_HELD = "2019-01-07:X:2019-02-08"      # the week-two one, the same structure on the later expiry
+_TP_WEEK = "2019-01-14"
+
+
+def _tp_fixture(exit=None, peak=(5.0, 5.2), drop=None):
+    """The weekly fixture with cheap 100 puts and a bearish forecast: each week buys the 100/90 put spread.
+
+    On ``_TP_WEEK`` the week-one book's 100 put quotes ``peak`` (sold at its bid, the 90 put bought back at its ask
+    .12: 10 x (5.00-.12) x 100 = 4,880 less 13 of fees, against the 1,113 debit: +3,754, 3.37x the reserve). The
+    week-two book is quoted as before (far below any multiple). ``drop`` removes that day's (expiry, strike) row.
+    """
+    params, inputs = _weekly_portfolio_fixture()
+    z = [-3+.5*i for i in range(13)]
+    for forecast in inputs["X"]["forecasts"]:
+        for i, v in enumerate(z):
+            forecast["method_cdf_"+str(i)] = .5*(1+math.erf((v+2.)/2**.5))
+    chain = []
+    for row in inputs["X"]["chain"]:
+        if row["strike"] == 100.:
+            row["bid"], row["ask"] = 1.0, 1.2
+            if row["date"] == _TP_WEEK and row["expiration"] == "2019-02-01":
+                row["bid"], row["ask"] = peak
+        if drop is None or (row["date"], row["expiration"], row["strike"]) != (_TP_WEEK, *drop):
+            chain.append(row)
+    inputs["X"]["chain"] = chain
+    if exit is not None:
+        params["methods"][0]["exit"] = exit
+    return params, inputs
+
+
+def _week(result, day):
+    return next(d for d in result["decisions"] if d["date"] == day)
+
+
+def test_the_hindsight_stage_two_formulations_validate_and_differ_only_where_they_say():
+    base, z = FORMULATIONS["w1_010_shock10_lp"], FORMULATIONS["w1_010z_shock10_lp"]
+    for name, method in HINDSIGHT2_FORMULATIONS.items():
+        params, inputs = _weekly_portfolio_fixture()
+        params["methods"] = [{"id": name, **method}]
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    assert HINDSIGHT2_FORMULATIONS["w1_010_shock10_tp3_lp"] == {**base, "exit": TP3}
+    assert HINDSIGHT2_FORMULATIONS["w1_010_shock10_tp2_lp"] == {**base, "exit": TP2}
+    assert HINDSIGHT2_FORMULATIONS["kelly025_sized_tp3_lp"] == {**SIZED_FORMULATIONS["kelly025_sized_lp"], "exit": TP3}
+    c4 = HINDSIGHT2_FORMULATIONS["w1_010z_shock10_sized_lp"]
+    assert {k: v for k, v in c4.items() if k != "sizer"} == z and c4["sizer"] == SIZER, \
+        "C4 is w1_010z_shock10_lp with the sizer block only"
+    assert c4["rho"] == 1.676983322330843 and c4["radius_scale"] == "reference_scale" and c4["shock"] == SHOCK10
+    assert FORMULATIONS["w1_010_shock10_lp"] == {**_BASE, "rho": .10, "shock": SHOCK10}, "the parents are untouched"
+    assert "exit" not in SIZED_FORMULATIONS["kelly025_sized_lp"] and "sizer" not in z
+
+
+@pytest.mark.parametrize("spec,ok", [
+    (TP3, True), (TP2, True), ({"take_profit_multiple": 3, "side": "executable"}, True),
+    ({"take_profit_multiple": 1.0, "side": "executable"}, False),
+    ({"take_profit_multiple": .5, "side": "executable"}, False),
+    ({"take_profit_multiple": -2., "side": "executable"}, False),
+    ({"take_profit_multiple": float("inf"), "side": "executable"}, False),
+    ({"take_profit_multiple": float("nan"), "side": "executable"}, False),
+    ({"take_profit_multiple": True, "side": "executable"}, False),
+    ({"take_profit_multiple": "3", "side": "executable"}, False),
+    ({"take_profit_multiple": 3., "side": "mid"}, False),
+    ({"take_profit_multiple": 3., "side": "bid"}, False),
+    ({"take_profit_multiple": 3.}, False),
+    ({"side": "executable"}, False),
+    ({**TP3, "horizon": 5}, False),
+    (None, False), ([3., "executable"], False),
+])
+def test_the_exit_block_accepts_a_take_profit_above_one_reserve_at_the_executable_side(spec, ok):
+    params, inputs = _weekly_portfolio_fixture()
+    params["methods"][0]["exit"] = spec
+    if ok:
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    else:
+        with pytest.raises(ValueError, match="invalid fixed method"):
+            ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+@pytest.mark.parametrize("spec", [
+    {**TP3, "stop_loss_multiple": .5},
+    {**TP3, "stop_loss": .75},
+    {"stop_loss_multiple": .5, "side": "executable"},
+    {**TP3, "Stop": 1.},
+])
+def test_a_stop_loss_exit_is_refused_by_name(spec):
+    params, inputs = _weekly_portfolio_fixture()
+    params["methods"][0]["exit"] = spec
+    with pytest.raises(ValueError, match="stop-loss"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_a_book_at_the_multiple_closes_at_the_executable_side_and_one_below_is_held():
+    params, inputs = _tp_fixture(TP3)
+    method = params["methods"][0]
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    held_params, held_inputs = _tp_fixture()
+    hold = ledger_studies.WeeklyOptionPortfolioStudy(held_params, held_inputs)._method(held_params["methods"][0], None)
+    trades = {t["id"]: t for t in result["trades"]}
+    assert set(trades) == {_TP_BOOK, _TP_HELD} == {t["id"] for t in hold["trades"]}
+    book, held = trades[_TP_BOOK], trades[_TP_HELD]
+    assert [(leg["right"], leg["strike"], leg["sign"], leg["quantity"]) for leg in book["legs"]] == [
+        ("put", 100., 1, 10), ("put", 90., -1, 10)] and book["credit"] == pytest.approx(-1113.)
+    assert book["reserve"] == pytest.approx(1113.)
+    # Sell the ten 100 puts at the bid 5.00, buy back the ten 90 puts at the ask .12, the 20-contract fee again.
+    proceeds, fees = 10*(5.0-.12)*100, 20*.65
+    assert book["close_date"] == _TP_WEEK and book["expiry"] == "2019-02-01"
+    assert book["exit"] == {"week": _TP_WEEK, "multiple_realised": pytest.approx((-1113.+proceeds-fees)/1113.),
+                            "proceeds": pytest.approx(proceeds), "fees": pytest.approx(fees)}
+    assert book["pnl"] == pytest.approx(-1113.+proceeds-fees) == pytest.approx(3754.)
+    assert book["exit"]["multiple_realised"] >= 3.
+    assert held["exit"] is None and held["close_date"] == held["expiry"] == "2019-02-08"
+    assert held["pnl"] == next(t["pnl"] for t in hold["trades"] if t["id"] == _TP_HELD), "the held book settles as before"
+    week = _week(result, _TP_WEEK)
+    assert week["exits"] == [{"book": _TP_BOOK, "week": _TP_WEEK, "multiple_realised": book["exit"]["multiple_realised"],
+                              "proceeds": book["exit"]["proceeds"], "fees": book["exit"]["fees"],
+                              "pnl": book["pnl"], "reserve": book["reserve"]}]
+    assert week["exit_unpriced"] == {}, "the week-two book was priced (below the multiple), so it is held, not unpriced"
+    assert all(d["exits"] == [] for d in result["decisions"] if d["date"] != _TP_WEEK)
+    assert result["pnl"] == pytest.approx(hold["pnl"]+book["pnl"]-next(
+        t["pnl"] for t in hold["trades"] if t["id"] == _TP_BOOK))
+    summary = result["ledger_summary"]
+    assert set(summary["parts"]) == {"expiry", "exit"} and summary["parts"]["exit"]["closed"] == {"exit": 1}
+    assert summary["closed"] == {"expiry": 1, "exit": 1} and summary["orders_opened"] == 2 == len(result["trades"])
+    assert summary["totals"]["pnl_usd"] == pytest.approx(result["pnl"]) and summary["exit_refused"] == {}
+    from index_options.mio_run_events import MioRunRows
+    assert MioRunRows._count_problems(result) == [], "the run-events gate reads the merged counts"
+    # The marked curve: the exited book is out of the open set from its exit session on.
+    after = [p for p in result["curve"] if p["date"] >= _TP_WEEK]
+    assert all(_TP_BOOK not in p["open_ids"] for p in after)
+    assert all(_TP_BOOK in p["open_ids"] for p in result["curve"] if "2019-01-03" <= p["date"] < _TP_WEEK)
+
+
+def test_the_released_reserve_and_profit_are_in_the_same_weeks_decision_and_every_later_one():
+    params, inputs = _tp_fixture(TP3)
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    held_params, held_inputs = _tp_fixture()
+    hold = ledger_studies.WeeklyOptionPortfolioStudy(held_params, held_inputs)._method(held_params["methods"][0], None)
+    pnl = next(t["pnl"] for t in result["trades"] if t["id"] == _TP_BOOK)
+    for day in [d for d in ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).weeks if d >= _TP_WEEK]:
+        exited, kept = _week(result, day), _week(hold, day)
+        assert exited["funding"] == pytest.approx(kept["funding"]+pnl-(
+            0. if day < "2019-02-01" else next(t["pnl"] for t in hold["trades"] if t["id"] == _TP_BOOK)))
+        assert exited["open_reserve"] == pytest.approx(kept["open_reserve"]-(1113. if day < "2019-02-01" else 0.))
+    week = _week(result, _TP_WEEK)
+    assert week["open_reserve"] == pytest.approx(1113.) and week["funding"] == pytest.approx(10000.+pnl)
+    snap = next(p for p in result["curve"] if p["date"] == _TP_WEEK)
+    assert snap["reserve"] == pytest.approx(1113.) and snap["realized"] == pytest.approx(pnl)
+    # The budget a decision is given reads the same account: the weekly cap after the exit is 25% of the new funding
+    # less the remaining open reserve.
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    assert params["weekly_fraction"]*week["funding"]-week["open_reserve"] > \
+        params["weekly_fraction"]*_week(hold, _TP_WEEK)["funding"]-_week(hold, _TP_WEEK)["open_reserve"]
+    assert study.weeks.index(_TP_WEEK) == 2
+
+
+def test_the_two_times_alternative_fires_on_the_same_book_and_a_higher_multiple_holds_every_book():
+    params, inputs = _tp_fixture(TP2)
+    two = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert [e["book"] for e in _week(two, _TP_WEEK)["exits"]] == [_TP_BOOK]
+    params, inputs = _tp_fixture({"take_profit_multiple": 3.5, "side": "executable"})
+    high = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    held_params, held_inputs = _tp_fixture()
+    hold = ledger_studies.WeeklyOptionPortfolioStudy(held_params, held_inputs)._method(held_params["methods"][0], None)
+    assert all(d["exits"] == [] for d in high["decisions"])
+    stripped = json.loads(json.dumps(high))
+    assert stripped["method"].pop("exit")["take_profit_multiple"] == 3.5
+    for d in stripped["decisions"]:
+        del d["exits"], d["exit_unpriced"]
+    for t in stripped["trades"]:
+        assert t.pop("exit") is None
+    assert _timeless_digest(stripped) == _timeless_digest(json.loads(json.dumps(hold))), \
+        "a rule that never fires changes nothing but its own fields"
+
+
+@pytest.mark.parametrize("drop,peak", [((("2019-02-01", 90.)), (5.0, 5.2)),     # the bought-back leg has no row
+                                       (None, (0., 5.2))])                    # the sold leg has no bid
+def test_a_book_whose_close_cannot_be_priced_at_the_executable_side_is_held(drop, peak):
+    params, inputs = _tp_fixture(TP3, peak=peak, drop=drop)
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    week = _week(result, _TP_WEEK)
+    assert week["exits"] == [] and week["exit_unpriced"] == {_TP_BOOK: "leg_not_quoted"}
+    book = next(t for t in result["trades"] if t["id"] == _TP_BOOK)
+    assert book["exit"] is None and book["close_date"] == "2019-02-01"
+
+
+def test_exit_fields_are_written_only_when_the_method_declares_the_exit():
+    params, inputs = _tp_fixture()
+    events = []
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None,
+                                                                              events=events.append)
+    assert not any({"exits", "exit_unpriced"} & set(d) for d in result["decisions"])
+    assert not any("exit" in t for t in result["trades"])
+    assert not any("exits" in e for e in events if e["type"] == "weekly_decision")
+    assert result["ledger_summary"]["stage"].endswith("close by expiry"), "one expiry ledger, as before"
+    params, inputs = _tp_fixture(TP3)
+    events = []
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None,
+                                                                              events=events.append)
+    weekly = [e for e in events if e["type"] == "weekly_decision"]
+    assert len(weekly) == len(result["decisions"])
+    assert all(e["exits"] == d["exits"] for e, d in zip(weekly, result["decisions"]))
+    assert all(set(t) >= {"exit", "close_date", "pnl"} for t in result["trades"])
+    exited = next(t for t in result["trades"] if t["exit"])
+    assert set(exited["exit"]) == {"week", "multiple_realised", "proceeds", "fees"}
+    assert set(_week(result, _TP_WEEK)["exits"][0]) == {"book", "week", "multiple_realised", "proceeds", "fees", "pnl",
+                                                        "reserve"}
+
+
+def test_the_take_profit_replays_recorded_and_derived_and_a_tampered_exit_is_refused():
+    import copy
+    from index_options.mio_worker import MIOMethodWorker
+
+    params, inputs = _tp_fixture(TP3)
+    method = params["methods"][0]
+    solved = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    recorded = json.loads(json.dumps(solved))
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=recorded) == solved
+    actions = MIOMethodWorker.actions(solved, ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).weeks)
+    derived = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, derived=actions)
+    assert _equal_but_last_bits(derived, solved)
+    assert _week(derived, _TP_WEEK)["exits"] == _week(solved, _TP_WEEK)["exits"], "the host re-derives the same exit"
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=derived) == derived
+    for edit in (lambda w: w["exits"].clear(),
+                 lambda w: w["exits"][0].update(proceeds=w["exits"][0]["proceeds"]+1.),
+                 lambda w: w.update(exit_unpriced={_TP_HELD: "leg_not_quoted"}),
+                 lambda w: w.pop("exits")):
+        bad = copy.deepcopy(recorded)
+        edit(_week(bad, _TP_WEEK))
+        with pytest.raises(ValueError, match="recorded exits differ"):
+            ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=bad)
+    # The same record under a method that declares no exit is a different result: the replay refuses it.
+    plain_params, plain_inputs = _tp_fixture()
+    with pytest.raises(ValueError):
+        ledger_studies.WeeklyOptionPortfolioStudy(plain_params, plain_inputs)._method(
+            plain_params["methods"][0], None, recorded=copy.deepcopy(recorded))
+
+
+def test_the_vol_unit_radius_arm_sizes_its_short_premium_books_and_replays():
+    """C4: the sizer takes stage-1 credit books (the fixture's are short put spreads) under the vol-unit radius.
+
+    At the formulation's own rho (1.677 reference-scale units, a 3.35-strike ball on the fixture's .02 scale) the
+    fixture's thin edge leaves stage 1 in cash, so nothing reaches the sizer; at rho .5 stage 1 sells the spread and
+    the sizer sizes it. Both run the C4 block (radius_scale, SHOCK10, SIZER) unchanged but for rho.
+    """
+    c4 = HINDSIGHT2_FORMULATIONS["w1_010z_shock10_sized_lp"]
+    for rho, trades in ((c4["rho"], False), (.5, True)):
+        params, inputs = _sizer_fixture(rho=rho)
+        params["methods"][0].update(radius_scale=c4["radius_scale"], shock=c4["shock"])
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+        method = params["methods"][0]
+        result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+        recorded = json.loads(json.dumps(result))
+        assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=recorded) == result
+        sized = _sized_week(result)
+        if not trades:
+            assert not sized and not result["trades"] and _week(result, "2019-01-07")["status"] == "cash"
+            continue
+        assert sized and all(w["status"] == "selected" for w in sized)
+        assert result["trades"] and all(t["credit"] > 0 for t in result["trades"]), "short-premium books, sized and filled"
+        for week in sized:
+            for unit in week["sizer"]["units"]:
+                assert unit["credit"] > 0 and -unit["reserve"]-1e-9 <= unit["worst_profit"] <= unit["best_profit"] \
+                    <= unit["credit"]+1e-9
+                assert unit["k"] > unit["units_selected"], "the sizer scales the short-premium book UP on the fixture"
+        # The reserve a short book commits is the 20% short-notional floor, not its max loss: per reserve it is thin.
+        book = result["trades"][0]
+        sold = sum(leg["strike"]*leg["quantity"] for leg in book["legs"] if leg["sign"] < 0)
+        assert book["reserve"] == pytest.approx(.2*sold*100.) and book["reserve"] > book["max_loss"]
+
+
+def test_the_take_profit_composes_with_the_sizer_and_replays():
+    params, inputs = _sizer_fixture()
+    params["methods"][0]["exit"] = TP3
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    method = params["methods"][0]
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    assert _sized_week(result) and all("exits" in d for d in result["decisions"])
+    recorded = json.loads(json.dumps(result))
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=recorded) == result

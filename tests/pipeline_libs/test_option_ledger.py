@@ -708,6 +708,40 @@ def test_funded_account_invalid_settlement_and_debit_are_atomic():
     assert account.advance("2019-01-16", {"a": -50.}) == 10.
     assert account.cash == 60.
 
+
+def test_funded_account_early_close_books_like_a_settlement_and_refuses_atomically():
+    """A declared exit (ADR-0306) closes an open book before maturity with the expiry close's accounting."""
+    from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+
+    account = FundedOptionAccount(1000., 0., 14, "2019-01-02")
+    limits = [{"members": ["X"], "upper": 1000.}]
+    assert account.admit("2019-01-02", [
+        {"id": "a", "symbol": "X", "expiry": "2019-02-01", "reserve": 100., "credit": -100.},
+        {"id": "b", "symbol": "X", "expiry": "2019-02-01", "reserve": 200., "credit": 50.}], limits)
+    assert account.cash == 950. and account.remaining(["X"], 1.) == 700.
+    account.advance("2019-01-14", {})
+    state = (account.cash, account.realized, dict(account.open), list(account.closed))
+    for day, closes in [("2019-01-15", {"a": 300.}),         # not the current session
+                        ("2019-01-14", {"c": 300.}),         # not an open book
+                        ("2019-01-14", {"a": float("nan")}),
+                        ("2019-01-14", {"b": -250.}),        # below its reserved loss
+                        ("2019-01-14", {"a": 300., "b": -201.}),
+                        ("2019-01-14", [("a", 300.)])]:
+        with pytest.raises(ValueError):
+            account.close_early(day, closes)
+        assert (account.cash, account.realized, dict(account.open), list(account.closed)) == state
+    account.close_early("2019-01-14", {"a": 300.})
+    assert set(account.open) == {"b"} and account.realized == 300. and account.funding == 1300.
+    assert account.cash == 950.+300.+100. and account.remaining(["X"], 1.) == 1100.
+    assert account.closed[-1]["id"] == "a" and account.closed[-1]["pnl"] == 300.
+    assert account.closed[-1]["close_date"] == "2019-01-14"
+    account.close_early("2019-01-14", {})
+    with pytest.raises(ValueError):
+        account.close_early("2019-01-14", {"a": 300.})   # already closed
+    account.advance("2019-02-01", {"b": 50.})
+    with pytest.raises(ValueError):
+        account.close_early("2019-02-01", {"b": 0.})     # settled at its maturity: nothing left to close
+
 def test_standard_split_converts_open_contracts_on_effective_date(ctx):
     """The split changes held contracts, not the original fill or its fee."""
     chain = [row("ABC", 0, 610, "call", 10.0, 11.0, 600.0)]
