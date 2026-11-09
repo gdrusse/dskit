@@ -4035,7 +4035,28 @@ class TransportPortfolioSolve(PyomoSolve):
     outputs = ("selection",)
     _PARAMS = PyomoSolve._PARAMS + (
         "absolute_gap", "relative_gap", "parity_tolerance", "timeout_policy",
-        "group_screen", "group_screen_keep", "utility_solve")
+        "group_screen", "group_screen_keep", "utility_solve", "utility_search", "utility_warm_start")
+
+    #: ADR-0302: the keys of ``utility_search``, the deterministic incumbent local search of the relax_fix strategy
+    #: (``iterations`` neighbourhoods at most, each freeing ``neighbourhood`` groups and fixing every other group at its
+    #: incumbent counts, solved under a HiGHS node limit ``node_limit`` with no wall-clock limit, drawn from
+    #: ``random.Random(seed)``), and of ``utility_warm_start`` (``node_limit``: the node budget of a certification
+    #: run from the complete incumbent on a week the action limit would otherwise decline).
+    UTILITY_SEARCH_KEYS = ("iterations", "neighbourhood", "node_limit", "seed")
+    UTILITY_WARM_START_KEYS = ("node_limit",)
+    #: The keys of the two records (``last_search`` and ``last_warm_start``) the strategy leaves for its caller.
+    SEARCH_RECORD_KEYS = ("seed", "iterations", "improved", "value_before", "value_after", "accepted_neighbourhoods",
+                          "budget_exhausted")
+    WARM_START_RECORD_KEYS = ("supplied", "accepted", "over_cap", "termination")
+    #: A relaxed count at least this far from the incumbent's count marks its group as one where the LP relaxation and
+    #: the incumbent disagree (the RINS half of a neighbourhood is drawn from those groups).
+    UTILITY_SEARCH_DISAGREE = .5
+    #: HiGHS's own defaults of the options the search and the warm start set, written back after them: appsi keeps an
+    #: option on its persistent HiGHS model once it was set, so deleting it from ``options`` would not undo it.
+    _HIGHS_DEFAULTS = {"time_limit": float("inf"), "mip_max_nodes": 2147483647, "random_seed": 0}
+    #: What the last relax_fix solve's search and warm-started certification did (None: not declared, or not reached).
+    last_search = None
+    last_warm_start = None
 
     #: How a utility program is solved (a dollar program ignores it): ``relax_fix`` (the default) solves the LP
     #: relaxation first, finds an incumbent on the integer program reduced to that relaxation's support, then
@@ -4096,6 +4117,35 @@ class TransportPortfolioSolve(PyomoSolve):
         strategy = params.get("utility_solve", cls.UTILITY_SOLVES[0])
         if not isinstance(strategy, str) or strategy not in cls.UTILITY_SOLVES:
             problems.append("utility_solve must be one of "+", ".join(cls.UTILITY_SOLVES))
+        problems.extend(cls.strategy_problems(params.get("utility_search"), params.get("utility_warm_start")))
+        if ((params.get("utility_search") is not None or params.get("utility_warm_start") is not None)
+                and strategy != "relax_fix"):
+            problems.append("utility_search and utility_warm_start act inside the relax_fix utility strategy")
+        return problems
+
+    @classmethod
+    def strategy_problems(cls, search, warm_start):
+        """Return the defects of an ADR-0302 search and warm-start declaration (None: not declared).
+
+        Every budget is an int (never a bool): ``iterations``, ``neighbourhood`` and both ``node_limit`` at least 1
+        (``iterations`` at most 1000, ``neighbourhood`` at most 10000), ``seed`` within HiGHS's ``random_seed`` range.
+        """
+        problems = []
+
+        def budget(value, low, high):
+            return type(value) is int and low <= value <= high
+
+        if search is not None and (not isinstance(search, dict) or set(search) != set(cls.UTILITY_SEARCH_KEYS)
+                                   or not budget(search["iterations"], 1, 1000)
+                                   or not budget(search["neighbourhood"], 1, 10000)
+                                   or not budget(search["node_limit"], 1, 2147483646)
+                                   or not budget(search["seed"], 0, 2147483647)):
+            problems.append("utility_search must be {iterations (int 1..1000), neighbourhood (int 1..10000), "
+                            "node_limit (int >= 1), seed (int 0..2**31-1)}")
+        if warm_start is not None and (not isinstance(warm_start, dict)
+                                       or set(warm_start) != set(cls.UTILITY_WARM_START_KEYS)
+                                       or not budget(warm_start["node_limit"], 1, 2147483646)):
+            problems.append("utility_warm_start must be {node_limit (int >= 1)}")
         return problems
 
     def _checked(self, inputs):
@@ -4745,6 +4795,158 @@ class TransportPortfolioSolve(PyomoSolve):
                         solver.options[key] = value
         return tightened()
 
+    def _highs_options(self, solver, wanted):
+        """A context that sets HiGHS options for the solves inside it and writes back the document's, or HiGHS's defaults.
+
+        A key the document never set is written back as HiGHS's own default (:attr:`_HIGHS_DEFAULTS`), not deleted:
+        appsi keeps an option on its persistent model once it was set. An empty ``wanted`` touches nothing.
+        """
+        import contextlib
+
+        @contextlib.contextmanager
+        def held():
+            saved = {key: solver.options.get(key) for key in wanted}
+            for key, value in wanted.items():
+                solver.options[key] = value
+            try:
+                yield
+            finally:
+                for key, value in saved.items():
+                    solver.options[key] = self._HIGHS_DEFAULTS[key] if value is None else value
+        return held()
+
+    def _search_incumbent(self, solver, model, bound, stakes):
+        """ADR-0302: improve the loaded incumbent by exact sampled utility over seeded neighbourhoods; return the record.
+
+        Each of at most ``iterations`` neighbourhoods frees ``neighbourhood`` groups (half drawn from the groups whose
+        LP relaxed counts and incumbent counts disagree, RINS-style, the rest from the other groups) and fixes every
+        other group at the incumbent's counts. The restricted program is solved from the complete incumbent (a MIP
+        start through appsi's warm start) under HiGHS's node limit ``node_limit``, with ``random_seed`` the declared
+        seed and NO wall-clock limit, so the same inputs and declaration give the same neighbourhoods and solves. A
+        candidate is kept only when its exact sampled utility (:meth:`_incumbent`, the audit the week's selection is
+        valued by: :class:`TransportActionScore` after the cleanup) beats the incumbent's by more than the parity
+        tolerance; otherwise the incumbent is reloaded. The search stops early once the incumbent is within the
+        document's allowance of the relaxation's bound (nothing left to find). Every bound is restored after it and
+        the best incumbent is left loaded. Nothing here certifies anything: the bound stays the relaxation's.
+        """
+        import math
+        import random
+        from pyomo.environ import Var
+
+        search = self.params["utility_search"]
+        tolerance = max(self.params["parity_tolerance"], 1e-9)
+        groups = sorted({i for i, _ in model.x})
+        members = {i: [] for i in groups}
+        for key in model.x:
+            members[key[0]].append(key)
+        bounds = {key: (model.x[key].lb, model.x[key].ub) for key in model.x}
+
+        def snapshot():
+            return [(v, v.value) for v in model.component_data_objects(Var)]
+
+        def restore(saved):
+            for variable, value in saved:
+                variable.set_value(value, skip_validation=True)
+            model._transport_no_incumbent = False
+
+        def exact():
+            saved = snapshot()   # the audit's cleanup writes x; the solver's own point is what is kept
+            try:
+                return self._incumbent(model)["value"]
+            except ValueError:
+                return None
+            finally:
+                restore(saved)
+
+        best, before = snapshot(), exact()
+        record = {"seed": search["seed"], "iterations": 0, "improved": False, "value_before": before,
+                  "value_after": before, "accepted_neighbourhoods": [], "budget_exhausted": False}
+        if before is None:
+            return record
+        rng = random.Random(search["seed"])
+        size = min(search["neighbourhood"], len(groups))
+        stopped = False
+        try:
+            for k in range(search["iterations"]):
+                current = self._objective_value(model)
+                if current is not None and bound-current <= max(self.params["absolute_gap"],
+                                                                  self.params["relative_gap"]*abs(current)):
+                    stopped = True
+                    break
+                counts = {key: round(model.x[key].value or 0) for key in model.x}
+                disagree = [i for i in groups if any(abs(stakes[key]-counts[key]) >= self.UTILITY_SEARCH_DISAGREE
+                                                     for key in members[i])]
+                near = rng.sample(disagree, min(len(disagree), math.ceil(size/2)))
+                taken = set(near)
+                rest = [i for i in groups if i not in taken]
+                chosen = sorted(near+rng.sample(rest, size-len(near)))
+                taken = set(chosen)
+                for key in model.x:
+                    if key[0] in taken:
+                        model.x[key].setlb(bounds[key][0])
+                        model.x[key].setub(bounds[key][1])
+                    else:
+                        model.x[key].setlb(counts[key])
+                        model.x[key].setub(counts[key])
+                record["iterations"] = k+1
+                try:
+                    with self._search_gaps(solver), self._highs_options(solver, {
+                            "time_limit": float("inf"), "mip_max_nodes": search["node_limit"],
+                            "random_seed": search["seed"]}):
+                        self._solve_once(solver, model)
+                    value = None if getattr(model, "_transport_no_incumbent", False) else exact()
+                except (RuntimeError, ValueError):
+                    value = None
+                if value is not None and value > record["value_after"]+tolerance:
+                    best = snapshot()
+                    record["value_after"] = value
+                    record["accepted_neighbourhoods"].append(
+                        {"iteration": k, "groups": [self._groups[i]["id"] for i in chosen], "value": value})
+                else:
+                    restore(best)
+        finally:
+            for key, (lower, upper) in bounds.items():
+                model.x[key].setlb(lower)
+                model.x[key].setub(upper)
+            restore(best)
+        record["improved"] = bool(record["accepted_neighbourhoods"])
+        record["budget_exhausted"] = not stopped and record["iterations"] == search["iterations"]
+        self.log.info("utility search: %d of %d neighbourhoods of %d groups, %d accepted", record["iterations"],
+                      search["iterations"], size, len(record["accepted_neighbourhoods"]))
+        return record
+
+    def _warm_start_record(self, model, result, supplied, start, over, tolerance):
+        """ADR-0302: what the certification did with the incumbent it was handed (its MIP start).
+
+        ``supplied``: every variable held the incumbent's value when the certification began, so appsi handed HiGHS
+        the complete incumbent (``Highs.setSolution``). ``accepted``: the certification's own incumbent is at least as
+        good as that start (HiGHS kept it or beat it). ``over_cap``: the certification ran above the action limit
+        because the warm start was declared. ``termination``: how the certification solve ended.
+        """
+        reached = None if getattr(model, "_transport_no_incumbent", False) else self._objective_value(model)
+        return {"supplied": bool(supplied),
+                "accepted": bool(supplied and start is not None and reached is not None and reached >= start-tolerance),
+                "over_cap": bool(over),
+                "termination": str(getattr(getattr(result, "solver", None), "termination_condition", None))}
+
+    def _warm_certified(self, model, result, bound, costs, fixed):
+        """Whether a warm-started certification above the action limit proved the document's gap (ADR-0302).
+
+        Proved: HiGHS ended ``optimal`` with an incumbent, and the bound its certificate will carry (the relaxation's,
+        or the solver's widened to the fixed actions' reach, whichever is tighter, as :meth:`_build_solve_record` takes
+        it) is within the document's allowance of the incumbent's model value (never above its audited value).
+        """
+        if getattr(model, "_transport_no_incumbent", False):
+            return False
+        if str(getattr(getattr(result, "solver", None), "termination_condition", "")) != "optimal":
+            return False
+        reached, own = self._objective_value(model), SolveRecord._bound(result, -1)
+        if reached is None or own is None:
+            return False
+        outside = max((bound+costs[key] for key in fixed), default=None)
+        proved = min(bound, own if outside is None else max(own, outside))
+        return proved-reached <= max(self.params["absolute_gap"], self.params["relative_gap"]*abs(reached))
+
     def _relaxation_failed(self, model):
         """A week whose relaxation did not solve: refused outside ``return`` mode, else a no-incumbent timeout.
 
@@ -4782,6 +4984,7 @@ class TransportPortfolioSolve(PyomoSolve):
 
         model._transport_bound, model._transport_declined = None, False
         model._transport_outcome, model._transport_bound_source = "certified", "certification"
+        self.last_search = self.last_warm_start = None
         budget = float(self.params.get("solver_options", {}).get("time_limit", 0) or 0)
         clock = time.perf_counter()
         remaining = lambda: None if not budget else max(1., budget-(time.perf_counter()-clock))
@@ -4805,6 +5008,11 @@ class TransportPortfolioSolve(PyomoSolve):
         incumbent = None if getattr(model, "_transport_no_incumbent", False) else self._objective_value(model)
         for key in outside:
             model.x[key].setub(capacity[key])
+        if incumbent is not None and self.params.get("utility_search") is not None:
+            # ADR-0302: improve the support incumbent by exact sampled utility before anything certifies it; a better
+            # incumbent also lets the reduced costs below fix more actions.
+            self.last_search = self._search_incumbent(solver, model, bound, stakes)
+            incumbent = self._objective_value(model)
         if incumbent is not None:
             allowance = max(self.params["absolute_gap"], self.params["relative_gap"]*abs(incumbent))
             if bound-incumbent <= allowance:
@@ -4821,7 +5029,9 @@ class TransportPortfolioSolve(PyomoSolve):
         fixed = [] if incumbent is None else [key for key, cost in costs.items()
                                               if stakes[key] < self.UTILITY_SUPPORT_EPS and bound+cost < incumbent-tolerance]
         free = len(stakes)-len(fixed)
-        if free > self.UTILITY_CERTIFY_ACTIONS:
+        warm = self.params.get("utility_warm_start")
+        over = free > self.UTILITY_CERTIFY_ACTIONS
+        if over and (warm is None or incumbent is None):
             # Too many actions for HiGHS to certify in any time: the support incumbent stands, bounded by the
             # relaxation (every outside action could reach it); no limit was hit, and the certificate says so.
             model._transport_bound, model._transport_outside, model._transport_declined = bound, bound, True
@@ -4832,16 +5042,36 @@ class TransportPortfolioSolve(PyomoSolve):
                           free, self.UTILITY_CERTIFY_ACTIONS, self._peak_rss())
             return result
         support = None if incumbent is None else [(v, v.value) for v in model.component_data_objects(Var)]
+        supplied = support is not None and all(v.value is not None
+                                               for v in model.component_data_objects(Var, active=True))
+        declined_result = result
         for key in fixed:
             model.x[key].setub(0)
         solver.options["mip_dual_bound"] = bound   # HiGHS stops at the gap against the bound it cannot improve on
+        # ADR-0302: above the action limit only a declared warm start reaches here; its node budget, not the clock,
+        # is what may stop it (the document's time limit stays a halt, and the record says which stopped it).
+        nodes = {"mip_max_nodes": warm["node_limit"]} if over else {}
         try:
-            with self._search_gaps(solver):
+            with self._search_gaps(solver), self._highs_options(solver, nodes):
                 result = self._solve_once(solver, model, remaining())
         finally:
             del solver.options["mip_dual_bound"]
             for key in fixed:
                 model.x[key].setub(capacity[key])
+        if warm is not None:
+            self.last_warm_start = self._warm_start_record(model, result, supplied, incumbent, over, tolerance)
+        if over and not self._warm_certified(model, result, bound, costs, fixed):
+            # The warm-started certification did not prove the gap: the week is the declined week it was, its
+            # incumbent and its relaxation bound untouched (what the certification found is not traded).
+            for variable, value in support:
+                variable.set_value(value, skip_validation=True)
+            model._transport_no_incumbent = False
+            model._transport_bound, model._transport_outside, model._transport_declined = bound, bound, True
+            model._transport_outcome, model._transport_bound_source = "declined", "relaxation"
+            self.log.info("utility solve: warm-started certification above the action limit (%d free actions, node "
+                          "limit %d) did not prove the gap (%s); the week stays declined, peak rss %.2f GB", free,
+                          warm["node_limit"], self.last_warm_start["termination"], self._peak_rss())
+            return declined_result
         if support is not None and getattr(model, "_transport_no_incumbent", False):
             # The certification found no solution in its time: the support incumbent it started from still stands.
             for variable, value in support:

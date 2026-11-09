@@ -4164,6 +4164,12 @@ TOP_FORMULATIONS = {
     # certification was declined, with the gap to the relaxation's bound recorded instead of the week skipped.
     "kelly025_top100_uncert_lp": {**_KELLY_BASE, "kelly": {**KELLY, "fraction": .25, "max_groups": 100,
                                                           "accept_uncertified": True}},
+    # ADR-0302 (owner option B, 2026-11-09): the uncertified arm, its declined weeks certified from the complete incumbent
+    # under a node budget, and the incumbent improved first by a seeded neighbourhood search on exact sampled utility.
+    "kelly025_top100_search_lp": {**_KELLY_BASE, "kelly": {
+        **KELLY, "fraction": .25, "max_groups": 100, "accept_uncertified": True,
+        "warm_start": {"node_limit": 1000},
+        "search": {"iterations": 30, "neighbourhood": 10, "node_limit": 500, "seed": 20261109}}},
 }
 
 
@@ -4612,3 +4618,213 @@ def test_accept_uncertified_is_a_boolean_kelly_key(value, ok):
             ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
     top = TOP_FORMULATIONS["kelly025_top100_uncert_lp"]["kelly"]
     assert top == {**TOP_FORMULATIONS["kelly025_top100_lp"]["kelly"], "accept_uncertified": True}
+
+
+# --- warm-started certification and incumbent local search (ADR-0302; owner option B, 2026-11-09) ----------------------
+
+SEARCH = {"iterations": 6, "neighbourhood": 1, "node_limit": 50, "seed": 7}
+
+
+def _solved_weeks(result):
+    return [d for d in result["decisions"] if "kelly" in d and "selection" in d]
+
+
+def _outcome(decision):
+    return decision.get("kelly", {}).get("solve", {}).get("strategy_outcome")
+
+
+def _traded(decision):
+    selection = decision["selection"]
+    return selection["candidate"] if "timeout" in selection else selection
+
+
+@pytest.mark.parametrize("kelly,ok", [
+    ({"search": SEARCH}, True),
+    ({"warm_start": {"node_limit": 10}}, True),
+    ({"search": SEARCH, "warm_start": {"node_limit": 10}, "accept_uncertified": True}, True),
+    ({"search": {**SEARCH, "neighbourhood": 2}, "max_groups": 3}, True),
+    ({"search": None}, False),
+    ({"search": {**SEARCH, "seed": -1}}, False),
+    ({"search": {**SEARCH, "seed": 2**31}}, False),
+    ({"search": {**SEARCH, "iterations": 0}}, False),
+    ({"search": {**SEARCH, "iterations": 1001}}, False),
+    ({"search": {**SEARCH, "iterations": True}}, False),
+    ({"search": {**SEARCH, "neighbourhood": 0}}, False),
+    ({"search": {**SEARCH, "node_limit": 1.}}, False),
+    ({"search": {k: v for k, v in SEARCH.items() if k != "seed"}}, False),
+    ({"search": {**SEARCH, "time_limit": 10}}, False),
+    ({"search": {**SEARCH, "neighbourhood": 3}, "max_groups": 3}, False),
+    ({"warm_start": True}, False),
+    ({"warm_start": None}, False),
+    ({"warm_start": {}}, False),
+    ({"warm_start": {"node_limit": 0}}, False),
+    ({"warm_start": {"node_limit": 5, "seed": 1}}, False),
+])
+def test_the_search_and_warm_start_keys_validate_or_refuse(kelly, ok):
+    params, inputs = _kelly_fixture(**kelly)
+    if ok:
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    else:
+        with pytest.raises(ValueError):
+            ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_the_search_and_warm_start_act_only_inside_relax_fix():
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params, inputs = _kelly_fixture(search=SEARCH)
+    params["solver"]["utility_solve"] = "direct"
+    with pytest.raises(ValueError, match="relax_fix"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    assert TransportPortfolioSolve.validate_params({**params["solver"], "utility_solve": "relax_fix",
+                                                    "utility_search": SEARCH}) == []
+    assert TransportPortfolioSolve.validate_params({**params["solver"], "utility_warm_start": {"node_limit": 0}})
+
+
+def test_the_search_formulation_is_the_uncertified_arm_plus_its_two_keys():
+    search = TOP_FORMULATIONS["kelly025_top100_search_lp"]
+    uncert = TOP_FORMULATIONS["kelly025_top100_uncert_lp"]
+    assert {k: v for k, v in search.items() if k != "kelly"} == {k: v for k, v in uncert.items() if k != "kelly"}
+    assert {k: v for k, v in search["kelly"].items() if k not in ("search", "warm_start")} == uncert["kelly"]
+    assert search["kelly"]["search"]["neighbourhood"] < search["kelly"]["max_groups"]
+    params, inputs = _weekly_portfolio_fixture()
+    params["methods"] = [{"id": "kelly025_top100_search_lp", **search}]
+    _for_kelly(params)
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def _declined_plain(monkeypatch):
+    """The declined fixture's weeks without the keys (every certification declined by the action limit)."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    monkeypatch.setattr(TransportPortfolioSolve, "UTILITY_CERTIFY_ACTIONS", 0)
+    params, inputs = _declined_kelly_fixture(accept_uncertified=True)
+    plain = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert all("warm_start" not in d.get("kelly", {}) and "search" not in d.get("kelly", {}) for d in plain["decisions"])
+    declined = [d for d in plain["decisions"] if _outcome(d) == "declined"]
+    assert declined, "the fixture's certification is declined"
+    return declined
+
+
+def test_a_warm_start_certifies_a_week_the_action_limit_declines_from_its_complete_incumbent(monkeypatch):
+    """Above the action limit a declared warm start hands the certification the complete incumbent under the node
+    budget; the fixture's program is small enough that HiGHS proves the gap, so the declined week becomes certified."""
+    declined = _declined_plain(monkeypatch)
+    params, inputs = _declined_kelly_fixture(accept_uncertified=True, warm_start={"node_limit": 20})
+    method = params["methods"][0]
+    warm = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    by_date = {d["date"]: d for d in warm["decisions"]}
+    for week in declined:
+        w = by_date[week["date"]]
+        record = w["kelly"]["warm_start"]
+        assert set(record) == {"supplied", "accepted", "over_cap", "termination"}
+        assert record["supplied"] and record["over_cap"] and record["accepted"], record
+        assert record["termination"] == "optimal" and _outcome(w) == "certified"
+        assert "timeout" not in w["selection"] and w["kelly"]["uncertified"] is None and w["status"] in ("selected", "cash")
+        assert w["selection"]["value"] >= _traded(week)["value"]-1e-6, "the certification starts from the incumbent"
+        assert "search" not in w["kelly"]
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=warm) == warm
+
+
+def test_an_unproved_warm_started_certification_leaves_the_declined_week_as_it_was(monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    declined = _declined_plain(monkeypatch)
+    monkeypatch.setattr(TransportPortfolioSolve, "_warm_certified", lambda self, *args: False)
+    params, inputs = _declined_kelly_fixture(accept_uncertified=True, warm_start={"node_limit": 20})
+    method = params["methods"][0]
+    warm = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    by_date = {d["date"]: d for d in warm["decisions"]}
+    for week in declined:
+        w = by_date[week["date"]]
+        assert w["kelly"]["warm_start"]["supplied"] and w["kelly"]["warm_start"]["over_cap"]
+        assert _outcome(w) == "declined" and w["kelly"]["solve"] == week["kelly"]["solve"]
+        assert w["selection"] == week["selection"] and w["books"] == week["books"], "what it found is not traded"
+        assert w["kelly"]["uncertified"] == week["kelly"]["uncertified"]
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=warm) == warm
+    forged = json.loads(json.dumps(warm))
+    week = next(d for d in forged["decisions"] if _outcome(d) == "declined" and d["kelly"]["warm_start"])
+    week["kelly"]["warm_start"]["over_cap"] = False
+    with pytest.raises(ValueError):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=forged)
+
+
+def _poor_incumbent_search(monkeypatch, **kelly):
+    """The declined fixture whose support search sees only cash (every action outside the support): a poor incumbent."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    monkeypatch.setattr(TransportPortfolioSolve, "UTILITY_CERTIFY_ACTIONS", 0)
+    monkeypatch.setattr(TransportPortfolioSolve, "UTILITY_SUPPORT_EPS", 1e9)
+    return _declined_kelly_fixture(accept_uncertified=True, **kelly)
+
+
+def test_the_search_improves_a_poor_incumbent_by_exact_utility_and_records_how(monkeypatch):
+    params, inputs = _poor_incumbent_search(monkeypatch)
+    plain = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    params, inputs = _poor_incumbent_search(monkeypatch, search=SEARCH)
+    searched = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    before = {d["date"]: d for d in _solved_weeks(plain)}
+    weeks = [d for d in _solved_weeks(searched) if d["kelly"]["search"] is not None]
+    assert weeks and any(d["kelly"]["search"]["improved"] for d in weeks), "the search lifts the cash incumbent"
+    for week in weeks:
+        s = week["kelly"]["search"]
+        assert set(s) == {"seed", "iterations", "improved", "value_before", "value_after", "accepted_neighbourhoods",
+                          "budget_exhausted"}
+        assert s["seed"] == SEARCH["seed"] and 0 <= s["iterations"] <= SEARCH["iterations"]
+        assert s["value_before"] == pytest.approx(_traded(before[week["date"]])["value"], abs=1e-6)
+        if s["improved"]:
+            assert s["value_after"] > s["value_before"]
+            assert [len(a["groups"]) for a in s["accepted_neighbourhoods"]] == [1]*len(s["accepted_neighbourhoods"])
+            assert s["accepted_neighbourhoods"][-1]["value"] == s["value_after"]
+        else:
+            assert s["value_after"] == s["value_before"] and not s["accepted_neighbourhoods"]
+        if _outcome(week) in ("declined", "relaxation_certified") and s["value_after"] > 0:
+            assert _traded(week)["value"] == pytest.approx(s["value_after"], abs=1e-6), "the best candidate is traded"
+        assert s["budget_exhausted"] == (s["iterations"] == SEARCH["iterations"]) or not s["budget_exhausted"]
+    assert sum(_traded(d)["value"] for d in weeks) > sum(_traded(before[d["date"]])["value"] for d in weeks)
+
+
+def test_the_search_is_deterministic_and_replays_through_the_recorded_and_derived_routes(monkeypatch):
+    from index_options.mio_worker import MIOMethodWorker
+
+    params, inputs = _poor_incumbent_search(monkeypatch, search=SEARCH, warm_start={"node_limit": 20})
+    method = params["methods"][0]
+    first = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    second = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    assert _timeless_digest(first) == _timeless_digest(second), "the same seed and node limits give the same weeks"
+    assert any(d["kelly"]["search"] and d["kelly"]["search"]["improved"] for d in _solved_weeks(first))
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    assert study._method(method, None, recorded=first) == first
+    actions = MIOMethodWorker.actions(first, study.weeks)
+    assert all(set(entry) == {"actions", "certificates", "kelly_strategy"} for entry in actions["decisions"].values())
+    derived = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, derived=actions)
+    assert _equal_but_last_bits(derived, first)
+    import copy
+    forged = copy.deepcopy(first)
+    week = next(d for d in forged["decisions"] if d.get("kelly", {}).get("search"))
+    week["kelly"]["search"]["seed"] += 1
+    with pytest.raises(ValueError):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=forged)
+    forged = copy.deepcopy(first)
+    week = next(d for d in forged["decisions"] if d.get("kelly", {}).get("search", {}) and d["kelly"]["search"]["improved"])
+    week["kelly"]["search"]["value_after"] += 1.
+    with pytest.raises(ValueError):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=forged)
+    bare = copy.deepcopy(actions)
+    for entry in bare["decisions"].values():
+        del entry["kelly_strategy"]
+    with pytest.raises(ValueError):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, derived=bare)
+    plain = ledger_studies.WeeklyOptionPortfolioStudy(*_kelly_fixture())
+    plain_actions = MIOMethodWorker.actions(
+        plain._method(plain.params["methods"][0], None), plain.weeks)
+    assert all(set(entry) == {"actions", "certificates"} for entry in plain_actions["decisions"].values()), \
+        "a method without the keys derives exactly as before"
+
+
+def test_a_comparison_row_carries_the_search_records_only_when_the_decision_does():
+    row = ledger_studies.MIOPacketCompare._kelly_row
+    plain = {"status": "estimated", "solve": {"strategy_outcome": "declined", "bound_source": "relaxation"}}
+    assert set(row(plain)) == set(ledger_studies.MIOPacketCompare._KELLY_ROW_KEYS)
+    searched = {**plain, "search": {"iterations": 3}, "warm_start": None}
+    assert row(searched) == {**row(plain), "search": {"iterations": 3}, "warm_start": None}

@@ -637,16 +637,24 @@ class MIOMethodWorker:
         -------
         dict
             ``method``, ``weeks`` and ``decisions`` (date to ``actions`` and
-            ``certificates``) for every week that carried a solve.
+            ``certificates``) for every week that carried a solve; a method
+            declaring ``kelly.search`` or ``kelly.warm_start`` (ADR-0302)
+            also carries the week's records of them (``kelly_strategy``),
+            the evidence a replay cannot re-derive without solving.
         """
         from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
 
+        kelly = result["method"].get("kelly")
+        declared = [k for k in ("search", "warm_start") if isinstance(kelly, dict) and k in kelly]
         decisions = {}
         for decision in result["decisions"]:
             if "selection" in decision:
                 decisions[decision["date"]] = {
                     "actions": TransportPortfolioSolve.actions(decision["selection"]),
                     "certificates": copy.deepcopy(decision["certificates"])}
+                if declared:
+                    decisions[decision["date"]]["kelly_strategy"] = {
+                        k: copy.deepcopy(decision["kelly"][k]) for k in declared}
         return {"method": result["method"]["id"], "weeks": list(weeks), "decisions": decisions}
 
     @staticmethod
