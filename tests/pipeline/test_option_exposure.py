@@ -1,0 +1,362 @@
+"""Greeks aggregation, stock-equivalent attribution and exposure (ADR-0310).
+
+Expected values are worked out independently of the classes under test.
+The two pins against the index_options child live in
+``children/index_options/tests/test_option_exposure_pins.py`` (core tests do
+not import a child).
+"""
+
+import math
+
+import pytest
+
+from dskit.pipeline import option_exposure as ox
+from dskit.pipeline.base import ConfigError
+from dskit.pipeline.option_exposure import (
+    BookGreeks, CellAttribution, ExposureSnapshot, LegGreeks, ParityForward,
+    StockEquivalent, fit_betas)
+from dskit.pipeline.option_pricing import black76, black76_delta, black76_gamma
+
+PARITY = {"parity_strikes": 3, "min_pairs": 2, "max_pair_spread_frac": 0.5}
+LEG = {"rate": 0.0, "multiplier": 100, "min_years": 0.001, "vol_floor": 0.01}
+
+
+def chain(forward, strikes, vol=0.2, years=30 / 365, half=0.05):
+    """Synthetic one-expiry chain priced by Black-76 at ``forward``."""
+    rows = []
+    for k in strikes:
+        for right in ("call", "put"):
+            mid = black76(right, forward, k, vol, years)
+            rows.append({"right": right, "strike": k, "bid": mid - half, "ask": mid + half})
+    return rows
+
+
+def test_all_exports():
+    assert sorted(ox.__all__) == sorted(
+        ["ParityForward", "LegGreeks", "BookGreeks", "StockEquivalent", "CellAttribution",
+         "ExposureSnapshot", "fit_betas"])
+
+
+# ---- parity forward -------------------------------------------------------------------
+def test_parity_forward_recovers_a_known_forward():
+    rows = chain(101.5, [96, 98, 100, 102, 104, 106])
+    forward, source = ParityForward(PARITY).from_chain(rows, 100.3)
+    assert source == "parity" and forward == pytest.approx(101.5, abs=1e-9)
+
+
+def test_parity_forward_uses_the_nearest_strikes_by_median():
+    rows = chain(101.5, [100, 102, 150])
+    rows += [{"right": "call", "strike": 90, "bid": 20.0, "ask": 20.2},
+             {"right": "put", "strike": 90, "bid": 0.1, "ask": 0.3}]
+    forward, _ = ParityForward({**PARITY, "parity_strikes": 2}).from_chain(rows, 101.0)
+    assert forward == pytest.approx(101.5, abs=1e-9)
+
+
+@pytest.mark.parametrize("damage", ["missing_put", "crossed", "wide", "no_quote"])
+def test_parity_forward_falls_back_to_spot(damage):
+    rows = chain(101.5, [100, 102])
+    if damage == "missing_put":
+        rows = [r for r in rows if r["right"] == "call"]
+    elif damage == "crossed":
+        for r in rows:
+            r["bid"], r["ask"] = r["ask"], r["bid"]
+    elif damage == "wide":
+        for r in rows:
+            r["ask"] = r["bid"] * 10
+    else:
+        rows = []
+    assert ParityForward(PARITY).from_chain(rows, 100.3) == (100.3, "spot")
+
+
+def test_parity_forward_needs_min_pairs_and_a_positive_spot():
+    rows = chain(101.5, [100])
+    assert ParityForward(PARITY).from_chain(rows, 100.0)[1] == "spot"
+    assert ParityForward({**PARITY, "min_pairs": 1}).from_chain(rows, 100.0)[1] == "parity"
+    with pytest.raises(ValueError, match="spot"):
+        ParityForward(PARITY).from_chain(rows, 0.0)
+
+
+# ---- leg and book greeks --------------------------------------------------------------
+def test_spot_delta_and_gamma_follow_the_chain_rule():
+    spot, rate, div, vol, strike = 100.0, 0.03, 0.02, 0.3, 105.0
+    expiry, day = "2024-04-01", "2024-03-01"          # 31 days
+    years = 31 / 365
+    forward = spot * math.exp((rate - div) * years)
+    leg = {"right": "call", "strike": strike, "sign": 1, "quantity": 1, "expiry": expiry}
+    quote = {"bid": 1.0, "ask": 1.2, "iv": vol}
+    row, code = LegGreeks({**LEG, "rate": rate, "multiplier": 1}).of(leg, quote, forward, spot, day)
+    assert code is None
+
+    def price(s):
+        return black76("call", s * math.exp((rate - div) * years), strike, vol, years, rate)
+    step = 0.01
+    delta = (price(spot + step) - price(spot - step)) / (2 * step)
+    gamma = (price(spot + step) - 2 * price(spot) + price(spot - step)) / step ** 2
+    assert row["delta_sh"] == pytest.approx(delta, rel=1e-6)
+    assert row["gamma_sh"] == pytest.approx(gamma, rel=1e-4)
+    ratio = forward / spot
+    assert row["delta_sh"] == pytest.approx(
+        black76_delta("call", forward, strike, vol, years, rate) * ratio)
+    assert row["gamma_sh"] == pytest.approx(
+        black76_gamma("call", forward, strike, vol, years, rate) * ratio ** 2)
+
+
+def test_leg_greeks_scale_with_sign_quantity_multiplier_and_units():
+    lg = LegGreeks(LEG)
+    quote = {"bid": 2.0, "ask": 2.2, "iv": 0.25}
+    base = {"right": "put", "strike": 100.0, "sign": 1, "quantity": 1, "expiry": "2024-03-15"}
+    one, _ = lg.of(base, quote, 100.0, 100.0, "2024-03-01")
+    short3, _ = lg.of({**base, "sign": -1, "quantity": 3}, quote, 100.0, 100.0, "2024-03-01")
+    for key in ("delta_sh", "gamma_sh", "vega_usd_per_pt", "theta_usd_per_day"):
+        assert short3[key] == pytest.approx(-3 * one[key])
+    years = 14 / 365
+    assert one["vega_usd_per_pt"] == pytest.approx(
+        100 * (black76("put", 100.0, 100.0, 0.2501, years)
+               - black76("put", 100.0, 100.0, 0.2499, years)) / 0.0002 * 0.01, rel=1e-5)
+    assert one["theta_usd_per_day"] < 0 < one["gamma_sh"]
+    assert one["iv"] == 0.25
+
+
+def test_mid_iv_source_reimplies_the_vol():
+    forward, years = 100.0, 30 / 365
+    mid = black76("call", forward, 100.0, 0.22, years)
+    leg = {"right": "call", "strike": 100.0, "sign": 1, "quantity": 1, "expiry": "2024-03-31"}
+    quote = {"bid": mid - 0.01, "ask": mid + 0.01, "iv": 0.9}
+    row, code = LegGreeks({**LEG, "iv_source": "mid"}).of(leg, quote, forward, forward, "2024-03-01")
+    assert code is None and row["iv"] == pytest.approx(0.22, abs=1e-6)
+
+
+@pytest.mark.parametrize("quote,code", [
+    (None, "no_fill_quote"),
+    ({"bid": float("nan"), "ask": 1.0, "iv": 0.2}, "no_fill_quote"),
+    ({"bid": 2.0, "ask": 1.0, "iv": 0.2}, "no_fill_quote"),
+    ({"bid": 1.0, "ask": 1.2}, "leg_no_iv"),
+    ({"bid": 1.0, "ask": 1.2, "iv": 0.0}, "leg_no_iv"),
+    ({"bid": 1.0, "ask": 1.2, "iv": float("nan")}, "leg_no_iv"),
+    ({"bid": 1.0, "ask": 1.2, "iv": 0.005}, "leg_no_iv"),
+])
+def test_leg_greeks_refusal_codes(quote, code):
+    leg = {"right": "call", "strike": 100.0, "sign": 1, "quantity": 1, "expiry": "2024-03-15"}
+    assert LegGreeks(LEG).of(leg, quote, 100.0, 100.0, "2024-03-01") == (None, code)
+
+
+def test_leg_below_min_years_and_the_refusal_inventory():
+    leg = {"right": "call", "strike": 100.0, "sign": 1, "quantity": 1, "expiry": "2024-03-01"}
+    out = LegGreeks(LEG).of(leg, {"bid": 1.0, "ask": 1.2, "iv": 0.2}, 100.0, 100.0, "2024-03-01")
+    assert out == (None, "leg_below_min_years")
+    assert set(LegGreeks.REFUSALS) == {"no_fill_quote", "leg_no_iv", "leg_below_min_years"}
+
+
+def test_leg_greeks_raise_on_malformed_input():
+    lg = LegGreeks(LEG)
+    quote = {"bid": 1.0, "ask": 1.2, "iv": 0.2}
+    leg = {"right": "call", "strike": 100.0, "sign": 1, "quantity": 1, "expiry": "2024-03-15"}
+    with pytest.raises(ValueError, match="forward"):
+        lg.of(leg, quote, 0.0, 100.0, "2024-03-01")
+    with pytest.raises(ValueError, match="malformed"):
+        lg.of({**leg, "sign": 2}, quote, 100.0, 100.0, "2024-03-01")
+
+
+def test_book_greeks_sum_and_status():
+    a = {"delta_sh": 10.0, "gamma_sh": 1.0, "vega_usd_per_pt": 5.0, "theta_usd_per_day": -2.0}
+    b = {"delta_sh": -4.0, "gamma_sh": 0.5, "vega_usd_per_pt": -1.0, "theta_usd_per_day": 1.0}
+    book = BookGreeks.sum([a, b], 101.0, "parity")
+    assert (book.delta_sh, book.gamma_sh, book.vega_usd_per_pt, book.theta_usd_per_day) == \
+        (6.0, 1.5, 4.0, -1.0)
+    assert (book.forward, book.forward_source, book.status) == (101.0, "parity", "ok")
+    assert BookGreeks.sum([a], 100.0, "spot").status == "forward_spot"
+    with pytest.raises(Exception):
+        book.delta_sh = 0.0
+    with pytest.raises(ValueError):
+        BookGreeks.sum([], 100.0, "spot")
+    with pytest.raises(ValueError, match="forward_source"):
+        BookGreeks.sum([a], 100.0, "vendor")
+
+
+# ---- stock equivalent -----------------------------------------------------------------
+def test_stock_equivalent_hand_example_of_a_five_to_one_call_book():
+    # bought 5 x 450 calls and 1 x 455 call, multiplier 100; delta 0.5 and 0.25 per share
+    entry_delta = 100 * (5 * 0.5 + 1 * 0.25)               # 275 shares
+    s_fill, s_settle, book_pnl = 450.0, 458.0, 1500.0
+    stock, residual = StockEquivalent().split(book_pnl, entry_delta, s_fill, s_settle)
+    assert stock == 275 * 8 == 2200.0
+    assert residual == -700.0
+    assert stock + residual == book_pnl
+
+
+def test_stock_equivalent_sums_exactly_and_takes_dividends():
+    se = StockEquivalent()
+    for pnl, delta, s0, s1 in [(125.5, -37.25, 100.5, 96.75), (-0.5, 12.0, 8.0, 9.5)]:
+        stock, residual = se.split(pnl, delta, s0, s1)
+        assert stock + residual == pnl
+    stock, residual = se.split(10.0, 200.0, 50.0, 49.0, dividends_per_share=0.5)
+    assert stock == pytest.approx(200 * (-1.0 + 0.5)) and residual == pytest.approx(10.0 - stock)
+
+
+def test_stock_equivalent_basis_and_refusals():
+    se = StockEquivalent()
+    assert se.basis_usd(-200.0, 100.0, 101.0) == 200.0
+    with pytest.raises(ValueError, match="s_fill"):
+        se.split(1.0, 1.0, 0.0, 1.0)
+    with pytest.raises(ValueError, match="book_pnl"):
+        se.split(float("nan"), 1.0, 1.0, 1.0)
+    with pytest.raises(ConfigError):
+        StockEquivalent({"x": 1})
+
+
+# ---- cell attribution -----------------------------------------------------------------
+def rows_for_cells():
+    def r(sym, rank, pnl, stock):
+        return {"symbol": sym, "rank": rank, "pnl": pnl, "stock_pnl": stock,
+                "residual": pnl - stock}
+    return [r("A", 1, 100.0, 40.0), r("A", 1, -30.0, -10.0), r("A", 2, 50.0, 80.0),
+            r("B", 1, 60.0, 10.0), r("B", 1, -60.0, -20.0)]
+
+
+def test_cell_sums_add_to_the_total_and_shares_are_exact():
+    ca = CellAttribution({"cell_by": ["symbol", "rank"], "min_total_usd": 1.0})
+    cells = ca.summarize(rows_for_cells())
+    assert [(c["symbol"], c["rank"]) for c in cells] == [("A", 1), ("A", 2), ("B", 1)]
+    rows = rows_for_cells()
+    assert sum(c["pnl_usd"] for c in cells) == pytest.approx(sum(r["pnl"] for r in rows))
+    assert sum(c["stock_pnl_usd"] + c["residual_usd"] for c in cells) == \
+        pytest.approx(sum(r["pnl"] for r in rows))
+    a1 = cells[0]
+    assert (a1["n"], a1["pnl_usd"], a1["stock_pnl_usd"], a1["residual_usd"]) == (2, 70.0, 30.0, 40.0)
+    assert a1["stock_share_net"] == pytest.approx(30 / 70)
+    assert a1["gross_pnl_usd"] == 130.0
+    assert a1["stock_share_gross"] == pytest.approx(30 / 130)
+    assert a1["residual_share_gross"] == pytest.approx(40 / 130)
+
+
+def test_net_share_is_null_below_min_total_but_gross_share_is_kept():
+    ca = CellAttribution({"cell_by": ["symbol", "rank"], "min_total_usd": 1.0})
+    b1 = ca.summarize(rows_for_cells())[2]                 # total exactly 0
+    assert b1["pnl_usd"] == 0.0
+    assert b1["stock_share_net"] is None and b1["residual_share_net"] is None
+    assert b1["gross_pnl_usd"] == 120.0 and b1["stock_share_gross"] == pytest.approx(-10 / 120)
+    high = CellAttribution({"cell_by": ["symbol", "rank"], "min_total_usd": 100.0})
+    assert high.summarize(rows_for_cells())[0]["stock_share_net"] is None
+    assert CellAttribution({"cell_by": ["symbol"], "min_total_usd": 0.0}).summarize(
+        [{"symbol": "Z", "pnl": 0.0, "stock_pnl": 0.0, "residual": 0.0}])[0][
+        "stock_share_gross"] is None
+
+
+def test_cell_attribution_refusals():
+    ca = CellAttribution({"cell_by": ["symbol"], "min_total_usd": 1.0})
+    with pytest.raises(ValueError, match="^cell_field_missing"):
+        ca.summarize([{"pnl": 1.0, "stock_pnl": 0.0, "residual": 1.0}])
+    with pytest.raises(ValueError, match="^pnl_not_finite"):
+        ca.summarize([{"symbol": "A", "pnl": float("nan"), "stock_pnl": 0.0, "residual": 0.0}])
+    assert set(CellAttribution.REFUSALS) == {"cell_field_missing", "pnl_not_finite"}
+
+
+# ---- exposure snapshot ----------------------------------------------------------------
+def book(symbol, dte, delta, spot=100.0, gamma=0.0, vega=0.0, status="ok"):
+    return {"symbol": symbol, "dte": dte, "spot": spot, "delta_sh": delta, "gamma_sh": gamma,
+            "vega_usd_per_pt": vega, "status": status}
+
+
+def test_buckets_are_half_open_at_the_edges():
+    es = ExposureSnapshot({"dte_edges": [0, 7, 14], "top_k": 1})
+    out = es.of({"A": 1.0}, [book("A", 0, 1.0), book("A", 6.9, 1.0), book("A", 7, 10.0),
+                             book("A", 13, 10.0), book("A", 14, 99.0), book("A", -1, 99.0)])
+    first, second = out["buckets"]
+    assert (first["dte_min"], first["dte_max"], first["n_books"]) == (0, 7, 2)
+    assert first["beta_delta_usd"] == 200.0
+    assert (second["n_books"], second["beta_delta_usd"]) == (2, 2000.0)
+    assert out["excluded"] == {"dte_outside_edges": 2}
+    assert out["total"]["n_books"] == 4
+
+
+def test_beta_weighted_delta_sign_scale_and_gamma_vega():
+    es = ExposureSnapshot({"dte_edges": [0, 30], "top_k": 2})
+    out = es.of({"A": 1.5, "B": 0.5},
+                [book("A", 10, 200.0, spot=50.0, gamma=2.0, vega=30.0),
+                 book("B", 10, -400.0, spot=20.0, gamma=1.0, vega=-10.0)])
+    total = out["total"]
+    assert total["beta_delta_usd"] == pytest.approx(200 * 50 * 1.5 - 400 * 20 * 0.5)  # 11000
+    assert total["vega_usd_per_pt"] == 20.0
+    assert total["gamma_usd_per_1pct"] == pytest.approx((2 * 50 ** 2 + 1 * 20 ** 2) * 0.01)
+
+
+def test_top_k_share_and_excluded_statuses():
+    es = ExposureSnapshot({"dte_edges": [0, 30], "top_k": 1})
+    out = es.of({"A": 1.0, "B": 1.0, "C": 1.0},
+                [book("A", 5, 30.0), book("A", 6, -10.0), book("B", 5, -10.0),
+                 book("C", 5, 10.0), book("C", 5, 1e6, status="open_leg_unmarked"),
+                 book("B", 5, 1.0, status="forward_spot")])
+    # name deltas: A 2000, B -900, C 1000 -> top-1 share 2000 / 3900
+    assert out["top_k_share"] == pytest.approx(2000 / 3900)
+    assert out["excluded"] == {"open_leg_unmarked": 1}
+    assert es.of({"A": 1.0}, [book("A", 5, 0.0)])["top_k_share"] is None
+
+
+def test_exposure_refuses_a_name_without_a_beta():
+    with pytest.raises(ValueError, match="^beta_missing"):
+        ExposureSnapshot({"dte_edges": [0, 30], "top_k": 1}).of({}, [book("A", 5, 1.0)])
+    assert set(ExposureSnapshot.REFUSALS) == {"dte_outside_edges", "beta_missing"}
+
+
+# ---- fit_betas ------------------------------------------------------------------------
+def test_fit_betas_hand_example_and_fallbacks():
+    returns = {"A": [0.01, -0.01, 0.02], "B": [0.02, -0.02, 0.04]}
+    betas = fit_betas(returns, ["A", "B"], 3, 2)
+    assert betas["A"] == pytest.approx(2 / 3) and betas["B"] == pytest.approx(4 / 3)
+    assert fit_betas(returns, ["A", "B"], 3, 4) == {"A": 1.0, "B": 1.0}
+    assert fit_betas(returns, [], 3, 2) == {}
+    # a flat basket has no variance
+    assert fit_betas({"A": [0.01] * 3, "B": [0.01] * 3}, ["A", "B"], 3, 2) == {"A": 1.0, "B": 1.0}
+
+
+# ---- params ---------------------------------------------------------------------------
+CASES = [
+    (ParityForward, PARITY), (LegGreeks, LEG), (CellAttribution,
+     {"cell_by": ["symbol"], "min_total_usd": 1.0}),
+    (ExposureSnapshot, {"dte_edges": [0, 7], "top_k": 1}),
+]
+
+
+@pytest.mark.parametrize("cls,good", CASES)
+def test_params_reject_unknown_keys_and_missing_keys(cls, good):
+    cls(good)
+    assert any("unknown" in p for p in cls.validate_params({**good, "typo": 1}))
+    with pytest.raises(ConfigError, match="typo"):
+        cls({**good, "typo": 1})
+    required = [k for k in cls._PARAMS if k != "iv_source"]
+    for key in required:
+        trimmed = {k: v for k, v in good.items() if k != key}
+        assert any("missing" in p for p in cls.validate_params(trimmed)), key
+    assert cls.validate_params([]) != []
+
+
+@pytest.mark.parametrize("cls,good,bad", [
+    (ParityForward, PARITY, {"parity_strikes": 0}),
+    (ParityForward, PARITY, {"min_pairs": True}),
+    (ParityForward, PARITY, {"max_pair_spread_frac": -1.0}),
+    (ParityForward, PARITY, {"max_pair_spread_frac": "x"}),
+    (LegGreeks, LEG, {"rate": float("nan")}),
+    (LegGreeks, LEG, {"rate": True}),
+    (LegGreeks, LEG, {"iv_source": "greeks"}),
+    (LegGreeks, LEG, {"multiplier": 0}),
+    (LegGreeks, LEG, {"min_years": -1}),
+    (LegGreeks, LEG, {"vol_floor": -0.1}),
+    (CellAttribution, CASES[2][1], {"cell_by": []}),
+    (CellAttribution, CASES[2][1], {"cell_by": ["a", "a"]}),
+    (CellAttribution, CASES[2][1], {"cell_by": "symbol"}),
+    (CellAttribution, CASES[2][1], {"min_total_usd": -1.0}),
+    (ExposureSnapshot, CASES[3][1], {"dte_edges": [5]}),
+    (ExposureSnapshot, CASES[3][1], {"dte_edges": [0, 7, 7]}),
+    (ExposureSnapshot, CASES[3][1], {"dte_edges": [0, "7"]}),
+    (ExposureSnapshot, CASES[3][1], {"top_k": 0}),
+    (ExposureSnapshot, CASES[3][1], {"top_k": 1.5}),
+])
+def test_params_reject_bad_types_and_values(cls, good, bad):
+    assert cls.validate_params({**good, **bad}) != []
+    with pytest.raises(ConfigError):
+        cls({**good, **bad})
+
+
+def test_leg_greeks_iv_source_defaults_to_vendor():
+    assert LegGreeks.validate_params(LEG) == []
+    assert ox.DEFAULT_IV_SOURCE == "vendor"

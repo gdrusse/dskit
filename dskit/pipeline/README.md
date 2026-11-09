@@ -1308,6 +1308,9 @@ dskit/pipeline/
 │                      to [floor, ceiling], a smile that dips below zero refused
 │                      (ADR-0182 tier placement); black76_implied_vol: the vol that
 │                      reprices a price, None outside the model's range (ADR-0265)
+├── option_exposure.py ParityForward, LegGreeks, BookGreeks, StockEquivalent, CellAttribution, ExposureSnapshot, fit_betas (ADR-0310): chain-implied forward,
+│                      spot-term Greeks per book, delta-equivalent stock vs residual P&L split, per-cell shares, beta-weighted exposure by DTE bucket;
+│                      option_pricing also gains black76_gamma + black76_theta (per year, forward fixed)
 ├── option_structures.py leg-set algebra graduated from the index_options child (ADR-0265):
 │                      structure_credit (shorts at the bid, longs at the ask), structure_payoff,
 │                      structure_max_loss, leg_intrinsic, quote_defect (coded quote refusals);

@@ -769,3 +769,64 @@ def test_black76_vega_matches_central_price_difference():
                 - black76("call", 120.0, 118.0, 0.3 - eps, 30 / 365)) / (2 * eps)
     assert black76_vega("call", 120.0, 118.0, 0.3, 30 / 365) == pytest.approx(expected, rel=1e-8)
     assert black76_vega("put", 120.0, 118.0, 0.3, 30 / 365) == pytest.approx(expected, rel=1e-8)
+
+
+# ADR-0310: Black-76 gamma and theta, checked against central differences of black76.
+GREEK_CASES = [(0.7, 0.4), (1.0, 0.4), (1.3, 0.4), (0.97, 7 / 365), (1.0, 7 / 365),
+               (1.04, 7 / 365)]
+
+
+@pytest.mark.parametrize("right", RIGHTS)
+@pytest.mark.parametrize("moneyness,years", GREEK_CASES)
+@pytest.mark.parametrize("rate", [0.0, 0.04])
+def test_black76_gamma_is_the_second_forward_difference(right, moneyness, years, rate):
+    forward, vol = 100.0, 0.25
+    strike = forward * moneyness
+    step = 1e-3 * forward
+    central = (black76(right, forward + step, strike, vol, years, rate)
+               - 2 * black76(right, forward, strike, vol, years, rate)
+               + black76(right, forward - step, strike, vol, years, rate)) / step ** 2
+    assert option_pricing.black76_gamma(right, forward, strike, vol, years, rate) == \
+        pytest.approx(central, rel=1e-3, abs=1e-6)
+
+
+@pytest.mark.parametrize("right", RIGHTS)
+@pytest.mark.parametrize("moneyness,years", GREEK_CASES)
+@pytest.mark.parametrize("rate", [0.0, 0.04])
+def test_black76_theta_is_minus_the_derivative_in_years_to_expiry(right, moneyness, years, rate):
+    forward, vol = 100.0, 0.25
+    strike = forward * moneyness
+    step = years * 1e-4
+    central = -(black76(right, forward, strike, vol, years + step, rate)
+                - black76(right, forward, strike, vol, years - step, rate)) / (2 * step)
+    assert option_pricing.black76_theta(right, forward, strike, vol, years, rate) == \
+        pytest.approx(central, rel=1e-5, abs=1e-6)
+
+
+def test_black76_gamma_is_equal_for_call_and_put_and_positive():
+    for strike in (80.0, 100.0, 125.0):
+        call = option_pricing.black76_gamma("call", 100.0, strike, 0.3, 0.2, 0.03)
+        put = option_pricing.black76_gamma("put", 100.0, strike, 0.3, 0.2, 0.03)
+        assert call == put and call > 0
+
+
+def test_black76_gamma_theta_known_atm_value():
+    # F=K=100, vol 0.2, 1y, rate 0: d1 = 0.1, pdf(0.1) = 0.396953
+    assert option_pricing.black76_gamma("call", 100.0, 100.0, 0.2, 1.0) == pytest.approx(
+        0.396953 / (100.0 * 0.2), abs=1e-6)
+    assert option_pricing.black76_theta("call", 100.0, 100.0, 0.2, 1.0) == pytest.approx(
+        -100.0 * 0.396953 * 0.2 / 2, abs=1e-5)
+
+
+@pytest.mark.parametrize("args", REFUSED)
+@pytest.mark.parametrize("name", ["black76_gamma", "black76_theta"])
+def test_black76_gamma_theta_refuse_what_black76_refuses(name, args):
+    with pytest.raises(ValueError) as price:
+        black76(*args)
+    with pytest.raises(ValueError) as greek:
+        getattr(option_pricing, name)(*args)
+    assert str(greek.value) == str(price.value)
+
+
+def test_black76_gamma_theta_are_exported():
+    assert {"black76_gamma", "black76_theta"} <= set(option_pricing.__all__)

@@ -4,8 +4,10 @@ Two pieces, both venue-neutral:
 
 * :func:`black76` — Black (1976) on a forward: the one closed form every
   cash-settled index option, future option or FX forward option shares —
-  :func:`black76_delta`, its forward delta, and :func:`black76_implied_vol`,
-  its inverse in the volatility (ADR-0265).
+  :func:`black76_delta`, its forward delta, :func:`black76_gamma` and
+  :func:`black76_theta`, its forward gamma and per-year theta with the
+  forward held fixed (ADR-0310), and :func:`black76_implied_vol`, its
+  inverse in the volatility (ADR-0265).
 * :class:`VolIndexSmileQuotes` — a PROXY bid/ask for one option leg when
   no historical option quote exists, built from a volatility-index close
   (quoted in percent: VIX for SPX, VXN for NDX, RVX for RUT, ...). The
@@ -53,7 +55,8 @@ from dskit.pipeline.node import JsonArtifact, Node, reject_unknown_params
 from dskit.pipeline.records import number_ok, price_ok
 
 __all__ = ["RIGHTS", "OptionScenarioReprice", "VolIndexSmileQuotes", "black76",
-           "black76_delta", "black76_implied_vol", "black76_vega"]
+           "black76_delta", "black76_gamma", "black76_implied_vol", "black76_theta",
+           "black76_vega"]
 
 #: The two option rights.
 RIGHTS = ("put", "call")
@@ -194,6 +197,87 @@ def black76_vega(right, forward, strike, vol, years, rate=0.0):
     """
     d1, _d2, discount = _black76_terms(right, forward, strike, vol, years, rate)
     return discount * forward * _STANDARD_NORMAL.pdf(d1) * math.sqrt(years)
+
+
+def black76_gamma(right, forward, strike, vol, years, rate=0.0):
+    """Return the forward gamma of a European option on a forward (Black 1976).
+
+    The second derivative of :func:`black76` with respect to ``forward``;
+    equal for a call and a put.
+
+    Parameters
+    ----------
+    right : str
+        ``"put"`` or ``"call"``.
+    forward, strike : float
+        Positive levels.
+    vol : float
+        Positive annualized volatility.
+    years : float
+        Positive time to expiry in years.
+    rate : float
+        Continuously compounded discount rate; default 0.
+
+    Returns
+    -------
+    float
+        ``DF * pdf(d1) / (forward * vol * sqrt(years))``, ``DF = exp(-rate * years)``.
+
+    Raises
+    ------
+    ValueError
+        On exactly the inputs :func:`black76` refuses, with its messages.
+
+    Examples
+    --------
+    An at-the-money one-year option at 20% vol::
+
+        black76_gamma("call", 100.0, 100.0, 0.2, 1.0)  # ~0.01985
+    """
+    d1, _d2, discount = _black76_terms(right, forward, strike, vol, years, rate)
+    return discount * _STANDARD_NORMAL.pdf(d1) / (forward * vol * math.sqrt(years))
+
+
+def black76_theta(right, forward, strike, vol, years, rate=0.0):
+    """Return the time decay per year of a European option on a forward.
+
+    Minus the derivative of :func:`black76` in ``years`` with the forward,
+    strike and vol held fixed, so the discount factor ages too. Divide by
+    365 for a per-calendar-day figure.
+
+    Parameters
+    ----------
+    right : str
+        ``"put"`` or ``"call"``.
+    forward, strike : float
+        Positive levels.
+    vol : float
+        Positive annualized volatility.
+    years : float
+        Positive time to expiry in years.
+    rate : float
+        Continuously compounded discount rate; default 0.
+
+    Returns
+    -------
+    float
+        ``rate * price - DF * forward * pdf(d1) * vol / (2 * sqrt(years))``,
+        ``DF = exp(-rate * years)``.
+
+    Raises
+    ------
+    ValueError
+        On exactly the inputs :func:`black76` refuses, with its messages.
+
+    Examples
+    --------
+    An at-the-money one-year call at 20% vol, zero rate::
+
+        black76_theta("call", 100.0, 100.0, 0.2, 1.0)  # ~-3.9695
+    """
+    d1, _d2, discount = _black76_terms(right, forward, strike, vol, years, rate)
+    decay = discount * forward * _STANDARD_NORMAL.pdf(d1) * vol / (2 * math.sqrt(years))
+    return rate * black76(right, forward, strike, vol, years, rate) - decay
 
 
 #: Newton / bisection steps :func:`black76_implied_vol` takes before it gives up.
