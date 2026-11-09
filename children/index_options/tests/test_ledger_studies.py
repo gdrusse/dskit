@@ -4497,6 +4497,95 @@ def test_the_recorded_route_replays_a_sizer_method_and_refuses_a_changed_count()
         ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=skipped)
 
 
+def test_a_sized_week_records_its_parity_and_a_record_without_one_replays_as_before():
+    """ADR-0300 amendment: a sized week records the solver-versus-recompute mismatch and the bound it was held to; a
+    record written before the amendment (2021Q2's, 965b634b) has no parity and replays unchanged; a recorded parity
+    that disagrees with its own certificate is refused."""
+    import copy
+
+    params, inputs = _sizer_fixture()
+    method = params["methods"][0]
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    week = _sized_week(result)[0]
+    parity = week["sizer"]["parity"]
+    assert set(parity) == {"mismatch", "tolerance", "declared", "feasibility", "dropped", "feasibility_tolerance",
+                           "small_matrix_value"}
+    assert abs(parity["mismatch"]) <= parity["tolerance"] and parity["declared"] == params["solver"]["parity_tolerance"]
+    assert parity["mismatch"] == pytest.approx(week["sizer"]["solve"]["objective"]-week["sizer"]["value"], abs=1e-12)
+    before = copy.deepcopy(result)
+    for decision in _sized_week(before):
+        del decision["sizer"]["parity"]
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=before) == before
+    forged = copy.deepcopy(result)
+    _sized_week(forged)[0]["sizer"]["parity"]["mismatch"] += 1.
+    with pytest.raises(ValueError, match="recorded sizer parity"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=forged)
+
+
+@pytest.mark.parametrize("cause", ["floor", "solver"])
+def test_a_stage_two_program_with_nothing_to_load_is_a_recorded_week_that_trades_nothing(monkeypatch, cause):
+    """ADR-0300 amendment: open books that alone breach the wealth floor (infeasible at every count zero), or a solve
+    that returns no incumbent before its limit, end the week as sizer_skipped with zero counts and the reason, never
+    an error that loses the method's quarter; the stage-1 selection stays recorded, and a replay re-solves and must
+    reach the same outcome."""
+    import copy
+    from index_options.kelly_sizer import BookKellySizer
+
+    params, inputs = _sizer_fixture()
+    method = params["methods"][0]
+    plain = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    if cause == "floor":
+        original = BookKellySizer.run
+
+        def breaching(self, ctx, week):   # the open books lose ten fundings in every scenario
+            return original(self, ctx, {**week, "held": [h-10*week["funding"] for h in week["held"]]})
+        monkeypatch.setattr(BookKellySizer, "run", breaching)
+    else:
+        def no_solution(self, solver, model):
+            raise RuntimeError("A feasible solution was not found, so no solution can be loaded")
+        monkeypatch.setattr(BookKellySizer, "_solve", no_solution)
+    expected = "infeasible" if cause == "floor" else "no_incumbent"
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    weeks = [d for d in result["decisions"] if d.get("sizer", {}).get("status") == expected]
+    assert weeks and not _sized_week(result)
+    week = weeks[0]
+    s = week["sizer"]
+    assert week["status"] == "sizer_skipped" and week["books"] == [] and "stage1" in week
+    assert week["selection"] == week["stage1"]["selection"], "stage 1 is recorded and never re-solved"
+    assert all(u["k"] == 0 and u["contracts"] == 0 for u in s["units"]) and s["units"]
+    assert s["stake_ratio"] == 0. and s["reserve_ratio"] == 0. and s["reserve"] == 0.
+    assert week["certificates"][1] == s["solve"] and len(week["certificates"]) == 2
+    assert s["reason"]["text"] and (s["reason"]["scenarios_below_floor_at_zero"] > 0) == (cause == "floor")
+    assert "parity" not in s and "alternates" not in s
+    assert result["trades"] == [] and result["unfilled"] == 0
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=result) == result
+    with pytest.raises(ValueError, match="recorded sizer outcome"):   # this host sizes: the record disagrees
+        monkeypatch.undo()
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=result)
+    if cause == "floor":
+        monkeypatch.setattr(BookKellySizer, "run", breaching)
+        with pytest.raises(ValueError, match="recorded sizer outcome"):   # a sized record, this host cannot size
+            ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=plain)
+        relabelled = copy.deepcopy(result)
+        relabelled["decisions"][result["decisions"].index(week)]["status"] = "timeout_skipped"
+        with pytest.raises(ValueError, match="recorded sizer outcome"):
+            ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=relabelled)
+
+
+def test_a_replay_that_times_out_on_a_recorded_sized_week_is_refused_not_relabelled(monkeypatch):
+    """ADR-0300 amendment: only a recorded timeout is kept as recorded; a sized week this host cannot re-solve inside
+    its limit is a replay that disagrees, refused rather than silently turned into a timeout."""
+    from index_options.kelly_sizer import BookKellySizer
+
+    params, inputs = _sizer_fixture()
+    method = params["methods"][0]
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    assert _sized_week(result)
+    monkeypatch.setattr(BookKellySizer, "_solver_options", lambda self: {**BookKellySizer._HIGHS_PINS, "time_limit": 1e-4})
+    with pytest.raises(ValueError, match="recorded sizer outcome differs from this host's replay \\(this host timed out"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=result)
+
+
 def test_the_derived_and_policy_routes_refuse_a_sizer_method():
     params, inputs = _sizer_fixture()
     study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)

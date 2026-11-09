@@ -484,3 +484,22 @@ def test_a_kelly_risk_input_week_is_a_hold_when_declared_and_refused_when_not():
     both = {**declared, "actions": {**declared["actions"], "timeout_skipped": "skip"}}
     rows = MioRunRows("rows", both).run(None, {"table": table_timeout()})
     assert ("d-2019-01-23", "skip") in [(d["decision_id"], d["action"]) for d in rows["decisions"]]
+
+
+def test_a_sizer_skipped_week_renders_as_a_skip_when_declared_and_is_named_when_not():
+    """ADR-0300 amendment: a stage-2 program with nothing to load saves `sizer_skipped` and no books. A report document
+    over a sized run declares it (`skip`, like a timeout); one that does not is refused naming the status, before any
+    report is written, so the saved study result is untouched and the report re-renders once the action is added."""
+    week = {"date": "2019-01-23", "status": "sizer_skipped", "books": [], "funding": 12000.0, "open_reserve": 0,
+            "candidate_books": 3, "refusals": [],
+            "sizer": {"status": "infeasible", "stake_ratio": 0., "reserve_ratio": 0., "reserve": 0.}}
+
+    def table():
+        result = _result()
+        result["result"]["decisions"] = [*result["result"]["decisions"], week]
+        return {"results": [result, _result(method=OTHER)]}
+    with pytest.raises(ValueError, match="decision status 'sizer_skipped' has no action in params.actions"):
+        MioRunRows("rows", SHAPE).run(None, {"table": table()})
+    declared = {**SHAPE, "actions": {**SHAPE["actions"], "timeout_skipped": "skip", "sizer_skipped": "skip"}}
+    rows = MioRunRows("rows", declared).run(None, {"table": table()})
+    assert ("d-2019-01-23", "skip") in [(d["decision_id"], d["action"]) for d in rows["decisions"]]
