@@ -101,7 +101,9 @@ class MioRunRows(Node):
         (``{status: action}``) — each decision status the run may save and
         the event action it becomes; an unlisted status refuses (a kelly
         method needs `kelly_risk_input`, a week it declined to size: `hold`,
-        and `timeout_skipped`, a week that ended above the gap: `skip`).
+        and `timeout_skipped`, a week that ended above the gap: `skip`; a
+        sizer method may also save `sizer_skipped`, a stage-2 program with
+        nothing to load, ADR-0300 amendment: `skip`).
 
     Inputs
     ------

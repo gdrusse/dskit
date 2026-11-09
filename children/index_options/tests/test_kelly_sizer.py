@@ -222,7 +222,7 @@ def test_the_sizer_refuses_malformed_inputs_and_parameters():
     for bad in ({**good, "units": []}, {**good, "units": [{**good["units"][0], "reserve": 0.}]},
                 {**good, "units": [{**good["units"][0], "profits": [1.]}]}, {**good, "held": [0.]},
                 {**good, "wealth_lo": 100.}, {**good, "cash_limit": -1.}, {**good, "weights": [.5, .6]},
-                {**good, "held": [0., -99.5]}, {**good, "extra": 1}):
+                {**good, "extra": 1}):
         with pytest.raises(ValueError):
             node.run(None, bad)
     for bad in ({"gamma": .5}, {"n_tangents": 1}, {"core": 1.}, {"parity_tolerance": -1.}, {"other": 1}):
@@ -244,7 +244,8 @@ def test_a_time_limit_before_any_incumbent_returns_a_timeout_certificate_not_an_
     assert out["certificate"]["objective"] is None and out["certificate"]["seconds"] >= 0
     assert set(out["certificate"]) == {"solver", "status", "termination", "objective", "bound", "gap", "seconds",
                                        "variables", "constraints"}
-    # The same words from a solve that did not use its time are a defect, not a timeout: re-raised.
+    # The same words from a solve that did not use its time are not a timeout: a recorded no-incumbent week (ADR-0300
+    # amendment), never an error that loses the method's quarter.
     fast = BookKellySizer("sizer", {"gamma": 2., "n_tangents": 32, "core": 2., "parity_tolerance": 1e-6,
                                     "solver_options": {"time_limit": 900}})
 
@@ -253,13 +254,143 @@ def test_a_time_limit_before_any_incumbent_returns_a_timeout_certificate_not_an_
     small = {"units": [{"id": "a", "reserve": 10., "k_max": 3, "profits": [1., -1.]}], "held": [0., 0.],
              "funding": 100., "w0": 100., "cash_limit": 90., "wealth_lo": 1.}
     fast._solve = no_solution.__get__(fast)
-    with pytest.raises(RuntimeError, match="no solution can be loaded"):
-        fast.run(None, small)
+    out = fast.run(None, small)["selection"]
+    assert out["no_incumbent"] is True and out["status"] == "no_incumbent" and "timeout" not in out
+    assert out["certificate"]["termination"] == "unknown" and out["certificate"]["objective"] is None
+    assert out["reason"]["scenarios_below_floor_at_zero"] == 0 and out["reason"]["floor_margin_at_zero"] == 99.
     # With no limit declared a no-incumbent halt is never a timeout either.
     unlimited = BookKellySizer("sizer", {"gamma": 2., "n_tangents": 32, "core": 2., "parity_tolerance": 1e-6})
     unlimited._solve = no_solution.__get__(unlimited)
-    with pytest.raises(RuntimeError, match="no solution can be loaded"):
+    assert unlimited.run(None, small)["selection"]["status"] == "no_incumbent"
+    # Any other solver error is still raised.
+
+    def broken(self, solver, model):
+        raise RuntimeError("the solver crashed")
+    unlimited._solve = broken.__get__(unlimited)
+    with pytest.raises(RuntimeError, match="crashed"):
         unlimited.run(None, small)
+
+
+def test_a_solver_verdict_without_an_incumbent_is_classified_by_its_termination():
+    """``infeasible`` when the solver says so, ``no_incumbent`` otherwise, a timeout when the limit was reached."""
+    node = BookKellySizer("sizer", {"gamma": 2., "n_tangents": 32, "core": 2., "parity_tolerance": 1e-6,
+                                    "solver_options": {"time_limit": 10.}})
+    margin = np.array([5., 9.])
+    certificate = {"solver": "appsi_highs", "status": "warning", "termination": "infeasible", "objective": None,
+                   "bound": None, "gap": None, "seconds": .2, "variables": 7, "constraints": 9}
+    assert node._without_incumbent(certificate, margin)["status"] == "infeasible"
+    assert node._without_incumbent({**certificate, "termination": "error"}, margin)["status"] == "no_incumbent"
+    late = node._without_incumbent({**certificate, "termination": "error", "seconds": 9.5}, margin)
+    assert late["timeout"] is True and late["certificate"]["termination"] == "maxTimeLimit"
+
+
+def test_a_program_highs_finds_infeasible_is_a_recorded_infeasible_week_end_to_end():
+    """Real HiGHS through ``_solve`` (load_solutions off): a stage-2 program with no feasible point returns its
+    ``infeasible`` termination as a recorded week, never appsi's RuntimeError. The program is made infeasible by a
+    subclass row k >= 5 against k_max 3 (the sizer's own program is feasible at every count zero)."""
+    from pyomo.environ import Constraint
+
+    class Forced(BookKellySizer):
+        def build_model(self, inputs, params):
+            m = super().build_model(inputs, params)
+            m.forced = Constraint(expr=m.k["a"] >= 5)
+            return m
+
+    node = Forced("sizer", {"gamma": 2., "n_tangents": 32, "core": 2., "parity_tolerance": 1e-6,
+                            "solver_options": {"time_limit": 900}})
+    out = node.run(None, {"units": [{"id": "a", "reserve": 10., "k_max": 3, "profits": [1., -1.]}],
+                          "held": [0., 0.], "funding": 100., "w0": 100., "cash_limit": 90.,
+                          "wealth_lo": 1.})["selection"]
+    assert out["no_incumbent"] is True and out["status"] == "infeasible" and "timeout" not in out and "k" not in out
+    assert out["certificate"]["termination"] == "infeasible" and out["certificate"]["objective"] is None
+    assert out["reason"]["scenarios_below_floor_at_zero"] == 0 and "likely a numerical verdict" in out["reason"]["text"]
+
+
+def test_open_books_that_alone_breach_the_floor_make_an_infeasible_week_not_an_error():
+    """At every count zero the open books put a scenario below wealth_lo: no solve runs, the week is recorded."""
+    out = _sizer(2.).run(None, {"units": [{"id": "a", "reserve": 10., "k_max": 3, "profits": [1., -1.]}],
+                                "held": [0., -99.5], "funding": 100., "w0": 100., "cash_limit": 90.,
+                                "wealth_lo": 1.})["selection"]
+    assert out["no_incumbent"] is True and out["status"] == "infeasible" and "k" not in out
+    assert out["reason"]["scenarios_below_floor_at_zero"] == 1
+    assert out["reason"]["floor_margin_at_zero"] == pytest.approx(-.5)
+    assert out["certificate"]["status"] == "not_solved" and out["certificate"]["objective"] is None
+    assert out["certificate"]["termination"] == "wealth_floor_breached_at_zero"
+
+
+def _gme_week(scale=30000., n=1000, seed=0):
+    """A GME-scale week on a 10,000 account: three units whose payoffs reach several times ``scale`` in the tails,
+    and open books with heavy-tailed P&L of the same order (the 2021Q1 failure's magnitudes)."""
+    rng = np.random.default_rng(seed)
+    units = []
+    for u in range(3):
+        credit = float(rng.uniform(50, 400))*scale/1e3
+        tail = rng.random(n) < .08
+        loss = np.where(tail, rng.uniform(0, 1, n)*scale, rng.uniform(0, .2, n)*credit)
+        if u % 2:
+            loss = -np.where(rng.random(n) < .05, rng.uniform(0, 3, n)*scale, -rng.uniform(.5, 1, n)*credit)
+        units.append({"id": f"u{u}", "reserve": scale/200, "k_max": 200, "profits": (credit-loss).tolist()})
+    held = (rng.standard_t(4, n)*scale/5).clip(-2000, None)
+    return {"units": units, "held": held.tolist(), "funding": 12000., "w0": 9910., "cash_limit": 8000.,
+            "wealth_lo": 99.1}
+
+
+def test_the_parity_bound_accepts_a_gme_scale_week_the_plain_tolerance_refused():
+    """Payoffs of tens of thousands on a 10,000 account carry scenario wealth past 400 w0, where the CRRA tangents'
+    slopes fall below HiGHS's small_matrix_value (1e-9) and are dropped: the solver's utility sits under the envelope
+    there. The derived bound accounts for exactly that (the dropped term), the record says so, and the recorded value
+    is the exact envelope at the counts."""
+    node = _sizer(4., parity_tolerance=1e-3)
+    week = _gme_week()
+    out = node.run(None, week)["selection"]
+    parity = out["parity"]
+    assert -parity["mismatch"] > 1e-3, "the plain 1e-3 tolerance of 965b634b refuses this week"
+    assert parity["mismatch"] == pytest.approx(node.solve_record.objective-out["value"], abs=1e-12)
+    assert parity["dropped"] > 1e-3 and parity["feasibility"] < 1e-3 and parity["declared"] == 1e-3
+    assert abs(parity["mismatch"]) <= parity["tolerance"] == pytest.approx(
+        parity["declared"]+parity["feasibility"]+parity["dropped"])
+    assert parity["small_matrix_value"] == 1e-9 and parity["feasibility_tolerance"] == 1e-9
+    assert out["wealth_max"] > 400*week["w0"]
+    from dskit.pipeline.libs.pyomo import TangentEnvelope
+
+    base = np.asarray(week["held"])+week["funding"]
+    wealth = base+sum(out["k"][u["id"]]*np.asarray(u["profits"]) for u in week["units"])
+    high = base+sum(u["k_max"]*np.maximum(np.asarray(u["profits"]), 0.) for u in week["units"])
+    envelope = TangentEnvelope(week["w0"], 4., week["wealth_lo"], float(max(week["w0"], high.max())), 32, 2.)
+    assert out["value"] == pytest.approx(week["w0"]*float(np.mean(envelope.value(wealth))), abs=1e-9), \
+        "the recorded value is the exact recompute, never the solver's number"
+
+
+def test_the_parity_bound_still_refuses_a_wrong_objective():
+    """A solver objective off by a dollar is refused; one above the envelope is refused even inside the dropped term,
+    because dropping a slope can only lower the solver's utility."""
+    import dataclasses
+
+    class Shifted(BookKellySizer):
+        shift = 0.
+
+        def extract(self, model, results):
+            if self.shift:
+                self.solve_record = dataclasses.replace(self.solve_record,
+                                                        objective=self.solve_record.objective+self.shift)
+            return super().extract(model, results)
+
+    params = {"gamma": 4., "n_tangents": 32, "core": 2., "parity_tolerance": 1e-3}
+    node = Shifted("sizer", params)
+    week = _gme_week()
+    clean = node.run(None, week)["selection"]["parity"]
+    for shift in (1.+clean["dropped"], -1.-clean["dropped"]-clean["feasibility"], clean["dropped"]/2-clean["mismatch"]):
+        node.shift = shift
+        with pytest.raises(ValueError, match="sizer objective differs from the exact recompute"):
+            node.run(None, week)
+    node.shift = 0.
+    assert Shifted("sizer", params).run(None, week)["selection"]["parity"] == clean
+    small = {"units": [{"id": "bet", "reserve": 400., "k_max": 50, "profits": [100., -400.]}], "held": [0., 0.],
+             "weights": [.9, .1], "funding": 10000., "w0": 10000., "cash_limit": 9500., "wealth_lo": 100.}
+    node = Shifted("sizer", {**params, "parity_tolerance": 1e-6})
+    node.shift = 1e-3
+    with pytest.raises(ValueError, match="sizer objective differs"):
+        node.run(None, small)
 
 
 def test_the_tilt_reaches_every_target_by_reweighting_and_never_moves_a_sample():
