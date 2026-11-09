@@ -4522,6 +4522,60 @@ def test_a_sized_week_records_its_parity_and_a_record_without_one_replays_as_bef
         ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=forged)
 
 
+def _force_solver_shift(monkeypatch, shift):
+    """Move the stage-2 solve record's objective by ``shift`` before the sizer reads it (a solver that mis-reports)."""
+    import dataclasses
+    from index_options.kelly_sizer import BookKellySizer
+
+    original = BookKellySizer.extract
+
+    def shifted(self, model, results):
+        self.solve_record = dataclasses.replace(self.solve_record, objective=self.solve_record.objective+shift)
+        return original(self, model, results)
+    monkeypatch.setattr(BookKellySizer, "extract", shifted)
+
+
+def test_an_under_claimed_sized_week_trades_the_counts_uncertified_and_replays(monkeypatch):
+    """ADR-0300 amendment 2: a solver objective below the exact recompute of its own counts beyond the bound trades the
+    counts at the exact value, records parity status under_claim_uncertified and an uncertified certificate; the recorded
+    route re-solves and must reach the same counts and status; an over-claim still refuses the week."""
+    import copy
+
+    params, inputs = _sizer_fixture()
+    method = params["methods"][0]
+    plain = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    _force_solver_shift(monkeypatch, -1e6)
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    weeks, reference = _sized_week(result), _sized_week(plain)
+    assert weeks and len(weeks) == len(reference), "no week is lost to the shortfall"
+    for week, base in zip(weeks, reference):
+        s = week["sizer"]
+        assert s["parity"]["status"] == "under_claim_uncertified" and s["parity"]["mismatch"] < -s["parity"]["tolerance"]
+        assert s["solve"]["uncertified"] is True and week["certificates"][-1] == s["solve"]
+        assert week["status"] == base["status"] and week["selection"]["quantities"] == base["selection"]["quantities"]
+        assert s["value"] == pytest.approx(base["sizer"]["value"]), "the recorded value is the exact recompute"
+        assert s["parity"]["mismatch"] == pytest.approx(s["solve"]["objective"]-s["value"], abs=1e-6)
+    assert result["trades"] == plain["trades"]
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=result) == result
+    for forge, message in ((lambda s: s["parity"].pop("status"), "recorded sizer parity status"),
+                           (lambda s: s["solve"].pop("uncertified"), "recorded sizer parity status"),
+                           (lambda s: s["solve"].update(objective=s["solve"]["objective"]-1e3),
+                            "recorded sizer (certificate|parity)")):
+        forged = copy.deepcopy(result)
+        forge(_sized_week(forged)[0]["sizer"])
+        with pytest.raises(ValueError, match=message):
+            ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=forged)
+    # A certified record is refused by a host that finds the week under-claimed, and the reverse.
+    with pytest.raises(ValueError, match="recorded sizer parity status"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=plain)
+    monkeypatch.undo()
+    with pytest.raises(ValueError, match="recorded sizer parity status"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=result)
+    _force_solver_shift(monkeypatch, 1e6)   # an over-claim is still refused
+    with pytest.raises(ValueError, match="sizer objective differs from the exact recompute"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+
+
 @pytest.mark.parametrize("cause", ["floor", "solver"])
 def test_a_stage_two_program_with_nothing_to_load_is_a_recorded_week_that_trades_nothing(monkeypatch, cause):
     """ADR-0300 amendment: open books that alone breach the wealth floor (infeasible at every count zero), or a solve

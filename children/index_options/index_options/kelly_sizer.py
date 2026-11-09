@@ -410,6 +410,12 @@ class BookKellySizer(PyomoSolve):
     objective may exceed the recompute by ``parity_tolerance + feasibility`` at most, and fall short of it by that
     plus ``dropped``; ``parity`` records the signed mismatch, the bound it was held to and both terms.
 
+    One side only (ADR-0300 amendment 2, 2026-11-09). An over-claim (solver above the recompute by more than the
+    bound) raises as before. An under-claim beyond the bound does not: the counts are feasible and worth the exact
+    recompute, which is the recorded ``value``; they are merely not certified optimal for it. The selection then
+    carries ``parity["status"] == "under_claim_uncertified"`` and ``certificate["uncertified"] = True``; a week within
+    the bound has neither key. Certificates are never fabricated: an uncertified week says so.
+
     Parameters
     ----------
     params : dict
@@ -432,6 +438,8 @@ class BookKellySizer(PyomoSolve):
     role = "capital"
     outputs = ("selection",)
     _PARAMS = PyomoSolve._PARAMS+("gamma", "n_tangents", "core", "parity_tolerance")
+    #: ``parity.status`` of a week whose solver objective sat below the exact recompute by more than its bound.
+    _UNDER_CLAIM = "under_claim_uncertified"
     #: The ``BudgetedSelect`` and ``ScenarioUtilitySolve`` precedent: integer counts routinely tie, so the gap,
     #: thread races and RNG jitter would each flip which optimal vertex comes back. The absolute gap is in the
     #: objective's dollars-to-first-order units.
@@ -688,9 +696,16 @@ class BookKellySizer(PyomoSolve):
         if not number_ok(record.objective):
             raise ValueError("sizer objective differs from the exact recompute of the envelope")
         parity = self._parity(model, k, wealth, value, record.objective)
-        if abs(parity["mismatch"]) > parity["tolerance"]:
+        if parity["mismatch"] > parity["tolerance"]:
+            # Over-claim: the solver says the counts are worth more than they are. Never traded.
             raise ValueError("sizer objective differs from the exact recompute of the envelope "
                              f"(mismatch {parity['mismatch']:.6g}, tolerance {parity['tolerance']:.6g})")
+        if parity["mismatch"] < -parity["tolerance"]:
+            # Under-claim beyond the bound (ADR-0300 amendment 2): the counts are feasible (cash rule and wealth floor
+            # were checked exactly above) and worth the exact recompute, which is what is recorded; they are only not
+            # certified optimal for that objective. The week trades them under an uncertified certificate.
+            parity = {**parity, "status": self._UNDER_CLAIM}
+            certificate = {**certificate, "uncertified": True}
         exact = float(data["w0"]*np.dot(data["weights"], tangent_utility(wealth, data["w0"], envelope.gamma)[0]))
         return {"selection": {
             "k": k, "reserve": float(reserve), "value": value, "exact": exact,

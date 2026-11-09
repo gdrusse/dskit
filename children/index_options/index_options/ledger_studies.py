@@ -2720,10 +2720,22 @@ class WeeklyOptionPortfolioStudy:
             # accepted, so such a record replays as it did.
             miss = (recorded_cert["objective"]-out["value"] if isinstance(recorded_cert, dict)
                     and number_ok(recorded_cert.get("objective")) else None)
-            if miss is None or abs(miss) > (parity["declared"]+parity["feasibility"]
-                                            +(parity["dropped"] if miss < 0 else 0.)):
-                raise ValueError("recorded sizer certificate differs from this host's replay")
             recorded_parity = claimed_sizer.get("parity")
+            # ADR-0300 amendment 2: a week this host's re-solve finds under-claimed beyond the bound must be recorded
+            # as such (parity status and an uncertified certificate), its recorded objective agreeing with this
+            # host's to the declared tolerance plus the feasibility term; any other week must not be.
+            host_status = parity.get("status", "certified")
+            recorded_status = recorded_parity.get("status", "certified") if isinstance(recorded_parity, dict) else "certified"
+            recorded_flag = isinstance(recorded_cert, dict) and recorded_cert.get("uncertified") is True
+            if recorded_status != host_status or recorded_flag != (host_status != "certified"):
+                raise ValueError("recorded sizer parity status differs from this host's replay")
+            if host_status != "certified":
+                if (miss is None or miss >= 0
+                        or abs(miss-parity["mismatch"]) > parity["declared"]+parity["feasibility"]):
+                    raise ValueError("recorded sizer certificate differs from this host's replay")
+            elif miss is None or abs(miss) > (parity["declared"]+parity["feasibility"]
+                                              +(parity["dropped"] if miss < 0 else 0.)):
+                raise ValueError("recorded sizer certificate differs from this host's replay")
             if recorded_parity is not None and (not isinstance(recorded_parity, dict)
                                                 or not number_ok(recorded_parity.get("mismatch"))
                                                 or abs(recorded_parity["mismatch"]-miss) > tolerance):
