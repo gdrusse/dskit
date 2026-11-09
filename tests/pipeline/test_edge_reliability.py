@@ -1013,4 +1013,162 @@ class TestEdgeCalibrationMap:
 
 def test_stage_2a_public_surface():
     assert {"PartialPooling", "NameAdjustment", "EdgeCalibrationMap"} <= set(er.__all__)
-    assert er.__all__[-3:] == ["PartialPooling", "NameAdjustment", "EdgeCalibrationMap"]
+    assert er.__all__[-4:] == ["PartialPooling", "NameAdjustment", "EdgeCalibrationMap", "TrailingRegime"]
+
+
+# ------------------------------------------------- TrailingRegime (stage 2b)
+
+from dskit.pipeline.edge_reliability import TrailingRegime  # noqa: E402
+
+REGIME = {"regime_lookback_weeks": 52, "regime_min_weeks": 13}
+MONDAY0 = datetime.date(2019, 1, 7)
+
+
+def _wk(i):
+    return (MONDAY0 + datetime.timedelta(weeks=i)).isoformat()
+
+
+def _regime(**over):
+    return TrailingRegime({**REGIME, **over})
+
+
+def _fill_regime(reg, values, name="AA"):
+    for i, v in enumerate(values):
+        reg.add(name, _wk(i), v)
+    return reg
+
+
+class TestTrailingRegime:
+    def test_strictly_before_own_observation_never_counts(self):
+        reg = _fill_regime(_regime(), [1.0] * 13)
+        # Own value at t = 13 is added AFTER the query; adding it must not move t's answer.
+        before = reg.of("AA", _wk(13), 5.0)
+        reg.add("AA", _wk(13), 5.0)
+        assert reg.of("AA", _wk(13), 5.0) == before == ("high", False)
+
+    def test_poisoned_future_changes_nothing_at_t(self):
+        clean = _fill_regime(_regime(), [1.0, 2.0, 3.0] * 5)
+        dirty = _fill_regime(_regime(), [1.0, 2.0, 3.0] * 5)
+        for k in range(15, 20):
+            dirty.add("AA", _wk(k), 1e9)
+        for v in (0.5, 2.0, 2.5):
+            assert dirty.of("AA", _wk(15), v) == clean.of("AA", _wk(15), v)
+
+    def test_window_is_exactly_52_weeks(self):
+        # 100 at week 0, then 1.0 for weeks 1..52: at t = week 53 the window is weeks 1..52
+        # (t-52w .. t-1w) so the 100 has dropped out; at t = week 52 week 0 is still in.
+        vals = [100.0] + [1.0] * 52
+        reg = _fill_regime(_regime(), vals)
+        # week 52: window weeks 0..51 = {100, 1x51}: median 1.0, v=1.0 not above
+        assert reg.of("AA", _wk(52), 1.0) == ("low", False)
+        # week 53 window = weeks 1..52, all 1.0: v slightly above is high
+        assert reg.of("AA", _wk(53), 1.0001) == ("high", False)
+        # window of 52 observations, not 53: count at week 53
+        assert reg.window_size("AA", _wk(53)) == 52
+        assert reg.window_size("AA", _wk(52)) == 52
+
+    def test_window_start_is_inclusive_week_and_excludes_older(self):
+        reg = _fill_regime(_regime(regime_lookback_weeks=4, regime_min_weeks=1),
+                           [10.0, 1.0, 1.0, 1.0, 1.0])
+        # t = week 5: window weeks 1..4 (4 obs); week 0 (value 10) is out
+        assert reg.window_size("AA", _wk(5)) == 4
+        assert reg.of("AA", _wk(5), 1.5) == ("high", False)
+
+    def test_fewer_than_minimum_is_low_with_warmup_flag(self):
+        reg = _fill_regime(_regime(), [1.0] * 12)
+        assert reg.of("AA", _wk(12), 99.0) == ("low", True)
+        assert reg.warmups == 1
+        reg.add("AA", _wk(12), 1.0)
+        assert reg.of("AA", _wk(13), 99.0) == ("high", False)  # exactly 13 prior
+        assert reg.warmups == 1
+
+    def test_unknown_name_is_warmup_low(self):
+        assert _regime().of("ZZ", _wk(3), 5.0) == ("low", True)
+
+    def test_names_are_independent(self):
+        reg = _fill_regime(_regime(), [1.0] * 13, "AA")
+        _fill_regime(reg, [9.0] * 13, "BB")
+        assert reg.of("AA", _wk(13), 5.0)[0] == "high"
+        assert reg.of("BB", _wk(13), 5.0)[0] == "low"
+
+    def test_tie_at_median_is_low_odd_and_even(self):
+        reg = _fill_regime(_regime(), [1.0, 2.0, 3.0] * 4 + [2.0])  # 13 obs, median 2
+        assert reg.of("AA", _wk(13), 2.0) == ("low", False)
+        assert reg.of("AA", _wk(13), 2.0001) == ("high", False)
+        even = _fill_regime(_regime(regime_min_weeks=2), [1.0, 3.0])  # median 2
+        assert even.of("AA", _wk(2), 2.0) == ("low", False)
+        assert even.of("AA", _wk(2), 2.5) == ("high", False)
+
+    def test_annualization_matches_sqrt_365_over_dte_median_over_expiries(self):
+        v = TrailingRegime.annualize([(0.02, 7), (0.04, 28), (0.05, 91)])
+        want = sorted([0.02 * math.sqrt(365 / 7), 0.04 * math.sqrt(365 / 28),
+                       0.05 * math.sqrt(365 / 91)])[1]
+        assert v == pytest.approx(want)
+        assert TrailingRegime.annualize([(0.02, 10), (0.04, 10)]) == pytest.approx(
+            0.03 * math.sqrt(36.5))
+
+    @pytest.mark.parametrize("pairs", [[], [(0.1, 0)], [(0.1, -3)], [(float("nan"), 5)],
+                                       [(-0.1, 5)], [(True, 5)]])
+    def test_annualize_refuses_bad_input(self, pairs):
+        with pytest.raises(ValueError):
+            TrailingRegime.annualize(pairs)
+
+    def test_incremental_state_is_bounded(self):
+        reg = _regime()
+        for i in range(400):
+            reg.add("AA", _wk(i), float(i % 7 + 1))
+        assert reg.stored("AA") <= 52 + 1
+
+    def test_matches_batch_median_over_long_series(self):
+        rng = np.random.default_rng(5)
+        series = rng.uniform(0.1, 1.0, 200).tolist()
+        reg = _regime()
+        for i, v in enumerate(series):
+            got = reg.of("AA", _wk(i), v)
+            prior = series[max(0, i - 52):i]
+            if len(prior) < 13:
+                assert got == ("low", True)
+            else:
+                assert got == (("high" if v > float(np.median(prior)) else "low"), False)
+            reg.add("AA", _wk(i), v)
+
+    def test_out_of_order_add_refuses(self):
+        reg = _fill_regime(_regime(), [1.0] * 3)
+        with pytest.raises(ValueError, match="out of order"):
+            reg.add("AA", _wk(1), 1.0)
+        with pytest.raises(ValueError, match="out of order"):
+            reg.add("AA", _wk(2), 1.0)  # same date twice
+
+    def test_query_before_evicted_window_refuses(self):
+        reg = _fill_regime(_regime(), [1.0] * 80)
+        with pytest.raises(ValueError, match="evicted"):
+            reg.of("AA", _wk(10), 1.0)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1.0, 0.0, True, "1"])
+    def test_bad_value_refuses(self, bad):
+        with pytest.raises(ValueError):
+            _regime().add("AA", _wk(0), bad)
+        with pytest.raises(ValueError):
+            _regime().of("AA", _wk(0), bad)
+
+    def test_params_reject_unknown_missing_and_bad(self):
+        with pytest.raises(ValueError, match="unknown params"):
+            TrailingRegime({**REGIME, "quantile": 0.5})
+        with pytest.raises(ValueError):
+            TrailingRegime({"regime_lookback_weeks": 52})
+        for over in ({"regime_lookback_weeks": 0}, {"regime_min_weeks": 0},
+                     {"regime_min_weeks": 60}, {"regime_lookback_weeks": 52.0},
+                     {"regime_lookback_weeks": True}):
+            with pytest.raises(ValueError):
+                _regime(**over)
+        with pytest.raises(ValueError):
+            TrailingRegime([])
+
+    def test_params_tuple_and_surface(self):
+        assert TrailingRegime._PARAMS == ("regime_lookback_weeks", "regime_min_weeks")
+        assert er.__all__[-1] == "TrailingRegime"
+
+    def test_does_not_mutate_caller_params(self):
+        p = dict(REGIME)
+        TrailingRegime(p)
+        assert p == REGIME
