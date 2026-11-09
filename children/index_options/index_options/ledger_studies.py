@@ -1383,7 +1383,12 @@ class WeeklyOptionPortfolioStudy:
         dropped). A week without enough strictly prior history, without a
         name with finite history, or without positive uncommitted capital,
         does not trade (kelly_risk_input). Open books enter through the cash
-        rule and that wealth only. A kelly block may add max_groups (int >= 1,
+        rule and that wealth only. A kelly block may add certify_stop
+        ("objective_target", ADR-0299 owner ruling A): the certification
+        solve stops once an incumbent is within the solve's allowance of the
+        relaxation bound, certified, recorded as kelly.certify_stop (only
+        under the key). A kelly block may
+        add max_groups (int >= 1,
         ADR-0301): after the lp screen only that many groups, the ones with
         the largest standalone relaxed value, enter the joint growth program.
         Optional method key sizer (ADR-0300, exclusive with kelly) keeps the
@@ -1432,10 +1437,14 @@ class WeeklyOptionPortfolioStudy:
                    "gap", "time_limit"}
     #: An optional kelly key (ADR-0301): ``max_groups`` keeps, of the ``lp`` screen's survivors, only that many with
     #: the largest standalone relaxed value before the joint growth program is built (the solver's group_screen_keep).
-    _KELLY_OPTIONAL_KEYS = {"max_groups", "accept_uncertified"}
+    _KELLY_OPTIONAL_KEYS = {"max_groups", "accept_uncertified", "certify_stop"}
     #: ``accept_uncertified`` (ADR-0301 amendment): a week whose certification the relax_fix strategy DECLINED (a support
     #: incumbent exists, too many actions stayed free to certify within the limit) trades that incumbent instead of
     #: skipping; the gap to the relaxation's bound is recorded (``kelly.uncertified``). A failed relaxation still skips.
+    #: ``certify_stop`` (ADR-0299, owner ruling A, 2026-11-09): ``objective_target`` reaches the solve as its
+    #: ``certify_stop``: the certification solve stops on the first incumbent within the method's allowance of the
+    #: relaxation bound and the week is certified (certify-more only); the week's stop is recorded (``kelly.certify_stop``).
+    _KELLY_CERTIFY_STOPS = ("objective_target",)
     _KELLY_GAP_KEYS = {"absolute", "relative"}
     #: The select-then-size Kelly method (ADR-0300): the method's own dollar keys select the books (stage 1, the
     #: locked formulation unchanged) and ``sizer`` sizes them by a sample-average CRRA program over sampled joint
@@ -1756,6 +1765,8 @@ class WeeklyOptionPortfolioStudy:
         return (isinstance(kelly, dict) and set(kelly)-cls._KELLY_OPTIONAL_KEYS == cls._KELLY_KEYS
                 and ("max_groups" not in kelly or (type(kelly["max_groups"]) is int and kelly["max_groups"] >= 1))
                 and ("accept_uncertified" not in kelly or type(kelly["accept_uncertified"]) is bool)
+                and ("certify_stop" not in kelly or (isinstance(kelly["certify_stop"], str)
+                                                     and kelly["certify_stop"] in cls._KELLY_CERTIFY_STOPS))
                 and number_ok(kelly["fraction"]) and 0 < kelly["fraction"] <= 1
                 and type(kelly["n_tangents"]) is int and kelly["n_tangents"] >= 2
                 and number_ok(kelly["core"]) and kelly["core"] > 1
@@ -1853,7 +1864,9 @@ class WeeklyOptionPortfolioStudy:
                 and number_ok(options.get("mip_feasibility_tolerance"))
                 and options["mip_feasibility_tolerance"] <= cls.KELLY_MIP_FEASIBILITY_TOLERANCE
                 and number_ok(solver.get("parity_tolerance")) and solver["parity_tolerance"] >= cls.KELLY_PARITY_FLOOR
-                and solver.get("group_screen") == cls.KELLY_GROUP_SCREEN)
+                and solver.get("group_screen") == cls.KELLY_GROUP_SCREEN
+                # certify_stop is an option of the relax_fix certification solve (ADR-0299 owner ruling A).
+                and ("certify_stop" not in kelly or solver.get("utility_solve", "relax_fix") == "relax_fix"))
 
     @staticmethod
     def _risk_charge_valid(spec):
@@ -3028,6 +3041,9 @@ class WeeklyOptionPortfolioStudy:
                     if kelly is not None and "max_groups" in kelly:
                         # ADR-0301: after the lp screen keep only the best max_groups groups by standalone relaxed value.
                         solver_params = {**p["solver"], "group_screen_keep": kelly["max_groups"]}
+                    if kelly is not None and "certify_stop" in kelly:
+                        # ADR-0299 owner ruling A: the certification solve may stop on its objective target.
+                        solver_params = {**solver_params, "certify_stop": kelly["certify_stop"]}
                     solver = TransportPortfolioSolve("portfolio", solver_params)
                     program = {"groups": configured,
                                "caps": self._caps(self._limits(account, method, components, solve=True), metadata)}
@@ -3158,6 +3174,12 @@ class WeeklyOptionPortfolioStudy:
                         certificates = selection.get("certificates") or [{}]
                         record["kelly"]["solve"] = {k: certificates[0].get(k)
                                                     for k in ("strategy_outcome", "bound_source")}
+                        if "certify_stop" in kelly:
+                            # ADR-0299 owner ruling A, only for a method that declares the key (earlier kelly records
+                            # are unchanged): the stop applied and how this week's certification ended (``stop`` is
+                            # objective_target when the target certified the week, none otherwise; None: no solve).
+                            record["kelly"]["certify_stop"] = {"applied": kelly["certify_stop"],
+                                                               "stop": certificates[0].get("stop")}
                     if books:
                         pending = {"books": books, "components": components, "record": record}
                 decisions.append(record)
@@ -3631,10 +3653,20 @@ class MIOPacketCompare(StudyNode):
     #: What a comparison row keeps of each kelly decision's ``kelly`` record (``book``: the exact sd, the charge, their
     #: ratio and the fraction the charge applies, ADR-0299).
     _KELLY_ROW_KEYS = ("status", "dropped", "candidates", "screen", "book", "solve", "uncertified")
+    #: Kept only where the decision's kelly record has them (a declared key's field), so earlier rows are unchanged:
+    #: ``certify_stop`` (ADR-0299 owner ruling A).
+    _KELLY_OPTIONAL_ROW_KEYS = ("certify_stop",)
     #: What a comparison row keeps of each sizer decision's ``sizer`` record (ADR-0300): how the week was sized and how
     #: far the counts moved from the stage-1 selection.
     _SIZER_ROW_KEYS = ("status", "reserve_ratio", "stake_ratio", "value", "exact", "wealth_min", "reserve",
                        "stage1_reserve", "cash_limit_applied", "exposure", "tilt", "alternates")
+
+    @classmethod
+    def _kelly_row(cls, kelly):
+        """What a comparison row keeps of one decision's ``kelly`` record: every row key (None when absent) and each
+        optional row key only where the record has it."""
+        return ({k: kelly.get(k) for k in cls._KELLY_ROW_KEYS}
+                | {k: kelly[k] for k in cls._KELLY_OPTIONAL_ROW_KEYS if k in kelly})
 
     @staticmethod
     def _kelly_dropped(decisions):
@@ -3681,8 +3713,7 @@ class MIOPacketCompare(StudyNode):
                     row["decisions"] = [{k: v for k, v in decision.items() if k in {
                         "date", "status", "candidate_books", "candidate_contracts", "eligible_by_pair",
                         "eligible_by_symbol", "fitted", "fallback", "refusals", "cdf_noise_repaired"}}
-                        | ({"kelly": {k: decision["kelly"].get(k) for k in self._KELLY_ROW_KEYS}}
-                           if "kelly" in decision else {})
+                        | ({"kelly": self._kelly_row(decision["kelly"])} if "kelly" in decision else {})
                         | ({"sizer": {k: decision["sizer"].get(k) for k in self._SIZER_ROW_KEYS}}
                            if "sizer" in decision else {}) for decision in result["decisions"]]
                     if any("kelly" in d for d in result["decisions"]):

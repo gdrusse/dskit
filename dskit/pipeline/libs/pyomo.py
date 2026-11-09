@@ -504,6 +504,32 @@ class _UtilitySolveRecord(SolveRecord):
         return self.strategy_outcome in self.OUTCOMES and self.bound_source in self.SOURCES
 
 
+@dataclass(frozen=True)
+class _TargetStopSolveRecord(_UtilitySolveRecord):
+    """A :class:`_UtilitySolveRecord` of a program solved under ``certify_stop`` (ADR-0299, owner ruling A).
+
+    Written only when the solve declares ``certify_stop``; every other utility certificate keeps its fields.
+
+    Parameters
+    ----------
+    stop : str
+        ``objective_target`` (HiGHS ended the certification solve on its objective target, the incumbent within the
+        method's allowance of the relaxation bound: certified, ``termination`` ``optimal``) or ``none`` (the week
+        ended as it would without the key).
+    """
+
+    stop: str
+
+    #: The values ``stop`` may hold.
+    STOPS = ("none", "objective_target")
+
+    def coherent(self):
+        """Whether every field holds a value the strategy can write and a target stop is a certified optimal week."""
+        return (super().coherent() and self.stop in self.STOPS
+                and (self.stop != "objective_target"
+                     or (self.strategy_outcome == "certified" and self.termination == "optimal")))
+
+
 class PyomoSolve(Node):
     """The abstract doorway: one pyomo program as one pipeline Node.
 
@@ -3965,6 +3991,15 @@ class TransportPortfolioSolve(PyomoSolve):
         further candidate restriction, so the certificate covers the kept
         program and the objective can only be lower than the unrestricted
         one. Replay re-derives it with the screen.
+        Optional certify_stop (ADR-0299, owner ruling A; appsi_highs and
+        utility_solve relax_fix only; absent changes nothing) is
+        "objective_target": the relax_fix certification solve hands HiGHS
+        an objective target of the relaxation bound less the method's
+        allowance (absolute_gap, relative_gap), so it stops on the first
+        incumbent within the allowance of that bound and the week is
+        certified; the certificate's ``stop`` says so. Any other ending is
+        read as without the key (certify-more only). A utility certificate
+        then carries ``stop``; a dollar program ignores the key.
         Inputs contain
         groups (id, grid, masses, radius, scale, credit, losses, capacity,
         exclusive, reserve_rows, linear_rows), caps (groups, upper) and
@@ -4035,7 +4070,9 @@ class TransportPortfolioSolve(PyomoSolve):
     outputs = ("selection",)
     _PARAMS = PyomoSolve._PARAMS + (
         "absolute_gap", "relative_gap", "parity_tolerance", "timeout_policy",
-        "group_screen", "group_screen_keep", "utility_solve")
+        "group_screen", "group_screen_keep", "utility_solve", "certify_stop")
+    #: The values ``certify_stop`` may hold (absent: HiGHS ends the certification at its own gaps or the time limit).
+    CERTIFY_STOPS = ("objective_target",)
 
     #: How a utility program is solved (a dollar program ignores it): ``relax_fix`` (the default) solves the LP
     #: relaxation first, finds an incumbent on the integer program reduced to that relaxation's support, then
@@ -4096,6 +4133,12 @@ class TransportPortfolioSolve(PyomoSolve):
         strategy = params.get("utility_solve", cls.UTILITY_SOLVES[0])
         if not isinstance(strategy, str) or strategy not in cls.UTILITY_SOLVES:
             problems.append("utility_solve must be one of "+", ".join(cls.UTILITY_SOLVES))
+        stop = params.get("certify_stop")
+        if stop is not None and (not isinstance(stop, str) or stop not in cls.CERTIFY_STOPS
+                                 or params.get("solver", DEFAULT_SOLVER) != "appsi_highs"
+                                 or strategy != "relax_fix"):
+            problems.append("certify_stop must be one of "+", ".join(cls.CERTIFY_STOPS)
+                            + " and needs appsi_highs and utility_solve relax_fix")
         return problems
 
     def _checked(self, inputs):
@@ -4780,8 +4823,10 @@ class TransportPortfolioSolve(PyomoSolve):
         """
         from pyomo.environ import Var
 
-        model._transport_bound, model._transport_declined = None, False
+        model._transport_bound, model._transport_declined, model._transport_target = None, False, None
         model._transport_outcome, model._transport_bound_source = "certified", "certification"
+        # certify_stop declared: every certificate of this run carries ``stop`` (``none`` unless the target ended it).
+        model._transport_stop = None if self.params.get("certify_stop") is None else "none"
         budget = float(self.params.get("solver_options", {}).get("time_limit", 0) or 0)
         clock = time.perf_counter()
         remaining = lambda: None if not budget else max(1., budget-(time.perf_counter()-clock))
@@ -4834,14 +4879,26 @@ class TransportPortfolioSolve(PyomoSolve):
         support = None if incumbent is None else [(v, v.value) for v in model.component_data_objects(Var)]
         for key in fixed:
             model.x[key].setub(0)
-        # No early-stop option: HiGHS ends at its own search gaps or the time limit (ADR-0299 dead-option amendment;
-        # HiGHS has no ``mip_dual_bound``, and ``objective_target`` would change outcomes, so it waits on the owner).
+        # Without certify_stop, no early-stop option: HiGHS ends at its own search gaps or the time limit (ADR-0299
+        # dead-option amendment; HiGHS has no ``mip_dual_bound``). With certify_stop objective_target (owner ruling A),
+        # HiGHS also stops on the first incumbent within the method's allowance of the relaxation bound.
+        target = None
+        if self.params.get("certify_stop") == "objective_target":
+            target = self._certification_target(bound, self.params["absolute_gap"], self.params["relative_gap"],
+                                                tolerance)
         try:
             with self._search_gaps(solver):
+                if target is not None:
+                    solver.options["objective_target"] = target
                 result = self._solve_once(solver, model, remaining())
         finally:
+            if target is not None:
+                del solver.options["objective_target"]
             for key in fixed:
                 model.x[key].setub(capacity[key])
+        if target is not None:
+            # Paired with this solve's own results: _build_solve_record reads the target for these results only.
+            model._transport_target = ((target, self.params["absolute_gap"], self.params["relative_gap"]), result)
         if support is not None and getattr(model, "_transport_no_incumbent", False):
             # The certification found no solution in its time: the support incumbent it started from still stands.
             for variable, value in support:
@@ -4855,6 +4912,20 @@ class TransportPortfolioSolve(PyomoSolve):
                       lp_seconds, len(stakes)-len(outside), len(stakes), search_seconds, len(fixed),
                       time.perf_counter()-clock-lp_seconds-search_seconds, self._peak_rss())
         return result
+
+    @staticmethod
+    def _certification_target(bound, absolute, relative, tolerance=0.):
+        """HiGHS's ``objective_target`` for a ``certify_stop`` certification: ``bound - max(a, r|bound|)/(1+r)`` plus
+        ``2 * tolerance``, with ``a``, ``r`` the method's allowance (``absolute_gap``, ``relative_gap``).
+
+        HiGHS ends a maximization with ``kObjectiveTarget`` once its incumbent reaches the target (a stop, never a
+        cut-off; ``objective_bound`` is a cut-off and would prune), in the profit's own sense (appsi passes
+        ``ObjSense.kMaximize``). Any ``v`` at or above ``bound - max(a, r|bound|)/(1+r)`` has
+        ``bound - v <= max(a, r|v|)`` whatever the signs; the ``2 * tolerance`` margin keeps the audited value (within
+        the parity tolerance of the model's) inside the allowance too. A target above ``bound`` never fires.
+        """
+        bound, absolute, relative = float(bound), float(absolute), float(relative)
+        return bound-max(absolute, relative*abs(bound))/(1.+relative)+2.*float(tolerance)
 
     @staticmethod
     def _peak_rss():
@@ -4880,7 +4951,22 @@ class TransportPortfolioSolve(PyomoSolve):
         record = PyomoSolve._build_solve_record(solver, model, results, name, seconds)
         if getattr(model, "_transport_no_incumbent", False):
             record = replace(record, objective=None, gap=None, binding=())
-        relaxed = getattr(model, "_transport_bound", None)
+        stop = getattr(model, "_transport_stop", None)
+        held, relaxed = getattr(model, "_transport_target", None), getattr(model, "_transport_bound", None)
+        if (held is not None and held[1] is results and relaxed is not None and number_ok(relaxed)
+                and record.termination == "minFunctionValue"
+                and record.objective is not None and number_ok(record.objective)):
+            # certify_stop objective_target (owner ruling A): HiGHS's objective-target stop (appsi objectiveLimit,
+            # legacy minFunctionValue) of the certification solve that set the target (its own results, never another
+            # solve's). An incumbent within the method's allowance of the relaxation bound is certified: labelled
+            # optimal, the label of a stop at the gap, with ``stop`` saying how it ended. Any other objective-limit
+            # ending keeps its label, which the certificate checks refuse. The test uses the relaxation bound alone,
+            # never a tighter solver bound: conservative, it can refuse, never over-certify.
+            (_, absolute, rel), _ = held
+            slack = 1e-9*max(1., abs(relaxed))
+            if relaxed-record.objective <= max(absolute, rel*abs(record.objective))+slack:
+                record = replace(record, termination="optimal", status="ok")
+                stop = "objective_target"
         if relaxed is not None and number_ok(relaxed):
             # The solver's bound covers the program it saw, with the actions fixed by reduced cost; every solution
             # outside it is bounded by the relaxation plus the largest fixed reduced cost (None: nothing fixed), so
@@ -4895,9 +4981,10 @@ class TransportPortfolioSolve(PyomoSolve):
                 record = replace(record, termination="maxTimeLimit", status="aborted")
         outcome = getattr(model, "_transport_outcome", None)
         if outcome is not None:
-            record = _UtilitySolveRecord(**{name: getattr(record, name) for name in SolveRecord.field_names()},
-                                         strategy_outcome=outcome,
-                                         bound_source=getattr(model, "_transport_bound_source", "none"))
+            fields = {name: getattr(record, name) for name in SolveRecord.field_names()}
+            fields.update(strategy_outcome=outcome, bound_source=getattr(model, "_transport_bound_source", "none"))
+            record = (_UtilitySolveRecord(**fields) if stop is None   # no certify_stop: the fields are unchanged
+                      else _TargetStopSolveRecord(**fields, stop=stop))
         return record
 
     def _timeout_reason(self, certificate, value):
@@ -4997,10 +5084,16 @@ class TransportPortfolioSolve(PyomoSolve):
             program["utility"] = self._utility
         return program
 
-    @staticmethod
-    def _certificate_fields(utility):
-        """The keys of a certificate: a utility program's carries ``strategy_outcome`` and ``bound_source`` too."""
-        return set((_UtilitySolveRecord if utility else SolveRecord).field_names())-{"binding"}
+    def _record_type(self, utility):
+        """The certificate's record class: a utility program's, with ``stop`` when ``certify_stop`` is declared."""
+        if not utility:
+            return SolveRecord
+        return _UtilitySolveRecord if self.params.get("certify_stop") is None else _TargetStopSolveRecord
+
+    def _certificate_fields(self, utility):
+        """The keys of a certificate: a utility program's carries ``strategy_outcome`` and ``bound_source`` too (and
+        ``stop`` under ``certify_stop``)."""
+        return set(self._record_type(utility).field_names())-{"binding"}
 
     def _cash(self):
         """Return the audited cash selection: nothing held, nothing reserved, nothing earned."""
@@ -5118,7 +5211,7 @@ class TransportPortfolioSolve(PyomoSolve):
                 or not isinstance(certificates[0], dict) or set(certificates[0]) != fields):
             raise RecordedCheckRefusal("incomplete recorded certificate", "certificate_fields", "certificate")
         certificate = certificates[0]
-        if "strategy_outcome" in fields and not _UtilitySolveRecord(
+        if "strategy_outcome" in fields and not self._record_type(True)(
                 **{**certificate, "binding": ()}).coherent():
             raise RecordedCheckRefusal("contradictory recorded certificate", "certificate_strategy", "certificate")
         if certificate["solver"] != self.params.get("solver", DEFAULT_SOLVER):
@@ -5164,7 +5257,7 @@ class TransportPortfolioSolve(PyomoSolve):
                 for j, quantity in enumerate(group):
                     model.x[i, j].set_value(quantity)
             self._price_duals(model)
-        self.solve_record = (_UtilitySolveRecord if self._utility is not None else SolveRecord)(
+        self.solve_record = self._record_type(self._utility is not None)(
             **{**certificate, "binding": ()})
         return self.extract(model, None)
 
@@ -5213,7 +5306,7 @@ class TransportPortfolioSolve(PyomoSolve):
         fields = self._certificate_fields(isinstance(inputs, dict) and inputs.get("utility") is not None)
         if not isinstance(certificate, dict) or set(certificate) != fields:
             raise ValueError("incomplete recorded certificate")
-        if "strategy_outcome" in fields and not _UtilitySolveRecord(**{**certificate, "binding": ()}).coherent():
+        if "strategy_outcome" in fields and not self._record_type(True)(**{**certificate, "binding": ()}).coherent():
             raise ValueError("contradictory recorded certificate")
         statuses = (("ok", "warning") if certificate["termination"] == "optimal"
                     else ("ok", "warning", "aborted")

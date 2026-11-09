@@ -6297,6 +6297,133 @@ def test_every_highs_option_the_module_sets_is_one_highs_accepts(monkeypatch):
     TransportPortfolioSolve("tight", tight).run(None, _hedged_program())
     assert len(solves) == 2 and {"mip_rel_gap", "threads"} <= {name for name, _ in handed}, "support and certification"
     assert [name for name, status in handed if status != ok] == []
+    handed.clear()
+    targeted = {**tight, "certify_stop": "objective_target"}   # reaches its certification solve
+    TransportPortfolioSolve("targeted", targeted).run(None, _hedged_program())
+    assert "objective_target" in {name for name, _ in handed} and "objective_target" in names
+    assert [name for name, status in handed if status != ok] == []
+
+
+# --- certify_stop objective_target (ADR-0299, owner ruling A, 2026-11-09) ------------------------------------------------
+
+@pytest.mark.parametrize("extra,ok", [
+    ({}, True), ({"certify_stop": "objective_target"}, True), ({"certify_stop": "target"}, False),
+    ({"certify_stop": None}, True), ({"certify_stop": 1}, False),
+    ({"certify_stop": "objective_target", "utility_solve": "direct"}, False),
+    ({"certify_stop": "objective_target", "solver": "glpk", "timeout_policy": "raise"}, False)])
+def test_certify_stop_accepts_only_objective_target_on_a_relax_fix_highs_solve(extra, ok):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    problems = TransportPortfolioSolve.validate_params(_strategy_params("relax_fix", **extra))
+    assert (not [p for p in problems if "certify_stop" in p]) == ok, problems
+
+
+def _target_stop_run(monkeypatch, certify=True, target=None):
+    """A certification from cash (an empty support) at the method's 5% allowance, HiGHS's own gaps exact; returns the
+    run's selection and each solve's (objective_target handed, termination). ``target`` replaces the stop's target."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    monkeypatch.setattr(TransportPortfolioSolve, "UTILITY_SUPPORT_EPS", float("inf"))
+    if target is not None:
+        monkeypatch.setattr(TransportPortfolioSolve, "_certification_target", staticmethod(target))
+    params = _strategy_params("relax_fix", absolute_gap=1e-3, relative_gap=.05,
+                              **({"certify_stop": "objective_target"} if certify else {}))
+    params["solver_options"] = {**params["solver_options"], "presolve": "off"}
+    endings, original = [], TransportPortfolioSolve._solve_once
+
+    def spy(self, solver, model, time_limit=None):
+        result = original(self, solver, model, time_limit)
+        endings.append(("objective_target" in solver.options, str(result.solver.termination_condition)))
+        return result
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", spy)
+    node = TransportPortfolioSolve("target", params)
+    return node, node.run(None, _hedged_program())["selection"], endings
+
+
+def test_a_certification_that_stops_on_the_objective_target_is_certified_within_the_allowance(monkeypatch):
+    """The stop fires (HiGHS's kObjectiveTarget: appsi objectiveLimit, legacy minFunctionValue) short of the optimum,
+    and the week is certified: the incumbent within the method's allowance of the bound, ``stop`` objective_target."""
+    import json
+
+    node, selection, endings = _target_stop_run(monkeypatch)
+    assert endings == [(False, "optimal"), (True, "minFunctionValue")], endings
+    assert "timeout" not in selection
+    c = selection["certificates"][0]
+    assert (c["termination"], c["status"], c["strategy_outcome"], c["bound_source"], c["stop"]) \
+        == ("optimal", "ok", "certified", "certification", "objective_target"), c
+    allowance = max(1e-3, .05*abs(selection["value"]))
+    assert 0. < c["bound"]-c["objective"] and selection["bound"]-selection["value"] <= allowance, \
+        "stopped short of the optimum, within the method's allowance of a valid bound"
+    exact = _target_stop_run(monkeypatch, certify=False)[1]
+    assert exact["value"] >= selection["value"] and exact["value"] <= selection["bound"]+1e-6, \
+        "the exact optimum lies under the certified bound"
+    certificates = [{k: v for k, v in cert.items() if k != "binding"} for cert in selection.pop("certificates")]
+    replay = node._recorded(_hedged_program(), *json.loads(json.dumps([selection, certificates])))
+    assert replay == {**selection, "certificates": certificates}, "the recorded route reproduces the stop's week"
+    with pytest.raises(ValueError):
+        node._recorded(_hedged_program(), selection, [{**certificates[0], "stop": "elsewhere"}])
+    with pytest.raises(ValueError):
+        node._recorded(_hedged_program(), selection, [{k: v for k, v in certificates[0].items() if k != "stop"}])
+
+
+def test_without_certify_stop_no_target_is_set_and_the_certificate_has_no_stop(monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve, _UtilitySolveRecord
+
+    _, selection, endings = _target_stop_run(monkeypatch, certify=False)
+    assert endings == [(False, "optimal"), (False, "optimal")], endings
+    c = selection["certificates"][0]
+    assert set(c) == set(_UtilitySolveRecord.field_names()) and c["termination"] == "optimal"
+    assert TransportPortfolioSolve("plain", _strategy_params("relax_fix"))._certificate_fields(True) \
+        == set(_UtilitySolveRecord.field_names())-{"binding"}
+
+
+def test_a_declared_stop_that_does_not_fire_records_stop_none_and_the_same_week(monkeypatch):
+    """A target above every solution never fires: the week is the one without the key, its certificate says none."""
+    _, plain, _ = _target_stop_run(monkeypatch, certify=False)
+    _, held, endings = _target_stop_run(monkeypatch, target=lambda bound, a, r, t=0.: bound+1.)
+    assert endings == [(False, "optimal"), (True, "optimal")], endings
+    c = held["certificates"][0]
+    assert c["stop"] == "none" and {k: v for k, v in c.items() if k not in ("stop", "seconds")} \
+        == {k: v for k, v in plain["certificates"][0].items() if k != "seconds"}
+    assert held["quantities"] == plain["quantities"] and held["value"] == plain["value"]
+
+
+def test_an_objective_limit_ending_outside_the_allowance_is_refused_never_certified(monkeypatch):
+    """A target-stop incumbent that is not within the allowance of the bound keeps its label and is refused."""
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal
+
+    with pytest.raises(RecordedCheckRefusal, match="invalid primary solver certificate"):
+        _target_stop_run(monkeypatch, target=lambda bound, a, r, t=0.: 1e-6)
+
+
+def test_a_target_stop_is_relabelled_only_for_the_certification_solve_that_set_it(monkeypatch):
+    """The relabel reads the target paired with the certification's own results: a target held for any other
+    results object relabels nothing, so the same within-allowance stop is refused."""
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
+
+    original = TransportPortfolioSolve._solve_relax_fix
+
+    def stale(self, solver, model):
+        result = original(self, solver, model)
+        model._transport_target = (model._transport_target[0], object())
+        return result
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_relax_fix", stale)
+    with pytest.raises(RecordedCheckRefusal, match="invalid primary solver certificate"):
+        _target_stop_run(monkeypatch)
+
+
+def test_the_certification_target_is_within_the_allowance_of_the_bound():
+    """Any incumbent at or above the target is within max(a, r|v|) of the bound, whatever the bound's sign."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    for rel, absolute in ((0., 1e-9), (1e-4, 1e-6), (.1, 1.), (.5, 1e-3), (.05, 100.)):
+        for bound in (-50., -1e-3, 0., 1e-3, 3., 1e4):
+            target = TransportPortfolioSolve._certification_target(bound, absolute, rel)
+            assert target <= bound
+            slack = 1e-12*max(1., abs(bound))   # the rounding of bound - d, not a looser test
+            assert bound-target <= max(absolute, rel*abs(target))+slack, (rel, absolute, bound)
+            assert TransportPortfolioSolve._certification_target(bound, absolute, rel, 1e-3) == pytest.approx(
+                target+2e-3), "the parity margin raises the target"
 
 
 def test_a_dollar_program_ignores_the_utility_solve_strategy_and_a_bad_one_refuses():

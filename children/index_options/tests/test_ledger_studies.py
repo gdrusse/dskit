@@ -4164,6 +4164,11 @@ TOP_FORMULATIONS = {
     # certification was declined, with the gap to the relaxation's bound recorded instead of the week skipped.
     "kelly025_top100_uncert_lp": {**_KELLY_BASE, "kelly": {**KELLY, "fraction": .25, "max_groups": 100,
                                                           "accept_uncertified": True}},
+    # ADR-0299 owner ruling A (2026-11-09): the same program, its certification solve stopping on HiGHS's objective
+    # target (the relaxation bound less the method's allowance); certify-more only.
+    "kelly025_top100_uncert_target_lp": {**_KELLY_BASE, "kelly": {**KELLY, "fraction": .25, "max_groups": 100,
+                                                                 "accept_uncertified": True,
+                                                                 "certify_stop": "objective_target"}},
 }
 
 
@@ -4612,3 +4617,97 @@ def test_accept_uncertified_is_a_boolean_kelly_key(value, ok):
             ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
     top = TOP_FORMULATIONS["kelly025_top100_uncert_lp"]["kelly"]
     assert top == {**TOP_FORMULATIONS["kelly025_top100_lp"]["kelly"], "accept_uncertified": True}
+
+
+# --- certify_stop objective_target (ADR-0299, owner ruling A, 2026-11-09) ------------------------------------------------
+
+@pytest.mark.parametrize("value,ok", [("objective_target", True), ("target", False), (True, False), (None, False)])
+def test_certify_stop_is_a_kelly_key_naming_objective_target(value, ok):
+    params, inputs = _kelly_fixture(certify_stop=value)
+    if ok:
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    else:
+        with pytest.raises(ValueError):
+            ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    params, inputs = _kelly_fixture(certify_stop="objective_target")
+    params["solver"]["utility_solve"] = "direct"
+    with pytest.raises(ValueError):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_the_target_formulation_validates_and_differs_from_its_parent_only_in_certify_stop():
+    target, parent = TOP_FORMULATIONS["kelly025_top100_uncert_target_lp"], TOP_FORMULATIONS["kelly025_top100_uncert_lp"]
+    assert {k: v for k, v in target.items() if k != "kelly"} == {k: v for k, v in parent.items() if k != "kelly"}
+    assert target["kelly"] == {**parent["kelly"], "certify_stop": "objective_target"}
+    assert all("certify_stop" not in TOP_FORMULATIONS[name]["kelly"]
+               for name in ("kelly025_top100_lp", "kelly025_top100_uncert_lp")), "the earlier formulations are unchanged"
+    params, inputs = _weekly_portfolio_fixture()
+    params["methods"] = [{"id": "kelly025_top100_uncert_target_lp", **target}]
+    _for_kelly(params)
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def _target_kelly_run(monkeypatch, fire):
+    """The kelly fixture under certify_stop, every certification from cash (an empty support), the solve's gaps the
+    method's own at a relative 20% (the fixture's optimum is 13.5% under its relaxation bound, inside it). The
+    fixture's one solved week is a two-contract program HiGHS solves at its root, before any target check, so ``fire``
+    hands that certification's results back with HiGHS's objective-target ending (legacy minFunctionValue, aborted)
+    when its incumbent is at or above the target, the stop the pyomo tests reach on a real HiGHS solve: what the study
+    records and replays from it."""
+    from pyomo.environ import value
+    from pyomo.opt import SolverStatus, TerminationCondition
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    monkeypatch.setattr(TransportPortfolioSolve, "UTILITY_SUPPORT_EPS", float("inf"))
+    params, inputs = _kelly_fixture(certify_stop="objective_target", gap={"absolute": 1., "relative": .2})
+    params["solver"].update(absolute_gap=1., relative_gap=.2)
+    if fire:
+        original = TransportPortfolioSolve._solve_once
+
+        def target_ending(self, solver, model, time_limit=None):
+            result = original(self, solver, model, time_limit)
+            if "objective_target" in solver.options and value(model.profit) >= solver.options["objective_target"]:
+                result.solver.termination_condition = TerminationCondition.minFunctionValue
+                result.solver.status = SolverStatus.aborted
+            return result
+        monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", target_ending)
+    return params, inputs
+
+
+def test_a_kelly_week_certified_on_the_objective_target_records_its_stop_and_replays(monkeypatch):
+    from index_options.mio_worker import MIOMethodWorker
+
+    plain_params, inputs = _kelly_fixture()
+    plain = ledger_studies.WeeklyOptionPortfolioStudy(plain_params, inputs)._method(plain_params["methods"][0], None)
+    assert all("certify_stop" not in d.get("kelly", {}) for d in plain["decisions"]), "no key, no field"
+    assert all("stop" not in c for d in plain["decisions"] for c in d.get("certificates", []))
+    params, inputs = _target_kelly_run(monkeypatch, fire=False)
+    held = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    held_solves = [d for d in held["decisions"] if "selection" in d]
+    assert held_solves and all(d["kelly"]["certify_stop"] == {"applied": "objective_target", "stop": "none"}
+                               and d["certificates"][0]["stop"] == "none" for d in held_solves), "declared, not fired"
+    params, inputs = _target_kelly_run(monkeypatch, fire=True)
+    method = params["methods"][0]
+    solved = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    solves = [d for d in solved["decisions"] if "selection" in d]
+    assert solves and all(d["kelly"]["certify_stop"] == {"applied": "objective_target",
+                                                         "stop": d["certificates"][0]["stop"]} for d in solves)
+    stopped = [d for d in solves if d["kelly"]["certify_stop"]["stop"] == "objective_target"]
+    assert stopped and len(stopped) == len(held_solves), "the target ends the fixture's certification"
+    assert [d["books"] for d in stopped] == [d["books"] for d in held_solves], "the same incumbent, certified"
+    for week in stopped:
+        c, selection = week["certificates"][0], week["selection"]
+        assert (c["termination"], c["strategy_outcome"]) == ("optimal", "certified")
+        assert week["status"] in ("selected", "cash") and "timeout" not in selection
+        gap = method["kelly"]["gap"]
+        assert selection["bound"]-selection["value"] <= max(gap["absolute"], gap["relative"]*abs(selection["value"]))
+    assert all(d["kelly"]["certify_stop"]["stop"] in ("none", "objective_target") for d in solves)
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=solved) == solved
+    actions = MIOMethodWorker.actions(solved, ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).weeks)
+    derived = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, derived=actions)
+    assert _equal_but_last_bits(derived, solved), "the derived route agrees"
+    rows = [ledger_studies.MIOPacketCompare._kelly_row(d["kelly"]) for d in solves]
+    assert all(row["certify_stop"] == d["kelly"]["certify_stop"] for row, d in zip(rows, solves))
+    assert all("certify_stop" not in ledger_studies.MIOPacketCompare._kelly_row(d["kelly"])
+               for d in plain["decisions"] if "kelly" in d), "earlier rows keep their keys"
+    assert set(ledger_studies.MIOPacketCompare._kelly_row({})) == set(ledger_studies.MIOPacketCompare._KELLY_ROW_KEYS)
