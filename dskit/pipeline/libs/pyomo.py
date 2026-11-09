@@ -4780,7 +4780,7 @@ class TransportPortfolioSolve(PyomoSolve):
         """
         from pyomo.environ import Var
 
-        model._transport_bound, model._transport_declined = None, False
+        model._transport_bound, model._transport_declined, model._transport_target = None, False, None
         model._transport_outcome, model._transport_bound_source = "certified", "certification"
         budget = float(self.params.get("solver_options", {}).get("time_limit", 0) or 0)
         clock = time.perf_counter()
@@ -4834,12 +4834,16 @@ class TransportPortfolioSolve(PyomoSolve):
         support = None if incumbent is None else [(v, v.value) for v in model.component_data_objects(Var)]
         for key in fixed:
             model.x[key].setub(0)
-        solver.options["mip_dual_bound"] = bound   # HiGHS stops at the gap against the bound it cannot improve on
         try:
             with self._search_gaps(solver):
+                # HiGHS stops once its incumbent is within the search gaps of the relaxation bound, a bound no
+                # solution can beat (ADR-0299 objective-target amendment; HiGHS has no ``mip_dual_bound`` option).
+                model._transport_target = self._certification_target(solver.options, bound)
+                solver.options["objective_target"] = model._transport_target[0]
                 result = self._solve_once(solver, model, remaining())
         finally:
-            del solver.options["mip_dual_bound"]
+            if "objective_target" in solver.options:
+                del solver.options["objective_target"]
             for key in fixed:
                 model.x[key].setub(capacity[key])
         if support is not None and getattr(model, "_transport_no_incumbent", False):
@@ -4855,6 +4859,19 @@ class TransportPortfolioSolve(PyomoSolve):
                       lp_seconds, len(stakes)-len(outside), len(stakes), search_seconds, len(fixed),
                       time.perf_counter()-clock-lp_seconds-search_seconds, self._peak_rss())
         return result
+
+    @staticmethod
+    def _certification_target(options, bound):
+        """``(target, r, a)``: HiGHS's ``objective_target`` for the certification solve and the solve's relative and
+        absolute MIP gaps (read from ``options``); any incumbent at or above the target is within them of ``bound``.
+
+        HiGHS ends a maximization with ``kObjectiveTarget`` once its incumbent reaches the target (a stop, never a
+        cut-off; ``objective_bound`` is a cut-off and would prune). The target is ``bound - max(a, r|bound|)/(1+r)``:
+        an incumbent ``v`` at or above it has ``bound - v <= max(a, r|v|)`` (``v <= bound`` holds for every
+        solution), the strategy's gap test against a bound the fixed program cannot exceed.
+        """
+        rel, absolute = float(options.get("mip_rel_gap") or 0.), float(options.get("mip_abs_gap") or 0.)
+        return float(bound)-max(absolute, rel*abs(float(bound)))/(1.+rel), rel, absolute
 
     @staticmethod
     def _peak_rss():
@@ -4880,6 +4897,16 @@ class TransportPortfolioSolve(PyomoSolve):
         record = PyomoSolve._build_solve_record(solver, model, results, name, seconds)
         if getattr(model, "_transport_no_incumbent", False):
             record = replace(record, objective=None, gap=None, binding=())
+        target, relaxed = getattr(model, "_transport_target", None), getattr(model, "_transport_bound", None)
+        if (target is not None and relaxed is not None and record.termination == "minFunctionValue"
+                and record.objective is not None and number_ok(record.objective)):
+            # HiGHS's objective-target stop (appsi's objectiveLimit, legacy minFunctionValue): an incumbent within
+            # the certification's own gaps of the relaxation bound is the stop HiGHS reports as optimal at its gap,
+            # and is labelled so; any other objective-limit ending keeps its label, which the certificate refuses.
+            _, rel, absolute = target
+            slack = 1e-9*max(1., abs(relaxed))
+            if relaxed-record.objective <= max(absolute, rel*abs(record.objective))+slack:
+                record = replace(record, termination="optimal", status="ok")
         relaxed = getattr(model, "_transport_bound", None)
         if relaxed is not None and number_ok(relaxed):
             # The solver's bound covers the program it saw, with the actions fixed by reduced cost; every solution
