@@ -34,7 +34,7 @@ import io
 import json
 import os
 from collections import Counter, OrderedDict
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from dskit.onboarding.artifacts import PinnedPayloadSource
@@ -53,10 +53,15 @@ PROTECTED_FROM = "2024-01-02"
 DEVELOPMENT_SEAL = "2021-07-01"
 #: The ADR's exact-match gate between a saved P&L and its recomputation, in dollars.
 PNL_GATE_USD = 0.005
-#: A0006: a weekly name's rank is its 7-day window, 1..8; a monthly-only name's, its position 1..3.
+#: A0006 / ADR-0310 A1: a cell rank is the book expiry's position among the listed slots; weekly
+#: names rank 1..8, monthly-only names 1..3. The classification horizon is
+#: ``WEEKLY_MAX_RANK x WEEKLY_WINDOW_DAYS`` days.
 WEEKLY_WINDOW_DAYS, WEEKLY_MAX_RANK, MONTHLY_MAX_POSITION = 7, 8, 3
-#: A name is weekly when at least this many expiries are listed within this many days.
-WEEKLY_PROBE_COUNT, WEEKLY_PROBE_DAYS = 2, 14
+#: Owner option (a): a name is weekly with at least this many non-monthly slots in the horizon.
+WEEKLY_MIN_NONSTANDARD = 2
+#: The ``rank_reason`` codes of a book row.
+RANK_OK, RANK_NON_SLOT, RANK_OUT_OF_RANGE, RANK_NOT_LISTED = (
+    "ok", "non_slot_expiry", "rank_out_of_range", "expiry_not_listed")
 #: The saved files read (``run.log`` is deliberately absent).
 INPUT_FILES = ("result.json", "trades.csv", "daily-account.csv")
 #: The files written, under ``out_dir``.
@@ -89,50 +94,72 @@ class GreeksRefusal(ValueError):
 
 
 class CellRank:
-    """The A0006 expiry rank of a book, from the expiries listed on its decision day.
+    """The A0006 cell rank of a book, from the expiries listed on its decision day (ADR-0310 A1).
 
-    A name is weekly when at least :data:`WEEKLY_PROBE_COUNT` listed expiries lie within
-    :data:`WEEKLY_PROBE_DAYS` days of the decision; its rank is the 7-day window holding
-    the book's expiry (1-7 days -> 1, 8-14 -> 2, ...), ``None`` past
-    :data:`WEEKLY_MAX_RANK`. Any other name is monthly-only; its rank is the expiry's
-    position among the listed ones (``None`` past :data:`MONTHLY_MAX_POSITION`). A
-    Thursday holiday expiry keeps the window it falls in.
+    Slots are the listed expiries with DTE >= 1 that are a Friday, or a Thursday whose ISO
+    week lists no Friday (the holiday expiry). The rank is the 1-based position of the book's
+    expiry among the sorted slots, ``None`` past :data:`WEEKLY_MAX_RANK` (weekly) or
+    :data:`MONTHLY_MAX_POSITION` (monthly-only). A name is weekly when at least
+    :data:`WEEKLY_MIN_NONSTANDARD` slots within ``WEEKLY_MAX_RANK x WEEKLY_WINDOW_DAYS`` days
+    are not standard monthly expiries (Friday on day 15-21, or Thursday on day 14-20).
+    Nothing but ``listed`` is read, so no later day can change a rank.
 
     Examples
     --------
     A weekly name and a monthly-only name::
 
-        CellRank().of("2021-04-05", "2021-04-16", ["2021-04-09", "2021-04-16"])
-        # -> ("weekly", 2)
+        CellRank().of("2021-04-05", "2021-04-16", ["2021-04-09", "2021-04-16", "2021-04-23"])
+        # -> ("weekly", 2, "ok")
         CellRank().of("2021-04-05", "2021-05-21", ["2021-04-16", "2021-05-21"])
-        # -> ("monthly", 2)
+        # -> ("monthly", 2, "ok")
     """
 
     def of(self, decision_date, expiry, listed):
-        """Return ``(cadence, rank)``; ``rank`` is ``None`` outside the A0006 range.
+        """Return ``(cadence, rank, rank_reason)``; ``rank`` is ``None`` unless the reason is ``ok``.
 
         Parameters
         ----------
         decision_date, expiry : str
             ISO dates.
         listed : list of str
-            The expiries listed on the decision day.
+            The expiries listed on the decision day (and only that day).
 
         Returns
         -------
         tuple
-            ``("weekly" | "monthly", int or None)``.
+            ``("weekly" | "monthly", int or None, reason)``; reason is ``ok``,
+            ``non_slot_expiry``, ``rank_out_of_range`` or ``expiry_not_listed``.
         """
         start = date.fromisoformat(decision_date)
-        dte = (date.fromisoformat(expiry) - start).days
-        ahead = sorted((date.fromisoformat(e) - start).days for e in listed)
-        ahead = [d for d in ahead if d >= 1]
-        if sum(d <= WEEKLY_PROBE_DAYS for d in ahead) >= WEEKLY_PROBE_COUNT:
-            rank = (dte - 1) // WEEKLY_WINDOW_DAYS + 1 if dte >= 1 else None
-            return "weekly", rank if rank is not None and rank <= WEEKLY_MAX_RANK else None
-        position = ahead.index(dte) + 1 if dte in ahead else None
-        return "monthly", position if position is not None and position <= MONTHLY_MAX_POSITION else None
+        slots = self._slots(start, [date.fromisoformat(e) for e in listed])
+        horizon = start + timedelta(days=WEEKLY_MAX_RANK * WEEKLY_WINDOW_DAYS)
+        stray = sum(not self._standard(d) for d in slots if d <= horizon)
+        if stray >= WEEKLY_MIN_NONSTANDARD:
+            cadence, cap = "weekly", WEEKLY_MAX_RANK
+        else:
+            cadence, cap = "monthly", MONTHLY_MAX_POSITION
+        book = date.fromisoformat(expiry)
+        if expiry not in listed:
+            return cadence, None, RANK_NOT_LISTED
+        if book not in slots:
+            return cadence, None, RANK_NON_SLOT
+        position = slots.index(book) + 1
+        if position > cap:
+            return cadence, None, RANK_OUT_OF_RANGE
+        return cadence, position, RANK_OK
 
+    @staticmethod
+    def _slots(start, listed):
+        """Return the sorted slots: Fridays, plus a Thursday when its ISO week lists no Friday."""
+        ahead = [d for d in set(listed) if d > start]
+        fridays = {d.isocalendar()[:2] for d in ahead if d.weekday() == 4}
+        return sorted(d for d in ahead if d.weekday() == 4
+                      or (d.weekday() == 3 and d.isocalendar()[:2] not in fridays))
+
+    @staticmethod
+    def _standard(day):
+        """Return whether ``day`` is a standard monthly: third Friday, or its holiday Thursday."""
+        return 15 <= day.day <= 21 if day.weekday() == 4 else 14 <= day.day <= 20
 
 class ChainQuotes:
     """Read-only per-day view of the pinned chain parquet, never at or past ``end_before``.
@@ -356,10 +383,11 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         return raw
 
     def _cell_key(self, book, quotes):
-        """Return ``symbol``, the A0006 ``rank`` and its ``cadence``."""
-        cadence, rank = CellRank().of(book["decision_date"], book["expiry"],
-                                      quotes.expiries(book["symbol"], book["decision_date"]))
-        return {"symbol": book["symbol"], "rank": rank, "cadence": cadence}
+        """Return ``symbol``, the A0006 ``rank``, its ``cadence`` and the ``rank_reason``."""
+        cadence, rank, reason = CellRank().of(
+            book["decision_date"], book["expiry"],
+            quotes.expiries(book["symbol"], book["decision_date"]))
+        return {"symbol": book["symbol"], "rank": rank, "cadence": cadence, "rank_reason": reason}
 
     def _seal(self):
         """Return the effective first sealed date."""
@@ -506,6 +534,10 @@ class MIOGreeksDiagnostics(BookGreeksReport):
             trades = next(r for r in table["results"] if r["id"] == method)["result"]["trades"]
             raw = {"method": method, "trades": trades, "bars": bars, "multiplier": multiplier}
             out = super().run(ctx, {"books": raw, "quotes": quotes, "bars": bars})
+            out["cells"] = [c for c in out["cells"] if c["rank"] is not None]
+            out["summary"]["rank_reasons"] = dict(sorted(
+                Counter(r["rank_reason"] for r in out["books"]
+                        if "rank_reason" in r).items()))
             for name in merged:
                 merged[name] += [{"method": method, **row} if "method" not in row else row
                                  for row in out[name]]
@@ -526,6 +558,8 @@ class MIOGreeksDiagnostics(BookGreeksReport):
             "window": self.params["window"], "sealed_from": self.params["sealed_from"],
             "rate": self.params["rate"], "iv_source": self.params.get("iv_source", "vendor"),
             "beta_lookback_flags": flags, "methods": summaries,
+            "rank_reasons": dict(sorted(sum((Counter(s["rank_reasons"])
+                                            for s in summaries.values()), Counter()).items())),
             "refusals": dict(sorted(sum((Counter(s["refusals"]) for s in summaries.values()),
                                         Counter()).items())),
             "forward_spot": sum(s["forward_spot"] for s in summaries.values()),
@@ -551,7 +585,7 @@ class MIOGreeksDiagnostics(BookGreeksReport):
     def _declared(self):
         """Return the header each CSV has when it has no row."""
         cells = [*self.params["cell_by"], *BookGreeksReport.CELL_COLUMNS]
-        books = ["method", *(c for c in BookGreeksReport.BOOK_COLUMNS), "rank", "cadence"]
+        books = ["method", *(c for c in BookGreeksReport.BOOK_COLUMNS), "rank", "cadence", "rank_reason"]
         return (books, ["method", *cells], ["method", *BookGreeksReport.EXPOSURE_COLUMNS])
 
     def _write(self, out_dir, result):

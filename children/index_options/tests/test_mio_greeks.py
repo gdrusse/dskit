@@ -271,28 +271,87 @@ def test_cells_and_exposure_cover_the_selected_methods_separately(world):
         sum(r["pnl"] for r in out["books"] if r["method"] == METHOD))
 
 
-# ---- the A0006 rank ------------------------------------------------------------------------
-def _listed(days):
-    return [(date(2021, 4, 5) + timedelta(days=d)).isoformat() for d in days]
+# ---- the A0006 rank (ADR-0310 A1: listed position, owner option (a)) ------------------------
+D0 = "2021-04-05"
 
 
-@pytest.mark.parametrize("dte,rank", [(1, 1), (7, 1), (8, 2), (14, 2), (15, 3), (56, 8), (57, None)])
-def test_weekly_rank_is_the_seven_day_window(dte, rank):
-    listed = _listed([4, 11, 18, 25, 32, 39, 46, 53, 60])         # weekly Fridays
-    expiry = (date(2021, 4, 5) + timedelta(days=dte)).isoformat()
-    assert CellRank().of("2021-04-05", expiry, listed) == ("weekly", rank)
+def _rank(decision, expiry, listed):
+    return CellRank().of(decision, expiry, listed)
 
 
-def test_monthly_only_names_use_the_expiry_position():
+WEEKLY_LIST = ["2021-04-09", "2021-04-16", "2021-04-23", "2021-04-30", "2021-05-07",
+               "2021-05-14", "2021-05-21", "2021-05-28", "2021-06-04"]       # nine Fridays
+
+
+def test_a_skipped_listed_week_leaves_no_gap():
+    listed = ["2021-04-09", "2021-04-16", "2021-04-23", "2021-05-07", "2021-05-21"]
+    assert _rank(D0, "2021-05-07", listed) == ("weekly", 4, "ok")           # DTE window would say 5
+
+
+def test_a_thursday_holiday_expiry_is_that_weeks_friday():
+    listed = ["2021-04-01", "2021-04-09", "2021-04-16"]                      # Good Friday 04-02 unlisted
+    assert _rank("2021-03-29", "2021-04-01", listed) == ("weekly", 1, "ok")
+    assert _rank("2021-03-29", "2021-04-09", listed) == ("weekly", 2, "ok")
+
+
+def test_a_thursday_beside_a_listed_friday_is_not_a_slot():
+    listed = ["2021-04-01", "2021-04-02", "2021-04-09", "2021-04-16"]
+    assert _rank("2021-03-29", "2021-04-01", listed) == ("weekly", None, "non_slot_expiry")
+    assert _rank("2021-03-29", "2021-04-02", listed)[1:] == (1, "ok")
+
+
+def test_a_holiday_thursday_monthly_is_standard():
+    # 2022-04-14 is the holiday Thursday of the third week (Good Friday 04-15); with 05-20 it is
+    # a monthly-only name: no non-standard slot at all.
+    listed = ["2022-04-14", "2022-05-20", "2022-06-17"]
+    assert _rank("2022-04-04", "2022-04-14", listed) == ("monthly", 1, "ok")
+
+
+def test_a_monthly_name_with_a_quarter_end_stray_stays_monthly():
+    listed = ["2021-03-19", "2021-03-31", "2021-04-16", "2021-05-21"]      # 03-31 is a Wednesday
+    assert _rank("2021-03-17", "2021-04-16", listed) == ("monthly", 2, "ok")
+    assert _rank("2021-03-17", "2021-03-31", listed) == ("monthly", None, "non_slot_expiry")
+    with_friday = [*listed, "2021-03-26"]                                    # one non-standard slot
+    assert _rank("2021-03-17", "2021-04-16", with_friday) == ("monthly", 3, "ok")
+
+
+def test_two_non_standard_slots_in_56_days_make_a_weekly_name():
+    listed = ["2021-04-09", "2021-04-16", "2021-04-23"]                      # 04-09 and 04-23 non-standard
+    assert _rank(D0, "2021-04-16", listed)[0] == "weekly"
+    far = ["2021-04-16", "2021-05-21", "2021-06-04", "2021-06-11"]           # both stray ones past 56 days
+    assert _rank(D0, "2021-04-16", far)[0] == "monthly"
+
+
+@pytest.mark.parametrize("position,expiry", [(8, "2021-05-28"), (9, "2021-06-04")])
+def test_weekly_rank_cap(position, expiry):
+    rank, reason = (position, "ok") if position == 8 else (None, "rank_out_of_range")
+    assert _rank(D0, expiry, WEEKLY_LIST) == ("weekly", rank, reason)
+
+
+def test_monthly_position_cap():
     listed = ["2021-04-16", "2021-05-21", "2021-06-18", "2021-07-16"]
-    assert CellRank().of("2021-04-05", "2021-04-16", listed) == ("monthly", 1)
-    assert CellRank().of("2021-04-05", "2021-06-18", listed) == ("monthly", 3)
-    assert CellRank().of("2021-04-05", "2021-07-16", listed) == ("monthly", None)
+    assert _rank(D0, "2021-06-18", listed) == ("monthly", 3, "ok")
+    assert _rank(D0, "2021-07-16", listed) == ("monthly", None, "rank_out_of_range")
 
 
-def test_a_thursday_holiday_expiry_keeps_its_window():
-    listed = ["2021-04-01", "2021-04-09", "2021-04-16"]            # 04-01 is a Thursday
-    assert CellRank().of("2021-03-26", "2021-04-01", listed) == ("weekly", 1)
+def test_an_expiry_not_listed_that_day_has_no_rank():
+    assert _rank(D0, "2021-04-23", ["2021-04-09", "2021-04-16"])[1:] == (None, "expiry_not_listed")
+
+
+def test_classification_reads_only_the_decision_day_listing():
+    listed = ["2021-04-16", "2021-05-21"]
+    assert _rank(D0, "2021-04-16", listed) == ("monthly", 1, "ok")
+    # a later day's wider listing never reaches the call: only `listed` is read
+    assert _rank("2021-04-06", "2021-04-16", [*listed, "2021-04-09", "2021-04-23"])[0] == "weekly"
+    assert _rank(D0, "2021-04-16", listed) == ("monthly", 1, "ok")
+
+
+def test_the_cell_table_drops_null_rank_books_and_counts_the_reason(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)
+    assert all(c["rank"] is not None for c in out["cells"])
+    assert all(r["rank_reason"] == "ok" for r in out["books"])
+    assert out["summary"]["rank_reasons"] == {"ok": len(out["books"])}
 
 
 def test_monthly_rank_end_to_end(world):
