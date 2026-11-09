@@ -34,7 +34,7 @@ def chain(forward, strikes, vol=0.2, years=30 / 365, half=0.05):
 def test_all_exports():
     assert sorted(ox.__all__) == sorted(
         ["ParityForward", "LegGreeks", "BookGreeks", "StockEquivalent", "CellAttribution",
-         "ExposureSnapshot", "fit_betas"])
+         "ExposureSnapshot", "fit_betas", "BookGreeksReport"])
 
 
 # ---- parity forward -------------------------------------------------------------------
@@ -360,3 +360,295 @@ def test_params_reject_bad_types_and_values(cls, good, bad):
 def test_leg_greeks_iv_source_defaults_to_vendor():
     assert LegGreeks.validate_params(LEG) == []
     assert ox.DEFAULT_IV_SOURCE == "vendor"
+
+
+# ---- BookGreeksReport node (ADR-0310 stage 2) -----------------------------------------
+from dskit.pipeline.option_exposure import BookGreeksReport  # noqa: E402
+
+REPORT = {
+    "rate": 0.0, "iv_source": "vendor", "multiplier": 100, "min_years": 0.001, "vol_floor": 0.01,
+    "parity_strikes": 3, "min_pairs": 2, "max_pair_spread_frac": 0.5,
+    "cell_by": ["symbol", "tag"], "min_total_usd": 1.0,
+    "dte_edges": [0, 7, 14, 28], "top_k": 1, "exposure_days": "both",
+    "beta_lookback": 3, "beta_min_pairs": 2,
+}
+FILL, DECISION, EXPIRY = "2021-03-02", "2021-03-01", "2021-03-19"
+FORWARD, SPOT, VOL = 101.5, 100.0, 0.2
+
+
+def priced_chain(forward=FORWARD, day=FILL, expiry=EXPIRY, strikes=(96, 98, 100, 102, 104, 106),
+                 iv=VOL):
+    years = (date_of(expiry) - date_of(day)).days / 365
+    rows = chain(forward, strikes, vol=iv, years=years)
+    return [{**r, "iv": iv} for r in rows]
+
+
+def date_of(text):
+    from datetime import date
+    return date.fromisoformat(text)
+
+
+class MemQuotes:
+    def __init__(self, table):
+        self.table = table
+
+    def chain(self, symbol, day, expiry):
+        return self.table.get((symbol, day, expiry), [])
+
+
+class Mem(BookGreeksReport):
+    """In-memory subclass: raw books are already normalized, raw quotes a dict."""
+
+    def _load_books(self, raw):
+        return raw
+
+    def _load_quotes(self, raw):
+        return MemQuotes(raw)
+
+    def _cell_key(self, book, quotes):
+        return {"symbol": book["symbol"], "tag": book["tags"]["tag"]}
+
+
+def make_book(key="b1", symbol="AAA", pnl=150.0, legs=None, **over):
+    legs = legs or [{"right": "call", "strike": 100.0, "sign": 1, "quantity": 2}]
+    return {"key": key, "symbol": symbol, "decision_date": DECISION, "fill_date": FILL,
+            "expiry": EXPIRY, "pnl": pnl, "factor": 1.0, "end_factor": 1.0, "legs": legs,
+            "tags": {"tag": "t"}, **over}
+
+
+def make_bars(extra=None):
+    history = {f"2021-02-{d:02d}": 100.0 for d in range(22, 27)}
+    bars = {"AAA": {**history, DECISION: 100.0, FILL: 100.0, EXPIRY: 104.0}}
+    bars.update(extra or {})
+    return bars
+
+
+def with_bar(day, close=101.0):
+    bars = make_bars()
+    bars["AAA"][day] = close
+    return bars
+
+
+def run_report(books, quotes=None, bars=None, **params):
+    quotes = {("AAA", FILL, EXPIRY): priced_chain()} if quotes is None else quotes
+    node = Mem("report", {**REPORT, **params})
+    return node.run(None, {"books": books, "quotes": quotes,
+                           "bars": make_bars() if bars is None else bars})
+
+
+def test_report_cannot_be_built_without_its_three_hooks():
+    with pytest.raises(TypeError):
+        BookGreeksReport("report", REPORT)
+
+
+def test_report_declares_its_outputs_and_role():
+    assert BookGreeksReport.outputs == ("books", "cells", "exposure", "summary")
+    assert BookGreeksReport.kind == "book_greeks_report"
+
+
+def test_report_splits_a_book_end_to_end():
+    out = run_report([make_book()])
+    assert sorted(out) == ["books", "cells", "exposure", "summary"]
+    (row,) = out["books"]
+    years = 17 / 365
+    delta = 2 * 100 * black76_delta("call", FORWARD, 100.0, VOL, years) * (FORWARD / SPOT)
+    assert row["status"] == "ok" and row["forward_source"] == "parity"
+    assert row["forward"] == pytest.approx(FORWARD, abs=1e-9)
+    assert row["delta_sh"] == pytest.approx(delta, rel=1e-12)
+    assert row["s_fill"] == 100.0 and row["s_settle"] == 104.0
+    assert row["stock_pnl"] == pytest.approx(delta * 4.0, rel=1e-12)
+    assert row["stock_pnl"] + row["residual"] == pytest.approx(150.0, abs=1e-12)
+    assert row["basis_usd"] == pytest.approx(delta * (SPOT - FORWARD), rel=1e-12)
+    assert row["gamma_sh"] > 0 and row["vega_usd_per_pt"] > 0 and row["theta_usd_per_day"] < 0
+    assert (row["symbol"], row["tag"], row["id"]) == ("AAA", "t", "b1")
+
+
+def test_report_cells_sum_to_the_attributed_total_and_summary_counts():
+    books = [make_book("b1", pnl=150.0), make_book("b2", pnl=-40.0)]
+    out = run_report(books)
+    (cell,) = out["cells"]
+    assert cell["n"] == 2 and cell["pnl_usd"] == pytest.approx(110.0)
+    assert cell["stock_pnl_usd"] + cell["residual_usd"] == pytest.approx(110.0)
+    summary = out["summary"]
+    assert summary["books"] == 2 and summary["attributed"] == 2
+    assert summary["attributed_pnl_usd"] == pytest.approx(110.0)
+    assert summary["unattributed_pnl_usd"] == 0.0 and summary["refusals"] == {}
+
+
+@pytest.mark.parametrize("code,change", [
+    ("leg_no_iv", "iv"), ("no_fill_quote", "strike"), ("basis_changed", "factor"),
+    ("no_settlement_bar", "bar"), ("leg_below_min_years", "late"),
+])
+def test_report_lists_a_refused_book_under_its_code_and_keeps_its_pnl(code, change):
+    """The bad book is a second name, so the good book proves the damage stays local."""
+    quotes = {("AAA", FILL, EXPIRY): priced_chain(), ("BBB", FILL, EXPIRY): priced_chain()}
+    bars = make_bars({"BBB": {FILL: 100.0, EXPIRY: 104.0}})
+    book = make_book("bad", symbol="BBB", pnl=77.0)
+    if change == "iv":
+        quotes["BBB", FILL, EXPIRY] = [{**r, "iv": None} for r in priced_chain()]
+    elif change == "strike":
+        book["legs"][0]["strike"] = 150.0
+    elif change == "factor":
+        book["end_factor"] = 2.0
+    elif change == "bar":
+        del bars["BBB"][EXPIRY]
+    else:
+        book["fill_date"] = EXPIRY            # zero days left: below min_years
+        bars["BBB"][EXPIRY] = 104.0
+        quotes["BBB", EXPIRY, EXPIRY] = priced_chain(day="2021-03-18")
+    out = run_report([make_book("good"), book], quotes=quotes, bars=bars)
+    by_id = {r["id"]: r for r in out["books"]}
+    assert by_id["bad"]["status"] == code and by_id["good"]["status"] == "ok"
+    assert by_id["bad"]["stock_pnl"] is None and by_id["bad"]["pnl"] == 77.0
+    summary = out["summary"]
+    assert summary["refusals"] == {code: 1}
+    assert summary["unattributed_pnl_usd"] == pytest.approx(77.0)
+    assert summary["attributed"] == 1 and summary["books"] == 2
+    assert [c["symbol"] for c in out["cells"]] == ["AAA"]
+
+
+def test_report_flags_forward_spot_but_still_attributes():
+    calls = [r for r in priced_chain() if r["right"] == "call"]
+    out = run_report([make_book()], quotes={("AAA", FILL, EXPIRY): calls})
+    (row,) = out["books"]
+    assert row["status"] == "forward_spot" and row["forward"] == SPOT
+    assert row["stock_pnl"] is not None
+    assert out["summary"]["forward_spot"] == 1 and out["summary"]["attributed"] == 1
+
+
+def test_report_exposure_marks_open_books_on_each_decision_and_fill_day():
+    mid = "2021-03-09"
+    quotes = {("AAA", FILL, EXPIRY): priced_chain(),
+              ("AAA", mid, EXPIRY): priced_chain(day=mid)}
+    book = make_book(decision_date=DECISION)
+    book["decision_date"] = mid
+    out = run_report([make_book("b1"), book], quotes=quotes, exposure_days="both",
+                     bars=with_bar(mid))
+    days = sorted({r["date"] for r in out["exposure"]})
+    assert days == [DECISION, FILL, mid]
+    on_fill = [r for r in out["exposure"] if r["date"] == FILL and r["bucket"] == "total"][0]
+    assert on_fill["n_books"] == 2                      # both fill on FILL, so both are open
+    on_decision = [r for r in out["exposure"] if r["date"] == DECISION and r["bucket"] == "total"][0]
+    assert on_decision["n_books"] == 0                  # nothing filled yet (fill_date > day)
+    on_mid = [r for r in out["exposure"] if r["date"] == mid and r["bucket"] == "total"][0]
+    assert on_mid["n_books"] == 2                       # still open mid-life, re-marked on 03-09
+    assert out["summary"]["exposure_days"] == 3
+
+
+def test_report_exposure_days_decision_only_and_fill_only():
+    quotes = {("AAA", FILL, EXPIRY): priced_chain()}
+    only_fill = run_report([make_book()], quotes=quotes, exposure_days="fill")
+    assert {r["date"] for r in only_fill["exposure"]} == {FILL}
+    only_decision = run_report([make_book()], quotes=quotes, exposure_days="decision")
+    assert {r["date"] for r in only_decision["exposure"]} == {DECISION}
+
+
+def test_report_exposure_buckets_dollar_delta_with_beta_one_when_history_is_short():
+    out = run_report([make_book()], exposure_days="fill",
+                     bars={"AAA": {FILL: 100.0, EXPIRY: 104.0}})
+    (row,) = [r for r in out["exposure"] if r["bucket"] == "[14,28)"]
+    (book,) = out["books"]
+    assert row["dte_min"] == 14 and row["dte_max"] == 28 and row["n_books"] == 1
+    assert row["beta_delta_usd"] == pytest.approx(book["delta_sh"] * SPOT * 1.0, rel=1e-12)
+    assert row["gamma_usd_per_1pct"] == pytest.approx(book["gamma_sh"] * SPOT ** 2 * 0.01)
+    assert row["vega_usd_per_pt"] == pytest.approx(book["vega_usd_per_pt"])
+    total = [r for r in out["exposure"] if r["bucket"] == "total"][0]
+    assert total["top_k_share"] == 1.0
+    assert out["summary"]["beta_all_one_days"] == 1
+
+
+def test_report_exposure_uses_betas_fitted_on_the_names_own_history():
+    # B moves 3x A each session, so the equal-weight basket is 2x A: beta_A = 0.5.
+    sessions = ["2021-02-22", "2021-02-23", "2021-02-24", "2021-02-25", "2021-02-26", DECISION]
+    a, b = [100.0], [50.0]
+    for r in (0.01, -0.02, 0.015, 0.005, -0.01):
+        a.append(a[-1] * math.exp(r))
+        b.append(b[-1] * math.exp(3 * r))
+    bars = {"AAA": dict(zip(sessions, a), **{FILL: 100.0, EXPIRY: 104.0}),
+            "BBB": dict(zip(sessions, b), **{FILL: 50.0, EXPIRY: 52.0})}
+    out = run_report([make_book()], bars=bars, beta_lookback=4, exposure_days="fill")
+    (row,) = [r for r in out["exposure"] if r["bucket"] == "[14,28)"]
+    (book,) = out["books"]
+    assert row["beta_delta_usd"] == pytest.approx(book["delta_sh"] * SPOT * 0.5, rel=1e-9)
+    assert out["summary"]["beta_all_one_days"] == 0
+
+
+def test_report_marks_open_leg_unmarked_per_day_and_excludes_only_that_day():
+    quotes = {("AAA", FILL, EXPIRY): priced_chain()}   # nothing quoted on the decision day
+    out = run_report([make_book()], quotes=quotes, exposure_days="both")
+    by_date = {(r["date"], r["bucket"]): r for r in out["exposure"]}
+    assert by_date[(FILL, "total")]["n_books"] == 1
+    # the decision day precedes the fill, so the book is not open; a mid-life gap is the case:
+    mid = "2021-03-09"
+    book = make_book(decision_date=mid)
+    out = run_report([book], quotes=quotes, exposure_days="decision", bars=with_bar(mid))
+    total = [r for r in out["exposure"] if r["date"] == mid and r["bucket"] == "total"][0]
+    assert total["n_books"] == 0 and total["excluded"] == {"open_leg_unmarked": 1}
+    assert out["summary"]["open_leg_unmarked"] == 1
+    assert out["books"][0]["status"] == "ok"            # the entry attribution is unaffected
+
+
+def test_report_basis_changed_book_is_left_out_of_exposure_and_counted():
+    book = make_book(end_factor=2.0)
+    out = run_report([book], exposure_days="fill")
+    total = [r for r in out["exposure"] if r["bucket"] == "total"][0]
+    assert total["n_books"] == 0 and total["excluded"] == {"basis_changed": 1}
+
+
+def test_report_cell_by_field_the_hook_does_not_give_refuses():
+    with pytest.raises(ValueError, match="cell_field_missing"):
+        run_report([make_book()], cell_by=["symbol", "rank"])
+
+
+def test_report_hooks_receive_the_raw_inputs_untouched():
+    seen = {}
+
+    class Spy(Mem):
+        def _load_books(self, raw):
+            seen["books"] = raw
+            return raw
+
+        def _load_quotes(self, raw):
+            seen["quotes"] = raw
+            return MemQuotes(raw)
+
+    books, quotes = [make_book()], {("AAA", FILL, EXPIRY): priced_chain()}
+    Spy("report", REPORT).run(None, {"books": books, "quotes": quotes, "bars": make_bars()})
+    assert seen["books"] is books and seen["quotes"] is quotes
+
+
+def test_report_run_is_deterministic():
+    first = run_report([make_book("b1"), make_book("b2", pnl=-3.0)])
+    again = run_report([make_book("b1"), make_book("b2", pnl=-3.0)])
+    assert first == again
+
+
+@pytest.mark.parametrize("change,fragment", [
+    ({"surprise": 1}, "unknown param"),
+    ({"exposure_days": "weekly"}, "exposure_days"),
+    ({"beta_lookback": 1}, "beta_lookback"),
+    ({"beta_min_pairs": 0}, "beta_min_pairs"),
+    ({"rate": "zero"}, "rate"),
+    ({"dte_edges": [5, 1]}, "dte_edges"),
+    ({"cell_by": []}, "cell_by"),
+])
+def test_report_params_are_default_deny(change, fragment):
+    problems = Mem.validate_params({**REPORT, **change})
+    assert any(fragment in p for p in problems)
+    with pytest.raises(ConfigError):
+        Mem("report", {**REPORT, **change})
+
+
+def test_report_params_require_every_knob():
+    for name in REPORT:
+        short = {k: v for k, v in REPORT.items() if k != name}
+        problems = Mem.validate_params(short)
+        if name == "iv_source":
+            assert problems == []            # the one defaulted knob
+        else:
+            assert any(name in p for p in problems), name
+
+
+def test_report_is_exported_by_its_module_and_valid_params_pass():
+    assert "BookGreeksReport" in ox.__all__
+    assert Mem.validate_params(REPORT) == []

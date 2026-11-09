@@ -25,12 +25,13 @@ cost: stdlib only.
 
 import math
 from abc import ABC, abstractmethod
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date
 from statistics import median
 
 from dskit.pipeline.base import ConfigError
-from dskit.pipeline.node import check_int_param, check_number_param, reject_unknown_params
+from dskit.pipeline.node import Node, check_int_param, check_number_param, reject_unknown_params
 from dskit.pipeline.option_pricing import (
     RIGHTS,
     black76_delta,
@@ -41,7 +42,7 @@ from dskit.pipeline.option_pricing import (
 )
 from dskit.pipeline.records import number_ok, price_ok
 
-__all__ = ["BookGreeks", "CellAttribution", "ExposureSnapshot", "LegGreeks",
+__all__ = ["BookGreeks", "BookGreeksReport", "CellAttribution", "ExposureSnapshot", "LegGreeks",
            "ParityForward", "StockEquivalent", "fit_betas"]
 
 #: Calendar days per year: the one divisor for years-to-expiry and per-day theta.
@@ -656,3 +657,304 @@ def fit_betas(returns, symbols, count, min_pairs):
         fitted[s] = math.fsum((r - mean) * (m - m_mean)
                               for r, m in zip(returns[s], market)) / length / variance
     return fitted if all(math.isfinite(b) for b in fitted.values()) else betas
+
+
+class BookGreeksReport(Node):
+    """Greeks, stock-equivalent attribution and exposure of settled option books.
+
+    Composes :class:`ParityForward`, :class:`LegGreeks`, :class:`BookGreeks`,
+    :class:`StockEquivalent`, :class:`CellAttribution`, :class:`ExposureSnapshot`
+    and :func:`fit_betas`; no arithmetic of theirs is repeated here. A subclass
+    maps its own saved files to the generic inputs by three hooks
+    (:meth:`_load_books`, :meth:`_load_quotes`, :meth:`_cell_key`) and may
+    refuse a read through :meth:`_guard_window`.
+
+    Per book (a normalized dict, see :meth:`_load_books`): the Greeks at the
+    fill session on a parity forward, ``stock_pnl`` / ``residual`` against the
+    settlement spot, then the cell sums. Per decision and/or fill day: every
+    open book (``fill_date <= day < expiry``) re-marked on that day's chain.
+    A book that cannot be attributed keeps its P&L in ``unattributed_pnl_usd``
+    under one status code (``leg_no_iv``, ``no_fill_quote``,
+    ``leg_below_min_years``, ``basis_changed``, ``no_settlement_bar``); the
+    ``forward_spot`` status is a flag, not a refusal. A day's open book that
+    cannot be marked is excluded from that day as ``open_leg_unmarked``.
+
+    Parameters
+    ----------
+    key : str
+        Pipeline node key.
+    params : dict
+        Every knob of :class:`LegGreeks` (``rate``, ``iv_source``,
+        ``multiplier``, ``min_years``, ``vol_floor``), :class:`ParityForward`
+        (``parity_strikes``, ``min_pairs``, ``max_pair_spread_frac``),
+        :class:`CellAttribution` (``cell_by``, ``min_total_usd``) and
+        :class:`ExposureSnapshot` (``dte_edges``, ``top_k``), plus
+        ``exposure_days`` (``"decision"``, ``"fill"`` or ``"both"``),
+        ``beta_lookback`` (int >= 2: trailing sessions strictly before the
+        day) and ``beta_min_pairs`` (int >= 1: fewer return pairs make every
+        beta 1.0, counted in the summary).
+
+    Inputs
+    ------
+    ``books``, ``quotes``
+        Raw handles for the hooks. ``bars``: ``{symbol: {date: close}}`` on
+        the split-adjusted basis; a book's ``factor`` divides it to the
+        chain's basis. The basket of the betas is every symbol in ``bars``.
+
+    Outputs
+    -------
+    ``books``, ``cells``, ``exposure``, ``summary``
+        Row lists (``books`` one per book, ``cells`` from
+        :class:`CellAttribution`, ``exposure`` one row per day and DTE bucket
+        plus a ``"total"`` row) and the counts dict.
+
+    Examples
+    --------
+    A subclass reading in-memory books and a dict of chains::
+
+        class Mem(BookGreeksReport):
+            def _load_books(self, raw):
+                return raw
+            def _load_quotes(self, raw):
+                return MemQuotes(raw)       # .chain(symbol, day, expiry) -> rows
+            def _cell_key(self, book, quotes):
+                return {"symbol": book["symbol"]}
+
+        node = Mem("report", params)
+        out = node.run(None, {"books": books, "quotes": chains, "bars": bars})
+    """
+
+    role = "transform"
+    kind = "book_greeks_report"
+    outputs = ("books", "cells", "exposure", "summary")
+    _OWNERS = (LegGreeks, ParityForward, CellAttribution, ExposureSnapshot)
+    _OWN_PARAMS = ("exposure_days", "beta_lookback", "beta_min_pairs")
+    _PARAMS = tuple(dict.fromkeys(name for owner in _OWNERS for name in owner._PARAMS)) + _OWN_PARAMS
+    EXPOSURE_DAYS = ("decision", "fill", "both")
+    BASIS_CHANGED = "basis_changed"
+    NO_SETTLEMENT_BAR = "no_settlement_bar"
+    OPEN_LEG_UNMARKED = "open_leg_unmarked"
+    TOTAL_BUCKET = "total"
+    _GREEK_FIELDS = ("delta_sh", "gamma_sh", "vega_usd_per_pt", "theta_usd_per_day")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return every problem ``params`` has (default-deny; each owner checks its knobs).
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            Empty when valid.
+        """
+        if not isinstance(params, dict):
+            return [f"params must be a mapping, got {type(params).__name__}"]
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        for owner in cls._OWNERS:
+            known = {k: v for k, v in params.items() if k in owner._PARAMS}
+            problems += [f"{owner.__name__}: {p}" for p in owner.validate_params(known)]
+        for name in _required(problems, params, cls._OWN_PARAMS):
+            if name == "exposure_days" and params[name] not in cls.EXPOSURE_DAYS:
+                problems.append(f"exposure_days must be one of {list(cls.EXPOSURE_DAYS)}, "
+                                f"got {params[name]!r}")
+            elif name == "beta_lookback":
+                check_int_param(problems, name, params[name], ge=2)
+            elif name == "beta_min_pairs":
+                check_int_param(problems, name, params[name], ge=1)
+        return problems
+
+    # -- the hooks ---------------------------------------------------------
+
+    @abstractmethod
+    def _load_books(self, raw):
+        """Return the normalized books of the raw ``books`` input.
+
+        Each book is a dict: ``key`` (unique str), ``symbol``,
+        ``decision_date``, ``fill_date``, ``expiry`` (ISO dates), ``pnl``
+        (dollars), ``factor`` (the basis divisor at the fill), ``end_factor``
+        (at expiry; a difference is ``basis_changed``), ``legs`` (``right``,
+        ``strike``, ``sign``, ``quantity``) and ``tags`` (a dict copied into
+        the book's row).
+        """
+
+    @abstractmethod
+    def _load_quotes(self, raw):
+        """Return a quote provider for the raw ``quotes`` input.
+
+        The provider has ``chain(symbol, day, expiry)`` returning that
+        session's rows for one expiry: ``right``, ``strike``, ``bid``,
+        ``ask`` and, for the vendor source, ``iv``.
+        """
+
+    @abstractmethod
+    def _cell_key(self, book, quotes):
+        """Return the dict of cell fields (every ``cell_by`` name) of an attributed book."""
+
+    def _guard_window(self, books):
+        """Refuse books outside the data a caller may read (default: accept all)."""
+
+    # -- the run -----------------------------------------------------------
+
+    def run(self, ctx, inputs):
+        """Attribute every book and snapshot the exposure; see the class docstring.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Unused.
+        inputs : dict
+            ``books``, ``quotes``, ``bars``.
+
+        Returns
+        -------
+        dict
+            ``books``, ``cells``, ``exposure`` and ``summary``.
+
+        Raises
+        ------
+        ValueError
+            From a hook, :meth:`_guard_window`, or a malformed book or leg.
+        """
+        p, bars = self.params, inputs["bars"]
+        books = self._load_books(inputs["books"])
+        quotes = self._load_quotes(inputs["quotes"])
+        self._guard_window(books)
+        owned = {owner: owner({k: v for k, v in p.items() if k in owner._PARAMS})
+                 for owner in (LegGreeks, ParityForward, CellAttribution, ExposureSnapshot)}
+        self._tools = owned
+        rows = [self._book_row(book, quotes, bars) for book in books]
+        attributed = [r for r in rows if r["stock_pnl"] is not None]
+        cells = owned[CellAttribution].summarize(
+            [{k: r[k] for k in (*p["cell_by"], "pnl", "stock_pnl", "residual") if k in r}
+             for r in attributed])
+        exposure, unmarked, all_one_days = self._exposure(books, quotes, bars)
+        return {"books": rows, "cells": cells, "exposure": exposure,
+                "summary": self._summary(rows, attributed, exposure, unmarked, all_one_days)}
+
+    def _spot(self, bars, book, day):
+        """Return the book's spot on ``day`` on the chain's basis, or ``None``."""
+        close = bars.get(book["symbol"], {}).get(day)
+        return None if not _is_positive(close) else close / book["factor"]
+
+    def _greeks_at(self, book, day, quotes, bars):
+        """Return ``(BookGreeks, None)`` or ``(None, code)`` for the book on ``day``."""
+        spot = self._spot(bars, book, day)
+        if spot is None:
+            return None, LegGreeks.NO_FILL_QUOTE
+        rows = quotes.chain(book["symbol"], day, book["expiry"])
+        forward, source = self._tools[ParityForward].from_chain(rows, spot)
+        found = []
+        for leg in book["legs"]:
+            quote = next((r for r in rows if r.get("right") == leg["right"]
+                          and math.isclose(r.get("strike", math.nan), leg["strike"],
+                                           rel_tol=1e-9, abs_tol=1e-12)), None)
+            row, code = self._tools[LegGreeks].of({**leg, "expiry": book["expiry"]}, quote,
+                                                  forward, spot, day)
+            if code:
+                return None, code
+            found.append(row)
+        return BookGreeks.sum(found, forward, source), None
+
+    def _book_row(self, book, quotes, bars):
+        """Return one book's output row (status ``ok``, ``forward_spot`` or a refusal code)."""
+        row = {"id": book["key"], "symbol": book["symbol"], **book["tags"],
+               "decision_date": book["decision_date"], "fill_date": book["fill_date"],
+               "expiry": book["expiry"], "pnl": book["pnl"], "status": None,
+               "forward": None, "forward_source": None, "s_fill": None, "s_settle": None,
+               **dict.fromkeys(self._GREEK_FIELDS), "stock_pnl": None, "residual": None,
+               "basis_usd": None}
+        if book["factor"] != book["end_factor"]:
+            row["status"] = self.BASIS_CHANGED
+            return row
+        greeks, code = self._greeks_at(book, book["fill_date"], quotes, bars)
+        if code is None and not _is_positive(bars.get(book["symbol"], {}).get(book["expiry"])):
+            code = self.NO_SETTLEMENT_BAR
+        if code is not None:
+            row["status"] = code
+            return row
+        s_fill = self._spot(bars, book, book["fill_date"])
+        s_settle = self._spot(bars, book, book["expiry"])
+        stock, residual = StockEquivalent().split(book["pnl"], greeks.delta_sh, s_fill, s_settle)
+        row.update({k: getattr(greeks, k) for k in self._GREEK_FIELDS})
+        row.update(status=greeks.status, forward=greeks.forward,
+                   forward_source=greeks.forward_source, s_fill=s_fill, s_settle=s_settle,
+                   stock_pnl=stock, residual=residual,
+                   basis_usd=StockEquivalent().basis_usd(greeks.delta_sh, s_fill, greeks.forward))
+        row.update(self._cell_key(book, quotes))
+        return row
+
+    def _betas(self, bars, day):
+        """Return ``(betas, all_one)`` from the trailing sessions strictly before ``day``."""
+        p = self.params
+        symbols = sorted(bars)
+        calendar = sorted(set.intersection(*(set(bars[s]) for s in symbols))) if symbols else []
+        past = [d for d in calendar if d < day][-p["beta_lookback"] - 1:]
+        returns = {s: [math.log(b / a) for a, b in zip(
+            [bars[s][d] for d in past], [bars[s][d] for d in past[1:]])] for s in symbols}
+        betas = fit_betas(returns, symbols, max(0, len(past) - 1), p["beta_min_pairs"])
+        return betas, all(v == 1.0 for v in betas.values())
+
+    def _days(self, books):
+        """Return the sorted exposure days the ``exposure_days`` knob asks for."""
+        mode, days = self.params["exposure_days"], set()
+        for book in books:
+            if mode in ("decision", "both"):
+                days.add(book["decision_date"])
+            if mode in ("fill", "both"):
+                days.add(book["fill_date"])
+        return sorted(days)
+
+    def _exposure(self, books, quotes, bars):
+        """Return ``(rows, unmarked, all_one_days)``: bucket rows, unmarked book-days, fallback days."""
+        snapshot, rows, unmarked, all_one_days = self._tools[ExposureSnapshot], [], 0, 0
+        for day in self._days(books):
+            betas, all_one = self._betas(bars, day)
+            all_one_days += all_one
+            open_books = []
+            for book in (b for b in books if b["fill_date"] <= day < b["expiry"]):
+                item = {"symbol": book["symbol"], "dte": (date.fromisoformat(book["expiry"])
+                                                         - date.fromisoformat(day)).days}
+                if book["factor"] != book["end_factor"]:
+                    item["status"] = self.BASIS_CHANGED
+                else:
+                    greeks, code = self._greeks_at(book, day, quotes, bars)
+                    if code:
+                        item["status"] = self.OPEN_LEG_UNMARKED
+                        unmarked += 1
+                    else:
+                        item.update(status=greeks.status, spot=self._spot(bars, book, day),
+                                    **{k: getattr(greeks, k) for k in self._GREEK_FIELDS})
+                open_books.append(item)
+            snap = snapshot.of(betas, open_books)
+            rows += self._day_rows(day, snap)
+        return rows, unmarked, all_one_days
+
+    def _day_rows(self, day, snap):
+        """Return the day's bucket rows and its total row."""
+        rows = [{"date": day, "bucket": f"[{b['dte_min']},{b['dte_max']})", **b,
+                 "top_k_share": None, "excluded": {}} for b in snap["buckets"]]
+        rows.append({"date": day, "bucket": self.TOTAL_BUCKET, "dte_min": None, "dte_max": None,
+                     **snap["total"], "top_k_share": snap["top_k_share"],
+                     "excluded": snap["excluded"]})
+        return rows
+
+    def _summary(self, rows, attributed, exposure, unmarked, all_one_days):
+        """Return the counts dict: attribution totals, refusals, flags, exposure days."""
+        refusals = Counter(r["status"] for r in rows if r["stock_pnl"] is None)
+        good = math.fsum(r["pnl"] for r in attributed)
+        bad = math.fsum(r["pnl"] for r in rows if r["stock_pnl"] is None)
+        return {"books": len(rows), "attributed": len(attributed),
+                "unattributed": len(rows) - len(attributed),
+                "attributed_pnl_usd": good, "unattributed_pnl_usd": bad,
+                "total_pnl_usd": math.fsum(r["pnl"] for r in rows),
+                "refusals": dict(sorted(refusals.items())),
+                "forward_spot": sum(r["status"] == BookGreeks.FORWARD_SPOT for r in rows),
+                "exposure_days": len({r["date"] for r in exposure}),
+                "open_leg_unmarked": unmarked, "beta_all_one_days": all_one_days,
+                "rate": self.params["rate"], "iv_source": self.params.get("iv_source",
+                                                                           DEFAULT_IV_SOURCE)}
