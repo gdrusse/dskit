@@ -2490,7 +2490,9 @@ class WeeklyOptionPortfolioStudy:
         ``beta_lookback`` sessions strictly before ``day``.
 
         ``record`` is :meth:`_sizer_inputs`'s (status ``estimated``), extended
-        in place. Returns ``status`` (``sized`` or ``timeout``), ``record``,
+        in place. Returns ``status`` (``sized``, ``timeout``, or ``infeasible`` /
+        ``no_incumbent`` for a stage-2 program with nothing to load, a week that
+        trades nothing new: ADR-0300 amendment), ``record``,
         ``certificate`` and, for a sized week, ``selection`` (the final
         quantities valued by the stage-1 program) and ``books``. ``claimed``
         is a recorded decision in a replay: this host re-solves and requires
@@ -2659,8 +2661,34 @@ class WeeklyOptionPortfolioStudy:
                                    "wealth_lo": record["wealth_lo"]})["selection"]
         out = solve(raw, tilt, held)
         if out.get("timeout"):
+            if claimed is not None:
+                # A recorded timeout returned above; any other recorded outcome (sized, infeasible, no_incumbent) that
+                # this host cannot reach inside its limit is a replay that disagrees, refused rather than relabelled.
+                raise ValueError("recorded sizer outcome differs from this host's replay (this host timed out)")
             record.update(status="timeout", incumbent=out["incumbent"], solve=out["certificate"])
             return {"status": "timeout", "record": record, "certificate": out["certificate"]}
+        outcome = out["status"] if out.get("no_incumbent") else "sized"
+        if claimed is not None and claimed_sizer.get("status") != outcome:
+            # Infeasibility and a missing incumbent are properties of the program on pinned HiGHS, not of the host's
+            # speed: a replay re-solves and must reach the same outcome (unlike a timeout, kept as recorded above).
+            raise ValueError("recorded sizer outcome differs from this host's replay")
+        if out.get("no_incumbent"):
+            # ADR-0300 amendment: a stage-2 program with nothing to load trades nothing new this week (the timeout's
+            # rule); the stage-1 selection stays recorded and is never re-solved. A replay keeps the recorded
+            # certificate (its seconds are the recording host's) once its termination matches this host's.
+            certificate = out["certificate"]
+            if claimed is not None:
+                recorded_cert = claimed_sizer.get("solve")
+                if (not isinstance(recorded_cert, dict)
+                        or recorded_cert.get("termination") != certificate["termination"]
+                        or claimed.get("status") != "sizer_skipped"):
+                    raise ValueError("recorded sizer outcome differs from this host's replay")
+                certificate = recorded_cert
+            for row in rows:
+                row.update(k=0, contracts=0)
+            record.update(status=out["status"], reason=out["reason"], solve=certificate, reserve=0.,
+                          stake_ratio=0., reserve_ratio=0.)
+            return {"status": out["status"], "record": record, "certificate": certificate}
         final = [[0]*len(g["capacity"]) for g in configured]
         for u in units:
             final[u["group"]] = [out["k"][u["id"]]*q for q in u["unit"]]
@@ -2679,16 +2707,30 @@ class WeeklyOptionPortfolioStudy:
             seed = scenario_seed(sizer["seed"]+extra, day)
             other = solve(*draw(seed))
             alternates.append({"seed": seed, "timeout": True} if other.get("timeout")
+                              else {"seed": seed, "status": other["status"]} if other.get("no_incumbent")
                               else {"seed": seed, "k": other["k"], "reserve": other["reserve"]})
-        certificate = out["certificate"]
+        certificate, parity = out["certificate"], out["parity"]
         if claimed is not None:
             if claimed.get("selection", {}).get("quantities") != final:
                 raise ValueError("recorded sizer counts differ from this host's replay")
             recorded_cert = (claimed.get("sizer") or {}).get("solve")
-            if (not isinstance(recorded_cert, dict) or not number_ok(recorded_cert.get("objective"))
-                    or abs(recorded_cert["objective"]-out["value"]) > tolerance):
+            # The recorded objective is held to this host's derived bound (ADR-0300 amendment): the declared tolerance,
+            # the feasibility term and, below the recompute only, the dropped-slope term. A record written before the
+            # amendment carries no parity and its replay adds none; the bound only widens what the plain tolerance
+            # accepted, so such a record replays as it did.
+            miss = (recorded_cert["objective"]-out["value"] if isinstance(recorded_cert, dict)
+                    and number_ok(recorded_cert.get("objective")) else None)
+            if miss is None or abs(miss) > (parity["declared"]+parity["feasibility"]
+                                            +(parity["dropped"] if miss < 0 else 0.)):
                 raise ValueError("recorded sizer certificate differs from this host's replay")
-            certificate = recorded_cert
+            recorded_parity = claimed_sizer.get("parity")
+            if recorded_parity is not None and (not isinstance(recorded_parity, dict)
+                                                or not number_ok(recorded_parity.get("mismatch"))
+                                                or abs(recorded_parity["mismatch"]-miss) > tolerance):
+                raise ValueError("recorded sizer parity differs from its certificate")
+            certificate, parity = recorded_cert, recorded_parity
+        if parity is not None:
+            record["parity"] = parity
         record.update(status="sized", solve=certificate, value=out["value"], exact=out["exact"],
                       reserve=out["reserve"], wealth_min=out["wealth_min"], wealth_max=out["wealth_max"],
                       knots=out["knots"], envelope_error=out["envelope_error"], core_error=out["core_error"],
@@ -3212,7 +3254,10 @@ class WeeklyOptionPortfolioStudy:
                             selection, books = sized["selection"], sized["books"]
                             status = "selected" if books else "cash"
                         else:
-                            books, timed_out, status = [], True, "timeout_skipped"
+                            # A stage-2 timeout, or a stage-2 program with nothing to load (ADR-0300 amendment): no
+                            # new books this week, under a status that says which.
+                            books, timed_out = [], True
+                            status = "timeout_skipped" if sized["status"] == "timeout" else "sizer_skipped"
                     record.update(status=status,
                                   selection={k: copy.deepcopy(v) for k, v in selection.items()
                                              if k != "certificates"},
@@ -3732,6 +3777,8 @@ class MIOPacketCompare(StudyNode):
     #: far the counts moved from the stage-1 selection.
     _SIZER_ROW_KEYS = ("status", "reserve_ratio", "stake_ratio", "value", "exact", "wealth_min", "reserve",
                        "stage1_reserve", "cash_limit_applied", "exposure", "tilt", "alternates")
+    #: Kept only where the record has them (ADR-0300 amendment), so a comparison of earlier records is unchanged.
+    _SIZER_ROW_OPTIONAL = ("parity", "reason")
 
     @staticmethod
     def _charge_row(decision):
@@ -3794,7 +3841,9 @@ class MIOPacketCompare(StudyNode):
                         "eligible_by_symbol", "fitted", "fallback", "refusals", "cdf_noise_repaired"}}
                         | ({"kelly": {k: decision["kelly"].get(k) for k in self._KELLY_ROW_KEYS}}
                            if "kelly" in decision else {})
-                        | ({"sizer": {k: decision["sizer"].get(k) for k in self._SIZER_ROW_KEYS}}
+                        | ({"sizer": {k: decision["sizer"].get(k) for k in self._SIZER_ROW_KEYS}
+                                     | {k: decision["sizer"][k] for k in self._SIZER_ROW_OPTIONAL
+                                        if k in decision["sizer"]}}
                            if "sizer" in decision else {})
                         | self._charge_row(decision) for decision in result["decisions"]]
                     if any("kelly" in d for d in result["decisions"]):

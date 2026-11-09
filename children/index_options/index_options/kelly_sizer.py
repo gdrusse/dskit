@@ -391,15 +391,30 @@ class BookKellySizer(PyomoSolve):
 
     Output: ``selection`` with ``k`` (``unit id -> count``), ``reserve``, ``value`` (the envelope objective),
     ``exact`` (the exact expected utility, scaled the same way), ``bound``, ``gap``, ``wealth_min``,
-    ``wealth_max``, ``knots``, ``envelope_error``, ``core_error`` and the solve ``certificate``; or
+    ``wealth_max``, ``knots``, ``envelope_error``, ``core_error``, ``parity`` (the solver-versus-recompute
+    mismatch and the tolerance it was held to, below) and the solve ``certificate``; or
     ``{"timeout": True, "incumbent": bool, "certificate"}`` when the solver stopped at its time limit (with or
-    without an incumbent), which the study records as a skipped week.
+    without an incumbent), which the study records as a skipped week; or ``{"no_incumbent": True, "status",
+    "reason", "certificate"}`` when the stage-2 program has no solution to load before its limit (ADR-0300
+    amendment, 2026-11-09): ``status`` is ``infeasible`` when the open books alone put a scenario's wealth below
+    ``wealth_lo`` (the program is then infeasible at every count zero, and no solve runs) or the solver says
+    infeasible, else ``no_incumbent``; the study trades nothing new that week and records it.
+
+    The parity check (ADR-0300 amendment). The recorded ``value`` is always the exact envelope at the integer
+    counts; the solver's objective must agree with it within ``parity_tolerance`` plus two terms derived from the
+    solve, never a free allowance: ``feasibility`` (HiGHS's ``mip_feasibility_tolerance`` on the wealth and tangent
+    rows, scaled by each row's magnitude, carried through the envelope's steepest live slope) and ``dropped`` (HiGHS
+    drops every matrix entry at or below ``small_matrix_value``, 1e-9, when appsi loads the model, so a tangent
+    whose slope is that small reads as ``U <= intercept``; the solver's utility can then sit below the envelope by
+    at most ``envelope(W) - least dropped live intercept`` in that scenario, and never above it). The solver's
+    objective may exceed the recompute by ``parity_tolerance + feasibility`` at most, and fall short of it by that
+    plus ``dropped``; ``parity`` records the signed mismatch, the bound it was held to and both terms.
 
     Parameters
     ----------
     params : dict
-        ``gamma`` (>= 1), ``n_tangents`` (int >= 2), ``core`` (> 1), ``parity_tolerance`` (>= 0: the recomputed
-        objective must agree with the solver's within it), and the base's ``solver`` and ``solver_options``
+        ``gamma`` (>= 1), ``n_tangents`` (int >= 2), ``core`` (> 1), ``parity_tolerance`` (>= 0: the declared part
+        of the parity bound above), and the base's ``solver`` and ``solver_options``
         (``time_limit`` in seconds applies verbatim). HiGHS determinism pins (one thread, seed 0, no relative gap,
         a tiny absolute one) sit under the document's options.
 
@@ -427,31 +442,84 @@ class BookKellySizer(PyomoSolve):
     _NO_INCUMBENT = "no solution can be loaded"
     #: The share of the declared time limit a no-incumbent halt must have used to count as a timeout rather than a defect.
     _LIMIT_REACHED = .9
+    #: HiGHS's ``small_matrix_value``: entries at or below it are dropped when appsi loads the model, before any option
+    #: the document passes reaches the solver (measured: a 1e-12 option leaves the 6.9e-10 slopes dropped), so a document
+    #: cannot lower it; a larger declared value only widens the drop.
+    _HIGHS_SMALL_MATRIX_VALUE = 1e-9
+    #: Terminations that say the program has no feasible point.
+    _INFEASIBLE = ("infeasible", "infeasibleOrUnbounded")
 
     def run(self, ctx, inputs):
-        """Solve; a time limit reached before any incumbent is a timeout certificate, not an error.
+        """Solve; a stage-2 program with nothing to load is a recorded outcome, never an error (ADR-0300 amendment).
 
-        The program is always feasible at cash (every count zero), so the only solve that returns nothing to load is a
-        halt before HiGHS found that point; it is recorded like a halt with an incumbent (``maxTimeLimit``) and the
-        study skips the week.
+        Open books that alone put a scenario below ``wealth_lo`` make the program infeasible at every count zero: no
+        solve runs and the outcome is ``infeasible`` with the breach. A solve that ends with nothing to load is a
+        timeout when it reached its declared time limit (``maxTimeLimit``, or 90% of the limit used), else
+        ``infeasible`` or ``no_incumbent`` by the solver's termination.
         """
         import time
 
+        units, profits, held, weights, funding, w0, cash, lo = self._checked(inputs)
+        margin = funding+held-lo
+        if bool((margin < 0).any()):
+            certificate = {"solver": self.params.get("solver", DEFAULT_SOLVER), "status": "not_solved",
+                           "termination": "wealth_floor_breached_at_zero", "objective": None, "bound": None,
+                           "gap": None, "seconds": 0., "variables": None, "constraints": None}
+            return {"selection": self._empty_week(
+                "infeasible", certificate, margin,
+                "the open books alone put wealth below wealth_lo in a scenario: infeasible at every count zero")}
         started = time.perf_counter()
         try:
             return super().run(ctx, inputs)
         except RuntimeError as exc:
-            # appsi's words are the same for an infeasible program, so the halt must also have used its time: a
-            # declared limit that the solve reached (the program is feasible at cash, so a fast return is a defect).
-            seconds = time.perf_counter()-started
-            limit = self._solver_options().get("time_limit")   # the limit HiGHS was actually given
-            if (self._NO_INCUMBENT not in str(exc) or not number_ok(limit) or limit <= 0
-                    or seconds < self._LIMIT_REACHED*limit):
+            # A solver interface that raises instead of returning (appsi with load_solution on): the same rule as
+            # ``extract``'s, with the termination unknown.
+            if self._NO_INCUMBENT not in str(exc):
                 raise
             certificate = {"solver": self.params.get("solver", DEFAULT_SOLVER), "status": "aborted",
-                           "termination": "maxTimeLimit", "objective": None, "bound": None, "gap": None,
-                           "seconds": seconds, "variables": None, "constraints": None}
-            return {"selection": {"timeout": True, "incumbent": False, "certificate": certificate}}
+                           "termination": "unknown", "objective": None, "bound": None, "gap": None,
+                           "seconds": time.perf_counter()-started, "variables": None, "constraints": None}
+            return {"selection": self._without_incumbent(certificate, margin)}
+
+    def _solve(self, solver, model):
+        """Solve without loading, then load only an incumbent.
+
+        This follows ``TransportActionScore``'s precedent, so a solve with nothing to load returns its termination
+        instead of raising.
+        """
+        from pyomo.environ import Var
+
+        results = solver.solve(model, load_solutions=False)
+        model._sizer["incumbent"] = bool(len(results.solution))
+        if model._sizer["incumbent"]:
+            model.solutions.load_from(results)
+        else:
+            for variable in model.component_data_objects(Var):
+                variable.set_value(None)
+        return results
+
+    def _without_incumbent(self, certificate, margin):
+        """Classify a solve with nothing to load: a timeout when it reached its declared limit, else a recorded week."""
+        limit = self._solver_options().get("time_limit")   # the limit HiGHS was actually given
+        if certificate["termination"] == "maxTimeLimit" or (
+                number_ok(limit) and limit > 0 and certificate["seconds"] >= self._LIMIT_REACHED*limit):
+            # The halt used its time: ADR-0300's timeout, recorded as a maxTimeLimit certificate as before.
+            certificate = {**certificate, "status": "aborted", "termination": "maxTimeLimit"}
+            return {"timeout": True, "incumbent": False, "certificate": certificate}
+        if certificate["termination"] in self._INFEASIBLE:
+            return self._empty_week("infeasible", certificate, margin,
+                                    "the solver found the stage-2 program infeasible, although every count zero is "
+                                    "feasible on exact arithmetic (likely a numerical verdict)")
+        return self._empty_week("no_incumbent", certificate, margin,
+                                "the solver returned no incumbent before its time limit, although every count zero "
+                                "is feasible on exact arithmetic (likely a numerical failure)")
+
+    @staticmethod
+    def _empty_week(status, certificate, margin, reason):
+        """Return a stage-2 week that sizes nothing new: its status, why, and the floor margin at every count zero."""
+        return {"no_incumbent": True, "status": status, "certificate": certificate,
+                "reason": {"text": reason, "floor_margin_at_zero": float(margin.min()),
+                           "scenarios_below_floor_at_zero": int((margin < 0).sum())}}
 
     @classmethod
     def validate_params(cls, params):
@@ -508,8 +576,6 @@ class BookKellySizer(PyomoSolve):
         funding, w0, cash, lo = (float(inputs[k]) for k in ("funding", "w0", "cash_limit", "wealth_lo"))
         if not 0 < lo < w0 or cash < 0:
             raise ValueError("needs 0 < wealth_lo < w0 and a nonnegative cash_limit")
-        if bool(np.any(funding+held < lo)):
-            raise ValueError("the open books alone breach the wealth floor in a scenario")
         return units, profits, held, weights, funding, w0, cash, lo
 
     def build_model(self, inputs, params):
@@ -517,6 +583,8 @@ class BookKellySizer(PyomoSolve):
         from pyomo.environ import ConcreteModel, Constraint, NonNegativeIntegers, Objective, Reals, Var, maximize
 
         units, profits, held, weights, funding, w0, cash, lo = self._checked(inputs)
+        if bool(np.any(funding+held < lo)):   # ``run`` records this week as infeasible before any build
+            raise ValueError("the open books alone breach the wealth floor in a scenario")
         ids = [u["id"] for u in units]
         kmax = {u["id"]: u["k_max"] for u in units}
         reserve = {u["id"]: float(u["reserve"]) for u in units}
@@ -539,14 +607,64 @@ class BookKellySizer(PyomoSolve):
         m.cash = Constraint(expr=sum(reserve[i]*m.k[i] for i in ids) <= cash)
         m.objective = Objective(expr=w0*sum(float(weights[s])*m.U[s] for s in range(n)), sense=maximize)
         m._sizer = {"ids": ids, "profits": profits, "base": base, "weights": weights, "reserve": reserve,
-                    "kmax": kmax, "w0": w0, "cash": cash, "lo": lo, "envelope": envelope}
+                    "kmax": kmax, "w0": w0, "cash": cash, "lo": lo, "envelope": envelope, "live": live,
+                    "margin": base-lo, "incumbent": True}
         return m
+
+    def _parity(self, model, k, wealth, value, objective):
+        """Return the parity record: the signed mismatch, the bound it is held to and the bound's two derived terms.
+
+        Per scenario ``s`` (``W`` the exact wealth at the integer counts ``k``, ``k~`` the solver's counts, ``eps``
+        the pinned ``mip_feasibility_tolerance``, ``sigma`` HiGHS's ``small_matrix_value``):
+
+        * the solver's wealth is within ``D_s = eps max(1, |base_s| + sum_u |p_us| k~_u + |W_s|) + sum_u |p_us|
+          |k~_u - k_u|`` of ``W_s`` (the wealth row's feasibility, relative to its magnitude, and the integrality
+          residual, measured);
+        * over ``J_s``, the tangents that are the least line somewhere in ``[W_s - D_s, W_s + D_s]``, the solver's
+          utility is at most ``envelope(W_s) + B_s D_s + eps T_s`` (``B_s`` their largest slope, ``T_s`` the largest
+          ``1 + |a_j| + b_j (W_s + D_s)``, the tangent row's magnitude): the ``feasibility`` term;
+        * a tangent with ``b_j <= sigma`` is the row ``U <= a_j`` in the solver, so its utility may also sit lower,
+          down to ``A_s``, the least such intercept among the scenario's live tangents: the ``dropped`` term
+          ``max(0, envelope(W_s) - A_s)``, zero where none is dropped.
+
+        Each term is weighted ``w0 x weight_s`` like the objective and summed. The declared ``parity_tolerance`` covers
+        the float arithmetic of the two sums.
+        """
+        import numpy as np
+
+        data, envelope = model._sizer, model._sizer["envelope"]
+        options = self._solver_options()
+        highs = self.params.get("solver", DEFAULT_SOLVER) == DEFAULT_SOLVER
+        eps = float(options.get("mip_feasibility_tolerance", 1e-6)) if highs else 0.
+        sigma = max(self._HIGHS_SMALL_MATRIX_VALUE, float(options.get("small_matrix_value", 0.))) if highs else 0.
+        ids, profits = data["ids"], data["profits"]
+        raw = {i: float(model.k[i].value or 0.) for i in ids}
+        scale = np.abs(data["base"])+np.abs(wealth)+sum(np.abs(profits[i])*abs(raw[i]) for i in ids)
+        drift = eps*np.maximum(1., scale)+sum(np.abs(profits[i])*abs(raw[i]-k[i]) for i in ids)
+        exact = envelope.value(wealth)
+        feasibility, dropped = np.zeros(len(wealth)), np.zeros(len(wealth))
+        for s, (w, d) in enumerate(zip(wealth, drift)):
+            near = envelope.live(w-d, w+d)
+            rows = 1.+np.abs(envelope.intercept[near])+envelope.slope[near]*(w+d)
+            feasibility[s] = float(envelope.slope[near].max())*d+eps*float(rows.max())
+            flat = [j for j in data["live"][s] if envelope.slope[j] <= sigma]
+            if flat:
+                dropped[s] = max(0., float(exact[s]-envelope.intercept[flat].min()))
+        scaled = data["w0"]*data["weights"]
+        declared = float(self.params["parity_tolerance"])
+        feasibility, dropped = float(scaled @ feasibility), float(scaled @ dropped)
+        mismatch = float(objective-value)
+        return {"mismatch": mismatch, "tolerance": declared+feasibility+(dropped if mismatch < 0 else 0.),
+                "declared": declared, "feasibility": feasibility, "dropped": dropped,
+                "feasibility_tolerance": eps, "small_matrix_value": sigma}
 
     def extract(self, model, results):
         import numpy as np
 
         record = self.solve_record
         certificate = {k: v for k, v in record.to_obj().items() if k != "binding"}
+        if not model._sizer["incumbent"]:
+            return {"selection": self._without_incumbent(certificate, model._sizer["margin"])}
         if record.termination == "maxTimeLimit":
             return {"selection": {"timeout": True, "incumbent": True, "certificate": certificate}}
         if record.termination != "optimal" or record.status not in ("ok", "warning"):
@@ -567,12 +685,16 @@ class BookKellySizer(PyomoSolve):
             raise ValueError("sizer counts breach the wealth floor on exact recompute")
         envelope = data["envelope"]
         value = float(data["w0"]*np.dot(data["weights"], envelope.value(wealth)))
-        if not number_ok(record.objective) or abs(record.objective-value) > tol:
+        if not number_ok(record.objective):
             raise ValueError("sizer objective differs from the exact recompute of the envelope")
+        parity = self._parity(model, k, wealth, value, record.objective)
+        if abs(parity["mismatch"]) > parity["tolerance"]:
+            raise ValueError("sizer objective differs from the exact recompute of the envelope "
+                             f"(mismatch {parity['mismatch']:.6g}, tolerance {parity['tolerance']:.6g})")
         exact = float(data["w0"]*np.dot(data["weights"], tangent_utility(wealth, data["w0"], envelope.gamma)[0]))
         return {"selection": {
             "k": k, "reserve": float(reserve), "value": value, "exact": exact,
             "bound": record.bound, "gap": record.gap,
             "wealth_min": float(wealth.min()), "wealth_max": float(wealth.max()),
             "knots": int(len(envelope.knots)), "envelope_error": envelope.error, "core_error": envelope.core_error,
-            "certificate": certificate}}
+            "parity": parity, "certificate": certificate}}
