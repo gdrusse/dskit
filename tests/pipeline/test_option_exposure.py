@@ -122,7 +122,7 @@ def test_mid_iv_source_reimplies_the_vol():
     mid = black76("call", forward, 100.0, 0.22, years)
     leg = {"right": "call", "strike": 100.0, "sign": 1, "quantity": 1, "expiry": "2024-03-31"}
     quote = {"bid": mid - 0.01, "ask": mid + 0.01, "iv": 0.9}
-    row, code = LegGreeks({**LEG, "iv_source": "mid"}).of(leg, quote, forward, forward, "2024-03-01")
+    row, code = LegGreeks({**LEG, "iv_source": "mid", "iv_disagree_tol": 0.05}).of(leg, quote, forward, forward, "2024-03-01")
     assert code is None and row["iv"] == pytest.approx(0.22, abs=1e-6)
 
 
@@ -323,7 +323,7 @@ def test_params_reject_unknown_keys_and_missing_keys(cls, good):
     assert any("unknown" in p for p in cls.validate_params({**good, "typo": 1}))
     with pytest.raises(ConfigError, match="typo"):
         cls({**good, "typo": 1})
-    required = [k for k in cls._PARAMS if k != "iv_source"]
+    required = [k for k in cls._PARAMS if k not in ("iv_source", "iv_disagree_tol")]
     for key in required:
         trimmed = {k: v for k, v in good.items() if k != key}
         assert any("missing" in p for p in cls.validate_params(trimmed)), key
@@ -652,3 +652,125 @@ def test_report_params_require_every_knob():
 def test_report_is_exported_by_its_module_and_valid_params_pass():
     assert "BookGreeksReport" in ox.__all__
     assert Mem.validate_params(REPORT) == []
+
+
+# ---- fix round 1: review findings -----------------------------------------------------
+MID = {**LEG, "iv_source": "mid", "iv_disagree_tol": 0.05}
+
+
+def test_theta_per_day_is_the_per_year_theta_over_365_by_hand():
+    """ATM call, F=K=100, rate 0: theta/yr = -F pdf(d1) vol / (2 sqrt(T)), d1 = vol sqrt(T) / 2."""
+    years, vol = 30 / 365, 0.2
+    d1 = vol * math.sqrt(years) / 2
+    per_year = -100.0 * math.exp(-d1 * d1 / 2) / math.sqrt(2 * math.pi) * vol / (2 * math.sqrt(years))
+    leg = {"right": "call", "strike": 100.0, "sign": -1, "quantity": 3, "expiry": "2024-03-31"}
+    row, _ = LegGreeks(LEG).of(leg, {"bid": 2.0, "ask": 2.2, "iv": vol}, 100.0, 100.0, "2024-03-01")
+    assert row["theta_usd_per_day"] == pytest.approx(-3 * 100 * per_year / 365, rel=1e-9)
+
+
+def test_mid_iv_needs_a_disagreement_tolerance_and_vendor_does_not():
+    assert any("iv_disagree_tol" in p for p in LegGreeks.validate_params({**LEG, "iv_source": "mid"}))
+    assert LegGreeks.validate_params(MID) == []
+    assert LegGreeks.validate_params(LEG) == []
+    assert LegGreeks.validate_params({**MID, "iv_disagree_tol": 0}) != []
+
+
+def test_leg_reports_the_vendor_iv_and_whether_it_disagrees_with_the_mid_iv():
+    forward, years = 100.0, 30 / 365
+    mid = black76("call", forward, 100.0, 0.22, years)
+    leg = {"right": "call", "strike": 100.0, "sign": 1, "quantity": 1, "expiry": "2024-03-31"}
+    lg = LegGreeks(MID)
+    near, _ = lg.of(leg, {"bid": mid - 0.01, "ask": mid + 0.01, "iv": 0.24}, forward, forward, "2024-03-01")
+    far, _ = lg.of(leg, {"bid": mid - 0.01, "ask": mid + 0.01, "iv": 0.30}, forward, forward, "2024-03-01")
+    assert near["vendor_iv"] == 0.24 and not near["iv_disagree"]
+    assert far["vendor_iv"] == 0.30 and far["iv_disagree"] and far["iv"] == pytest.approx(0.22, abs=1e-6)
+
+
+def test_report_counts_mid_vs_vendor_iv_disagreements():
+    quotes = {("AAA", FILL, EXPIRY): priced_chain(iv=0.5)}      # mids imply 0.5 (consistent)
+    quotes["AAA", FILL, EXPIRY] = [{**r, "iv": 0.2} for r in quotes["AAA", FILL, EXPIRY]]
+    out = run_report([make_book()], quotes=quotes, iv_source="mid", iv_disagree_tol=0.05)
+    assert out["books"][0]["iv_disagree_legs"] == 1 and out["summary"]["iv_disagree_legs"] == 1
+    agree = run_report([make_book()], iv_source="mid", iv_disagree_tol=0.05)
+    assert agree["summary"]["iv_disagree_legs"] == 0
+    assert run_report([make_book()])["summary"]["iv_disagree_legs"] == 0
+
+
+def _betas_node():
+    return Mem("report", REPORT)
+
+
+def _closes_from(returns, start):
+    out = [start]
+    for r in returns:
+        out.append(out[-1] * math.exp(r))
+    return out
+
+
+def _hand_beta(ra, rb):
+    """Beta of A on the two-name equal-weight basket, population moments, by hand."""
+    n = len(ra)
+    market = [(a + b) / 2 for a, b in zip(ra, rb)]
+    ma, mm = sum(ra) / n, sum(market) / n
+    cov = sum((a - ma) * (m - mm) for a, m in zip(ra, market)) / n
+    return cov / (sum((m - mm) ** 2 for m in market) / n)
+
+
+def test_betas_use_exactly_lookback_returns_strictly_before_the_day():
+    days = [f"2021-02-{d:02d}" for d in range(15, 27)]            # 12 sessions
+    day = "2021-02-27"
+    ra = [0.05, -0.04, 0.01, -0.02, 0.015, 0.03, -0.01, 0.02, -0.03, 0.01, 0.005]
+    rb = [-0.02, 0.06, 0.02, 0.01, -0.03, 0.02, 0.04, -0.02, 0.01, -0.05, 0.03]
+    bars = {"AAA": dict(zip(days, _closes_from(ra, 100.0))),
+            "BBB": dict(zip(days, _closes_from(rb, 50.0)))}
+    bars["AAA"][day], bars["BBB"][day] = 500.0, 5.0               # a bar ON the day is never used
+    betas, _, _ = _betas_node()._betas(bars, day)                 # lookback 3: the last 3 returns
+    assert betas["AAA"] == pytest.approx(_hand_beta(ra[-3:], rb[-3:]), rel=1e-9)
+    assert betas["BBB"] == pytest.approx(_hand_beta(rb[-3:], ra[-3:]), rel=1e-9)
+
+
+def test_betas_skip_names_with_gaps_and_nonpositive_closes_and_count_them():
+    days = [f"2021-02-{d:02d}" for d in range(15, 27)]
+    day = "2021-02-27"
+    ra = [0.05, -0.04, 0.01, -0.02, 0.015, 0.03, -0.01, 0.02, -0.03, 0.01, 0.005]
+    rb = [-0.02, 0.06, 0.02, 0.01, -0.03, 0.02, 0.04, -0.02, 0.01, -0.05, 0.03]
+    late = {d: 20.0 + i for i, d in enumerate(days[10:])}          # starts inside the window
+    bars = {"AAA": dict(zip(days, _closes_from(ra, 100.0))),
+            "BBB": dict(zip(days, _closes_from(rb, 50.0))), "LATE": late,
+            "ZERO": {**dict(zip(days, _closes_from(rb, 40.0))), days[-2]: 0.0}}
+    betas, all_one, dropped = _betas_node()._betas(bars, day)
+    assert sorted(dropped) == ["LATE", "ZERO"] and betas["LATE"] == betas["ZERO"] == 1.0
+    assert betas["AAA"] == pytest.approx(_hand_beta(ra[-3:], rb[-3:]), rel=1e-9) and not all_one
+
+
+def test_a_nonpositive_close_does_not_crash_the_report_and_is_counted():
+    days = [f"2021-02-{d:02d}" for d in range(22, 27)]
+    bars = make_bars({"BBB": {**dict.fromkeys(days, 10.0), DECISION: 0.0, FILL: 10.0}})
+    out = run_report([make_book()], bars=bars, exposure_days="fill")
+    assert out["summary"]["beta_dropped_name_days"] == 1
+
+
+def test_a_missing_spot_is_no_spot_not_no_fill_quote():
+    bars = make_bars()
+    bars["AAA"][FILL] = 0.0
+    out = run_report([make_book()], bars=bars)
+    assert out["books"][0]["status"] == "no_spot" and out["summary"]["refusals"] == {"no_spot": 1}
+
+
+def test_duplicate_quote_rows_are_one_refusal_for_leg_lookup_and_parity_forward():
+    rows = priced_chain()
+    dup = rows + [{**rows[0], "bid": rows[0]["bid"] + 0.01}]
+    with pytest.raises(ValueError, match="duplicate_quote"):
+        ParityForward(PARITY).from_chain(dup, SPOT)
+    assert ParityForward.duplicates(rows) == [] and len(ParityForward.duplicates(dup)) == 1
+    out = run_report([make_book()], quotes={("AAA", FILL, EXPIRY): dup})
+    assert out["books"][0]["status"] == "duplicate_quote"
+    assert out["summary"]["refusals"] == {"duplicate_quote": 1}
+    assert out["summary"]["unattributed_pnl_usd"] == pytest.approx(150.0)
+
+
+def test_declared_columns_match_the_rows_the_report_writes():
+    out = run_report([make_book()], exposure_days="fill")
+    assert set(BookGreeksReport.BOOK_COLUMNS) <= set(out["books"][0])
+    assert list(out["exposure"][0]) == list(BookGreeksReport.EXPOSURE_COLUMNS)
+    assert list(out["cells"][0])[-9:] == list(BookGreeksReport.CELL_COLUMNS)

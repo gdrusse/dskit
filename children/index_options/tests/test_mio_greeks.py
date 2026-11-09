@@ -107,8 +107,9 @@ def _trade(tid, symbol, decision, fill, expiry, legs, settle, factor=1.0):
             "pnl": credit + MULT * payoff, "factor": factor, "legs": legs}
 
 
-BLK_LEGS = [_leg("call", 1, 5, 450.0, 1.60, 1.65), _leg("call", -1, 1, 455.0, 1.15, 1.10)]
-BLK_SETTLE = 458.0
+# docs/explanations/mio-glossary.md worked example: both calls BOUGHT at the ask, expired worthless.
+BLK_LEGS = [_leg("call", 1, 5, 450.0, 1.60, 1.65), _leg("call", 1, 1, 455.0, 1.15, 1.10)]
+BLK_SETTLE = 448.0
 MMM_LEGS = [_leg("put", -1, 2, 100.0, 2.1, 2.0)]
 
 
@@ -161,7 +162,7 @@ def build_run(root, *, mutate=None, drop_chain=(), calls_only=(), no_iv=(), extr
         "plan": {"source_pins": {"bars": _block(base, "bars", bar_frames),
                                  "chain": _block(base, "chain", chains)},
                  "study": {"domain": {"params": {
-                     "symbols": ["BLK", "MMM"], "methods": methods,
+                     "symbols": ["BLK", "MMM"], "methods": methods, "correlation_min_pairs": 2,
                      "bridge": {"solver": {"multiplier": MULT, "fee_per_contract_usd": FEE}}}}}},
         "results": [{"id": m["id"], "result": {"trades": [blk, mmm, later], "rejected": [],
                                                 "curve": []}} for m in methods],
@@ -184,7 +185,7 @@ PARAMS = {
     "min_years": 0.001, "vol_floor": 0.01, "parity_strikes": 3, "min_pairs": 2,
     "max_pair_spread_frac": 0.5, "cell_by": ["symbol", "rank"], "min_total_usd": 1.0,
     "dte_edges": [0, 7, 14, 28, 60], "top_k": 1, "exposure_days": "both",
-    "beta_lookback": 3, "beta_min_pairs": 2,
+    "beta_lookback": 3, "beta_min_pairs": 2, "chain_cache_days": 8,
 }
 
 
@@ -223,18 +224,19 @@ def test_blk_book_end_to_end_with_hand_computed_stock_pnl_and_residual(world):
     out = run_node(run_dir, out_dir)
     row = rows_by(out)[f"{METHOD}|2021-04-05:BLK:2021-04-16"]
     years = 10 / 365
-    # delta in shares: +5 calls at 450, -1 call at 455, x100, spot terms (F/S chain rule)
+    # delta in shares: +5 calls at 450, +1 call at 455, x100, spot terms (F/S chain rule)
     d450 = black76_delta("call", BLK_FORWARD, 450.0, BLK_VOL, years)
     d455 = black76_delta("call", BLK_FORWARD, 455.0, BLK_VOL, years)
-    delta_sh = 100 * (5 * d450 - 1 * d455) * (BLK_FORWARD / BLK_SPOT)
-    credit = -5 * 1.65 * 100 + 1 * 1.10 * 100 - 6 * FEE            # -718.90
-    pnl = credit + 100 * (5 * (458.0 - 450.0) - 1 * (458.0 - 455.0))   # + 3700
-    assert pnl == pytest.approx(2981.1)
-    assert row["pnl"] == pytest.approx(pnl)
+    delta_sh = 100 * (5 * d450 + d455) * (BLK_FORWARD / BLK_SPOT)
+    premium = -(5 * 1.65 * 100 + 1 * 1.10 * 100)                    # glossary: -935.00
+    credit = premium - 6 * FEE                                       # fees 3.90 -> -938.90
+    pnl = credit                                                     # both calls expire worthless
+    assert (premium, round(credit, 2)) == (-935.0, -938.90)
+    assert row["pnl"] == pytest.approx(-938.90)
     assert row["status"] == "ok" and row["forward_source"] == "parity"
     assert row["forward"] == pytest.approx(BLK_FORWARD, abs=1e-6)
     assert row["delta_sh"] == pytest.approx(delta_sh, rel=1e-9)
-    assert row["stock_pnl"] == pytest.approx(delta_sh * (458.0 - 452.0), rel=1e-9)
+    assert row["stock_pnl"] == pytest.approx(delta_sh * (448.0 - 452.0), rel=1e-9)
     assert row["stock_pnl"] + row["residual"] == pytest.approx(pnl, abs=1e-9)
     assert (row["symbol"], row["rank"], row["cadence"], row["method"]) == (
         "BLK", 2, "weekly", METHOD)
@@ -304,6 +306,9 @@ def test_monthly_rank_end_to_end(world):
 @pytest.mark.parametrize("change,fragment", [
     ({"sealed_from": None}, "sealed_from"),
     ({"sealed_from": "2024-06-03"}, "sealed_from"),
+    ({"sealed_from": "2021-07-02"}, "development_seal_exceeded"),
+    ({"sealed_from": "2022-01-03"}, "development_seal_exceeded"),
+    ({"chain_cache_days": 0}, "chain_cache_days"),
     ({"window": {"start": "2021-04-01", "end": "2021-07-01"}}, "window"),
     ({"window": {"start": "2021-05-01", "end": "2021-04-01"}}, "window"),
     ({"methods": []}, "methods"),
@@ -459,6 +464,45 @@ def test_symbols_missing(world, how):
     assert code_of(exc) == "symbols_missing"
 
 
+def test_beta_min_pairs_must_equal_the_runs_correlation_min_pairs(world):
+    run_dir, out_dir = world()
+    with pytest.raises(GreeksRefusal) as exc:
+        run_node(run_dir, out_dir, beta_min_pairs=3)
+    assert code_of(exc) == "beta_min_pairs_mismatch"
+
+
+def test_a_sealed_date_refuses_before_any_pnl_field_is_used(world):
+    def move(table):
+        for r in table["results"]:
+            r["result"]["trades"][0]["fill_date"] = "2021-07-01"
+            r["result"]["trades"][0]["pnl"] += 1000.0     # would fail the P&L recompute gate
+    run_dir, out_dir = world(mutate=move)
+    with pytest.raises(GreeksRefusal) as exc:
+        run_node(run_dir, out_dir)
+    assert code_of(exc) == "window_outside_data_rights"
+
+
+@pytest.mark.parametrize("field,value", [("fill_date", "2021-4-6"), ("expiry", "tomorrow"),
+                                         ("decision_date", None)])
+def test_bad_dates_refuse_before_comparison(world, field, value):
+    def move(table):
+        for r in table["results"]:
+            r["result"]["trades"][0][field] = value
+    run_dir, out_dir = world(mutate=move)
+    with pytest.raises(GreeksRefusal) as exc:
+        run_node(run_dir, out_dir)
+    assert code_of(exc) == "bad_date"
+
+
+@pytest.mark.parametrize("header", ["id,contracts,pnl", "method,contracts,pnl"])
+def test_trades_csv_without_method_or_id_is_a_schema_refusal(world, header):
+    run_dir, out_dir = world()
+    (run_dir / "trades.csv").write_text(header + "\n")
+    with pytest.raises(GreeksRefusal) as exc:
+        run_node(run_dir, out_dir)
+    assert code_of(exc) == "trades_schema"
+
+
 def test_multiplier_must_equal_the_runs_own(world):
     run_dir, out_dir = world()
     with pytest.raises(GreeksRefusal) as exc:
@@ -480,7 +524,7 @@ def test_no_fill_quote(world):
             r["result"]["trades"][0]["legs"][0]["strike"] = 451.0
             trade = r["result"]["trades"][0]
             trade["credit"] = _credit(trade["legs"])
-            trade["pnl"] = trade["credit"] + MULT * (5 * 7.0 - 3.0)
+            trade["pnl"] = trade["credit"]                  # 451 and 455 calls both expire at 448
     run_dir, out_dir = world(mutate=move)
     assert run_node(run_dir, out_dir)["summary"]["refusals"] == {"no_fill_quote": 1}
 
@@ -508,7 +552,7 @@ def test_no_settlement_bar_keeps_the_book_unattributed_not_refused_whole(world):
     (run_dir / "result.json").write_text(json.dumps(table, sort_keys=True))
     out = run_node(run_dir, out_dir)
     assert out["summary"]["refusals"] == {"no_settlement_bar": 1}
-    assert out["summary"]["methods"][METHOD]["unattributed_pnl_usd"] == pytest.approx(2981.1)
+    assert out["summary"]["methods"][METHOD]["unattributed_pnl_usd"] == pytest.approx(-938.90)
 
 
 def test_leg_below_min_years(world):
@@ -525,6 +569,30 @@ def test_forward_spot_is_a_flag_and_the_book_is_still_attributed(world):
     assert out["summary"]["forward_spot"] == 1 and out["summary"]["refusals"] == {}
 
 
+def test_a_missing_spot_is_no_spot(world):
+    run_dir, out_dir = world()
+    path = _FakePinned.base / "bars/BLK.parquet"
+    frame = pd.read_parquet(path)
+    frame.loc[frame["date"] == FILL, "close"] = 0.0
+    frame.to_parquet(path, index=False)
+    table = json.loads((run_dir / "result.json").read_text())
+    table["plan"]["source_pins"]["bars"]["pin"]["files"]["bars/BLK.parquet"] = _sha(path)
+    (run_dir / "result.json").write_text(json.dumps(table, sort_keys=True))
+    assert run_node(run_dir, out_dir)["summary"]["refusals"] == {"no_spot": 1}
+
+
+def test_a_duplicate_quote_row_refuses_the_book_and_is_counted(world):
+    run_dir, out_dir = world()
+    path = _FakePinned.base / "chain/BLK.parquet"
+    frame = pd.read_parquet(path)
+    row = frame[(frame["date"] == FILL) & (frame["expiration"] == EXPIRY)].iloc[:1]
+    pd.concat([frame, row]).to_parquet(path, index=False)
+    table = json.loads((run_dir / "result.json").read_text())
+    table["plan"]["source_pins"]["chain"]["pin"]["files"]["chain/BLK.parquet"] = _sha(path)
+    (run_dir / "result.json").write_text(json.dumps(table, sort_keys=True))
+    assert run_node(run_dir, out_dir)["summary"]["refusals"] == {"duplicate_quote": 1}
+
+
 def test_open_leg_unmarked_counts_per_day_and_leaves_the_entry_alone(world):
     run_dir, out_dir = world(drop_chain=(("BLK", LATER_DECISION),))
     out = run_node(run_dir, out_dir)
@@ -532,6 +600,57 @@ def test_open_leg_unmarked_counts_per_day_and_leaves_the_entry_alone(world):
     assert day["excluded"] == {"open_leg_unmarked": 1}
     assert out["summary"]["open_leg_unmarked"] >= 1
     assert out["summary"]["refusals"] == {}
+
+
+# ---- caching, development seal, output writing ---------------------------------------------
+def test_the_chain_cache_stays_bounded_across_many_days(world):
+    run_dir, _ = world()
+    binding = json.loads((run_dir / "result.json").read_text())["plan"]["source_pins"]["chain"]
+    quotes = mio_greeks.ChainQuotes(binding, "2021-07-01", cache_days=2)
+    for day in (*DAYS, *DAYS, "2021-05-03", "2021-05-04"):
+        quotes.chain("BLK", day, EXPIRY)
+        assert len(quotes._days) <= 2
+    assert quotes.chain("BLK", FILL, EXPIRY)                      # an evicted day is read again
+
+
+def test_every_shipped_greeks_config_ends_before_a_seal_no_later_than_the_development_seal():
+    configs = sorted((CHILD / "configs").glob("mio-greeks-*.json"))
+    assert configs
+    for path in configs:
+        for node in json.loads(path.read_text())["pipeline"].values():
+            params = node["params"]
+            assert params["window"]["end"] < params["sealed_from"] <= mio_greeks.DEVELOPMENT_SEAL, path
+
+
+def test_the_development_seal_is_one_named_constant():
+    assert mio_greeks.DEVELOPMENT_SEAL == "2021-07-01"
+    assert mio_greeks.DEVELOPMENT_SEAL < mio_greeks.PROTECTED_FROM
+
+
+def test_an_empty_method_still_writes_every_csv_with_its_header(world):
+    def empty(table):
+        table["results"][0]["result"]["trades"] = []
+    run_dir, out_dir = world(mutate=empty)
+    run_node(run_dir, out_dir)
+    for name in ("books.csv", "cells.csv", "exposure.csv"):
+        lines = (out_dir / name).read_text().splitlines()
+        assert len(lines) == 1 and lines[0].startswith(("method,", "symbol,", "date,")), name
+    assert "stock_pnl" in (out_dir / "books.csv").read_text()
+
+
+def test_nothing_is_written_when_any_output_cannot_be_serialized(tmp_path):
+    node = MIOGreeksDiagnostics("g", {**PARAMS, "run_dir": str(tmp_path / "run"),
+                                      "out_dir": str(tmp_path / "out")})
+    with pytest.raises(ValueError):
+        node._write(tmp_path / "out", {"books": [], "cells": [], "exposure": [],
+                                       "summary": {"x": float("nan")}})
+    assert not (tmp_path / "out").exists()
+
+
+def test_the_summary_counts_mid_iv_disagreements_and_dropped_beta_names(world):
+    run_dir, out_dir = world()
+    summary = run_node(run_dir, out_dir)["summary"]
+    assert summary["iv_disagree_legs"] == 0 and summary["beta_dropped_name_days"] == 0
 
 
 # ---- read-only discipline -----------------------------------------------------------------
@@ -625,7 +744,9 @@ def test_the_template_validates_and_ends_before_the_seal():
     doc = json.loads(TEMPLATE.read_text())
     node = doc["pipeline"]["greeks"]
     params = node["params"]
-    assert doc["notes"] and node["notes"]
+    assert doc["notes"].startswith("Template, not a run config: no MIO Greeks run is approved yet. "
+                                   "Added by the orchestrator; awaiting owner confirmation.")
+    assert "owner-approved deviation" not in doc["notes"] and node["notes"]
     assert node["uses"] == "index_options.mio_greeks:MIOGreeksDiagnostics"
     assert params["sealed_from"] == "2021-07-01"
     assert params["window"]["end"] == "2021-06-30" < params["sealed_from"]

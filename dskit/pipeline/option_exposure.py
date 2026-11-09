@@ -130,6 +130,7 @@ class ParityForward(_Configured):
 
     _PARAMS = ("parity_strikes", "min_pairs", "max_pair_spread_frac")
     SOURCE_PARITY, SOURCE_SPOT = FORWARD_SOURCES
+    DUPLICATE_QUOTE = "duplicate_quote"
 
     @classmethod
     def _check(cls, problems, params):
@@ -150,6 +151,17 @@ class ParityForward(_Configured):
             return None
         return mid
 
+    @staticmethod
+    def duplicates(rows):
+        """Return the sorted ``(right, strike)`` groups quoted by more than one row.
+
+        The one duplicate rule: :meth:`from_chain` and the report's leg lookup
+        both refuse a chain that has any, so neither picks a row arbitrarily.
+        """
+        seen = Counter((r.get("right"), r.get("strike")) for r in rows
+                       if r.get("right") in RIGHTS and _is_positive(r.get("strike")))
+        return sorted(key for key, n in seen.items() if n > 1)
+
     def from_chain(self, rows, spot):
         """Return ``(forward, source)`` for one expiry's chain rows.
 
@@ -169,10 +181,14 @@ class ParityForward(_Configured):
         Raises
         ------
         ValueError
-            When ``spot`` is not a positive finite number.
+            When ``spot`` is not a positive finite number, or (starting
+            ``duplicate_quote``) when a right and strike is quoted twice.
         """
         if not _is_positive(spot):
             raise ValueError(f"spot must be a positive finite number, got {spot!r}")
+        duplicated = self.duplicates(rows)
+        if duplicated:
+            raise ValueError(f"{self.DUPLICATE_QUOTE}: {duplicated}")
         mids = {}
         for row in rows:
             right, strike = row.get("right"), row.get("strike")
@@ -208,7 +224,9 @@ class LegGreeks(_Configured):
         re-imply the vol from the quote mid). ``multiplier`` (number > 0,
         required). ``min_years`` (number > 0, required) — a leg closer to
         expiry is refused. ``vol_floor`` (number >= 0, required) — a vol
-        below it is unusable.
+        below it is unusable. ``iv_disagree_tol`` (number > 0; required when
+        ``iv_source`` is ``"mid"``) — a leg whose mid-implied vol and vendor
+        ``iv`` differ by more than it is flagged ``iv_disagree``.
 
     Examples
     --------
@@ -222,7 +240,7 @@ class LegGreeks(_Configured):
                           100.0, 100.0, "2024-03-01")
     """
 
-    _PARAMS = ("rate", "iv_source", "multiplier", "min_years", "vol_floor")
+    _PARAMS = ("rate", "iv_source", "multiplier", "min_years", "vol_floor", "iv_disagree_tol")
     NO_FILL_QUOTE = "no_fill_quote"
     NO_IV = "leg_no_iv"
     BELOW_MIN_YEARS = "leg_below_min_years"
@@ -235,12 +253,14 @@ class LegGreeks(_Configured):
         if params.get("iv_source", DEFAULT_IV_SOURCE) not in IV_SOURCES:
             problems.append(f"iv_source must be one of {list(IV_SOURCES)}, got "
                             f"{params['iv_source']!r}")
-        for name in ("multiplier", "min_years"):
+        for name in ("multiplier", "min_years", "iv_disagree_tol"):
             if name in params and not _is_positive(params[name]):
                 problems.append(f"{name} must be a positive finite number, got {params[name]!r}")
         if "vol_floor" in params:
             check_number_param(problems, "vol_floor", params["vol_floor"], lower=0.0, upper=_INF)
         _required(problems, params, ("rate", "multiplier", "min_years", "vol_floor"))
+        if params.get("iv_source") == "mid":
+            _required(problems, params, ("iv_disagree_tol",))
 
     def _vol(self, leg, quote, forward, years):
         """Return the usable vol, or ``None``."""
@@ -253,6 +273,12 @@ class LegGreeks(_Configured):
         if not price_ok(vol) or vol < self.params["vol_floor"]:
             return None
         return vol
+
+    def _disagrees(self, vol, vendor):
+        """Say whether the mid-implied ``vol`` and the ``vendor`` iv differ by more than the tolerance."""
+        if self.params.get("iv_source", DEFAULT_IV_SOURCE) != "mid" or vendor is None:
+            return False
+        return abs(vol - vendor) > self.params["iv_disagree_tol"]
 
     def of(self, leg, quote, forward, spot, day):
         """Return ``(greeks, None)`` or ``(None, refusal_code)`` for one leg.
@@ -275,7 +301,8 @@ class LegGreeks(_Configured):
         -------
         tuple
             A dict ``delta_sh, gamma_sh, vega_usd_per_pt, theta_usd_per_day,
-            iv`` and ``None``; or ``None`` and one of :attr:`REFUSALS`.
+            iv`` (the vol used), ``vendor_iv`` (the quote's, or ``None``) and
+            ``iv_disagree`` (bool; only ``"mid"`` source can set it) and ``None``; or ``None`` and one of :attr:`REFUSALS`.
 
         Raises
         ------
@@ -296,6 +323,7 @@ class LegGreeks(_Configured):
         vol = self._vol(leg, quote, forward, years)
         if vol is None:
             return None, self.NO_IV
+        vendor = quote.get("iv") if price_ok(quote.get("iv")) else None
         args = (leg["right"], forward, leg["strike"], vol, years, self.params["rate"])
         scale = leg["sign"] * leg["quantity"] * self.params["multiplier"]
         ratio = forward / spot
@@ -304,7 +332,8 @@ class LegGreeks(_Configured):
             "gamma_sh": scale * black76_gamma(*args) * ratio * ratio,
             "vega_usd_per_pt": scale * black76_vega(*args) * _ONE_PERCENT,
             "theta_usd_per_day": scale * black76_theta(*args) / DAYS_PER_YEAR,
-            "iv": vol,
+            "iv": vol, "vendor_iv": vendor,
+            "iv_disagree": self._disagrees(vol, vendor),
         }, None
 
 
@@ -313,7 +342,8 @@ class BookGreeks:
     """A book's summed Greeks, the forward they were taken at and its status.
 
     ``status`` is ``"ok"`` for a parity forward and ``"forward_spot"`` (a flag,
-    not a refusal) when the forward fell back to the spot.
+    not a refusal) when the forward fell back to the spot. ``iv_disagree``
+    counts the legs whose mid-implied and vendor vols differ beyond the tolerance.
 
     Examples
     --------
@@ -330,6 +360,7 @@ class BookGreeks:
     forward: float
     forward_source: str
     status: str
+    iv_disagree: int = 0
 
     OK = "ok"
     FORWARD_SPOT = "forward_spot"
@@ -354,7 +385,7 @@ class BookGreeks:
                   for k in ("delta_sh", "gamma_sh", "vega_usd_per_pt", "theta_usd_per_day")}
         status = cls.OK if forward_source == ParityForward.SOURCE_PARITY else cls.FORWARD_SPOT
         return cls(**totals, forward=float(forward), forward_source=forward_source,
-                   status=status)
+                   status=status, iv_disagree=sum(bool(leg.get("iv_disagree")) for leg in legs))
 
 
 class StockEquivalent(_Configured):
@@ -675,7 +706,8 @@ class BookGreeksReport(Node):
     open book (``fill_date <= day < expiry``) re-marked on that day's chain.
     A book that cannot be attributed keeps its P&L in ``unattributed_pnl_usd``
     under one status code (``leg_no_iv``, ``no_fill_quote``,
-    ``leg_below_min_years``, ``basis_changed``, ``no_settlement_bar``); the
+    ``leg_below_min_years``, ``basis_changed``, ``no_settlement_bar``, ``no_spot``,
+    ``duplicate_quote``); the
     ``forward_spot`` status is a flag, not a refusal. A day's open book that
     cannot be marked is excluded from that day as ``open_leg_unmarked``.
 
@@ -699,7 +731,10 @@ class BookGreeksReport(Node):
     ``books``, ``quotes``
         Raw handles for the hooks. ``bars``: ``{symbol: {date: close}}`` on
         the split-adjusted basis; a book's ``factor`` divides it to the
-        chain's basis. The basket of the betas is every symbol in ``bars``.
+        chain's basis. The beta basket is every symbol in ``bars`` whose close
+        is positive on every session of the window (the sessions any name has,
+        strictly before the day); any other name gets beta 1.0 and is counted
+        in ``beta_dropped_name_days``, as the shock gate drops a non-finite name.
 
     Outputs
     -------
@@ -732,10 +767,21 @@ class BookGreeksReport(Node):
     _PARAMS = tuple(dict.fromkeys(name for owner in _OWNERS for name in owner._PARAMS)) + _OWN_PARAMS
     EXPOSURE_DAYS = ("decision", "fill", "both")
     BASIS_CHANGED = "basis_changed"
+    NO_SPOT = "no_spot"
+    DUPLICATE_QUOTE = ParityForward.DUPLICATE_QUOTE
     NO_SETTLEMENT_BAR = "no_settlement_bar"
     OPEN_LEG_UNMARKED = "open_leg_unmarked"
     TOTAL_BUCKET = "total"
     _GREEK_FIELDS = ("delta_sh", "gamma_sh", "vega_usd_per_pt", "theta_usd_per_day")
+    #: The columns each output has (a row list that is empty still has them).
+    BOOK_COLUMNS = ("id", "symbol", "decision_date", "fill_date", "expiry", "pnl", "status",
+                    "forward", "forward_source", "s_fill", "s_settle", *_GREEK_FIELDS,
+                    "stock_pnl", "residual", "basis_usd", "iv_disagree_legs")
+    EXPOSURE_COLUMNS = ("date", "bucket", "dte_min", "dte_max", "n_books", "beta_delta_usd",
+                        "vega_usd_per_pt", "gamma_usd_per_1pct", "top_k_share", "excluded")
+    CELL_COLUMNS = ("n", "pnl_usd", "stock_pnl_usd", "residual_usd", "stock_share_net",
+                    "residual_share_net", "gross_pnl_usd", "stock_share_gross",
+                    "residual_share_gross")
 
     @classmethod
     def validate_params(cls, params):
@@ -832,9 +878,10 @@ class BookGreeksReport(Node):
         cells = owned[CellAttribution].summarize(
             [{k: r[k] for k in (*p["cell_by"], "pnl", "stock_pnl", "residual") if k in r}
              for r in attributed])
-        exposure, unmarked, all_one_days = self._exposure(books, quotes, bars)
+        exposure, unmarked, all_one_days, dropped = self._exposure(books, quotes, bars)
         return {"books": rows, "cells": cells, "exposure": exposure,
-                "summary": self._summary(rows, attributed, exposure, unmarked, all_one_days)}
+                "summary": self._summary(rows, attributed, exposure, (unmarked, all_one_days,
+                                                                      dropped))}
 
     def _spot(self, bars, book, day):
         """Return the book's spot on ``day`` on the chain's basis, or ``None``."""
@@ -845,8 +892,10 @@ class BookGreeksReport(Node):
         """Return ``(BookGreeks, None)`` or ``(None, code)`` for the book on ``day``."""
         spot = self._spot(bars, book, day)
         if spot is None:
-            return None, LegGreeks.NO_FILL_QUOTE
+            return None, self.NO_SPOT
         rows = quotes.chain(book["symbol"], day, book["expiry"])
+        if ParityForward.duplicates(rows):
+            return None, self.DUPLICATE_QUOTE
         forward, source = self._tools[ParityForward].from_chain(rows, spot)
         found = []
         for leg in book["legs"]:
@@ -867,7 +916,7 @@ class BookGreeksReport(Node):
                "expiry": book["expiry"], "pnl": book["pnl"], "status": None,
                "forward": None, "forward_source": None, "s_fill": None, "s_settle": None,
                **dict.fromkeys(self._GREEK_FIELDS), "stock_pnl": None, "residual": None,
-               "basis_usd": None}
+               "basis_usd": None, "iv_disagree_legs": None}
         if book["factor"] != book["end_factor"]:
             row["status"] = self.BASIS_CHANGED
             return row
@@ -884,20 +933,23 @@ class BookGreeksReport(Node):
         row.update(status=greeks.status, forward=greeks.forward,
                    forward_source=greeks.forward_source, s_fill=s_fill, s_settle=s_settle,
                    stock_pnl=stock, residual=residual,
-                   basis_usd=StockEquivalent().basis_usd(greeks.delta_sh, s_fill, greeks.forward))
+                   basis_usd=StockEquivalent().basis_usd(greeks.delta_sh, s_fill, greeks.forward),
+                   iv_disagree_legs=greeks.iv_disagree)
         row.update(self._cell_key(book, quotes))
         return row
 
     def _betas(self, bars, day):
-        """Return ``(betas, all_one)`` from the trailing sessions strictly before ``day``."""
+        """Return ``(betas, all_one, dropped)``: the class docstring's beta rule at ``day``."""
         p = self.params
-        symbols = sorted(bars)
-        calendar = sorted(set.intersection(*(set(bars[s]) for s in symbols))) if symbols else []
+        calendar = sorted({d for series in bars.values() for d in series})
         past = [d for d in calendar if d < day][-p["beta_lookback"] - 1:]
+        usable = sorted(s for s in bars if all(_is_positive(bars[s].get(d)) for d in past))
+        dropped = sorted(set(bars) - set(usable))
         returns = {s: [math.log(b / a) for a, b in zip(
-            [bars[s][d] for d in past], [bars[s][d] for d in past[1:]])] for s in symbols}
-        betas = fit_betas(returns, symbols, max(0, len(past) - 1), p["beta_min_pairs"])
-        return betas, all(v == 1.0 for v in betas.values())
+            [bars[s][d] for d in past], [bars[s][d] for d in past[1:]])] for s in usable}
+        fitted = fit_betas(returns, usable, max(0, len(past) - 1), p["beta_min_pairs"])
+        betas = {**dict.fromkeys(dropped, 1.0), **fitted}
+        return betas, all(v == 1.0 for v in betas.values()), dropped
 
     def _days(self, books):
         """Return the sorted exposure days the ``exposure_days`` knob asks for."""
@@ -910,11 +962,13 @@ class BookGreeksReport(Node):
         return sorted(days)
 
     def _exposure(self, books, quotes, bars):
-        """Return ``(rows, unmarked, all_one_days)``: bucket rows, unmarked book-days, fallback days."""
+        """Return ``(rows, unmarked, all_one_days, dropped_days)``: rows and the three day counts."""
         snapshot, rows, unmarked, all_one_days = self._tools[ExposureSnapshot], [], 0, 0
+        dropped_days = 0
         for day in self._days(books):
-            betas, all_one = self._betas(bars, day)
+            betas, all_one, dropped = self._betas(bars, day)
             all_one_days += all_one
+            dropped_days += len(dropped)
             open_books = []
             for book in (b for b in books if b["fill_date"] <= day < b["expiry"]):
                 item = {"symbol": book["symbol"], "dte": (date.fromisoformat(book["expiry"])
@@ -932,7 +986,7 @@ class BookGreeksReport(Node):
                 open_books.append(item)
             snap = snapshot.of(betas, open_books)
             rows += self._day_rows(day, snap)
-        return rows, unmarked, all_one_days
+        return rows, unmarked, all_one_days, dropped_days
 
     def _day_rows(self, day, snap):
         """Return the day's bucket rows and its total row."""
@@ -943,8 +997,12 @@ class BookGreeksReport(Node):
                      "excluded": snap["excluded"]})
         return rows
 
-    def _summary(self, rows, attributed, exposure, unmarked, all_one_days):
-        """Return the counts dict: attribution totals, refusals, flags, exposure days."""
+    def _summary(self, rows, attributed, exposure, day_counts):
+        """Return the counts dict: attribution totals, refusals, flags, exposure days.
+
+        ``day_counts``: ``(unmarked book-days, all-one-beta days, dropped name-days)``.
+        """
+        unmarked, all_one_days, dropped_days = day_counts
         refusals = Counter(r["status"] for r in rows if r["stock_pnl"] is None)
         good = math.fsum(r["pnl"] for r in attributed)
         bad = math.fsum(r["pnl"] for r in rows if r["stock_pnl"] is None)
@@ -956,5 +1014,7 @@ class BookGreeksReport(Node):
                 "forward_spot": sum(r["status"] == BookGreeks.FORWARD_SPOT for r in rows),
                 "exposure_days": len({r["date"] for r in exposure}),
                 "open_leg_unmarked": unmarked, "beta_all_one_days": all_one_days,
+                "beta_dropped_name_days": dropped_days,
+                "iv_disagree_legs": sum(r["iv_disagree_legs"] or 0 for r in attributed),
                 "rate": self.params["rate"], "iv_source": self.params.get("iv_source",
                                                                            DEFAULT_IV_SOURCE)}

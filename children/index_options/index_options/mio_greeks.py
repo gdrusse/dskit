@@ -14,11 +14,17 @@ no study and no replay. Every date it may touch lies below ``sealed_from`` (and
 below Path A0003's protected start): the seal is checked on the books' dates and
 again by the chain reader, and bars are read only below it.
 
+``result.json`` holds every method's P&L and cannot be read in part with the stdlib,
+so the whole file is parsed; the seal and date check on the requested methods' trades
+therefore runs first, before any P&L field is used (the recompute gate included).
+
 Refusals carry stable codes (:class:`GreeksRefusal`): ``window_outside_data_rights``,
-``out_dir_inside_run_dir``, ``input_not_closed``, ``pnl_recompute_mismatch``,
-``beta_lookback_mismatch``, ``symbols_missing`` and ``multiplier_mismatch`` (the
-config's ``multiplier`` must equal the run's own solver multiplier). The per-book
-and per-day codes are the core's. Import cost: stdlib, plus pyarrow when a chain or
+``development_seal_exceeded`` (a config's ``sealed_from`` later than
+:data:`DEVELOPMENT_SEAL`), ``bad_date``, ``trades_schema``, ``out_dir_inside_run_dir``,
+``input_not_closed``, ``pnl_recompute_mismatch``, ``beta_lookback_mismatch``,
+``beta_min_pairs_mismatch`` (the run's ``correlation_min_pairs``), ``symbols_missing`` and
+``multiplier_mismatch`` (the config's ``multiplier`` must equal the run's own solver
+multiplier). The per-book and per-day codes are the core's. Import cost: stdlib, plus pyarrow when a chain or
 bar file is read.
 """
 
@@ -27,12 +33,12 @@ import hashlib
 import io
 import json
 import os
-from collections import Counter
+from collections import Counter, OrderedDict
 from datetime import date
 from pathlib import Path
 
 from dskit.onboarding.artifacts import PinnedPayloadSource
-from dskit.pipeline.node import atomic_write
+from dskit.pipeline.node import atomic_write, check_int_param
 from dskit.pipeline.option_exposure import BookGreeksReport
 from dskit.pipeline.option_structures import structure_payoff
 
@@ -42,6 +48,9 @@ __all__ = ["ChainQuotes", "CellRank", "GreeksRefusal", "MIOGreeksDiagnostics"]
 
 #: Path A0003: the holdout opens on this session; no seal may lie beyond it.
 PROTECTED_FROM = "2024-01-02"
+#: The first date the owner has NOT opened for development economics (RE-ENTRY: no 2022-2023 MIO
+#: economics before the owner's 3 picks). One owner; it moves only when the owner lifts it.
+DEVELOPMENT_SEAL = "2021-07-01"
 #: The ADR's exact-match gate between a saved P&L and its recomputation, in dollars.
 PNL_GATE_USD = 0.005
 #: A0006: a weekly name's rank is its 7-day window, 1..8; a monthly-only name's, its position 1..3.
@@ -52,9 +61,13 @@ WEEKLY_PROBE_COUNT, WEEKLY_PROBE_DAYS = 2, 14
 INPUT_FILES = ("result.json", "trades.csv", "daily-account.csv")
 #: The files written, under ``out_dir``.
 OUTPUT_FILES = ("books.csv", "cells.csv", "exposure.csv", "greeks-summary.json")
+#: Default size of the chain day cache (a node sets it by ``chain_cache_days``).
+DEFAULT_CACHE_DAYS = 8
 #: Chain columns read when present (``iv`` may be absent: every leg is then ``leg_no_iv``).
 CHAIN_COLUMNS = ("date", "expiration", "type", "strike_raw", "bid", "ask", "iv")
 _PLACEMENT = ("run_dir", "out_dir")
+#: Params that do not change the arithmetic, so stay out of the identity hash.
+_NON_IDENTITY = (*_PLACEMENT, "chain_cache_days")
 
 
 class GreeksRefusal(ValueError):
@@ -130,6 +143,9 @@ class ChainQuotes:
         The plan's ``source_pins.chain``: ``pin`` and ``files`` (symbol -> file).
     end_before : str
         ISO date; a day on or after it refuses ``window_outside_data_rights``.
+    cache_days : int
+        Most (name, session) days kept; the least recently used is evicted, so
+        memory is bounded however many days are read.
 
     Examples
     --------
@@ -139,10 +155,10 @@ class ChainQuotes:
         rows = quotes.chain("BLK", "2021-04-06", "2021-04-16")   # right, strike, bid, ask, iv
     """
 
-    def __init__(self, binding, end_before):
-        self.binding, self.end_before = binding, end_before
+    def __init__(self, binding, end_before, cache_days=DEFAULT_CACHE_DAYS):
+        self.binding, self.end_before, self.cache_days = binding, end_before, cache_days
         self._source = PinnedPayloadSource(binding["pin"])
-        self._paths, self._days = {}, {}
+        self._paths, self._days = {}, OrderedDict()
         #: Relative file -> its pinned sha256, for every file opened.
         self.files = {}
 
@@ -151,7 +167,9 @@ class ChainQuotes:
         if day >= self.end_before:
             raise GreeksRefusal(MIOGreeksDiagnostics.WINDOW,
                                 f"chain day {day} is on or after {self.end_before}")
-        if (symbol, day) not in self._days:
+        if (symbol, day) in self._days:
+            self._days.move_to_end((symbol, day))
+        else:
             import pyarrow.parquet as pq
 
             if symbol not in self._paths:
@@ -170,6 +188,8 @@ class ChainQuotes:
                     {"right": r["type"], "strike": r["strike_raw"], "bid": r["bid"],
                      "ask": r["ask"], "iv": r.get("iv")})
             self._days[symbol, day] = by_expiry
+            while len(self._days) > self.cache_days:
+                self._days.popitem(last=False)
         return self._days[symbol, day]
 
     def chain(self, symbol, day, expiry):
@@ -196,9 +216,11 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         read-only), ``out_dir`` (a new place outside it), ``methods`` (distinct
         result ids), ``window`` (``{start, end}`` ISO, inclusive) and ``sealed_from``
         (required ISO date: any book date on or after it refuses; ``window.end``
-        must lie before it, and it may not exceed Path A0003's protected start).
+        must lie before it, and it may not exceed :data:`DEVELOPMENT_SEAL`),
+        ``chain_cache_days`` (int >= 1: the chain day cache size; no effect on a result).
         ``beta_lookback`` must equal a method's ``shock.beta_lookback`` when it
-        declares one; ``multiplier`` must equal the run's solver multiplier.
+        declares one; ``beta_min_pairs`` the run's ``correlation_min_pairs``;
+        ``multiplier`` the run's solver multiplier.
 
     Examples
     --------
@@ -208,9 +230,13 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         out = node.run(None, {})                         # books, cells, exposure, summary
     """
 
-    _CHILD_PARAMS = ("run_dir", "out_dir", "methods", "window", "sealed_from")
+    _CHILD_PARAMS = ("run_dir", "out_dir", "methods", "window", "sealed_from", "chain_cache_days")
     _PARAMS = BookGreeksReport._PARAMS + _CHILD_PARAMS
     WINDOW = "window_outside_data_rights"
+    DEVELOPMENT_SEAL_EXCEEDED = "development_seal_exceeded"
+    BAD_DATE = "bad_date"
+    TRADES_SCHEMA = "trades_schema"
+    MIN_PAIRS_MISMATCH = "beta_min_pairs_mismatch"
     OUT_DIR_INSIDE = "out_dir_inside_run_dir"
     NOT_CLOSED = "input_not_closed"
     PNL_MISMATCH = "pnl_recompute_mismatch"
@@ -249,6 +275,8 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         if "methods" in params and (not isinstance(methods, list) or not methods or not all(
                 isinstance(m, str) and m for m in methods) or len(set(methods)) != len(methods)):
             problems.append(f"methods must be a non-empty list of distinct ids, got {methods!r}")
+        if "chain_cache_days" in params:
+            check_int_param(problems, "chain_cache_days", params["chain_cache_days"], ge=1)
         problems += cls._window_problems(params)
         missing = [n for n in cls._CHILD_PARAMS if n not in params]
         if missing:
@@ -278,6 +306,9 @@ class MIOGreeksDiagnostics(BookGreeksReport):
             if not cls._iso(seal) or seal > PROTECTED_FROM:
                 problems.append(f"sealed_from must be an ISO date no later than {PROTECTED_FROM}, "
                                 f"got {seal!r}")
+            elif seal > DEVELOPMENT_SEAL:
+                problems.append(f"{cls.DEVELOPMENT_SEAL_EXCEEDED}: sealed_from {seal} is after "
+                                f"{DEVELOPMENT_SEAL}, the development seal the owner has not lifted")
             elif window and window["end"] >= seal:
                 problems.append(f"window.end {window['end']} must be before sealed_from {seal} "
                                 f"({cls.WINDOW})")
@@ -336,19 +367,29 @@ class MIOGreeksDiagnostics(BookGreeksReport):
 
     def _guard_window(self, books):
         """Refuse a book dated on or after the seal or outside ``window``."""
+        self._guard_dates((b["key"], b) for b in books)
+
+    def _guard_dates(self, named):
+        """Refuse ``(name, record)`` pairs with a non-ISO date, or one sealed or outside ``window``."""
         window, seal = self.params["window"], self._seal()
-        for book in books:
+        for name, record in named:
             for field in ("decision_date", "fill_date", "expiry"):
-                day = book[field]
+                day = record.get(field)
+                if self._iso(day) is None:
+                    raise GreeksRefusal(self.BAD_DATE, f"{name} {field} {day!r} is not an ISO date")
                 if day >= seal or not window["start"] <= day <= window["end"]:
-                    raise GreeksRefusal(self.WINDOW, f"{book['key']} {field} {day} is outside "
+                    raise GreeksRefusal(self.WINDOW, f"{name} {field} {day} is outside "
                                                      f"[{window['start']}, {window['end']}] or on or "
                                                      f"after {seal}")
 
     # -- the saved run -----------------------------------------------------
 
     def _read_inputs(self, run_dir):
-        """Return ``(table, shas)`` of a closed run; refuse ``input_not_closed`` otherwise."""
+        """Return ``(table, shas)`` of a closed run; refuse ``input_not_closed`` otherwise.
+
+        The whole ``result.json`` is parsed (the format cannot be read in part); no P&L
+        field is used until :meth:`run` has checked the requested methods' dates.
+        """
         shas, texts = {}, {}
         for name in INPUT_FILES:
             path = run_dir / name
@@ -364,7 +405,11 @@ class MIOGreeksDiagnostics(BookGreeksReport):
                 table.get("results"), list):
             raise GreeksRefusal(self.NOT_CLOSED, "result.json does not say the run is complete")
         saved = {(r["id"], t["id"]) for r in table["results"] for t in r["result"]["trades"]}
-        listed = {(r["method"], r["id"]) for r in csv.DictReader(io.StringIO(texts["trades.csv"]))}
+        reader = csv.DictReader(io.StringIO(texts["trades.csv"]))
+        if not {"method", "id"} <= set(reader.fieldnames or ()):
+            raise GreeksRefusal(self.TRADES_SCHEMA, f"trades.csv columns {reader.fieldnames!r} "
+                                                    "lack method and id")
+        listed = {(r["method"], r["id"]) for r in reader}
         if saved != listed or len(list(csv.reader(io.StringIO(texts["daily-account.csv"])))) < 2:
             raise GreeksRefusal(self.NOT_CLOSED, "trades.csv or daily-account.csv does not match "
                                                  "result.json")
@@ -383,6 +428,10 @@ class MIOGreeksDiagnostics(BookGreeksReport):
             multiplier = domain["bridge"]["solver"]["multiplier"]
         except (KeyError, TypeError):
             raise GreeksRefusal(self.NOT_CLOSED, "result.json carries no solver multiplier") from None
+        pairs = domain.get("correlation_min_pairs")
+        if pairs is not None and pairs != self.params["beta_min_pairs"]:
+            raise GreeksRefusal(self.MIN_PAIRS_MISMATCH, f"config {self.params['beta_min_pairs']!r}, "
+                                                         f"run {pairs!r}")
         if multiplier != self.params["multiplier"]:
             raise GreeksRefusal(self.MULTIPLIER_MISMATCH, f"config {self.params['multiplier']!r}, "
                                                           f"run {multiplier!r}")
@@ -445,8 +494,12 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         table, shas = self._read_inputs(run_dir)
         domain, symbols, multiplier = self._domain(table)
         flags = self._method_flags(domain, table)
+        for method in p["methods"]:                 # dates first: no P&L is used before the seal check
+            self._guard_dates((f"{method}|{t.get('id')}", t) for r in table["results"]
+                              if r["id"] == method for t in r["result"]["trades"])
         bars, bar_shas = self._read_bars(table, symbols)
-        quotes = ChainQuotes(table["plan"]["source_pins"]["chain"], self._seal())
+        quotes = ChainQuotes(table["plan"]["source_pins"]["chain"], self._seal(),
+                             p["chain_cache_days"])
         merged = {"books": [], "cells": [], "exposure": []}
         summaries = {}
         for method in p["methods"]:
@@ -465,7 +518,7 @@ class MIOGreeksDiagnostics(BookGreeksReport):
 
     def _run_summary(self, summaries, flags, shas):
         """Return the run-level summary: inputs, params hash, per-method counts and totals."""
-        identity = {k: v for k, v in self.params.items() if k not in _PLACEMENT}
+        identity = {k: v for k, v in self.params.items() if k not in _NON_IDENTITY}
         return {
             "inputs": dict(sorted(shas.items())),
             "params_hash": hashlib.sha256(json.dumps(
@@ -477,12 +530,14 @@ class MIOGreeksDiagnostics(BookGreeksReport):
                                         Counter()).items())),
             "forward_spot": sum(s["forward_spot"] for s in summaries.values()),
             "open_leg_unmarked": sum(s["open_leg_unmarked"] for s in summaries.values()),
+            "iv_disagree_legs": sum(s["iv_disagree_legs"] for s in summaries.values()),
+            "beta_dropped_name_days": sum(s["beta_dropped_name_days"] for s in summaries.values()),
         }
 
     @staticmethod
-    def _csv(rows):
-        """Return rows as CSV bytes: columns in first-seen order, ``None`` empty, nesting as JSON."""
-        columns = list(dict.fromkeys(k for row in rows for k in row))
+    def _csv(rows, declared):
+        """Return rows as CSV bytes: columns first-seen (``declared`` when no row), ``None`` empty."""
+        columns = list(dict.fromkeys(k for row in rows for k in row)) or list(declared)
         stream = io.StringIO()
         writer = csv.writer(stream, lineterminator="\n")
         writer.writerow(columns)
@@ -493,10 +548,19 @@ class MIOGreeksDiagnostics(BookGreeksReport):
                              for c in columns])
         return stream.getvalue().encode("utf-8")
 
+    def _declared(self):
+        """Return the header each CSV has when it has no row."""
+        cells = [*self.params["cell_by"], *BookGreeksReport.CELL_COLUMNS]
+        books = ["method", *(c for c in BookGreeksReport.BOOK_COLUMNS), "rank", "cadence"]
+        return (books, ["method", *cells], ["method", *BookGreeksReport.EXPOSURE_COLUMNS])
+
     def _write(self, out_dir, result):
-        """Land the four output files atomically under ``out_dir``."""
+        """Serialize all four outputs in memory, then land them atomically under ``out_dir``."""
+        payloads = {name: self._csv(rows, columns) for name, rows, columns in zip(
+            OUTPUT_FILES, (result["books"], result["cells"], result["exposure"]),
+            self._declared())}
+        payloads[OUTPUT_FILES[3]] = (json.dumps(
+            result["summary"], indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
         out_dir.mkdir(parents=True, exist_ok=True)
-        for name, rows in zip(OUTPUT_FILES, (result["books"], result["cells"], result["exposure"])):
-            atomic_write(str(out_dir / name), self._csv(rows))
-        atomic_write(str(out_dir / OUTPUT_FILES[3]), (json.dumps(
-            result["summary"], indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8"))
+        for name, data in payloads.items():
+            atomic_write(str(out_dir / name), data)
