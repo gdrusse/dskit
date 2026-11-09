@@ -116,24 +116,24 @@ week, and the long-only bound already answers the question.
 - **The full oracle is useless as a target and informative as a fact.** The best knapsack under 25% of funding and fill
   depth made 50x to 100x the weekly budget every week (2021Q2: $57k-$260k on $2.5k-$4.9k). The universe always contains a
   10x-100x weekly winner at displayed depth; that is the lottery the long-premium formulations are implicitly buying.
-- **Base rates (mean over the quarter's weeks; `04-oracle.md`).** 61,000-78,000 eligible long contracts a week in
-  ~1,080-1,110 groups. Share ending positive 34% / 39% / 34% (2019Q4 / 2020Q1 / 2021Q2), share expiring worthless 31-33%,
-  median return per premium -0.23 / -0.20 / -0.18 in every quarter. The mean return per premium, equal weight over
-  contracts, was -0.03 / +0.78 / -0.16, and an equal-weight long portfolio made +0.006 / +0.051 / 0.000 per dollar per week.
-  Long premium at the ask was roughly fair outside the crash quarter, where everything OTM paid (31-60 DTE slice +1.38 per
-  premium, > 10% OTM slice +0.80). The 31-60 DTE slice beat the under-8-DTE slice in all three quarters (+0.07 vs -0.10,
-  +1.38 vs -0.10, -0.15 vs -0.16): part of the horizon effect in section 2 is a property of what the market offered, not of
-  the selection.
-- **The selections beat the universe only in 2020Q1.** Filled books' mean return per reserve against the universe's mean
-  return per premium: 2019Q4 -0.07 vs -0.03 (win 24% vs 35% positive); 2020Q1 +2.10 vs +0.78 (long-premium rows +3.06; win
-  55% vs 39%); 2021Q2 -0.28 on distinct books vs -0.16 (win 27% vs 34%). In two of three quarters with a universe the
-  selection was no better than a random eligible long contract at the ask, with a lower hit rate; in the crash quarter it
-  was 2.7x better. 2021Q1's universe is in `04-oracle.md` when its run completes (see section 9).
+- **Base rates (mean over the quarter's weeks; `04-oracle.md`).** 61,000-81,000 eligible long contracts a week in
+  ~1,080-1,110 groups. Share ending positive 34% / 39% / 34% / 34% (2019Q4 / 2020Q1 / 2021Q1 / 2021Q2), share expiring
+  worthless 31-33%, median return per premium -0.23 / -0.20 / -0.22 / -0.18. The mean return per premium, equal weight
+  over contracts, was -0.03 / +0.78 / -0.12 / -0.16, and an equal-weight long portfolio made +0.006 / +0.051 / -0.031 /
+  0.000 per dollar per week. Long premium at the ask was roughly fair to slightly negative outside the crash quarter, where
+  everything OTM paid (31-60 DTE slice +1.38 per premium, > 10% OTM slice +0.80). The 31-60 DTE slice beat the under-8-DTE
+  slice in 2019Q4 and 2020Q1 (+0.07 vs -0.10, +1.38 vs -0.10) and not in 2021 (-0.18 vs -0.09, -0.15 vs -0.16): part of the
+  horizon effect in section 2 is what the market offered in two quarters, the rest is the selection.
+- **The selections beat the universe in the two event quarters and not in the two quiet ones.** Filled books' mean return
+  per reserve against the universe's mean return per premium: 2019Q4 -0.07 vs -0.03 (win 24% vs 35% positive); 2020Q1 +2.10
+  vs +0.78 (long-premium rows +3.06; win 55% vs 39%); 2021Q1 +0.64 vs -0.12 (win 20% vs 34%; GME); 2021Q2 -0.28 on distinct
+  books vs -0.16 (win 27% vs 34%). In the quiet quarters the selection was no better than a random eligible long contract
+  at the ask, with a lower hit rate; in the crash and squeeze quarters it was 2.7x and 5x better, on one or three books.
 - **Same-names oracle.** Restricting the knapsack to the names the method selected that week, the 2021Q2 dollar arms would
   have made $100k-$620k over the quarter against -$5.7k to +$10.4k realized; same (symbol, expiry) groups: $10k-$440k.
   The names and expiries the methods picked contained large winners (AMC, GME, RUN, NVDA); the structures and strikes chosen
   captured a few percent of them, and the weeks that could not be solved (timeouts, cash) sat on $70k-$245k full-oracle weeks.
-  Pooled capture ratio, actual P&L over the same-groups oracle: -0.08 (2019Q4), +0.06 (2020Q1), +0.004 (2021Q2). The
+  Pooled capture ratio, actual P&L over the same-groups oracle: -0.08 (2019Q4), +0.06 (2020Q1), +0.09 (2021Q1), +0.004 (2021Q2). The
   selection problem the data expose is inside the group (which strikes, which structure, how long-dated), not which name.
 
 **Ex-post growth-optimal fraction** (each book a bet of fraction f of capital on its reserve, f* maximising mean
