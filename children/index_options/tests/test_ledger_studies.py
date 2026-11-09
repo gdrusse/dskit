@@ -4813,6 +4813,53 @@ def test_a_book_whose_close_cannot_be_priced_at_the_executable_side_is_held(drop
     assert book["exit"] is None and book["close_date"] == "2019-02-01"
 
 
+def _tp_split(inputs, effective):
+    """A 10-for-1 standard split of X effective ``effective`` on the take-profit fixture (as the split tests do)."""
+    for row in inputs["X"]["chain"]:
+        if row["date"] >= effective:
+            row["strike_raw"] /= 10
+            row["basis_factor"] = 10.
+    for row in inputs["X"]["bars"]:
+        row["basis_factor"] = 10. if row["date"] >= effective else 1.
+    return [{"symbol": "X", "root_before": "X", "root_after": "X",
+             "deliverable_shares": 100, "published": "2018-12-31", "effective": effective,
+             "ratio": 10, "strike_divisor": 10, "multiplier": 100,
+             "basis_before": 1., "basis_after": 10.}]
+
+
+def test_a_split_after_a_take_profit_exit_leaves_the_exited_book_closed_at_its_exit():
+    """The exited book left the account at the exit session; a split before its expiry must not reopen it."""
+    params, inputs = _tp_fixture(TP3)
+    plain = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    params, inputs = _tp_fixture(TP3)
+    events = _tp_split(inputs, "2019-01-30")                 # after the 2019-01-14 exit, before the 2019-02-01 expiry
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs, adjustments=events)
+    result = study._method(params["methods"][0], None)
+    trades, before = {t["id"]: t for t in result["trades"]}, {t["id"]: t for t in plain["trades"]}
+    book = trades[_TP_BOOK]
+    assert book["close_date"] == _TP_WEEK and not book.get("applied_adjustments")
+    assert book["exit"] == before[_TP_BOOK]["exit"] and book["pnl"] == pytest.approx(before[_TP_BOOK]["pnl"])
+    assert trades[_TP_HELD]["applied_adjustments"], "the still-open book is converted on the ex-date"
+    assert trades[_TP_HELD]["pnl"] == pytest.approx(before[_TP_HELD]["pnl"]), "and keeps its frozen economics"
+    assert result["pnl"] == pytest.approx(plain["pnl"])
+    assert result["ledger_summary"]["totals"]["pnl_usd"] == pytest.approx(result["pnl"])
+    recorded = json.loads(json.dumps(result))
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs, adjustments=events)._method(
+        params["methods"][0], None, recorded=recorded) == result
+
+
+def test_a_book_a_split_converted_before_the_take_profit_week_is_held_as_split_adjusted():
+    params, inputs = _tp_fixture(TP3)
+    events = _tp_split(inputs, "2019-01-10")                 # between both fills and the 2019-01-14 peak
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs, adjustments=events)._method(
+        params["methods"][0], None)
+    week = _week(result, _TP_WEEK)
+    assert week["exits"] == [] and week["exit_unpriced"][_TP_BOOK] == "split_adjusted"
+    book = next(t for t in result["trades"] if t["id"] == _TP_BOOK)
+    assert book["exit"] is None and book["close_date"] == "2019-02-01" and book["applied_adjustments"]
+    assert all(d["exits"] == [] for d in result["decisions"])
+
+
 def test_exit_fields_are_written_only_when_the_method_declares_the_exit():
     params, inputs = _tp_fixture()
     events = []

@@ -2838,8 +2838,11 @@ class WeeklyOptionPortfolioStudy:
             structures[b["id"]] = [[leg["right"], leg["sign"]*leg["quantity"]] for leg in b["legs"]]
             orders.append({"date": b["fill_date"], "symbol": symbol, "expiration": expiry,
                            "strikes": [leg["strike"] for leg in b["legs"]], "structure": b["id"]})
+            # A take-profit exit ends the book at its exit session: no chain rows, marks or basis check after it (a
+            # split between the exit and the expiry no longer touches a book that left the account at the exit).
+            last = b["close_date"] if exiting else expiry
             for day in self.calendar:
-                if not b["fill_date"] <= day <= expiry:
+                if not b["fill_date"] <= day <= last:
                     continue
                 converted = (b.get("applied_adjustments")
                              and day >= b["applied_adjustments"][0]["effective"])
@@ -3090,7 +3093,7 @@ class WeeklyOptionPortfolioStudy:
                 if exit_rule is not None:
                     # Only a method that declares the exit carries the fields: every other record is unchanged.
                     record["exits"], record["exit_unpriced"] = exits, unpriced
-                repaired ={m["id"]: m["cdf_noise_raised"] for m in metadata if "cdf_noise_raised" in m}
+                repaired = {m["id"]: m["cdf_noise_raised"] for m in metadata if "cdf_noise_raised" in m}
                 if repaired:
                     # Only a repaired week carries the key, so a monotone forecast's record is unchanged.
                     record["cdf_noise_repaired"] = {"rows": len(repaired), "largest": max(repaired.values()),
