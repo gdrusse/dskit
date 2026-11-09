@@ -1387,7 +1387,8 @@ class WeeklyOptionPortfolioStudy:
         ("objective_target", ADR-0299 owner ruling A): the certification
         solve stops once an incumbent is within the solve's allowance of the
         relaxation bound, certified, recorded as kelly.certify_stop (only
-        under the key). A kelly block may
+        under the key; a stop outside the allowance is re-run without the
+        target, stop target_retried). A kelly block may
         add max_groups (int >= 1,
         ADR-0301): after the lp screen only that many groups, the ones with
         the largest standalone relaxed value, enter the joint growth program.

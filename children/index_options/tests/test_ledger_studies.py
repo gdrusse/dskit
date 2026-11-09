@@ -4711,3 +4711,29 @@ def test_a_kelly_week_certified_on_the_objective_target_records_its_stop_and_rep
     assert all("certify_stop" not in ledger_studies.MIOPacketCompare._kelly_row(d["kelly"])
                for d in plain["decisions"] if "kelly" in d), "earlier rows keep their keys"
     assert set(ledger_studies.MIOPacketCompare._kelly_row({})) == set(ledger_studies.MIOPacketCompare._KELLY_ROW_KEYS)
+
+
+def test_a_kelly_week_whose_target_stop_misses_is_re_run_records_target_retried_and_replays(monkeypatch):
+    """A target stop read as outside the allowance is re-run without the target: the week has the books of the
+    declared-but-not-fired run, its stop says target_retried, and the recorded and derived routes agree."""
+    from index_options.mio_worker import MIOMethodWorker
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params, inputs = _target_kelly_run(monkeypatch, fire=False)
+    held = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    params, inputs = _target_kelly_run(monkeypatch, fire=True)
+    monkeypatch.setattr(TransportPortfolioSolve, "_target_stop_missed",
+                        lambda self, model, results, bound: str(results.solver.termination_condition)
+                        == "minFunctionValue")
+    method = params["methods"][0]
+    solved = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    solves = [d for d in solved["decisions"] if "selection" in d]
+    assert solves and all(d["kelly"]["certify_stop"] == {"applied": "objective_target", "stop": "target_retried"}
+                          and d["certificates"][0]["stop"] == "target_retried"
+                          and d["certificates"][0]["termination"] == "optimal" for d in solves), \
+        [d["certificates"][0] for d in solves]
+    assert [d["books"] for d in solves] == [d["books"] for d in held["decisions"] if "selection" in d]
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=solved) == solved
+    actions = MIOMethodWorker.actions(solved, ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).weeks)
+    derived = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, derived=actions)
+    assert _equal_but_last_bits(derived, solved), "the derived route agrees"

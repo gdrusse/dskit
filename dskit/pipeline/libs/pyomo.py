@@ -514,14 +514,16 @@ class _TargetStopSolveRecord(_UtilitySolveRecord):
     ----------
     stop : str
         ``objective_target`` (HiGHS ended the certification solve on its objective target, the incumbent within the
-        method's allowance of the relaxation bound: certified, ``termination`` ``optimal``) or ``none`` (the week
-        ended as it would without the key).
+        method's allowance of the relaxation bound: certified, ``termination`` ``optimal``), ``none`` (the week
+        ended as it would without the key) or ``target_retried`` (the target stop ended outside the allowance, so
+        the certification was re-run once without the target, from the same start, in the time left; the week is
+        read from that solve as it would be without the key).
     """
 
     stop: str
 
     #: The values ``stop`` may hold.
-    STOPS = ("none", "objective_target")
+    STOPS = ("none", "objective_target", "target_retried")
 
     def coherent(self):
         """Whether every field holds a value the strategy can write and a target stop is a certified optimal week."""
@@ -4886,14 +4888,31 @@ class TransportPortfolioSolve(PyomoSolve):
         if self.params.get("certify_stop") == "objective_target":
             target = self._certification_target(bound, self.params["absolute_gap"], self.params["relative_gap"],
                                                 tolerance)
+        # A target stop whose incumbent is not within the allowance (HiGHS's contract says it cannot happen) is not
+        # refused: the certification is re-run once without the target from the same start, the solve the week has
+        # without the key, so the key never turns a week that certifies without it into a refusal (certify-more).
+        start = ([(v, v.value) for v in model.component_data_objects(Var)],
+                 getattr(model, "_transport_no_incumbent", False))
         try:
-            with self._search_gaps(solver):
-                if target is not None:
-                    solver.options["objective_target"] = target
-                result = self._solve_once(solver, model, remaining())
+            for attempt in ((None,) if target is None else (target, None)):
+                with self._search_gaps(solver):
+                    saved = None if attempt is None else self._highs_option(solver, "objective_target")
+                    if attempt is not None:
+                        solver.options["objective_target"] = attempt
+                    try:
+                        result = self._solve_once(solver, model, remaining())
+                    finally:
+                        if attempt is not None:
+                            self._restore_highs_option(solver, "objective_target", saved)
+                if attempt is None or not self._target_stop_missed(model, result, bound):
+                    break
+                self.log.info("utility solve: the objective-target stop ended outside the allowance; the "
+                              "certification is re-run once without the target")
+                model._transport_stop, target = "target_retried", None
+                for variable, value in start[0]:
+                    variable.set_value(value)
+                model._transport_no_incumbent = start[1]
         finally:
-            if target is not None:
-                del solver.options["objective_target"]
             for key in fixed:
                 model.x[key].setub(capacity[key])
         if target is not None:
@@ -4928,6 +4947,51 @@ class TransportPortfolioSolve(PyomoSolve):
         return bound-max(absolute, relative*abs(bound))/(1.+relative)+2.*float(tolerance)
 
     @staticmethod
+    def _highs_option(solver, name):
+        """The value the solver's HiGHS instance holds for option ``name`` (None: no instance yet, or unreadable)."""
+        highs = getattr(solver, "_solver_model", None)
+        if highs is None:
+            return None
+        try:
+            held = highs.getOptionValue(name)
+        except Exception:   # an instance that cannot report the option: nothing to restore
+            return None
+        return held[-1] if isinstance(held, (tuple, list)) else held
+
+    @staticmethod
+    def _restore_highs_option(solver, name, saved):
+        """Undo an option handed for one solve: drop it from ``solver.options`` and set the HiGHS instance back to
+        ``saved`` (appsi only ever sets options on its persistent ``Highs``, so a dropped option would otherwise stay
+        in force for the instance's later solves). ``saved`` None: an instance created by the solve itself, so its
+        default (``highspy.Highs()``'s)."""
+        solver.options.pop(name, None)
+        highs = getattr(solver, "_solver_model", None)
+        if highs is None:
+            return
+        if saved is None:
+            from types import SimpleNamespace
+            import highspy
+            saved = TransportPortfolioSolve._highs_option(SimpleNamespace(_solver_model=highspy.Highs()), name)
+        if saved is not None:
+            highs.setOptionValue(name, saved)
+
+    @staticmethod
+    def _within_target_allowance(bound, value, absolute, relative):
+        """Whether ``value`` is within ``max(a, r|value|)`` of the relaxation ``bound`` (a 1e-9 relative rounding slack):
+        the test a target stop's incumbent must pass to be certified."""
+        slack = 1e-9*max(1., abs(bound))
+        return bound-value <= max(absolute, relative*abs(value))+slack
+
+    def _target_stop_missed(self, model, results, bound):
+        """Whether a certification run under an objective target ended on the target (legacy ``minFunctionValue``)
+        with no loaded incumbent within the method's allowance of the relaxation ``bound``."""
+        if str(getattr(getattr(results, "solver", None), "termination_condition", "")) != "minFunctionValue":
+            return False
+        value = None if getattr(model, "_transport_no_incumbent", False) else self._objective_value(model)
+        return value is None or not self._within_target_allowance(bound, value, self.params["absolute_gap"],
+                                                                  self.params["relative_gap"])
+
+    @staticmethod
     def _peak_rss():
         """This process's peak resident set in GB (0 where the platform does not report it)."""
         try:
@@ -4960,11 +5024,11 @@ class TransportPortfolioSolve(PyomoSolve):
             # legacy minFunctionValue) of the certification solve that set the target (its own results, never another
             # solve's). An incumbent within the method's allowance of the relaxation bound is certified: labelled
             # optimal, the label of a stop at the gap, with ``stop`` saying how it ended. Any other objective-limit
-            # ending keeps its label, which the certificate checks refuse. The test uses the relaxation bound alone,
-            # never a tighter solver bound: conservative, it can refuse, never over-certify.
+            # ending keeps its label, which the certificate checks refuse (_solve_relax_fix re-runs such a solve
+            # without the target first, so none reaches here from it). The test uses the relaxation bound alone,
+            # never a tighter solver bound: conservative, it never over-certifies.
             (_, absolute, rel), _ = held
-            slack = 1e-9*max(1., abs(relaxed))
-            if relaxed-record.objective <= max(absolute, rel*abs(record.objective))+slack:
+            if TransportPortfolioSolve._within_target_allowance(relaxed, record.objective, absolute, rel):
                 record = replace(record, termination="optimal", status="ok")
                 stop = "objective_target"
         if relaxed is not None and number_ok(relaxed):

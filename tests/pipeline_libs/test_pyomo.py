@@ -6318,15 +6318,16 @@ def test_certify_stop_accepts_only_objective_target_on_a_relax_fix_highs_solve(e
     assert (not [p for p in problems if "certify_stop" in p]) == ok, problems
 
 
-def _target_stop_run(monkeypatch, certify=True, target=None):
-    """A certification from cash (an empty support) at the method's 5% allowance, HiGHS's own gaps exact; returns the
-    run's selection and each solve's (objective_target handed, termination). ``target`` replaces the stop's target."""
+def _target_stop_run(monkeypatch, certify=True, target=None, relative_gap=.05):
+    """A certification from cash (an empty support) at the method's 5% allowance (``relative_gap``), HiGHS's own gaps
+    exact; returns the run's selection and each solve's (objective_target handed, termination). ``target`` replaces
+    the stop's target."""
     from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
 
     monkeypatch.setattr(TransportPortfolioSolve, "UTILITY_SUPPORT_EPS", float("inf"))
     if target is not None:
         monkeypatch.setattr(TransportPortfolioSolve, "_certification_target", staticmethod(target))
-    params = _strategy_params("relax_fix", absolute_gap=1e-3, relative_gap=.05,
+    params = _strategy_params("relax_fix", absolute_gap=1e-3, relative_gap=relative_gap,
                               **({"certify_stop": "objective_target"} if certify else {}))
     params["solver_options"] = {**params["solver_options"], "presolve": "off"}
     endings, original = [], TransportPortfolioSolve._solve_once
@@ -6388,12 +6389,76 @@ def test_a_declared_stop_that_does_not_fire_records_stop_none_and_the_same_week(
     assert held["quantities"] == plain["quantities"] and held["value"] == plain["value"]
 
 
-def test_an_objective_limit_ending_outside_the_allowance_is_refused_never_certified(monkeypatch):
-    """A target-stop incumbent that is not within the allowance of the bound keeps its label and is refused."""
-    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal
+def test_a_target_stop_outside_the_allowance_is_re_run_without_the_target_and_matches_the_week_without_the_key(
+        monkeypatch):
+    """A target-stop incumbent not within the allowance of the bound is never certified and never refuses the week:
+    the certification is re-run once without the target, from the same start, and the week is the one without the
+    key, its certificate saying ``target_retried``."""
+    import json
 
+    _, plain, _ = _target_stop_run(monkeypatch, certify=False, relative_gap=1e-3)
+    node, held, endings = _target_stop_run(monkeypatch, target=lambda bound, a, r, t=0.: 1e-6, relative_gap=1e-3)
+    assert endings == [(False, "optimal"), (True, "minFunctionValue"), (False, "optimal")], endings
+    c = held["certificates"][0]
+    assert c["stop"] == "target_retried" and c["termination"] == "optimal" and c["strategy_outcome"] == "certified"
+    assert {k: v for k, v in c.items() if k not in ("stop", "seconds")} \
+        == {k: v for k, v in plain["certificates"][0].items() if k != "seconds"}
+    assert held["quantities"] == plain["quantities"] and held["value"] == plain["value"]
+    certificates = [{k: v for k, v in cert.items() if k != "binding"} for cert in held.pop("certificates")]
+    replay = node._recorded(_hedged_program(), *json.loads(json.dumps([held, certificates])))
+    assert replay == {**held, "certificates": certificates}, "the recorded route reproduces the retried week"
+
+
+def test_an_objective_limit_ending_outside_the_allowance_reaching_the_record_is_refused(monkeypatch):
+    """Were the retry skipped, the record still never certifies a target stop outside the allowance: it keeps its
+    label and the certificate checks refuse it."""
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
+
+    monkeypatch.setattr(TransportPortfolioSolve, "_target_stop_missed", lambda self, model, results, bound: False)
     with pytest.raises(RecordedCheckRefusal, match="invalid primary solver certificate"):
-        _target_stop_run(monkeypatch, target=lambda bound, a, r, t=0.: 1e-6)
+        _target_stop_run(monkeypatch, target=lambda bound, a, r, t=0.: 1e-6, relative_gap=1e-3)
+
+
+def test_the_certification_target_option_is_removed_even_when_the_solve_raises(monkeypatch):
+    """The objective target never outlives its certification solve, whatever ends it."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    seen, original = [], TransportPortfolioSolve._solve_once
+
+    def failing(self, solver, model, time_limit=None):
+        seen.append(solver)
+        if "objective_target" in solver.options:
+            raise RuntimeError("certification failed")
+        return original(self, solver, model, time_limit)
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", failing)
+    monkeypatch.setattr(TransportPortfolioSolve, "UTILITY_SUPPORT_EPS", float("inf"))
+    params = _strategy_params("relax_fix", absolute_gap=1e-3, relative_gap=.05, certify_stop="objective_target")
+    with pytest.raises(RuntimeError, match="certification failed"):
+        TransportPortfolioSolve("target", params).run(None, _hedged_program())
+    assert seen and all("objective_target" not in solver.options for solver in seen)
+    assert all(TransportPortfolioSolve._highs_option(solver, "objective_target") == float("-inf") for solver in seen), \
+        "HiGHS's own instance is back at its default too"
+
+
+def test_the_objective_target_does_not_stay_in_force_in_the_highs_instance_after_its_solve(monkeypatch):
+    """appsi never unsets an option on its persistent Highs: the target is set back on the instance itself, so the
+    retry (and any later solve on the instance) runs without it."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    held, solvers, original = [], [], TransportPortfolioSolve._solve_once
+
+    def spy(self, solver, model, time_limit=None):
+        result = original(self, solver, model, time_limit)
+        held.append(TransportPortfolioSolve._highs_option(solver, "objective_target"))
+        solvers.append(solver)
+        return result
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", spy)
+    monkeypatch.setattr(TransportPortfolioSolve, "UTILITY_SUPPORT_EPS", float("inf"))
+    params = _strategy_params("relax_fix", absolute_gap=1e-3, relative_gap=.05, certify_stop="objective_target")
+    TransportPortfolioSolve("target", params).run(None, _hedged_program())
+    assert held[0] == float("-inf") and held[1] > float("-inf"), held   # the support search, then the target solve
+    assert TransportPortfolioSolve._highs_option(solvers[-1], "objective_target") == float("-inf"), \
+        "after the run the instance holds HiGHS's default again"
 
 
 def test_a_target_stop_is_relabelled_only_for_the_certification_solve_that_set_it(monkeypatch):
