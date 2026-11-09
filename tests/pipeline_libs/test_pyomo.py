@@ -6220,13 +6220,13 @@ def test_the_support_and_certification_solves_run_with_tight_internal_gaps_not_t
     seen, original = [], TransportPortfolioSolve._solve_once
 
     def spy(self, solver, model, time_limit=None):
-        seen.append((solver.options["mip_rel_gap"], solver.options["mip_abs_gap"], "objective_target" in solver.options))
+        seen.append((solver.options["mip_rel_gap"], solver.options["mip_abs_gap"]))
         return original(self, solver, model, time_limit)
     monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", spy)
     node = TransportPortfolioSolve("gaps", params)
     node.run(None, program)
-    assert len(seen) == 2 and seen[1][2] and not seen[0][2], "a support search, then a certification"
-    for rel, absolute, _bound in seen:
+    assert len(seen) == 2, "a support search, then a certification"
+    for rel, absolute in seen:
         assert rel == TransportPortfolioSolve.UTILITY_SEARCH_REL_GAP <= 1e-4
         assert absolute == TransportPortfolioSolve.UTILITY_SEARCH_ABS_GAP <= 1e-6
 
@@ -6240,17 +6240,19 @@ def test_a_certification_that_returns_no_solution_keeps_the_support_incumbent(mo
     program = _hedged_program()
     tight = _strategy_params("relax_fix", absolute_gap=1e-9, relative_gap=0.)
     baseline = TransportPortfolioSolve("base", tight).run(None, program)["selection"]
-    original = TransportPortfolioSolve._solve_once
+    original, calls = TransportPortfolioSolve._solve_once, []
 
     def empty_certification(self, solver, model, time_limit=None):
         result = original(self, solver, model, time_limit)
-        if "objective_target" in solver.options:   # the certification solve: HiGHS finds nothing in time
+        calls.append(None)
+        if len(calls) == 2:   # the certification solve (after the support search): HiGHS finds nothing in time
             model._transport_no_incumbent = True
             for variable in model.component_data_objects(Var):
                 variable.set_value(None)
         return result
     monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", empty_certification)
     kept = TransportPortfolioSolve("kept", tight).run(None, program)["selection"]
+    assert len(calls) == 2, "the run reached its certification solve"
     candidate = kept["candidate"] if "timeout" in kept else kept
     assert "timeout" not in kept or kept["timeout"] != "no_incumbent", "the support incumbent is kept"
     assert candidate["quantities"] == baseline["quantities"] and sum(map(sum, candidate["quantities"])) > 0
@@ -6259,7 +6261,7 @@ def test_a_certification_that_returns_no_solution_keeps_the_support_incumbent(mo
 
 def test_every_highs_option_the_module_sets_is_one_highs_accepts(monkeypatch):
     """appsi drops setOptionValue's status, so a name HiGHS does not know is ignored without a word: the certification's
-    ``mip_dual_bound`` was never a HiGHS option (ADR-0299 objective-target amendment). Every option name the module
+    ``mip_dual_bound`` was never a HiGHS option (ADR-0299 dead-option amendment). Every option name the module
     writes, and every option a utility certification hands HiGHS, must be one HiGHS accepts."""
     import inspect
     import re
@@ -6275,97 +6277,26 @@ def test_every_highs_option_the_module_sets_is_one_highs_accepts(monkeypatch):
     names |= {name for obj in vars(module).values() if isinstance(obj, type)
               for name in (getattr(obj, "_HIGHS_DETERMINISM", None) or {})}
     names |= {"mip_rel_gap", "mip_abs_gap"}   # the search gaps (_search_gaps)
-    assert {"objective_target", "time_limit", "threads"} <= names, names
+    assert {"time_limit", "threads"} <= names and "mip_dual_bound" not in names, names
     assert {name: probe.setOptionValue(name, probe.getOptionValue(name)[1]) for name in sorted(names)} \
         == {name: ok for name in sorted(names)}
-    handed, original = [], highspy.Highs.setOptionValue
+    handed, original, solves = [], highspy.Highs.setOptionValue, []
+    solve_once = TransportPortfolioSolve._solve_once
 
     def spy(self, name, value):
         status = original(self, name, value)
         handed.append((name, status))
         return status
+
+    def counted(self, solver, model, time_limit=None):
+        solves.append(None)
+        return solve_once(self, solver, model, time_limit)
     monkeypatch.setattr(highspy.Highs, "setOptionValue", spy)
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", counted)
     tight = _strategy_params("relax_fix", absolute_gap=1e-9, relative_gap=0.)
     TransportPortfolioSolve("tight", tight).run(None, _hedged_program())
-    assert "objective_target" in {name for name, _ in handed}, "the certification solve sets its target"
+    assert len(solves) == 2 and {"mip_rel_gap", "threads"} <= {name for name, _ in handed}, "support and certification"
     assert [name for name, status in handed if status != ok] == []
-
-
-def _target_stop_run(monkeypatch, target):
-    """A certification from cash (an empty support) whose HiGHS gaps are exact, under a stated ``target``
-    (``(target, r, a)`` for the options and the bound), so HiGHS can end only on the objective target or at its exact
-    optimum; returns the run's selection and each solve's (target set, termination). The stated gaps standing apart
-    from HiGHS's exact ones model HiGHS's target check firing before its own gap check (an incumbent found before
-    the root bound): the stop the option exists for, which this small program does not otherwise reach."""
-    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
-
-    monkeypatch.setattr(TransportPortfolioSolve, "UTILITY_SUPPORT_EPS", float("inf"))
-    monkeypatch.setattr(TransportPortfolioSolve, "_certification_target", staticmethod(target))
-    params = _strategy_params("relax_fix", absolute_gap=1e-3, relative_gap=.05)
-    params["solver_options"] = {**params["solver_options"], "presolve": "off"}
-    endings, original = [], TransportPortfolioSolve._solve_once
-
-    def spy(self, solver, model, time_limit=None):
-        result = original(self, solver, model, time_limit)
-        endings.append(("objective_target" in solver.options, str(result.solver.termination_condition)))
-        return result
-    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", spy)
-    return TransportPortfolioSolve("target", params).run(None, _hedged_program())["selection"], endings
-
-
-def test_a_certification_that_stops_on_the_objective_target_is_certified_within_its_gaps(monkeypatch):
-    """HiGHS's objective-target stop (appsi objectiveLimit, legacy minFunctionValue) is a gap-reached certification:
-    labelled optimal, the incumbent within the stated gaps of the relaxation bound, never a timeout."""
-    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
-
-    real = TransportPortfolioSolve._certification_target
-    selection, endings = _target_stop_run(
-        monkeypatch, lambda options, bound: real({"mip_rel_gap": .01, "mip_abs_gap": 1e-9}, bound))
-    assert endings == [(False, "optimal"), (True, "minFunctionValue")], endings
-    assert "timeout" not in selection
-    c = selection["certificates"][0]
-    assert (c["termination"], c["status"], c["strategy_outcome"], c["bound_source"]) \
-        == ("optimal", "ok", "certified", "certification"), c
-    assert 0. < c["bound"]-c["objective"] <= .01*abs(c["objective"]), "stopped short of the optimum, within 1%"
-    assert c["gap"] <= .05 and selection["value"] > 0. and sum(map(sum, selection["quantities"])) > 0
-
-
-def test_an_objective_limit_ending_outside_the_gaps_is_refused_never_certified(monkeypatch):
-    """A HiGHS objective-limit ending whose incumbent is not within the stated gaps of the bound keeps its label, and
-    the certificate check refuses it: nothing is certified that the bound does not support."""
-    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal
-
-    with pytest.raises(RecordedCheckRefusal, match="invalid primary solver certificate"):
-        _target_stop_run(monkeypatch, lambda options, bound: (1e-6, 0., 1e-9))
-
-
-def test_a_target_stop_is_relabelled_only_for_the_certification_solve_that_set_it(monkeypatch):
-    """The relabel reads the target paired with the certification's own results: a target held for any other
-    results object (stale state) relabels nothing, so the same within-gaps stop is refused."""
-    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
-
-    real, original = TransportPortfolioSolve._certification_target, TransportPortfolioSolve._solve_relax_fix
-
-    def stale(self, solver, model):
-        result = original(self, solver, model)
-        model._transport_target = (model._transport_target[0], object())
-        return result
-    monkeypatch.setattr(TransportPortfolioSolve, "_solve_relax_fix", stale)
-    with pytest.raises(RecordedCheckRefusal, match="invalid primary solver certificate"):
-        _target_stop_run(monkeypatch, lambda options, bound: real({"mip_rel_gap": .01, "mip_abs_gap": 1e-9}, bound))
-
-
-def test_the_certification_target_is_within_the_gaps_of_the_bound():
-    """Any incumbent at or above the target is within max(a, r|v|) of the bound, whatever the bound's sign."""
-    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
-
-    for rel, absolute in ((0., 1e-9), (1e-4, 1e-6), (.5, 1e-3), (.05, 100.)):
-        for bound in (-50., -1e-3, 0., 1e-3, 3., 1e4):
-            options = {"mip_rel_gap": rel, "mip_abs_gap": absolute}
-            target, stated_rel, stated_abs = TransportPortfolioSolve._certification_target(options, bound)
-            assert (stated_rel, stated_abs) == (rel, absolute) and target <= bound
-            slack = 1e-12*max(1., abs(bound))   # the rounding of bound - d, not a looser test
-            assert bound-target <= max(absolute, rel*abs(target))+slack, (rel, absolute, bound)
 
 
 def test_a_dollar_program_ignores_the_utility_solve_strategy_and_a_bad_one_refuses():
