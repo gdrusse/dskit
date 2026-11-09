@@ -16,7 +16,10 @@ import pytest
 
 import dskit.pipeline.edge_reliability as er
 from dskit.pipeline.edge_reliability import (
+    EdgeCalibrationMap,
     LinearEdgeState,
+    NameAdjustment,
+    PartialPooling,
     ReliabilityBuckets,
     SettledBefore,
     _Refusal,
@@ -586,7 +589,428 @@ class TestReliabilityBuckets:
 
 
 def test_public_surface():
-    assert sorted(er.__all__) == sorted(
-        ["DEVELOPMENT_SEAL", "LinearEdgeState", "ReliabilityBuckets", "SettledBefore"])
+    assert set(er.__all__) >= {"DEVELOPMENT_SEAL", "LinearEdgeState", "ReliabilityBuckets", "SettledBefore"}
     for name in er.__all__:
         assert hasattr(er, name)
+
+
+# ================================================================ stage 2a: pooling, name adjustment, map
+# Oracles below restate the maths independently (numpy, row by row); only the stage-1 state is read.
+
+POOL = {"min_clusters": 4, "min_dates": 3, "tau2_floor": 1e-6, "weight_cap": 1.0, "lcb_k": 1.0}
+NAME = {"name_prior_clusters": 26, "name_min_clusters": 2}
+LAM = 0.9
+
+
+def _built(lam=None, upto=None):
+    state = LinearEdgeState(N_BUCKETS, lam)
+    rows = _drive(state, _clusters(), _weeks(), lam=lam, upto=upto)
+    return state, rows
+
+
+def _shrink_oracle(state, buckets, floor, min_clusters):
+    """theta* = theta_b + V (T + V)^-1 (theta_0 - theta_b), T by method of moments over eligible buckets."""
+    f0 = state.fit(None)
+    th0 = np.array([f0["a"], f0["b"]])
+    elig = {}
+    for b in buckets:
+        f = state.fit(b)
+        if f["clusters"] < min_clusters or f["a"] is None:
+            continue
+        sw = state.sandwich(b, (f["a"], f["b"]), "two")
+        if sw is not None:
+            elig[b] = (np.array([f["a"], f["b"]]), _arr(sw["cov"]))
+    if len(elig) >= 2:
+        th = np.array([v[0] for v in elig.values()])
+        mean_v = np.mean([np.diag(v[1]) for v in elig.values()], axis=0)
+        tdiag = np.maximum(np.var(th, axis=0, ddof=1) - mean_v, floor)
+    else:
+        tdiag = np.full(2, floor)
+    t = np.diag(tdiag)
+    out = {}
+    for b in buckets:
+        if b in elig:
+            thb, v = elig[b]
+            out[b] = (thb + v @ np.linalg.solve(t + v, th0 - thb), t @ np.linalg.solve(t + v, v))
+        else:
+            out[b] = (th0, None)
+    return out, tdiag
+
+
+class TestPartialPoolingParams:
+    @pytest.mark.parametrize("bad", [
+        {**POOL, "extra": 1}, {k: v for k, v in POOL.items() if k != "lcb_k"},
+        {**POOL, "min_clusters": 1}, {**POOL, "min_dates": 0}, {**POOL, "tau2_floor": 0.0},
+        {**POOL, "weight_cap": 0.0}, {**POOL, "lcb_k": -1}, {**POOL, "lcb_k": float("nan")},
+        {**POOL, "min_clusters": True}, "x", None,
+    ])
+    def test_rejects(self, bad):
+        with pytest.raises(ValueError):
+            PartialPooling(bad)
+
+    def test_params_tuple(self):
+        assert PartialPooling._PARAMS == ("min_clusters", "min_dates", "tau2_floor", "weight_cap", "lcb_k")
+        assert NameAdjustment._PARAMS == ("name_prior_clusters", "name_min_clusters")
+
+
+class TestPartialPooling:
+    def test_matches_independent_shrinkage(self):
+        state, _ = _built()
+        res = PartialPooling(POOL).fit(state)
+        want, _ = _shrink_oracle(state, range(N_BUCKETS), POOL["tau2_floor"], POOL["min_clusters"])
+        assert res["warm"] is True
+        for b in range(3):
+            assert not res["buckets"][b]["pooled"]
+            assert np.allclose([res["buckets"][b]["a"], res["buckets"][b]["b"]], want[b][0], rtol=1e-9)
+            assert res["buckets"][b]["se_b"] == pytest.approx(math.sqrt(want[b][1][1][1]), rel=1e-9)
+
+    def test_empty_bucket_takes_the_pool(self):
+        state, _ = _built()
+        res = PartialPooling(POOL).fit(state)
+        f0 = state.fit(None)
+        b3 = res["buckets"][3]
+        assert b3["pooled"] is True and b3["clusters"] == 0
+        assert (b3["a"], b3["b"]) == (f0["a"], f0["b"])
+
+    def test_tiny_bucket_shrinks_to_the_pool(self):
+        state, rows = _built()
+        # a 5th bucket with 3 clusters (< min_clusters 4) and wild numbers
+        state = LinearEdgeState(5, None)
+        _drive(state, _clusters(), _weeks())
+        for k, name in enumerate(["AA", "BB", "CC"]):
+            state.add_cluster(_weeks()[-1], name, "2020-03-06", "2020-03-02", [4, 4], [1.0, 2.0], [50.0, 90.0 + k])
+        res = PartialPooling(POOL).fit(state)
+        f0 = state.fit(None)
+        assert res["buckets"][4]["pooled"] is True and res["buckets"][4]["clusters"] == 3
+        assert (res["buckets"][4]["a"], res["buckets"][4]["b"]) == (f0["a"], f0["b"])
+
+    def test_zero_variance_bucket_keeps_its_slope(self):
+        state = LinearEdgeState(3, None)
+        t = "2020-03-20"
+        rng = np.random.default_rng(5)
+        k = 0
+        for wk in range(5):
+            for name in ["AA", "BB", "CC"]:
+                day = _iso(FIRST_SETTLE + datetime.timedelta(days=7 * wk))
+                e = rng.normal(0, 2, 6)
+                state.add_cluster(t, name, day, _iso(FIRST_SETTLE + datetime.timedelta(days=7 * wk - 3)),
+                                  [0] * 3 + [1] * 3, [float(x) for x in e],
+                                  [float(1.0 + 2.0 * x) for x in e[:3]] + [float(rng.normal(0, 3) - 4 * x) for x in e[3:]])
+                k += 1
+        res = PartialPooling(POOL).fit(state)
+        assert res["buckets"][0]["a"] == pytest.approx(1.0, abs=1e-7)
+        assert res["buckets"][0]["b"] == pytest.approx(2.0, abs=1e-7)
+        assert not res["buckets"][0]["pooled"]
+
+    def test_warm_up_returns_the_prior(self):
+        state, _ = _built(upto=1)  # only the first settle date is in
+        assert state.fit(None)["dates"] < POOL["min_dates"]
+        res = PartialPooling(POOL).fit(state)
+        assert res["warm"] is False
+        assert all(x["a"] == 0.0 and x["b"] == 0.0 and x["w"] == 0.0 for x in res["buckets"])
+        assert res["pooled"]["a"] == 0.0 and res["pooled"]["b"] == 0.0
+
+    def test_warm_up_waits_for_clusters_too(self):
+        state, _ = _built()
+        res = PartialPooling({**POOL, "min_clusters": 10_000}).fit(state)
+        assert res["warm"] is False and res["buckets"][0]["b"] == 0.0
+
+    def test_tau2_floor_binds(self):
+        # identical buckets: across-bucket variance 0, so T is the floor and the result is the pool
+        state = LinearEdgeState(2, None)
+        rng = np.random.default_rng(3)
+        for wk in range(5):
+            for name in ["AA", "BB", "CC"]:
+                e = [float(x) for x in rng.normal(0, 2, 5)]
+                r = [float(0.2 + 0.7 * x + rng.normal(0, 1)) for x in e]
+                day = _iso(FIRST_SETTLE + datetime.timedelta(days=7 * wk))
+                state.add_cluster("2020-03-20", name, day, _iso(FIRST_SETTLE + datetime.timedelta(days=7 * wk - 2)),
+                                  [0] * 5, e, r)
+                state.add_cluster("2020-03-20", name + "x", day, _iso(FIRST_SETTLE + datetime.timedelta(days=7 * wk - 2)),
+                                  [1] * 5, e, r)
+        floor = 1e-9
+        res = PartialPooling({**POOL, "tau2_floor": floor}).fit(state)
+        _, tdiag = _shrink_oracle(state, range(2), floor, POOL["min_clusters"])
+        assert np.allclose(tdiag, floor)
+        f0 = state.fit(None)
+        assert res["buckets"][0]["b"] == pytest.approx(f0["b"], rel=1e-4)
+        loose = PartialPooling({**POOL, "tau2_floor": 1e6}).fit(state)  # huge floor: no shrinkage
+        assert loose["buckets"][0]["b"] == pytest.approx(state.fit(0)["b"], rel=1e-6)
+
+    def test_origin_slope_cap_and_clip(self):
+        state = LinearEdgeState(2, None)
+        rng = np.random.default_rng(8)
+        for wk in range(6):
+            for name in ["AA", "BB", "CC", "DD"]:
+                e = [float(x) for x in rng.normal(0, 2, 6)]
+                day = _iso(FIRST_SETTLE + datetime.timedelta(days=7 * wk))
+                fill = _iso(FIRST_SETTLE + datetime.timedelta(days=7 * wk - 2))
+                state.add_cluster("2020-03-20", name, day, fill, [0] * 6, e, [float(3.0 * x + rng.normal(0, .5)) for x in e])
+        res = PartialPooling(POOL).fit(state)
+        assert res["buckets"][0]["w"] == 1.0  # raw slope ~3, capped at 1
+        capped = PartialPooling({**POOL, "weight_cap": 0.5}).fit(state)
+        assert capped["buckets"][0]["w"] == 0.5
+        neg = LinearEdgeState(1, None)
+        for wk in range(6):
+            for name in ["AA", "BB", "CC", "DD"]:
+                e = [float(x) for x in rng.normal(0, 2, 6)]
+                day = _iso(FIRST_SETTLE + datetime.timedelta(days=7 * wk))
+                neg.add_cluster("2020-03-20", name, day, _iso(FIRST_SETTLE + datetime.timedelta(days=7 * wk - 2)),
+                                [0] * 6, e, [float(-1.5 * x + rng.normal(0, .5)) for x in e])
+        res = PartialPooling(POOL).fit(neg)
+        assert res["buckets"][0]["w"] == 0.0 and res["buckets"][0]["w_lcb"] == 0.0
+
+    def test_origin_slope_matches_independent_sandwich(self):
+        state, rows = _built()
+        res = PartialPooling({**POOL, "weight_cap": 100.0}).fit(state)
+        f0 = _origin_oracle(rows)
+        assert res["pooled"]["w"] == pytest.approx(f0[0], rel=1e-9)
+        assert res["pooled"]["se_w"] == pytest.approx(math.sqrt(f0[1]), rel=1e-9)
+
+    def test_lcb_variants(self):
+        state, _ = _built()
+        for k in (0.0, 1.0, 2.5):
+            res = PartialPooling({**POOL, "lcb_k": k, "weight_cap": 100.0}).fit(state)
+            for x in res["buckets"][:3]:
+                assert x["b_lcb"] == pytest.approx(x["b"] - k * x["se_b"], rel=1e-12)
+                assert x["w_lcb"] == pytest.approx(max(x["w"] - k * x["se_w"], 0.0), rel=1e-12)
+
+    def test_decayed_state_is_pooled_from_its_own_sums(self):
+        state, _ = _built(lam=LAM)
+        res = PartialPooling(POOL).fit(state)
+        want, _ = _shrink_oracle(state, range(N_BUCKETS), POOL["tau2_floor"], POOL["min_clusters"])
+        assert np.allclose([res["buckets"][1]["a"], res["buckets"][1]["b"]], want[1][0], rtol=1e-9)
+
+    def test_does_not_change_the_state(self):
+        state, _ = _built()
+        before = json.dumps(state.to_dict(), sort_keys=True)
+        PartialPooling(POOL).fit(state)
+        assert json.dumps(state.to_dict(), sort_keys=True) == before
+
+
+def _origin_oracle(rows):
+    """Slope through the origin and its two-way CR1 variance, row by row."""
+    e = np.array([q["e"] for q in rows])
+    r = np.array([q["r"] for q in rows])
+    wt = np.array([q["w"] for q in rows])
+    see = np.sum(wt * e * e)
+    w = np.sum(wt * e * r) / see
+
+    def one(labels):
+        s = {}
+        for lab, ei, ri, wi in zip(labels, e, r, wt):
+            s[lab] = s.get(lab, 0.0) + wi * ei * (ri - w * ei)
+        g = len(s)
+        return g / (g - 1) * sum(v * v for v in s.values()) / see ** 2
+
+    names = [q["name"] for q in rows]
+    dates = [q["date"] for q in rows]
+    return w, one(names) + one(dates) - one(list(zip(names, dates)))
+
+
+# ---------------------------------------------------------------- name adjustment
+
+
+def _name_clusters(name, g, slope_da=0.5, slope_db=0.3, seed=1):
+    rng = np.random.default_rng(seed)
+    out = []
+    for k in range(g):
+        e = [float(x) for x in rng.normal(0, 2, 5)]
+        c = [float(0.1 * x) for x in e]
+        u = [slope_da + slope_db * x + float(rng.normal(0, .4)) for x in e]
+        day = _iso(FIRST_SETTLE + datetime.timedelta(days=7 * k))
+        out.append({"name": name, "settle": day, "e": e, "c": c, "r": [ci + ui for ci, ui in zip(c, u)], "u": u, "age": g - 1 - k})
+    return out
+
+
+def _ols(e, u, w):
+    x = np.array([[1.0, v] for v in e])
+    wt = np.array(w)
+    return np.linalg.solve(x.T @ (wt[:, None] * x), x.T @ (wt * np.array(u)))
+
+
+class TestNameAdjustment:
+    def _fed(self, clusters, decay=None, upto=None):
+        adj = NameAdjustment(NAME, decay=decay)
+        t_last = None
+        for k, c in enumerate(clusters):
+            t = _iso(FIRST_SETTLE + datetime.timedelta(days=7 * k + 3))
+            adj.advance(t)
+            adj.add_cluster(t, c["name"], c["settle"], c["e"], c["r"], c["c"])
+            t_last = t
+        return adj, t_last
+
+    @pytest.mark.parametrize("bad", [{**NAME, "x": 1}, {"name_prior_clusters": 26},
+                                     {**NAME, "name_prior_clusters": -1}, {**NAME, "name_min_clusters": 0},
+                                     {**NAME, "name_prior_clusters": float("inf")}, None])
+    def test_rejects(self, bad):
+        with pytest.raises(ValueError):
+            NameAdjustment(bad)
+
+    def test_shrinks_toward_zero_by_effective_clusters(self):
+        cl = _name_clusters("AA", 10)
+        adj, _ = self._fed(cl)
+        raw = _ols([v for c in cl for v in c["e"]], [v for c in cl for v in c["u"]], [1.0] * 50)
+        got = adj.adjust("AA")
+        assert np.allclose(got, raw * 10 / (10 + 26), rtol=1e-9)
+
+    def test_zero_below_min_clusters_and_for_unknown_name(self):
+        adj, _ = self._fed(_name_clusters("AA", 1))
+        assert adj.adjust("AA") == (0.0, 0.0)
+        assert adj.adjust("ZZ") == (0.0, 0.0)
+
+    def test_singular_name_is_zero(self):
+        adj = NameAdjustment(NAME)
+        for k in range(3):
+            day = _iso(FIRST_SETTLE + datetime.timedelta(days=7 * k))
+            adj.add_cluster("2020-06-01", "AA", day, [1.0, 1.0], [2.0, 3.0], [0.5, 0.5])
+        assert adj.adjust("AA") == (0.0, 0.0)
+
+    def test_decayed_uses_kish_effective_clusters_and_weights(self):
+        cl = _name_clusters("AA", 8)
+        adj, _ = self._fed(cl, decay=LAM)
+        w = [LAM ** (c["age"]) for c in cl for _ in c["e"]]
+        raw = _ols([v for c in cl for v in c["e"]], [v for c in cl for v in c["u"]], w)
+        cw = np.array([LAM ** c["age"] for c in cl])
+        g_eff = cw.sum() ** 2 / (cw ** 2).sum()
+        assert np.allclose(adj.adjust("AA"), raw * g_eff / (g_eff + 26), rtol=1e-9)
+        assert adj.effective_clusters("AA") == pytest.approx(g_eff, rel=1e-12)
+
+    def test_one_names_cluster_moves_only_that_name(self):
+        adj, t = self._fed(_name_clusters("AA", 6, seed=1) + _name_clusters("BB", 6, seed=2))
+        before_b = adj.adjust("BB")
+        before_a = adj.adjust("AA")
+        extra = _name_clusters("AA", 7, seed=9)[-1]
+        adj.add_cluster("2021-01-01", "AA", "2020-12-25", extra["e"], extra["r"], extra["c"])
+        assert adj.adjust("BB") == before_b
+        assert adj.adjust("AA") != before_a
+
+    def test_only_settlements_strictly_before_t(self):
+        adj = NameAdjustment(NAME)
+        before = json.dumps(adj.to_dict(), sort_keys=True)
+        for s in ("2020-03-06", "2020-03-07"):
+            with pytest.raises(_Refusal) as exc:
+                adj.add_cluster("2020-03-06", "AA", s, [1.0, 2.0], [1.0, 2.0], [0.0, 0.0])
+            assert exc.value.code == "state_from_future"
+        assert json.dumps(adj.to_dict(), sort_keys=True) == before
+
+    def test_residual_is_frozen_at_decision_time(self):
+        """The residual uses the c stored at t_i; a later bucket map never rewrites it."""
+        state, _ = _built(upto=5)
+        pooling = PartialPooling(POOL)
+        m1 = EdgeCalibrationMap.build("2020-02-14", state, pooling, NameAdjustment(NAME))
+        e, r = [1.0, -2.0, 3.0], [2.0, 0.5, 1.0]
+        c_frozen = [m1.bucket_only(1, v) for v in e]
+        adj = NameAdjustment(NAME)
+        for k in range(3):
+            day = _iso(FIRST_SETTLE + datetime.timedelta(days=7 * k))
+            adj.add_cluster("2020-06-01", "AA", day, e, r, c_frozen)
+        frozen = json.dumps(adj.to_dict(), sort_keys=True)
+        da, db = adj.adjust("AA")
+        # the bucket map moves on (more data); the stored residuals and the adjustment do not
+        state2, _ = _built()
+        m2 = EdgeCalibrationMap.build("2020-04-01", state2, pooling, adj)
+        assert [m2.bucket_only(1, v) for v in e] != c_frozen
+        assert json.dumps(adj.to_dict(), sort_keys=True) == frozen
+        assert adj.adjust("AA") == (da, db)
+        u = [ri - ci for ri, ci in zip(r, c_frozen)]
+        want = _ols(e * 3, u * 3, [1.0] * 9) * 3 / (3 + 26)
+        assert np.allclose([da, db], want, rtol=1e-9)
+
+    def test_dump_roundtrip_continues_identically(self):
+        adj, _ = self._fed(_name_clusters("AA", 6), decay=LAM)
+        again = NameAdjustment.from_dict(json.loads(json.dumps(adj.to_dict())))
+        assert json.dumps(again.to_dict(), sort_keys=True) == json.dumps(adj.to_dict(), sort_keys=True)
+        for a in (adj, again):
+            a.advance("2021-01-01")
+        assert again.adjust("AA") == adj.adjust("AA")
+
+    def test_duplicate_cluster_and_bad_inputs_refuse(self):
+        adj = NameAdjustment(NAME)
+        adj.add_cluster("2020-06-01", "AA", "2020-05-01", [1.0, 2.0], [1.0, 2.0], [0.0, 0.0])
+        with pytest.raises(ValueError):
+            adj.add_cluster("2020-06-01", "AA", "2020-05-01", [1.0, 2.0], [1.0, 2.0], [0.0, 0.0])
+        for bad in ([[1.0], [1.0, 2.0], [0.0, 0.0]], [[1.0, float("nan")], [1.0, 2.0], [0.0, 0.0]], [[], [], []]):
+            with pytest.raises(ValueError):
+                adj.add_cluster("2020-06-01", "BB", "2020-05-02", *bad)
+
+
+# ---------------------------------------------------------------- calibration map
+
+
+class TestEdgeCalibrationMap:
+    def _map(self, lam=None, adj=None):
+        state, _ = _built(lam=lam)
+        return state, EdgeCalibrationMap.build("2020-04-01", state, PartialPooling(POOL), adj or NameAdjustment(NAME, decay=lam))
+
+    def test_is_frozen(self):
+        _, m = self._map()
+        for attr, val in (("t", "x"), ("buckets", ()), ("newattr", 1)):
+            with pytest.raises((AttributeError, TypeError)):
+                setattr(m, attr, val)
+
+    def test_calibrated_adds_the_name_adjustment(self):
+        adj = NameAdjustment(NAME)
+        for k, c in enumerate(_name_clusters("AA", 5)):
+            adj.add_cluster("2021-01-01", "AA", c["settle"], c["e"], c["r"], c["c"])
+        _, m = self._map(adj=adj)
+        da, db = adj.adjust("AA")
+        b = m.buckets[1]
+        assert m.calibrated(1, "AA", 2.0) == pytest.approx((b.a + da) + (b.b + db) * 2.0, rel=1e-12)
+        assert m.calibrated(1, "ZZ", 2.0) == pytest.approx(b.a + b.b * 2.0, rel=1e-12)
+        assert m.bucket_only(1, 2.0) == pytest.approx(b.a + b.b * 2.0, rel=1e-12)
+
+    def test_counts_weights_and_se_present(self):
+        state, m = self._map()
+        f = state.fit(1)
+        b = m.buckets[1]
+        assert (b.clusters, b.rows) == (f["clusters"], f["rows"])
+        assert b.se_b > 0 and b.se_a > 0 and 0.0 <= b.w <= POOL["weight_cap"]
+        assert m.t == "2020-04-01" and m.warm is True and m.pooled.clusters == state.fit(None)["clusters"]
+        assert m.names == {} or all(len(v) == 2 for v in m.names.values())
+
+    def test_variants(self):
+        _, m = self._map()
+        b = m.buckets[2]
+        assert m.origin(2, 3.0) == pytest.approx(b.w * 3.0, rel=1e-12)
+        assert m.origin(2, 3.0, lcb=True) == pytest.approx(b.w_lcb * 3.0, rel=1e-12)
+        assert m.lower(2, 3.0) == pytest.approx(b.a + b.b_lcb * 3.0, rel=1e-12)
+        assert m.origin(2, 0.0) == 0.0  # zero predicted, zero calibrated
+
+    def test_warm_up_is_zero_everywhere(self):
+        state, _ = _built(upto=1)
+        m = EdgeCalibrationMap.build("2020-01-24", state, PartialPooling(POOL), NameAdjustment(NAME))
+        assert m.warm is False
+        for b in range(N_BUCKETS):
+            assert m.calibrated(b, "AA", 5.0) == 0.0 and m.origin(b, 5.0) == 0.0 and m.lower(b, 5.0) == 0.0
+
+    def test_roundtrip_json(self):
+        _, m = self._map()
+        blob = json.loads(json.dumps(m.to_dict()))
+        again = EdgeCalibrationMap.from_dict(blob)
+        assert json.dumps(again.to_dict(), sort_keys=True) == json.dumps(m.to_dict(), sort_keys=True)
+        assert again.calibrated(1, "AA", 1.5) == m.calibrated(1, "AA", 1.5)
+
+    def test_later_state_changes_do_not_move_a_built_map(self):
+        state, m = self._map()
+        before = json.dumps(m.to_dict(), sort_keys=True)
+        state.add_cluster("2020-06-01", "ZZ", "2020-05-01", "2020-04-28", [1, 1], [1.0, 2.0], [9.0, 9.0])
+        assert json.dumps(m.to_dict(), sort_keys=True) == before
+
+    def test_decayed_and_expanding_differ(self):
+        _, mx = self._map()
+        _, md = self._map(lam=LAM)
+        assert md.buckets[1].b != mx.buckets[1].b
+
+    def test_bad_bucket_and_input_refuse(self):
+        _, m = self._map()
+        for bad in (-1, N_BUCKETS, True, 1.5):
+            with pytest.raises(ValueError):
+                m.bucket_only(bad, 1.0)
+        with pytest.raises(ValueError):
+            m.bucket_only(1, float("nan"))
+
+
+def test_stage_2a_public_surface():
+    assert {"PartialPooling", "NameAdjustment", "EdgeCalibrationMap"} <= set(er.__all__)
+    assert er.__all__[-3:] == ["PartialPooling", "NameAdjustment", "EdgeCalibrationMap"]
