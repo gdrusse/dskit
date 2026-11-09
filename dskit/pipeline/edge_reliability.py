@@ -26,6 +26,8 @@ Refusals that carry a stable code raise a private ``ValueError`` subclass
 whose ``code`` attribute and message prefix are that code.
 """
 
+import bisect
+import math
 from datetime import date, datetime
 
 from dskit.pipeline.kinds_split import label_reaches
@@ -37,6 +39,7 @@ __all__ = [
     "LinearEdgeState",
     "ReliabilityBuckets",
     "SettledBefore",
+    "TrailingRegime",
 ]
 
 #: Newest ``sealed_from`` a config may name until the owner lifts the seal (ADR-0311 rule 7).
@@ -605,3 +608,189 @@ class LinearEdgeState:
         except (KeyError, TypeError) as exc:
             raise ValueError(f"malformed LinearEdgeState dump: {exc!r}") from exc
         return state
+
+
+class TrailingRegime:
+    """A name's volatility regime at decision ``t``: is it above its own trailing median.
+
+    ``v`` is the name's annualized scale at a decision session (see
+    :meth:`annualize`). The regime at ``t`` is ``high`` when ``v`` is STRICTLY
+    above the median of that name's earlier values dated in
+    ``[t - 7 * regime_lookback_weeks days, t)``; the value at ``t`` itself and
+    anything later never counts, so a tie is ``low``. With fewer than
+    ``regime_min_weeks`` such values the regime is the fallback ``low`` and the
+    answer carries ``warmup=True`` (ADR-0311 counts it as ``regime_warmup``;
+    :attr:`warmups` is that count).
+
+    State is incremental: each name keeps only the values still inside the
+    newest window (about ``regime_lookback_weeks + 1``), appended in date order,
+    so a call never rescans history. A query is exact for any ``t`` whose window
+    has not been evicted, else it refuses.
+
+    Parameters
+    ----------
+    params : dict
+        ``regime_lookback_weeks`` and ``regime_min_weeks``, both positive ints
+        (``min <= lookback``), required.
+
+    Raises
+    ------
+    ValueError
+        On an unknown or missing key or a bad value (params); on an
+        out-of-order ``add``, a bad ``v`` or a query into an evicted window.
+
+    Examples
+    --------
+    ::
+
+        reg = TrailingRegime({"regime_lookback_weeks": 52, "regime_min_weeks": 13})
+        v = TrailingRegime.annualize([(0.02, 7), (0.04, 28)])
+        regime, warmup = reg.of("AAA", "2020-03-06", v)  # then reg.add("AAA", "2020-03-06", v)
+    """
+
+    _PARAMS = ("regime_lookback_weeks", "regime_min_weeks")
+
+    def __init__(self, params):
+        if not isinstance(params, dict):
+            raise ValueError(f"params must be a dict, got {type(params).__name__}")
+        unknown = sorted(set(params) - set(self._PARAMS))
+        if unknown:
+            raise ValueError(f"unknown params {unknown}; allowed {list(self._PARAMS)}")
+        for key in self._PARAMS:
+            value = params.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{key} must be an int >= 1, got {value!r}")
+        self._lookback = params["regime_lookback_weeks"]
+        self._min = params["regime_min_weeks"]
+        if self._min > self._lookback:
+            raise ValueError(f"regime_min_weeks {self._min} exceeds regime_lookback_weeks {self._lookback}")
+        self._days = {}
+        self._vals = {}
+        self._evicted = {}
+        #: Rows answered with the fallback ``low`` for lack of history (``regime_warmup``).
+        self.warmups = 0
+
+    @staticmethod
+    def _scale(v):
+        if isinstance(v, bool) or not number_ok(v) or v <= 0:
+            raise ValueError(f"v must be a finite number > 0, got {v!r}")
+        return float(v)
+
+    @staticmethod
+    def annualize(scale_dte_pairs):
+        """Return the median over expiries of ``reference_scale * sqrt(365 / dte)``.
+
+        Parameters
+        ----------
+        scale_dte_pairs : iterable of (float, float)
+            One ``(reference_scale, dte)`` per eligible expiry of the name at
+            the decision session; scale ``> 0``, calendar ``dte > 0``.
+
+        Returns
+        -------
+        float
+            The annualized scale ``v`` (the median limits one bad expiry).
+
+        Raises
+        ------
+        ValueError
+            When empty or any scale or dte is not a finite positive number.
+        """
+        out = []
+        for scale, dte in scale_dte_pairs:
+            for x, what in ((scale, "reference_scale"), (dte, "dte")):
+                if isinstance(x, bool) or not number_ok(x) or x <= 0:
+                    raise ValueError(f"{what} must be a finite number > 0, got {x!r}")
+            out.append(float(scale) * math.sqrt(365.0 / float(dte)))
+        if not out:
+            raise ValueError("annualize needs at least one (reference_scale, dte) pair")
+        return _median(out)
+
+    def _window(self, name, t):
+        """Return the values of ``name`` dated in ``[t - lookback weeks, t)``."""
+        days = self._days.get(name, [])
+        start = t.toordinal() - 7 * self._lookback
+        if name in self._evicted and start <= self._evicted[name]:
+            raise ValueError(f"{name}: window starting {date.fromordinal(start)} was evicted "
+                             f"(values up to {date.fromordinal(self._evicted[name])} are gone)")
+        lo = bisect.bisect_left(days, start)
+        hi = bisect.bisect_left(days, t.toordinal())
+        return self._vals.get(name, [])[lo:hi]
+
+    def add(self, name, t, v):
+        """Record ``name``'s annualized scale ``v`` at decision session ``t``.
+
+        Parameters
+        ----------
+        name : str
+            The name (ticker).
+        t : str or datetime.date
+            The decision session; strictly later than the name's last one.
+        v : float
+            The annualized scale, finite and positive.
+
+        Raises
+        ------
+        ValueError
+            On a date not after the name's latest (``out of order``) or a bad ``v``.
+        """
+        day = date.fromisoformat(_iso(t, "t")).toordinal()
+        value = self._scale(v)
+        days = self._days.setdefault(name, [])
+        vals = self._vals.setdefault(name, [])
+        if days and day <= days[-1]:
+            raise ValueError(f"{name}: add at {_iso(t, 't')} is out of order (latest "
+                             f"{date.fromordinal(days[-1]).isoformat()})")
+        days.append(day)
+        vals.append(value)
+        cut = bisect.bisect_left(days, day - 7 * self._lookback)
+        if cut:
+            self._evicted[name] = days[cut - 1]
+            del days[:cut]
+            del vals[:cut]
+
+    def window_size(self, name, t):
+        """Return how many earlier values of ``name`` fall in the window at ``t``."""
+        return len(self._window(name, date.fromisoformat(_iso(t, "t"))))
+
+    def stored(self, name):
+        """Return how many values are retained for ``name`` (bounded by the window)."""
+        return len(self._vals.get(name, ()))
+
+    def of(self, name, t, v):
+        """Return ``(regime, warmup)`` for ``name`` at ``t`` with annualized scale ``v``.
+
+        Parameters
+        ----------
+        name : str
+            The name (ticker).
+        t : str or datetime.date
+            The decision session; only values dated strictly before it count.
+        v : float
+            The name's annualized scale at ``t``, finite and positive.
+
+        Returns
+        -------
+        tuple of (str, bool)
+            ``"high"`` when ``v`` is strictly above the trailing median, else
+            ``"low"``; and True when fewer than ``regime_min_weeks`` earlier
+            values existed (the regime is then the fallback ``"low"``).
+
+        Raises
+        ------
+        ValueError
+            On a bad ``v`` or when the window at ``t`` has been evicted.
+        """
+        value = self._scale(v)
+        window = self._window(name, date.fromisoformat(_iso(t, "t")))
+        if len(window) < self._min:
+            self.warmups += 1
+            return "low", True
+        return ("high" if value > _median(window) else "low"), False
+
+
+def _median(values):
+    """Return the median of a non-empty list of numbers."""
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2.0
