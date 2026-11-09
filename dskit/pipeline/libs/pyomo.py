@@ -4039,15 +4039,24 @@ class TransportPortfolioSolve(PyomoSolve):
 
     #: ADR-0302: the keys of ``utility_search``, the deterministic incumbent local search of the relax_fix strategy
     #: (``iterations`` neighbourhoods at most, each freeing ``neighbourhood`` groups and fixing every other group at its
-    #: incumbent counts, solved under a HiGHS node limit ``node_limit`` with no wall-clock limit, drawn from
-    #: ``random.Random(seed)``), and of ``utility_warm_start`` (``node_limit``: the node budget of a certification
-    #: run from the complete incumbent on a week the action limit would otherwise decline).
+    #: incumbent counts, solved under a HiGHS node limit ``node_limit``, drawn from ``random.Random(seed)``; the clock
+    #: may only halt it, :attr:`UTILITY_SEARCH_SHARE`), and of ``utility_warm_start`` (``node_limit``: the node budget
+    #: of a certification run from the complete incumbent on a week the action limit would otherwise decline).
     UTILITY_SEARCH_KEYS = ("iterations", "neighbourhood", "node_limit", "seed")
     UTILITY_WARM_START_KEYS = ("node_limit",)
     #: The keys of the two records (``last_search`` and ``last_warm_start``) the strategy leaves for its caller.
     SEARCH_RECORD_KEYS = ("seed", "iterations", "improved", "value_before", "value_after", "accepted_neighbourhoods",
-                          "budget_exhausted")
-    WARM_START_RECORD_KEYS = ("supplied", "accepted", "over_cap", "termination")
+                          "budget_exhausted", "halted_by", "failed", "seconds")
+    WARM_START_RECORD_KEYS = ("supplied", "accepted", "over_cap", "termination", "value_before", "value_after", "kept")
+    #: ADR-0302 fix round 1: the share of the document's time limit the incumbent search may take, ON TOP of the week's
+    #: budget (the certification's remaining time is measured with the search's seconds left out, so it sees what the
+    #: arm without the search would see). The clock can only halt the search: a neighbourhood the clock stops is
+    #: discarded and the search ends (``halted_by`` "clock"), so the traded point is always the deterministic search's
+    #: result after the recorded number of neighbourhoods.
+    UTILITY_SEARCH_SHARE = .25
+    #: The terminations of a node-limited solve that do not depend on the clock: a solve that ended so is a
+    #: deterministic function of its inputs and budgets (HiGHS maps a node limit to ``maxIterations``).
+    DETERMINISTIC_TERMINATIONS = ("optimal", "maxIterations")
     #: A relaxed count at least this far from the incumbent's count marks its group as one where the LP relaxation and
     #: the incumbent disagree (the RINS half of a neighbourhood is drawn from those groups).
     UTILITY_SEARCH_DISAGREE = .5
@@ -4815,23 +4824,58 @@ class TransportPortfolioSolve(PyomoSolve):
                     solver.options[key] = self._HIGHS_DEFAULTS[key] if value is None else value
         return held()
 
-    def _search_incumbent(self, solver, model, bound, stakes):
+    @staticmethod
+    def _snapshot(model):
+        """Every variable of ``model`` with its loaded value (reloaded by :meth:`_reload`)."""
+        from pyomo.environ import Var
+
+        return [(v, v.value) for v in model.component_data_objects(Var)]
+
+    @staticmethod
+    def _reload(model, saved):
+        """Reload a :meth:`_snapshot`; the loaded point is an incumbent again."""
+        for variable, value in saved:
+            variable.set_value(value, skip_validation=True)
+        model._transport_no_incumbent = False
+
+    def _exact_utility(self, model):
+        """The exact sampled utility of the loaded point (the audit's value, :meth:`_incumbent`), or None.
+
+        The audit's cleanup writes ``x``; the solver's own point is reloaded after it, so what is kept is never the
+        cleaned point (the week's own audit cleans it the same way later).
+        """
+        if getattr(model, "_transport_no_incumbent", False):
+            return None
+        saved = self._snapshot(model)
+        try:
+            return self._incumbent(model)["value"]
+        except ValueError:
+            return None
+        finally:
+            self._reload(model, saved)
+
+    def _search_incumbent(self, solver, model, bound, stakes, seconds=None):
         """ADR-0302: improve the loaded incumbent by exact sampled utility over seeded neighbourhoods; return the record.
 
         Each of at most ``iterations`` neighbourhoods frees ``neighbourhood`` groups (half drawn from the groups whose
         LP relaxed counts and incumbent counts disagree, RINS-style, the rest from the other groups) and fixes every
         other group at the incumbent's counts. The restricted program is solved from the complete incumbent (a MIP
         start through appsi's warm start) under HiGHS's node limit ``node_limit``, with ``random_seed`` the declared
-        seed and NO wall-clock limit, so the same inputs and declaration give the same neighbourhoods and solves. A
-        candidate is kept only when its exact sampled utility (:meth:`_incumbent`, the audit the week's selection is
-        valued by: :class:`TransportActionScore` after the cleanup) beats the incumbent's by more than the parity
-        tolerance; otherwise the incumbent is reloaded. The search stops early once the incumbent is within the
-        document's allowance of the relaxation's bound (nothing left to find). Every bound is restored after it and
-        the best incumbent is left loaded. Nothing here certifies anything: the bound stays the relaxation's.
+        seed, so the same inputs and declaration give the same neighbourhoods and solves. A candidate is kept only
+        when its exact sampled utility (:meth:`_exact_utility`, the audit the week's selection is valued by:
+        :class:`TransportActionScore` after the cleanup) beats the incumbent's by more than the parity tolerance;
+        otherwise the incumbent is reloaded. The search stops early once the incumbent is within the document's
+        allowance of the relaxation's bound (nothing left to find). Every bound is restored after it and the best
+        incumbent is left loaded. Nothing here certifies anything: the bound stays the relaxation's.
+
+        ``seconds`` (None: no clock) is the search's own wall-clock allowance. The clock can only halt the search:
+        once it is spent no further neighbourhood starts, and a neighbourhood solve the clock stops (termination
+        ``maxTimeLimit``) is discarded, so the incumbent left is the deterministic search's after the neighbourhoods
+        the record counts (``halted_by`` "clock"). A neighbourhood whose solve raises is counted in ``failed`` and
+        logged, never silently taken for a rejected one.
         """
         import math
         import random
-        from pyomo.environ import Var
 
         search = self.params["utility_search"]
         tolerance = max(self.params["parity_tolerance"], 1e-9)
@@ -4840,27 +4884,11 @@ class TransportPortfolioSolve(PyomoSolve):
         for key in model.x:
             members[key[0]].append(key)
         bounds = {key: (model.x[key].lb, model.x[key].ub) for key in model.x}
-
-        def snapshot():
-            return [(v, v.value) for v in model.component_data_objects(Var)]
-
-        def restore(saved):
-            for variable, value in saved:
-                variable.set_value(value, skip_validation=True)
-            model._transport_no_incumbent = False
-
-        def exact():
-            saved = snapshot()   # the audit's cleanup writes x; the solver's own point is what is kept
-            try:
-                return self._incumbent(model)["value"]
-            except ValueError:
-                return None
-            finally:
-                restore(saved)
-
-        best, before = snapshot(), exact()
+        started = time.perf_counter()
+        best, before = self._snapshot(model), self._exact_utility(model)
         record = {"seed": search["seed"], "iterations": 0, "improved": False, "value_before": before,
-                  "value_after": before, "accepted_neighbourhoods": [], "budget_exhausted": False}
+                  "value_after": before, "accepted_neighbourhoods": [], "budget_exhausted": False,
+                  "halted_by": None, "failed": 0, "seconds": 0.}
         if before is None:
             return record
         rng = random.Random(search["seed"])
@@ -4872,6 +4900,10 @@ class TransportPortfolioSolve(PyomoSolve):
                 if current is not None and bound-current <= max(self.params["absolute_gap"],
                                                                   self.params["relative_gap"]*abs(current)):
                     stopped = True
+                    break
+                left = None if seconds is None else seconds-(time.perf_counter()-started)
+                if left is not None and left < 1.:
+                    record["halted_by"] = "clock"
                     break
                 counts = {key: round(model.x[key].value or 0) for key in model.x}
                 disagree = [i for i in groups if any(abs(stakes[key]-counts[key]) >= self.UTILITY_SEARCH_DISAGREE
@@ -4891,43 +4923,68 @@ class TransportPortfolioSolve(PyomoSolve):
                 record["iterations"] = k+1
                 try:
                     with self._search_gaps(solver), self._highs_options(solver, {
-                            "time_limit": float("inf"), "mip_max_nodes": search["node_limit"],
-                            "random_seed": search["seed"]}):
-                        self._solve_once(solver, model)
-                    value = None if getattr(model, "_transport_no_incumbent", False) else exact()
-                except (RuntimeError, ValueError):
+                            "time_limit": float("inf") if left is None else max(1., left),
+                            "mip_max_nodes": search["node_limit"], "random_seed": search["seed"]}):
+                        result = self._solve_once(solver, model)
+                    termination = self._termination(result)
+                    halted = termination == "maxTimeLimit"
                     value = None
+                    if termination in self.DETERMINISTIC_TERMINATIONS:
+                        value = self._exact_utility(model)
+                    elif not halted:
+                        record["failed"] += 1
+                        self.log.warning("utility search: neighbourhood %d ended %s; the incumbent stands", k,
+                                         termination)
+                except (RuntimeError, ValueError) as error:
+                    halted, value = False, None
+                    record["failed"] += 1
+                    self.log.warning("utility search: neighbourhood %d failed (%s: %s); the incumbent stands", k,
+                                     type(error).__name__, error)
                 if value is not None and value > record["value_after"]+tolerance:
-                    best = snapshot()
+                    best = self._snapshot(model)
                     record["value_after"] = value
                     record["accepted_neighbourhoods"].append(
                         {"iteration": k, "groups": [self._groups[i]["id"] for i in chosen], "value": value})
                 else:
-                    restore(best)
+                    self._reload(model, best)
+                if halted:
+                    record["halted_by"] = "clock"
+                    break
         finally:
             for key, (lower, upper) in bounds.items():
                 model.x[key].setlb(lower)
                 model.x[key].setub(upper)
-            restore(best)
+            self._reload(model, best)
         record["improved"] = bool(record["accepted_neighbourhoods"])
-        record["budget_exhausted"] = not stopped and record["iterations"] == search["iterations"]
-        self.log.info("utility search: %d of %d neighbourhoods of %d groups, %d accepted", record["iterations"],
-                      search["iterations"], size, len(record["accepted_neighbourhoods"]))
+        record["budget_exhausted"] = (not stopped and record["halted_by"] is None
+                                      and record["iterations"] == search["iterations"])
+        record["seconds"] = round(time.perf_counter()-started, 3)
+        self.log.info("utility search: %d of %d neighbourhoods of %d groups, %d accepted, %d failed, halted by %s, "
+                      "%.0fs", record["iterations"], search["iterations"], size, len(record["accepted_neighbourhoods"]),
+                      record["failed"], record["halted_by"], record["seconds"])
         return record
 
-    def _warm_start_record(self, model, result, supplied, start, over, tolerance):
+    @staticmethod
+    def _termination(result):
+        """A solve's termination condition as a string (``maxTimeLimit`` is the clock, ``maxIterations`` a node limit)."""
+        return str(getattr(getattr(result, "solver", None), "termination_condition", None))
+
+    def _warm_start_record(self, model, result, supplied, start, over, tolerance, value_before):
         """ADR-0302: what the certification did with the incumbent it was handed (its MIP start).
 
         ``supplied``: every variable held the incumbent's value when the certification began, so appsi handed HiGHS
         the complete incumbent (``Highs.setSolution``). ``accepted``: the certification's own incumbent is at least as
         good as that start (HiGHS kept it or beat it). ``over_cap``: the certification ran above the action limit
-        because the warm start was declared. ``termination``: how the certification solve ended.
+        because the warm start was declared. ``termination``: how the certification solve ended. ``value_before`` and
+        ``value_after``: the exact sampled utility of the start and of the certification's own incumbent (None: none).
+        ``kept``: set by the strategy when an unproved over-cap certification's better incumbent is traded uncertified.
         """
         reached = None if getattr(model, "_transport_no_incumbent", False) else self._objective_value(model)
         return {"supplied": bool(supplied),
                 "accepted": bool(supplied and start is not None and reached is not None and reached >= start-tolerance),
                 "over_cap": bool(over),
-                "termination": str(getattr(getattr(result, "solver", None), "termination_condition", None))}
+                "termination": self._termination(result),
+                "value_before": value_before, "value_after": self._exact_utility(model), "kept": False}
 
     def _warm_certified(self, model, result, bound, costs, fixed):
         """Whether a warm-started certification above the action limit proved the document's gap (ADR-0302).
@@ -4986,8 +5043,10 @@ class TransportPortfolioSolve(PyomoSolve):
         model._transport_outcome, model._transport_bound_source = "certified", "certification"
         self.last_search = self.last_warm_start = None
         budget = float(self.params.get("solver_options", {}).get("time_limit", 0) or 0)
-        clock = time.perf_counter()
-        remaining = lambda: None if not budget else max(1., budget-(time.perf_counter()-clock))
+        clock, searched = time.perf_counter(), 0.
+        # The search's own seconds (ADR-0302) are left out of the time the rest of the strategy sees (``searched`` is
+        # rebound after it), so the certification gets what it would get without the search.
+        remaining = lambda: None if not budget else max(1., budget-(time.perf_counter()-clock-searched))
         relaxed = self._relaxation(solver, model, remaining())
         if relaxed is None:
             return self._relaxation_failed(model)
@@ -5008,11 +5067,16 @@ class TransportPortfolioSolve(PyomoSolve):
         incumbent = None if getattr(model, "_transport_no_incumbent", False) else self._objective_value(model)
         for key in outside:
             model.x[key].setub(capacity[key])
-        if incumbent is not None and self.params.get("utility_search") is not None:
+        if self.params.get("utility_search") is not None:
             # ADR-0302: improve the support incumbent by exact sampled utility before anything certifies it; a better
-            # incumbent also lets the reduced costs below fix more actions.
-            self.last_search = self._search_incumbent(solver, model, bound, stakes)
-            incumbent = self._objective_value(model)
+            # incumbent also lets the reduced costs below fix more actions. Its clock is its own share, charged to
+            # the week on top of the document's budget; without a support incumbent it records that it never ran.
+            began = time.perf_counter()
+            self.last_search = self._search_incumbent(
+                solver, model, bound, stakes, None if not budget else self.UTILITY_SEARCH_SHARE*budget)
+            searched = time.perf_counter()-began
+            if incumbent is not None:
+                incumbent = self._objective_value(model)
         if incumbent is not None:
             allowance = max(self.params["absolute_gap"], self.params["relative_gap"]*abs(incumbent))
             if bound-incumbent <= allowance:
@@ -5044,6 +5108,7 @@ class TransportPortfolioSolve(PyomoSolve):
         support = None if incumbent is None else [(v, v.value) for v in model.component_data_objects(Var)]
         supplied = support is not None and all(v.value is not None
                                                for v in model.component_data_objects(Var, active=True))
+        start_value = None if warm is None or support is None else self._exact_utility(model)
         declined_result = result
         for key in fixed:
             model.x[key].setub(0)
@@ -5059,10 +5124,24 @@ class TransportPortfolioSolve(PyomoSolve):
             for key in fixed:
                 model.x[key].setub(capacity[key])
         if warm is not None:
-            self.last_warm_start = self._warm_start_record(model, result, supplied, incumbent, over, tolerance)
+            self.last_warm_start = self._warm_start_record(model, result, supplied, incumbent, over, tolerance,
+                                                           start_value)
         if over and not self._warm_certified(model, result, bound, costs, fixed):
-            # The warm-started certification did not prove the gap: the week is the declined week it was, its
-            # incumbent and its relaxation bound untouched (what the certification found is not traded).
+            w = self.last_warm_start
+            if (w["termination"] in self.DETERMINISTIC_TERMINATIONS and w["value_after"] is not None
+                    and start_value is not None and w["value_after"] > start_value+tolerance):
+                # The node budget, not the clock, stopped it and its incumbent beats the start by exact utility: that
+                # incumbent is traded UNCERTIFIED, the week declined and bounded by the relaxation as before.
+                w["kept"] = True
+                model._transport_bound, model._transport_outside, model._transport_declined = bound, bound, True
+                model._transport_outcome, model._transport_bound_source = "declined", "relaxation"
+                self.log.info("utility solve: warm-started certification above the action limit (%d free actions, "
+                              "node limit %d) did not prove the gap (%s) but improved the incumbent; it is kept "
+                              "uncertified, peak rss %.2f GB", free, warm["node_limit"], w["termination"],
+                              self._peak_rss())
+                return result
+            # Not proved and not improved, or stopped by the clock: the week is the declined week it was, its
+            # incumbent and its relaxation bound untouched (a clock-dependent point is never traded).
             for variable, value in support:
                 variable.set_value(value, skip_validation=True)
             model._transport_no_incumbent = False
@@ -5083,7 +5162,7 @@ class TransportPortfolioSolve(PyomoSolve):
         self.log.info("utility solve: relaxation %.0fs, support %d of %d actions, incumbent search %.0fs, "
                       "certification with %d actions fixed by reduced cost in %.0fs, peak rss %.2f GB",
                       lp_seconds, len(stakes)-len(outside), len(stakes), search_seconds, len(fixed),
-                      time.perf_counter()-clock-lp_seconds-search_seconds, self._peak_rss())
+                      time.perf_counter()-clock-lp_seconds-search_seconds-searched, self._peak_rss())
         return result
 
     @staticmethod

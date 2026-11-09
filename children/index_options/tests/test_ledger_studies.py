@@ -4717,8 +4717,10 @@ def test_a_warm_start_certifies_a_week_the_action_limit_declines_from_its_comple
     for week in declined:
         w = by_date[week["date"]]
         record = w["kelly"]["warm_start"]
-        assert set(record) == {"supplied", "accepted", "over_cap", "termination"}
-        assert record["supplied"] and record["over_cap"] and record["accepted"], record
+        assert set(record) == {"supplied", "accepted", "over_cap", "termination", "value_before", "value_after", "kept"}
+        assert record["supplied"] and record["over_cap"] and record["accepted"] and not record["kept"], record
+        assert record["value_before"] == pytest.approx(_traded(week)["value"], abs=1e-6)
+        assert record["value_after"] == pytest.approx(w["selection"]["value"], abs=1e-6)
         assert record["termination"] == "optimal" and _outcome(w) == "certified"
         assert "timeout" not in w["selection"] and w["kelly"]["uncertified"] is None and w["status"] in ("selected", "cash")
         assert w["selection"]["value"] >= _traded(week)["value"]-1e-6, "the certification starts from the incumbent"
@@ -4749,6 +4751,17 @@ def test_an_unproved_warm_started_certification_leaves_the_declined_week_as_it_w
         ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=forged)
 
 
+def _search_timeless_digest(result):
+    """:func:`_timeless_digest` without the search's own wall seconds (the only clock reading its record carries)."""
+    import copy
+
+    result = copy.deepcopy(result)
+    for decision in result["decisions"]:
+        if (decision.get("kelly") or {}).get("search"):
+            decision["kelly"]["search"].pop("seconds")
+    return _timeless_digest(result)
+
+
 def _poor_incumbent_search(monkeypatch, **kelly):
     """The declined fixture whose support search sees only cash (every action outside the support): a poor incumbent."""
     from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
@@ -4769,8 +4782,9 @@ def test_the_search_improves_a_poor_incumbent_by_exact_utility_and_records_how(m
     for week in weeks:
         s = week["kelly"]["search"]
         assert set(s) == {"seed", "iterations", "improved", "value_before", "value_after", "accepted_neighbourhoods",
-                          "budget_exhausted"}
+                          "budget_exhausted", "halted_by", "failed", "seconds"}
         assert s["seed"] == SEARCH["seed"] and 0 <= s["iterations"] <= SEARCH["iterations"]
+        assert s["halted_by"] is None and s["failed"] == 0 and s["seconds"] >= 0
         assert s["value_before"] == pytest.approx(_traded(before[week["date"]])["value"], abs=1e-6)
         if s["improved"]:
             assert s["value_after"] > s["value_before"]
@@ -4791,7 +4805,8 @@ def test_the_search_is_deterministic_and_replays_through_the_recorded_and_derive
     method = params["methods"][0]
     first = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
     second = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
-    assert _timeless_digest(first) == _timeless_digest(second), "the same seed and node limits give the same weeks"
+    assert _search_timeless_digest(first) == _search_timeless_digest(second), \
+        "the same seed and node limits give the same weeks"
     assert any(d["kelly"]["search"] and d["kelly"]["search"]["improved"] for d in _solved_weeks(first))
     study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
     assert study._method(method, None, recorded=first) == first
@@ -4820,6 +4835,146 @@ def test_the_search_is_deterministic_and_replays_through_the_recorded_and_derive
         plain._method(plain.params["methods"][0], None), plain.weeks)
     assert all(set(entry) == {"actions", "certificates"} for entry in plain_actions["decisions"].values()), \
         "a method without the keys derives exactly as before"
+
+
+def _forged_refused(params, inputs, method, result, edit):
+    import copy
+
+    forged = copy.deepcopy(result)
+    edit(forged)
+    with pytest.raises(ValueError):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=forged)
+
+
+def test_an_unproved_warm_start_that_a_node_budget_stopped_keeps_its_better_incumbent_uncertified(monkeypatch):
+    """Fix round 1: above the action limit, a certification that did not prove the gap but stopped on its own (not on
+    the clock) and beat its start by exact utility is traded uncertified; the week stays declined, relaxation-bounded."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params, inputs = _poor_incumbent_search(monkeypatch)
+    plain = {d["date"]: d for d in _solved_weeks(
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None))}
+    monkeypatch.setattr(TransportPortfolioSolve, "_warm_certified", lambda self, *args: False)
+    params, inputs = _poor_incumbent_search(monkeypatch, warm_start={"node_limit": 20})
+    method = params["methods"][0]
+    warm = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    kept = [d for d in _solved_weeks(warm) if d["kelly"]["warm_start"] and d["kelly"]["warm_start"]["kept"]]
+    assert kept, "the cash start leaves the certification room to improve"
+    for week in kept:
+        w = week["kelly"]["warm_start"]
+        assert _outcome(week) == "declined" and w["over_cap"] and w["termination"] in ("optimal", "maxIterations")
+        assert w["value_before"] == pytest.approx(_traded(plain[week["date"]])["value"], abs=1e-6)
+        assert w["value_after"] > w["value_before"] and _traded(week)["value"] == pytest.approx(w["value_after"], abs=1e-6)
+        assert week["selection"]["timeout"] == "gap" and week["kelly"]["uncertified"]["outcome"] == "declined"
+        assert week["kelly"]["uncertified"]["bound"] == pytest.approx(
+            plain[week["date"]]["kelly"]["uncertified"]["bound"], rel=1e-9), "the bound stays the relaxation's"
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=warm) == warm
+
+    def unkeep(result):
+        next(d for d in result["decisions"] if d.get("kelly", {}).get("warm_start", {}) and
+             d["kelly"]["warm_start"]["kept"])["kelly"]["warm_start"]["kept"] = False
+
+    def worse(result):
+        w = next(d for d in result["decisions"] if d.get("kelly", {}).get("warm_start", {}) and
+                 d["kelly"]["warm_start"]["kept"])["kelly"]["warm_start"]
+        w["value_after"] = w["value_before"]
+
+    def clocked(result):
+        next(d for d in result["decisions"] if d.get("kelly", {}).get("warm_start", {}) and
+             d["kelly"]["warm_start"]["kept"])["kelly"]["warm_start"]["termination"] = "maxTimeLimit"
+
+    for edit in (unkeep, worse, clocked):
+        _forged_refused(params, inputs, method, warm, edit)
+
+
+def test_a_clock_stopped_warm_start_is_never_traded(monkeypatch):
+    """A certification whose stop may depend on the clock leaves the declined week exactly as it was."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params, inputs = _poor_incumbent_search(monkeypatch)
+    plain = {d["date"]: d for d in _solved_weeks(
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None))}
+    monkeypatch.setattr(TransportPortfolioSolve, "_warm_certified", lambda self, *args: False)
+    monkeypatch.setattr(TransportPortfolioSolve, "DETERMINISTIC_TERMINATIONS", ("never",))
+    params, inputs = _poor_incumbent_search(monkeypatch, warm_start={"node_limit": 20})
+    method = params["methods"][0]
+    warm = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    weeks = [d for d in _solved_weeks(warm) if d["kelly"]["warm_start"]]
+    assert weeks
+    for week in weeks:
+        assert not week["kelly"]["warm_start"]["kept"] and _outcome(week) == "declined"
+        assert week["selection"] == plain[week["date"]]["selection"], "what a clock-stopped solve found is not traded"
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=warm) == warm
+
+
+def test_the_clock_only_halts_the_search_and_never_shortens_the_certification(monkeypatch):
+    """The search has its own share of the clock: spent, it halts (recorded) with the incumbent it has; its seconds
+    are left out of the time the certification sees."""
+    import time as clock_module
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    monkeypatch.setattr(TransportPortfolioSolve, "UTILITY_SEARCH_SHARE", 0.)
+    params, inputs = _poor_incumbent_search(monkeypatch, search=SEARCH)
+    halted = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    for week in _solved_weeks(halted):
+        s = week["kelly"]["search"]
+        assert s["halted_by"] == "clock" and s["iterations"] == 0 and not s["improved"] and not s["budget_exhausted"]
+        assert s["value_after"] == s["value_before"]
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(
+        params["methods"][0], None, recorded=halted) == halted
+    monkeypatch.undo()
+    # A search that (by a fake clock) takes ten budgets still leaves the certification its whole remaining time.
+    real, offset, limits = clock_module.perf_counter, [0.], []
+    monkeypatch.setattr(clock_module, "perf_counter", lambda: real()+offset[0])
+    search = TransportPortfolioSolve._search_incumbent
+
+    def slow(self, *args, **kwargs):
+        record = search(self, *args, **kwargs)
+        offset[0] += 10*KELLY["time_limit"]
+        return record
+    monkeypatch.setattr(TransportPortfolioSolve, "_search_incumbent", slow)
+    once = TransportPortfolioSolve._solve_once
+
+    def spy(self, solver, model, time_limit=None):
+        limits.append(time_limit)
+        return once(self, solver, model, time_limit)
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", spy)
+    params, inputs = _declined_kelly_fixture(search=SEARCH)
+    ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    # The support search is capped at its 40% share; only a certification can be handed (nearly) the whole budget,
+    # and it would be handed the 1 s floor if the search's ten budgets were charged to it.
+    assert any(t is not None and t > .9*KELLY["time_limit"] for t in limits), limits
+
+
+def test_a_failed_neighbourhood_is_counted_and_a_missing_search_record_refused(monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    once = TransportPortfolioSolve._solve_once
+
+    def failing(self, solver, model, time_limit=None):
+        if solver.options.get("random_seed") == SEARCH["seed"]:
+            raise RuntimeError("neighbourhood fixture failure")
+        return once(self, solver, model, time_limit)
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", failing)
+    params, inputs = _poor_incumbent_search(monkeypatch, search=SEARCH)
+    method = params["methods"][0]
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None)
+    weeks = [d for d in _solved_weeks(result) if d["kelly"]["search"]["iterations"]]
+    assert weeks and all(d["kelly"]["search"]["failed"] == d["kelly"]["search"]["iterations"]
+                         and not d["kelly"]["search"]["improved"] for d in weeks)
+
+    def missing(forged):
+        next(d for d in forged["decisions"] if d.get("kelly", {}).get("search"))["kelly"]["search"] = None
+
+    def overcounted(forged):
+        s = next(d for d in forged["decisions"] if d.get("kelly", {}).get("search"))["kelly"]["search"]
+        s["failed"] = s["iterations"]+1
+
+    def halted_by_wall(forged):
+        next(d for d in forged["decisions"] if d.get("kelly", {}).get("search"))["kelly"]["search"]["halted_by"] = "wall"
+
+    for edit in (missing, overcounted, halted_by_wall):
+        _forged_refused(params, inputs, method, result, edit)
 
 
 def test_a_comparison_row_carries_the_search_records_only_when_the_decision_does():

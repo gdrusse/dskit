@@ -2403,9 +2403,15 @@ class WeeklyOptionPortfolioStudy:
         The search: its seed is the declared one; at most the declared iterations ran (all of them when the budget
         is exhausted); the accepted neighbourhoods are in iteration order, each at most ``neighbourhood`` groups, each
         strictly better by exact utility than the one before, the last the value after; and when no solve followed
-        it (a declined or relaxation-certified week) the value after is the traded selection's value. The warm start:
-        present only when a certification ran (so a certified week has one, a relaxation-decided week none); a
-        declined week that ran one ran it above the action limit; nothing accepted that was not supplied.
+        it (a declined or relaxation-certified week) the value after is the traded selection's value (or, when an
+        over-cap warm start kept a better incumbent, the value that warm start began from); on a certified week the
+        certification started from it, so the traded value is no worse. A week whose relaxation solved always has a
+        search record (one that never ran has no value before); ``halted_by`` is None or "clock" (then the budget
+        is not exhausted), ``failed`` counts neighbourhoods within those run, ``seconds`` is finite and nonnegative.
+        The warm start: present only when a certification ran (so a certified week has one, a relaxation-decided week
+        none); a declined week that ran one ran it above the action limit; nothing accepted that was not supplied;
+        ``kept`` only on a declined over-cap week stopped deterministically, whose kept value beats its start and is
+        the traded value; a declined week that kept nothing trades the start.
         """
         from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
 
@@ -2415,6 +2421,10 @@ class WeeklyOptionPortfolioStudy:
         traded = selection.get("candidate") if "timeout" in selection else selection
         value = traded.get("value") if isinstance(traded, dict) else None
         bad = ValueError("recorded kelly search or warm-start record differs from its decision")
+        w = out.get("warm_start")
+        kept = isinstance(w, dict) and w.get("kept") is True
+        if "search" in out and out["search"] is None and outcome != "relaxation_failed":
+            raise bad
         if "search" in out and out["search"] is not None:
             s, declared = out["search"], kelly["search"]
             if (not isinstance(s, dict) or set(s) != set(TransportPortfolioSolve.SEARCH_RECORD_KEYS)
@@ -2422,6 +2432,9 @@ class WeeklyOptionPortfolioStudy:
                     or type(s["iterations"]) is not int or not 0 <= s["iterations"] <= declared["iterations"]
                     or type(s["improved"]) is not bool or type(s["budget_exhausted"]) is not bool
                     or (s["budget_exhausted"] and s["iterations"] != declared["iterations"])
+                    or s["halted_by"] not in (None, "clock") or (s["budget_exhausted"] and s["halted_by"] is not None)
+                    or type(s["failed"]) is not int or not 0 <= s["failed"] <= s["iterations"]
+                    or not number_ok(s["seconds"]) or s["seconds"] < 0
                     or not isinstance(s["accepted_neighbourhoods"], list)
                     or s["improved"] != bool(s["accepted_neighbourhoods"]) or outcome == "relaxation_failed"):
                 raise bad
@@ -2445,18 +2458,31 @@ class WeeklyOptionPortfolioStudy:
                     last, previous = entry["value"], entry["iteration"]
                 if last != after:
                     raise bad
+                # What the search left is what was traded, unless a warm start then kept a better point from it.
+                reached = w["value_before"] if kept and number_ok(w.get("value_before")) else value
                 if (outcome in ("declined", "relaxation_certified") and after > tol
-                        and (not number_ok(value) or abs(after-value) > tol)):
+                        and (not number_ok(reached) or abs(after-reached) > tol)):
+                    raise bad
+                if outcome == "certified" and number_ok(value) and after > value+2*tol:
                     raise bad
         if "warm_start" in out:
-            w = out["warm_start"]
             if w is None:
                 if outcome == "certified" or (outcome == "declined" and value is not None):
                     raise bad
             elif (not isinstance(w, dict) or set(w) != set(TransportPortfolioSolve.WARM_START_RECORD_KEYS)
-                    or any(type(w[k]) is not bool for k in ("supplied", "accepted", "over_cap"))
+                    or any(type(w[k]) is not bool for k in ("supplied", "accepted", "over_cap", "kept"))
                     or not isinstance(w["termination"], str) or outcome not in ("certified", "declined")
+                    or any(w[k] is not None and not number_ok(w[k]) for k in ("value_before", "value_after"))
                     or (w["accepted"] and not w["supplied"]) or (outcome == "declined" and not w["over_cap"])):
+                raise bad
+            elif kept and (outcome != "declined"
+                           or w["termination"] not in TransportPortfolioSolve.DETERMINISTIC_TERMINATIONS
+                           or w["value_before"] is None or w["value_after"] is None
+                           or not w["value_after"] > w["value_before"]+tol
+                           or not number_ok(value) or abs(value-w["value_after"]) > tol):
+                raise bad
+            elif (not kept and outcome == "declined" and number_ok(value) and w["value_before"] is not None
+                  and abs(value-w["value_before"]) > tol):
                 raise bad
 
     def _books(self, selection, metadata, charge=None):
