@@ -796,9 +796,9 @@ class BookGreeksReport(Node):
     Composes :class:`ParityForward`, :class:`LegGreeks`, :class:`BookGreeks`,
     :class:`StockEquivalent`, :class:`StaticDeltaHedge`, :class:`CellAttribution`,
     :class:`ExposureSnapshot` and :func:`fit_betas`; no arithmetic of theirs is repeated here. A subclass
-    maps its own saved files to the generic inputs by three hooks
-    (:meth:`_load_books`, :meth:`_load_quotes`, :meth:`_cell_key`) and may
-    refuse a read through :meth:`_guard_window`.
+    maps its own saved files to the generic inputs by three required hooks
+    (:meth:`_load_books`, :meth:`_load_quotes`, :meth:`_cell_key`) and the optional
+    :meth:`_hedge_dividend`, and may refuse a read through :meth:`_guard_window`.
 
     Per book (a normalized dict, see :meth:`_load_books`): the Greeks at the
     fill session on a parity forward, ``stock_pnl`` / ``residual`` against the
@@ -1020,7 +1020,8 @@ class BookGreeksReport(Node):
         found = []
         for leg in book["legs"]:
             quote = next((r for r in rows if r.get("right") == leg["right"]
-                          and math.isclose(r.get("strike", math.nan), leg["strike"],
+                          and _is_positive(r.get("strike"))
+                          and math.isclose(r["strike"], leg["strike"],
                                            rel_tol=1e-9, abs_tol=1e-12)), None)
             row, code = self._tools[LegGreeks].of({**leg, "expiry": book["expiry"]}, quote,
                                                   forward, spot, day)
@@ -1078,10 +1079,19 @@ class BookGreeksReport(Node):
                 "dividend_adjust": hedge["dividend_adjust"],
                 "hedged_pnl": None if missing else hedge["hedged_pnl"], "hedge_status": status}
 
-    def _betas(self, bars, day):
-        """Return ``(betas, all_one, dropped)``: the class docstring's beta rule at ``day``."""
+    @staticmethod
+    def _calendar(bars):
+        """Return the sorted sessions any name in ``bars`` has."""
+        return sorted({d for series in bars.values() for d in series})
+
+    def _betas(self, bars, day, calendar=None):
+        """Return ``(betas, all_one, dropped)``: the class docstring's beta rule at ``day``.
+
+        ``calendar`` is :meth:`_calendar` of ``bars``; the run builds it once and passes it,
+        a direct call may omit it.
+        """
         p = self.params
-        calendar = sorted({d for series in bars.values() for d in series})
+        calendar = self._calendar(bars) if calendar is None else calendar
         past = [d for d in calendar if d < day][-p["beta_lookback"] - 1:]
         usable = sorted(s for s in bars if all(_is_positive(bars[s].get(d)) for d in past))
         dropped = sorted(set(bars) - set(usable))
@@ -1104,29 +1114,34 @@ class BookGreeksReport(Node):
     def _exposure(self, books, quotes, bars):
         """Return ``(rows, unmarked, all_one_days, dropped_days)``: rows and the three day counts."""
         snapshot, rows, unmarked, all_one_days = self._tools[ExposureSnapshot], [], 0, 0
-        dropped_days = 0
+        dropped_days, calendar = 0, self._calendar(bars)
         for day in self._days(books):
-            betas, all_one, dropped = self._betas(bars, day)
+            betas, all_one, dropped = self._betas(bars, day, calendar)
             all_one_days += all_one
             dropped_days += len(dropped)
-            open_books = []
-            for book in (b for b in books if b["fill_date"] <= day < b["expiry"]):
-                item = {"symbol": book["symbol"], "dte": (date.fromisoformat(book["expiry"])
-                                                         - date.fromisoformat(day)).days}
-                if book["factor"] != book["end_factor"]:
-                    item["status"] = self.BASIS_CHANGED
-                else:
-                    greeks, code = self._greeks_at(book, day, quotes, bars)
-                    if code:
-                        item["status"] = self.OPEN_LEG_UNMARKED
-                        unmarked += 1
-                    else:
-                        item.update(status=greeks.status, spot=self._spot(bars, book, day),
-                                    **{k: getattr(greeks, k) for k in self._GREEK_FIELDS})
-                open_books.append(item)
-            snap = snapshot.of(betas, open_books)
+            open_books = [b for b in books if b["fill_date"] <= day < b["expiry"]]
+            items = [None] * len(open_books)
+            for i in sorted(range(len(open_books)), key=lambda j: open_books[j]["symbol"]):
+                items[i], marked = self._open_item(open_books[i], day, quotes, bars)
+                unmarked += not marked
+            snap = snapshot.of(betas, items)
             rows += self._day_rows(day, snap)
         return rows, unmarked, all_one_days, dropped_days
+
+    def _open_item(self, book, day, quotes, bars):
+        """Return ``(item, marked)``: the open book's exposure item on ``day`` (read per symbol)."""
+        item = {"symbol": book["symbol"], "dte": (date.fromisoformat(book["expiry"])
+                                                 - date.fromisoformat(day)).days}
+        if book["factor"] != book["end_factor"]:
+            item["status"] = self.BASIS_CHANGED
+            return item, True
+        greeks, code = self._greeks_at(book, day, quotes, bars)
+        if code:
+            item["status"] = self.OPEN_LEG_UNMARKED
+            return item, False
+        item.update(status=greeks.status, spot=self._spot(bars, book, day),
+                    **{k: getattr(greeks, k) for k in self._GREEK_FIELDS})
+        return item, True
 
     def _day_rows(self, day, snap):
         """Return the day's bucket rows and its total row."""

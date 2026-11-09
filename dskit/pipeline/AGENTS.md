@@ -165,8 +165,8 @@ dskit/pipeline/
 │                      (ADR-0182 tier placement); black76_implied_vol (safeguarded Newton, ADR-0265);
 │                      OptionScenarioReprice (JSON book, named full-repricing shocks;
 │                      opt-in stable_tail_v1 with normal-tail and dollar-error refusals)
-├── option_exposure.py ParityForward, LegGreeks, BookGreeks, StockEquivalent, CellAttribution, ExposureSnapshot, fit_betas, BookGreeksReport (kind book_greeks_report, by import path; ADR-0310):
-│                      chain-implied forward, spot-term Greeks, delta-equivalent stock vs residual P&L split, beta-weighted exposure by DTE bucket; three hooks
+├── option_exposure.py ParityForward, LegGreeks, BookGreeks, StockEquivalent, StaticDeltaHedge, CellAttribution, ExposureSnapshot, fit_betas, BookGreeksReport (kind book_greeks_report, by import path; ADR-0310):
+│                      chain-implied forward, spot-term Greeks, delta-equivalent stock vs residual P&L split, beta-weighted exposure by DTE bucket; static delta-hedge P&L; four hooks (incl. _hedge_dividend)
 ├── option_structures.py leg-set algebra (credit, payoff, max loss, quote_defect) graduated from
 │                      the index_options child (ADR-0265); classify_option_strategy adds post-solve
 │                      anatomy/quantity labels without selection templates (ADR-0276)

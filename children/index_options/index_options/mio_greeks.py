@@ -133,16 +133,22 @@ class CellRank:
         tuple
             ``("weekly" | "monthly", int or None, reason)``; reason is ``ok``,
             ``non_slot_expiry``, ``rank_out_of_range`` or ``expiry_not_listed``.
+
+        Raises
+        ------
+        GreeksRefusal
+            ``bad_date`` when ``decision_date``, ``expiry`` or a listed entry is not a canonical
+            ISO date.
         """
-        start = date.fromisoformat(decision_date)
-        slots = self._slots(start, [date.fromisoformat(e) for e in listed])
+        start = self._day(decision_date)
+        slots = self._slots(start, [self._day(e) for e in listed])
         horizon = start + timedelta(days=WEEKLY_MAX_RANK * WEEKLY_WINDOW_DAYS)
         stray = sum(not self._standard(d) for d in slots if d <= horizon)
         if stray >= WEEKLY_MIN_NONSTANDARD:
             cadence, cap = "weekly", WEEKLY_MAX_RANK
         else:
             cadence, cap = "monthly", MONTHLY_MAX_POSITION
-        book = date.fromisoformat(expiry)
+        book = self._day(expiry)
         if expiry not in listed:
             return cadence, None, RANK_NOT_LISTED
         if book not in slots:
@@ -151,6 +157,13 @@ class CellRank:
         if position > cap:
             return cadence, None, RANK_OUT_OF_RANGE
         return cadence, position, RANK_OK
+
+    @staticmethod
+    def _day(text):
+        """Return ``text`` as a date, or refuse ``bad_date`` (never a bare ``ValueError``)."""
+        if MIOGreeksDiagnostics._iso(text) is None:
+            raise GreeksRefusal(MIOGreeksDiagnostics.BAD_DATE, f"{text!r} is not an ISO date")
+        return date.fromisoformat(text)
 
     @staticmethod
     def _slots(start, listed):
@@ -228,7 +241,12 @@ class ChainQuotes:
         return self._day(symbol, day).get(expiry, [])
 
     def expiries(self, symbol, day):
-        """Return the sorted expiries listed for ``symbol`` on ``day``."""
+        """Return the sorted expiries listed for ``symbol`` on ``day``.
+
+        The listing is that session's own data: the expiries the chain quoted on ``day``, which
+        for a book's decision day is day-of-decision data and never a later day's. A ``day`` on
+        or after the seal refuses ``window_outside_data_rights`` like any other read.
+        """
         return sorted(self._day(symbol, day))
 
 
@@ -378,7 +396,9 @@ class MIOGreeksDiagnostics(BookGreeksReport):
                                    for leg in book["legs"]], close / book["factor"],
                                   [leg["strike"] for leg in book["legs"]])
         expected = book["credit"] + multiplier * payoff
-        if abs(book["pnl"] - expected) >= PNL_GATE_USD:
+        pnl = book["pnl"]
+        if not (isinstance(pnl, (int, float)) and not isinstance(pnl, bool)
+                and abs(pnl - expected) < PNL_GATE_USD):
             raise GreeksRefusal(self.PNL_MISMATCH, f"{book['key']}: saved pnl {book['pnl']!r}, "
                                                     f"credit + payoff gives {expected!r}")
 
@@ -500,6 +520,8 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         source = PinnedPayloadSource(block["pin"])
         found = {}
         for symbol in sorted(symbols):
+            if symbol not in block["files"]:
+                raise GreeksRefusal(self.SYMBOLS_MISSING, f"no bar file for {symbol}")
             path = source.file(block["files"][symbol], verify=True)
             if "dividend_amount" in pq.read_schema(path).names:
                 found[symbol] = pq.read_table(
@@ -576,9 +598,9 @@ class MIOGreeksDiagnostics(BookGreeksReport):
             raw = {"method": method, "trades": trades, "bars": bars, "multiplier": multiplier}
             out = super().run(ctx, {"books": raw, "quotes": quotes, "bars": bars})
             out["cells"] = [c for c in out["cells"] if c["rank"] is not None]
-            out["summary"]["rank_reasons"] = dict(sorted(
-                Counter(r["rank_reason"] for r in out["books"]
-                        if "rank_reason" in r).items()))
+            ranked = [r for r in out["books"] if "rank_reason" in r]
+            out["summary"]["rank_reasons"] = dict(sorted(Counter(r["rank_reason"] for r in ranked).items()))
+            out["summary"]["rank_null_pnl_usd"] = self._null_rank_pnl(ranked)
             for name in merged:
                 merged[name] += [{"method": method, **row} if "method" not in row else row
                                  for row in out[name]]
@@ -588,6 +610,15 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         result = {**merged, "summary": summary}
         self._write(out_dir, result)
         return result
+
+    @staticmethod
+    def _null_rank_pnl(rows):
+        """Return ``{rank_reason: P&L}`` of the attributed books with no rank (not in any cell)."""
+        by_reason = {}
+        for r in rows:
+            if r["rank"] is None:
+                by_reason.setdefault(r["rank_reason"], []).append(r["pnl"])
+        return {k: math.fsum(v) for k, v in sorted(by_reason.items())}
 
     def _run_summary(self, summaries, flags, shas):
         """Return the run-level summary: inputs, params hash, per-method counts and totals."""
@@ -602,6 +633,10 @@ class MIOGreeksDiagnostics(BookGreeksReport):
             "beta_lookback_flags": flags, "methods": summaries,
             "rank_reasons": dict(sorted(sum((Counter(s["rank_reasons"])
                                             for s in summaries.values()), Counter()).items())),
+            "rank_null_pnl_usd": {k: math.fsum(s["rank_null_pnl_usd"].get(k, 0.0)
+                                               for s in summaries.values())
+                                  for k in sorted({k for s in summaries.values()
+                                                   for k in s["rank_null_pnl_usd"]})},
             "refusals": dict(sorted(sum((Counter(s["refusals"]) for s in summaries.values()),
                                         Counter()).items())),
             "forward_spot": sum(s["forward_spot"] for s in summaries.values()),
@@ -636,12 +671,18 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         return (books, ["method", *cells], ["method", *BookGreeksReport.EXPOSURE_COLUMNS])
 
     def _write(self, out_dir, result):
-        """Serialize all four outputs in memory, then land them atomically under ``out_dir``."""
+        """Serialize all four outputs in memory, then land them under ``out_dir``, all or nothing.
+
+        Each file lands atomically; the old summary is removed first and the new one written
+        last, so a kill between files leaves no summary beside CSVs of another run.
+        """
         payloads = {name: self._csv(rows, columns) for name, rows, columns in zip(
             OUTPUT_FILES, (result["books"], result["cells"], result["exposure"]),
             self._declared())}
         payloads[OUTPUT_FILES[3]] = (json.dumps(
             result["summary"], indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
         out_dir.mkdir(parents=True, exist_ok=True)
-        for name, data in payloads.items():
-            atomic_write(str(out_dir / name), data)
+        summary = OUTPUT_FILES[3]
+        (out_dir / summary).unlink(missing_ok=True)   # the summary vouches for its CSVs: none, until all land
+        for name in (*OUTPUT_FILES[:3], summary):
+            atomic_write(str(out_dir / name), payloads[name])

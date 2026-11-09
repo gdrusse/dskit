@@ -627,6 +627,54 @@ def test_report_hooks_receive_the_raw_inputs_untouched():
     assert seen["books"] is books and seen["quotes"] is quotes
 
 
+@pytest.mark.parametrize("strike", [None, math.nan, math.inf, -5.0, 0.0])
+def test_report_skips_chain_rows_whose_strike_is_not_positive_and_finite(strike):
+    junk = {"right": "call", "strike": strike, "bid": 1.0, "ask": 1.2, "iv": VOL}
+    quotes = {("AAA", FILL, EXPIRY): [junk, *priced_chain()]}
+    out = run_report([make_book()], quotes=quotes)
+    assert out["books"][0]["status"] == "ok"
+    assert out["books"][0]["delta_sh"] == run_report([make_book()])["books"][0]["delta_sh"]
+
+
+class _Order(Mem):
+    """Records every (symbol, day) the chain provider is asked for, in order."""
+
+    asked = []
+
+    def _load_quotes(self, raw):
+        outer = super()._load_quotes(raw)
+
+        class Spy:
+            def chain(_, symbol, day, expiry):
+                _Order.asked.append((symbol, day))
+                return outer.chain(symbol, day, expiry)
+        return Spy()
+
+
+def test_report_marks_one_days_open_books_symbol_by_symbol():
+    mid = "2021-03-09"
+    books = [make_book("a1", "AAA", decision_date=mid), make_book("b1", "BBB", decision_date=mid),
+             make_book("a2", "AAA", decision_date=mid)]
+    bars = {**with_bar(mid), "BBB": dict(with_bar(mid)["AAA"])}
+    quotes = {(s, d, EXPIRY): priced_chain(day=d) for s in ("AAA", "BBB") for d in (FILL, mid)}
+    _Order.asked = []
+    out = _Order("report", {**REPORT, "exposure_days": "decision"}).run(
+        None, {"books": books, "quotes": quotes, "bars": bars})
+    on_day = [s for s, d in _Order.asked if d == mid]
+    assert on_day == sorted(on_day)                        # AAA, AAA, BBB: the cache sees one run per name
+    total = [r for r in out["exposure"] if r["date"] == mid and r["bucket"] == "total"][0]
+    assert total["n_books"] == 3
+
+
+def test_report_builds_the_bar_calendar_once_per_run(monkeypatch):
+    calls = []
+    real = BookGreeksReport._calendar
+    monkeypatch.setattr(BookGreeksReport, "_calendar",
+                        staticmethod(lambda bars: calls.append(1) or real(bars)))
+    run_report([make_book()], exposure_days="both")
+    assert len(calls) == 1
+
+
 def test_report_run_is_deterministic():
     first = run_report([make_book("b1"), make_book("b2", pnl=-3.0)])
     again = run_report([make_book("b1"), make_book("b2", pnl=-3.0)])

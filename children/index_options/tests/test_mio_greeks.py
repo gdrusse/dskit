@@ -446,12 +446,80 @@ def test_classification_reads_only_the_decision_day_listing():
     assert _rank(D0, "2021-04-16", listed) == ("monthly", 1, "ok")
 
 
-def test_the_cell_table_drops_null_rank_books_and_counts_the_reason(world):
+# (decision, the boundary slot, one certain non-standard Friday, the cadence the boundary implies)
+STANDARD_EDGES = [
+    ("2021-04-26", "2021-05-14", "2021-04-30", "weekly"),     # Friday on day 14: not standard
+    ("2021-10-04", "2021-10-15", "2021-10-08", "monthly"),    # Friday on day 15: standard
+    ("2021-05-03", "2021-05-21", "2021-05-07", "monthly"),    # Friday on day 21: standard
+    ("2021-10-04", "2021-10-22", "2021-10-08", "weekly"),     # Friday on day 22: not standard
+    ("2021-05-03", "2021-05-13", "2021-05-07", "weekly"),     # Thursday on day 13: not standard
+    ("2021-10-04", "2021-10-14", "2021-10-08", "monthly"),    # Thursday on day 14: holiday monthly
+    ("2021-05-03", "2021-05-20", "2021-05-07", "monthly"),    # Thursday on day 20: holiday monthly
+    ("2021-10-04", "2021-10-21", "2021-10-08", "weekly"),     # Thursday on day 21: not standard
+]
+
+
+@pytest.mark.parametrize("decision,boundary,stray,cadence", STANDARD_EDGES)
+def test_the_standard_monthly_day_ranges_are_exact_at_both_edges(decision, boundary, stray, cadence):
+    assert _rank(decision, boundary, [stray, boundary])[0] == cadence
+
+
+@pytest.mark.parametrize("listed,cadence", [
+    (["2021-04-09", "2021-06-03"], "weekly"),      # a Thursday slot exactly 56 days out counts
+    (["2021-04-09", "2021-06-04"], "monthly"),     # 57 days out does not
+])
+def test_the_classification_horizon_is_inclusive_at_56_days(listed, cadence):
+    assert _rank("2021-04-08", listed[-1], listed)[0] == cadence
+
+
+def test_an_expiry_on_the_decision_day_is_not_a_slot_and_does_not_shift_the_rank():
+    listed = ["2021-04-09", "2021-04-16", "2021-05-21"]               # decision day is a Friday
+    assert _rank("2021-04-09", "2021-04-09", listed) == ("monthly", None, "non_slot_expiry")
+    assert _rank("2021-04-09", "2021-04-16", listed) == ("monthly", 1, "ok")
+
+
+@pytest.mark.parametrize("decision,expiry,listed", [
+    ("2021-04-05", "not-a-date", ["2021-04-16"]),
+    ("2021-04-05", "2021-04-16", ["2021-04-16", "junk"]),
+    ("2021-04-05", "20210416", ["2021-04-16"]),
+    ("04/05/2021", "2021-04-16", ["2021-04-16"]),
+])
+def test_a_malformed_date_is_a_bad_date_refusal_not_a_bare_value_error(decision, expiry, listed):
+    with pytest.raises(GreeksRefusal) as exc:
+        CellRank().of(decision, expiry, listed)
+    assert exc.value.code == "bad_date"
+
+
+def test_with_no_null_rank_book_every_reason_is_ok_and_no_pnl_is_set_aside(world):
     run_dir, out_dir = world()
     out = run_node(run_dir, out_dir)
     assert all(c["rank"] is not None for c in out["cells"])
     assert all(r["rank_reason"] == "ok" for r in out["books"])
     assert out["summary"]["rank_reasons"] == {"ok": len(out["books"])}
+    assert out["summary"]["rank_null_pnl_usd"] == {}
+
+
+def test_a_null_rank_book_leaves_the_cells_but_stays_in_books_csv_reasons_and_the_reconciliation(
+        world, monkeypatch):
+    monkeypatch.setattr(mio_greeks, "MONTHLY_MAX_POSITION", 1)   # MMM (monthly-only) lists 05-21 second
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)
+    mmm = [r for r in out["books"] if r["symbol"] == "MMM"]
+    assert {(r["rank"], r["rank_reason"]) for r in mmm} == {(None, "rank_out_of_range")}
+    assert not [c for c in out["cells"] if c["symbol"] == "MMM"]
+    assert [c["symbol"] for c in out["cells"]] == ["BLK"]
+    csv_rows = (out_dir / "books.csv").read_text().splitlines()
+    assert sum(",rank_out_of_range" in line for line in csv_rows) == 2
+    summary = out["summary"]
+    assert summary["rank_reasons"] == {"ok": 1, "rank_out_of_range": 2}
+    set_aside = sum(r["pnl"] for r in mmm)
+    assert summary["rank_null_pnl_usd"] == {"rank_out_of_range": pytest.approx(set_aside)}
+    method = summary["methods"][METHOD]
+    assert method["rank_null_pnl_usd"] == summary["rank_null_pnl_usd"]
+    assert sum(c["pnl_usd"] for c in out["cells"]) + sum(method["rank_null_pnl_usd"].values()) == (
+        pytest.approx(method["attributed_pnl_usd"]))
+    on_disk = json.loads((out_dir / "greeks-summary.json").read_text())
+    assert on_disk["rank_null_pnl_usd"] == {"rank_out_of_range": pytest.approx(set_aside)}
 
 
 def test_monthly_rank_end_to_end(world):
@@ -577,6 +645,18 @@ def test_a_method_the_result_does_not_hold_is_not_closed_input(world):
     with pytest.raises(GreeksRefusal) as exc:
         run_node(run_dir, out_dir, methods=["w1_010_shock10_lp"])
     assert code_of(exc) == "input_not_closed"
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, None, "12.5"])
+def test_a_non_finite_or_non_numeric_saved_pnl_refuses_the_recompute_gate(world, bad):
+    def corrupt(table):
+        for r in table["results"]:
+            r["result"]["trades"][0]["pnl"] = bad
+    run_dir, out_dir = world(mutate=corrupt)
+    with pytest.raises(GreeksRefusal) as exc:
+        run_node(run_dir, out_dir)
+    assert code_of(exc) == "pnl_recompute_mismatch"
+    assert not out_dir.exists()
 
 
 def test_pnl_recompute_gate_is_half_a_cent(world):
@@ -918,3 +998,47 @@ def test_the_template_validates_and_ends_before_the_seal():
         "hedge_fee_per_share": 0.005, "hedge_half_spread_bps": 5.0, "hedge_borrow_rate": 0.005}
     assert "hedge_" in node["notes"] and "no default" in node["notes"]
     assert not (set(range(2022, 2026)) & {int(params["window"][k][:4]) for k in ("start", "end")})
+
+
+# ---- review minors: dividends file, all-or-nothing outputs ------------------------------------
+def test_a_symbol_with_no_bar_file_is_a_symbols_missing_refusal_for_the_dividend_read(world):
+    world()
+    node = MIOGreeksDiagnostics("greeks", {**PARAMS, "run_dir": "/x/run", "out_dir": "/x/out"})
+    block = {"pin": {"files": {}}, "files": {}}
+    with pytest.raises(GreeksRefusal) as exc:
+        node._read_dividends(block, ["BLK"])
+    assert code_of(exc) == "symbols_missing"
+
+
+def _stale_outputs(out_dir):
+    out_dir.mkdir()
+    for name in mio_greeks.OUTPUT_FILES:
+        (out_dir / name).write_text("OLD\n")
+
+
+def test_a_failure_between_files_never_leaves_a_stale_summary_beside_new_csvs(world, monkeypatch):
+    run_dir, out_dir = world()
+    _stale_outputs(out_dir)
+    real, landed = mio_greeks.atomic_write, []
+
+    def dying(path, raw):
+        if len(landed) == 2:
+            raise OSError("killed between files")
+        landed.append(Path(path).name)
+        real(path, raw)
+    monkeypatch.setattr(mio_greeks, "atomic_write", dying)
+    with pytest.raises(OSError):
+        run_node(run_dir, out_dir)
+    assert not (out_dir / "greeks-summary.json").exists()          # the old summary went first
+    assert landed == ["books.csv", "cells.csv"]
+
+
+def test_the_summary_is_written_last_and_replaces_the_old_one(world, monkeypatch):
+    run_dir, out_dir = world()
+    _stale_outputs(out_dir)
+    real, order = mio_greeks.atomic_write, []
+    monkeypatch.setattr(mio_greeks, "atomic_write",
+                        lambda path, raw: (order.append(Path(path).name), real(path, raw)))
+    run_node(run_dir, out_dir)
+    assert order[-1] == "greeks-summary.json" and sorted(order) == sorted(mio_greeks.OUTPUT_FILES)
+    assert json.loads((out_dir / "greeks-summary.json").read_text())["methods"]
