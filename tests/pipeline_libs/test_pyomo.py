@@ -3488,7 +3488,7 @@ def test_transport_portfolio_requests_sparse_only_for_positive_radius():
 
 @pytest.mark.parametrize("radius", [0., .08])
 def test_transport_portfolio_cash_start_and_single_solve(monkeypatch, radius):
-    """Cash is a feasible warm start and profit needs only one solver call."""
+    """Cash is a feasible warm start and the integer search is one solver call (its incumbent is then priced exactly)."""
     from pyomo.environ import Constraint, Var, value
     node = _roundtrip_selector()
     inputs = _roundtrip_portfolio(radius)
@@ -3511,8 +3511,11 @@ def test_transport_portfolio_cash_start_and_single_solve(monkeypatch, radius):
         solver = original()
         actual_solve = solver.solve
         def solve(model, **kwargs):
+            if all(v.fixed for v in model.x.values()):   # ADR-0305 amendment 2: the exact pricing of the incumbent
+                calls.append("priced")
+                return actual_solve(model, **kwargs)
             assert kwargs == {"warmstart": True}
-            current = {v.name: v.value for v in model.component_data_objects(Var)}
+            current ={v.name: v.value for v in model.component_data_objects(Var)}
             secondary = hasattr(model, "primary_floor")
             calls.append(secondary)
             if secondary:
@@ -3528,7 +3531,7 @@ def test_transport_portfolio_cash_start_and_single_solve(monkeypatch, radius):
         return solver
     monkeypatch.setattr(node, "_resolve_solver", resolve)
     got = node.run(None, inputs)["selection"]
-    assert calls == [False]
+    assert calls == [False, "priced"]
     assert len(got["certificates"]) == 1
     assert got["value"] > 0
 
@@ -6591,3 +6594,181 @@ def test_a_malformed_outer_approx_configuration_is_refused(change):
         params.pop("outer_approx")
     assert TransportPortfolioSolve.validate_params(params)
     assert not TransportPortfolioSolve.validate_params(_outer_params())
+
+
+# --- ADR-0303 amendment 1: cash is an incumbent; the live incumbent is priced exactly --------------------------------
+
+def _all_masters_aborted(monkeypatch):
+    """Label every integer master as a node-limited abort that still holds its solution (what HiGHS returns at
+    ``mip_max_nodes``): pyomo loads it with a warning, and the loop reads the point and the bound off it."""
+    from pyomo.opt import SolverStatus, TerminationCondition
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    original = TransportPortfolioSolve._solve_once
+
+    def aborted(self, solver, model, time_limit=None):
+        result = original(self, solver, model, time_limit)
+        result.solver.status = SolverStatus.aborted
+        result.solver.termination_condition = TerminationCondition.maxIterations
+        return result
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", aborted)
+
+
+@pytest.mark.parametrize("aborted", [False, True], ids=["optimal masters", "node-limited aborted masters"])
+@pytest.mark.parametrize("dispersion,iterations", [(False, 1), (True, 1), (True, 2)])
+def test_outer_approx_incumbent_worse_than_cash_is_cash_not_a_refusal(monkeypatch, aborted, dispersion, iterations):
+    """The refusal ``incumbent_negative`` ("invalid primary dual/primal incumbent value") at its source.
+
+    A master holds only some of the tangent rows (and, with ``dispersion``, none of the epigraph), so it over-values its
+    point; after one or two masters the best point it gave is worth less than cash once priced exactly. The loop
+    never offered cash, so ``extract`` refused the week. Cash is feasible for every master: the incumbent is now the
+    better of the two, the bound is the master's own, and the week is the honest gap timeout it is.
+    """
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
+
+    if aborted:
+        _all_masters_aborted(monkeypatch)
+    program = _hedged_program()
+    params = _outer_params(iterations=iterations, dispersion=dispersion)
+    selection = TransportPortfolioSolve("cash", params).run(None, program)["selection"]
+    certificate = selection["certificates"][0]
+    loop = certificate["outer"]
+    assert loop["history"][-1]["incumbent"] < -1e-3, "the loop's best master point is worth less than cash"
+    assert loop["incumbent"] == pytest.approx(0., abs=1e-9) and loop["decided_at"] == 0 and loop["outcome"] == "iterations"
+    assert selection["timeout"] == "gap" and certificate["strategy_outcome"] == "outer_approx_budget"
+    assert (certificate["termination"], certificate["status"]) == ("maxTimeLimit", "aborted")
+    candidate = selection["candidate"]
+    assert all(q == 0 for group in candidate["quantities"] for q in group) and candidate["value"] == 0.
+    assert candidate["bound"] == certificate["bound"] and candidate["gap"] == pytest.approx(candidate["bound"])
+    # Both replay routes accept the envelope.
+    envelope = {k: v for k, v in selection.items() if k != "certificates"}
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in selection["certificates"]]
+    replayed = TransportPortfolioSolve("replay", params)._recorded(program, envelope, certificates)
+    assert {k: v for k, v in replayed.items() if k != "certificates"} == envelope
+    derived = TransportPortfolioSolve("derived", params).derived(
+        program, TransportPortfolioSolve.actions(selection), certificates)["selection"]
+    assert derived["timeout"] == "gap" and derived["candidate"]["quantities"] == candidate["quantities"]
+    # Outside `return` mode the uncertified week is still refused, now for its gap, not for a negative incumbent.
+    with pytest.raises(RecordedCheckRefusal) as caught:
+        TransportPortfolioSolve("raise", {**params, "timeout_policy": "raise"}).run(None, program)
+    assert caught.value.check == "gap"
+
+
+def test_outer_approx_keeps_a_better_than_cash_incumbent_exactly_as_before():
+    """The cash fallback never fires on a point worth more than cash: the loop's account is the one it always was."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    selection = TransportPortfolioSolve("kept", _outer_params(iterations=3)).run(None, _hedged_program())["selection"]
+    loop = (selection["candidate"] if "timeout" in selection else selection)["certificates"][0]["outer"] \
+        if False else selection["certificates"][0]["outer"]
+    assert loop["incumbent"] > 1. and loop["decided_at"] >= 1
+    assert loop["incumbent"] == max(h["incumbent"] for h in loop["history"] if h["incumbent"] is not None)
+
+
+def _gap_tolerant_charges(node, inflate):
+    """Make ``node``'s MIP solves behave like a solver that stopped inside its gap: while an integer column is free the
+    real solve is followed by raising every name's charge variable by ``inflate`` (feasible: the charge only has to sit
+    on or above its lines, and the objective pays it)."""
+    from pyomo.environ import Var
+
+    real = node._resolve_solver
+
+    class GapTolerant:
+        def __init__(self, solver):
+            self.solver, self.options = solver, solver.options
+
+        def solve(self, model, *args, **kwargs):
+            results = self.solver.solve(model, *args, **kwargs)
+            if any(v.is_integer() and not v.fixed for v in model.component_data_objects(Var, active=True)):
+                for variable in model.charge.values():
+                    variable.set_value(variable.value+inflate)
+            return results
+
+    node._resolve_solver = lambda: GapTolerant(real())
+    return node
+
+
+@pytest.mark.parametrize("strategy", ["direct", "relax_fix"])
+def test_live_gap_limited_incumbent_is_priced_exactly_and_the_derived_route_agrees(monkeypatch, strategy):
+    """ADR-0305 amendment 2 on this branch: a live incumbent whose charge variables sit above their least values
+    recorded an objective under the exact value of its actions, which the derived route (it prices the actions
+    exactly) refused as ``certificate_objective``. The live route now records the exact objective."""
+    import copy
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
+
+    program = _hedged_program()
+    # Raise mode: the solver loads its solution straight into the model, where the stub can leave its gap behind
+    # (return mode loads it afterwards from the results object).
+    params = {**_strategy_params(strategy), "timeout_policy": "raise"}
+    exact =TransportPortfolioSolve("exact", params).run(None, copy.deepcopy(program))["selection"]
+    live = _gap_tolerant_charges(TransportPortfolioSolve("live", params), 3.)
+    chosen = live.run(None, copy.deepcopy(program))["selection"]
+    certificate = {k: v for k, v in chosen["certificates"][0].items() if k != "binding"}
+    assert chosen["quantities"] == exact["quantities"] and chosen["quantities"] != [[0], [0], [0]]
+    assert certificate["objective"] == pytest.approx(exact["certificates"][0]["objective"], abs=1e-6)
+    assert chosen["model_value"] == pytest.approx(exact["model_value"], abs=1e-6)
+    derived = TransportPortfolioSolve("derived", params).derived(
+        program, TransportPortfolioSolve.actions(chosen), [certificate])["selection"]
+    assert derived["model_value"] == pytest.approx(chosen["model_value"], abs=1e-6)
+    envelope = {k: v for k, v in chosen.items() if k != "certificates"}
+    TransportPortfolioSolve("recorded", params)._recorded(program, envelope, [certificate])
+    # Without the re-pricing the same live solve records the inflated objective and the replay refuses it.
+    monkeypatch.setattr(TransportPortfolioSolve, "_reprice_incumbent", lambda self, model: None)
+    stale = _gap_tolerant_charges(TransportPortfolioSolve("stale", params), 3.).run(
+        None, copy.deepcopy(program))["selection"]
+    assert stale["certificates"][0]["objective"] < certificate["objective"]-1e-2
+    with pytest.raises(RecordedCheckRefusal) as caught:
+        TransportPortfolioSolve("derived", params).derived(
+            program, TransportPortfolioSolve.actions(stale),
+            [{k: v for k, v in stale["certificates"][0].items() if k != "binding"}])
+    assert (caught.value.check, caught.value.category) == ("certificate_objective", "numeric")
+
+
+@pytest.mark.parametrize("strategy", ["direct", "relax_fix", "outer_approx"])
+def test_live_solve_is_byte_identical_with_and_without_repricing(monkeypatch, strategy):
+    """An incumbent already at its least values (or priced by the loop itself) is not touched: whole selection equal."""
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params = _outer_params() if strategy == "outer_approx" else _strategy_params(strategy)
+    program = _three_scenario_program()
+
+    def clockless(selection):
+        out = copy.deepcopy(selection)
+        for certificate in out["certificates"]:
+            certificate["seconds"] = 0.
+        return out
+    priced = TransportPortfolioSolve("priced", params).run(None, copy.deepcopy(program))["selection"]
+    monkeypatch.setattr(TransportPortfolioSolve, "_reprice_incumbent", lambda self, model: None)
+    plain = TransportPortfolioSolve("plain", params).run(None, copy.deepcopy(program))["selection"]
+    assert clockless(priced) == clockless(plain)
+
+
+def test_derived_pricing_leaves_no_integer_side_free(monkeypatch):
+    """ADR-0305 amendment 1 on this branch: with the actions fixed the exclusive sides are fixed too, so the pricing is
+    an LP and no MIP gap can reach it (the outer-approximation loop prices its incumbent the same way)."""
+    from pyomo.environ import Var
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    inputs = _roundtrip_portfolio()
+    g = inputs["groups"][0]
+    g.update(credit=[-1., -1., 10.], losses=[[0., 0., 0.]]*3, capacity=[1, 1, 2], reserve_rows=[[0., 0., 0.]],
+             linear_rows=[{"coefficients": [-1., -1., 1.], "upper": 0.}])
+    node = _roundtrip_selector()
+    chosen = node.run(None, inputs)["selection"]
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in chosen["certificates"]]
+    derived = _roundtrip_selector()
+    real, seen = derived._resolve_solver, []
+
+    class Spy:
+        def __init__(self, solver):
+            self.solver = solver
+
+        def solve(self, model, *args, **kwargs):
+            seen.append(([v.name for v in model.component_data_objects(Var, active=True)
+                          if v.is_integer() and not v.fixed], {k: v.value for k, v in model.side.items()}))
+            return self.solver.solve(model, *args, **kwargs)
+    monkeypatch.setattr(derived, "_resolve_solver", lambda: Spy(real()))
+    derived.derived(inputs, TransportPortfolioSolve.actions(chosen), certificates)
+    assert [free for free, _sides in seen] == [[]], "a free side would leave a MIP, exact only to the solver gap"
+    assert [sides for _free, sides in seen] == [{(0, 0): 1 if chosen["quantities"][0][0] else 0}]
