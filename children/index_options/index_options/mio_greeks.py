@@ -24,7 +24,9 @@ Refusals carry stable codes (:class:`GreeksRefusal`): ``window_outside_data_righ
 ``input_not_closed``, ``pnl_recompute_mismatch``, ``beta_lookback_mismatch``,
 ``beta_min_pairs_mismatch`` (the run's ``correlation_min_pairs``), ``symbols_missing`` and
 ``multiplier_mismatch`` (the config's ``multiplier`` must equal the run's own solver
-multiplier). The per-book and per-day codes are the core's, hedge flags included. The static delta-hedge column's dividends come from the pinned bar
+multiplier), and (ADR-0310 A2) ``quarter_mismatch``, ``dividend_column_absent`` and
+``cell_by_incomplete``; ``seal_crossing`` ``exclude`` drops, by dates alone, books that settle past
+the seal. The per-book and per-day codes are the core's, hedge flags included. The static delta-hedge column's dividends come from the pinned bar
 files' ``dividend_amount`` column when it exists (:meth:`MIOGreeksDiagnostics._hedge_dividend`
 through :func:`~index_options.contracts.dividends_paid`), else every row is flagged
 ``dividends_absent``. Import cost: stdlib, plus pyarrow when a chain or bar file is read.
@@ -33,9 +35,11 @@ through :func:`~index_options.contracts.dividends_paid`), else every row is flag
 import csv
 import hashlib
 import io
+import calendar
 import json
 import math
 import os
+import re
 from collections import Counter, OrderedDict
 from datetime import date, timedelta
 from pathlib import Path
@@ -74,6 +78,12 @@ OUTPUT_FILES = ("books.csv", "cells.csv", "exposure.csv", "greeks-summary.json")
 DEFAULT_CACHE_DAYS = 8
 #: Chain columns read when present (``iv`` may be absent: every leg is then ``leg_no_iv``).
 CHAIN_COLUMNS = ("date", "expiration", "type", "strike_raw", "bid", "ask", "iv")
+#: ``seal_crossing`` values: refuse a book that settles past the seal (default), or exclude it.
+SEAL_CROSSING_MODES = ("refuse", "exclude")
+#: ``dividends`` values: ``required`` refuses a bar file with no ``dividend_amount``.
+DIVIDEND_MODES = ("required", "optional")
+_QUARTER = re.compile(r"^(\d{4})Q([1-4])$")
+_DATE_FIELDS = ("decision_date", "fill_date", "expiry")
 _PLACEMENT = ("run_dir", "out_dir")
 #: Params that do not change the arithmetic, so stay out of the identity hash.
 _NON_IDENTITY = (*_PLACEMENT, "chain_cache_days")
@@ -279,7 +289,8 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         out = node.run(None, {})                         # books, cells, exposure, summary
     """
 
-    _CHILD_PARAMS = ("run_dir", "out_dir", "methods", "window", "sealed_from", "chain_cache_days")
+    _CHILD_PARAMS = ("run_dir", "out_dir", "methods", "window", "sealed_from", "chain_cache_days",
+                     "quarter", "dividends", "seal_crossing")
     _PARAMS = BookGreeksReport._PARAMS + _CHILD_PARAMS
     WINDOW = "window_outside_data_rights"
     DEVELOPMENT_SEAL_EXCEEDED = "development_seal_exceeded"
@@ -292,6 +303,9 @@ class MIOGreeksDiagnostics(BookGreeksReport):
     BETA_MISMATCH = "beta_lookback_mismatch"
     SYMBOLS_MISSING = "symbols_missing"
     MULTIPLIER_MISMATCH = "multiplier_mismatch"
+    QUARTER_MISMATCH = "quarter_mismatch"
+    DIVIDEND_COLUMN_ABSENT = "dividend_column_absent"
+    CELL_BY_INCOMPLETE = "cell_by_incomplete"
     FLAG_MATCHES, FLAG_CONFIG = "matches_shock", "config_value_no_shock"
 
     # -- config ------------------------------------------------------------
@@ -327,10 +341,35 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         if "chain_cache_days" in params:
             check_int_param(problems, "chain_cache_days", params["chain_cache_days"], ge=1)
         problems += cls._window_problems(params)
+        problems += cls._a2_problems(params)
         missing = [n for n in cls._CHILD_PARAMS if n not in params]
         if missing:
             problems.append(f"missing required param(s) {missing}")
         return problems
+
+    @classmethod
+    def _a2_problems(cls, params):
+        """Return the problems of ``quarter``, ``dividends``, ``seal_crossing`` and ``cell_by`` (A2)."""
+        problems = []
+        if "quarter" in params and not (isinstance(params["quarter"], str)
+                                        and _QUARTER.match(params["quarter"])):
+            problems.append(f"quarter must be 'YYYYQn' with n in 1-4, got {params['quarter']!r}")
+        for name, allowed in (("dividends", DIVIDEND_MODES), ("seal_crossing", SEAL_CROSSING_MODES)):
+            if name in params and params[name] not in allowed:
+                problems.append(f"{name} must be one of {list(allowed)}, got {params[name]!r}")
+        by = params.get("cell_by")
+        if isinstance(by, list) and not {"rank", "cadence"} <= set(by):
+            problems.append(f"{cls.CELL_BY_INCOMPLETE}: cell_by must contain rank and cadence "
+                            f"(A0006's two rank scales), got {by!r}")
+        return problems
+
+    @staticmethod
+    def _quarter_bounds(quarter):
+        """Return ``(first, last)`` ISO dates of a ``YYYYQn`` calendar quarter."""
+        year, number = (int(g) for g in _QUARTER.match(quarter).groups())
+        last_month = 3 * number
+        return (f"{year:04d}-{last_month - 2:02d}-01",
+                f"{year:04d}-{last_month:02d}-{calendar.monthrange(year, last_month)[1]:02d}")
 
     @staticmethod
     def _iso(value):
@@ -433,6 +472,92 @@ class MIOGreeksDiagnostics(BookGreeksReport):
                     raise GreeksRefusal(self.WINDOW, f"{name} {field} {day} is outside "
                                                      f"[{window['start']}, {window['end']}] or on or "
                                                      f"after {seal}")
+
+    # -- the date census (A2.6): dates only, never an economic field ---------
+
+    def _census(self, table):
+        """Return ``{method: [crossing, ...]}`` after the dates-only census of every requested method.
+
+        Reads only ``id``, ``decision_date``, ``fill_date`` and ``expiry`` of each requested
+        trade. A date that is not ISO refuses ``bad_date``; a decision or any date outside
+        ``window`` that is not a seal crossing, or any date on or after the protected start,
+        refuses ``window_outside_data_rights``; a decision outside ``quarter`` refuses
+        ``quarter_mismatch``. A *crossing* is a book decided inside the window whose fill or
+        expiry lies on or after the seal (and before the protected start): ``seal_crossing``
+        ``refuse`` raises with the census, ``exclude`` returns them for the caller to drop.
+        """
+        window, seal = self.params["window"], self._seal()
+        crossing = {m: [] for m in self.params["methods"]}
+        trades = {m: [t for r in table["results"] if r["id"] == m for t in r["result"]["trades"]]
+                  for m in self.params["methods"]}
+        for method, rows in trades.items():
+            for t in rows:
+                name = f"{method}|{t.get('id')}"
+                for field in _DATE_FIELDS:
+                    if self._iso(t.get(field)) is None:
+                        raise GreeksRefusal(self.BAD_DATE, f"{name} {field} {t.get(field)!r} "
+                                                           "is not an ISO date")
+                past = [f for f in _DATE_FIELDS if t[f] >= seal]
+                stray = [f for f in ("fill_date", "expiry")
+                         if not (window["start"] <= t[f] <= window["end"] or f in past)]
+                if (not window["start"] <= t["decision_date"] <= window["end"] or stray
+                        or any(t[f] >= PROTECTED_FROM for f in _DATE_FIELDS)):
+                    raise GreeksRefusal(self.WINDOW, f"{name} dates {[t[f] for f in _DATE_FIELDS]} are "
+                                                     f"outside [{window['start']}, {window['end']}] "
+                                                     f"and not a seal crossing (sealed_from {seal})")
+                crossing[method] += [(t["id"], f, t[f]) for f in past]
+        first, last = self._quarter_bounds(self.params["quarter"])
+        for method, rows in trades.items():
+            bad = [(method, t.get("id"), t["decision_date"]) for t in rows
+                   if not first <= t["decision_date"] <= last]
+            if bad:
+                raise GreeksRefusal(self.QUARTER_MISMATCH, f"{len(bad)} book(s) decided outside "
+                                                           f"{self.params['quarter']} [{first}, {last}]: {bad}")
+        return crossing, trades
+
+    def _apply_crossing(self, crossing, trades):
+        """Return ``(kept trades, excluded rows)`` or refuse with the census (``seal_crossing``)."""
+        total = {m: len({i for i, _, _ in found}) for m, found in crossing.items()}
+        if self.params["seal_crossing"] == "refuse":
+            if any(total.values()):
+                detail = [(m, i, f, d) for m, found in crossing.items() for i, f, d in found]
+                raise GreeksRefusal(self.WINDOW, f"{len(detail)} seal-crossing date(s) in "
+                                                 f"n_crossing={sum(total.values())} book(s), per method "
+                                                 f"{total}: {detail} (seal_crossing: refuse; sealed_from "
+                                                 f"{self._seal()})")
+            return trades, []
+        names = {m: {i for i, _, _ in found} for m, found in crossing.items()}
+        kept = {m: [t for t in rows if t["id"] not in names[m]] for m, rows in trades.items()}
+        excluded = [{"method": m, "id": t["id"], **{f: t[f] for f in _DATE_FIELDS}}
+                    for m, rows in trades.items() for t in rows if t["id"] in names[m]]
+        return kept, excluded
+
+    @staticmethod
+    def _shared_book_count(kept):
+        """Return how many books appear under more than one method, keyed on their identity."""
+        seen = Counter()
+        for rows in kept.values():
+            keys = {(t["symbol"], t["decision_date"], t["expiry"], json.dumps(
+                [[leg["right"], leg["strike"], leg["sign"], leg["quantity"]] for leg in t["legs"]]))
+                    for t in rows}
+            seen.update(keys)
+        return sum(1 for n in seen.values() if n > 1)
+
+    def _dividend_census(self, block, symbols):
+        """Refuse ``dividend_column_absent`` listing every symbol whose bar file lacks the column."""
+        import pyarrow.parquet as pq
+
+        source = PinnedPayloadSource(block["pin"])
+        lacking = []
+        for symbol in sorted(set(symbols)):
+            if symbol not in block["files"]:
+                raise GreeksRefusal(self.SYMBOLS_MISSING, f"no bar file for {symbol}")
+            path = source.file(block["files"][symbol], verify=True)
+            if "dividend_amount" not in pq.read_schema(path).names:
+                lacking.append(symbol)
+        if lacking:
+            raise GreeksRefusal(self.DIVIDEND_COLUMN_ABSENT, f"dividends: required, but the bar file of "
+                                                             f"{lacking} has no dividend_amount column")
 
     # -- the saved run -----------------------------------------------------
 
@@ -584,9 +709,11 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         table, shas = self._read_inputs(run_dir)
         domain, symbols, multiplier = self._domain(table)
         flags = self._method_flags(domain, table)
-        for method in p["methods"]:                 # dates first: no P&L is used before the seal check
-            self._guard_dates((f"{method}|{t.get('id')}", t) for r in table["results"]
-                              if r["id"] == method for t in r["result"]["trades"])
+        crossing, trades = self._census(table)      # dates only: no P&L is used before it
+        kept, excluded = self._apply_crossing(crossing, trades)
+        if p["dividends"] == "required":            # before any P&L field is touched
+            self._dividend_census(table["plan"]["source_pins"]["bars"],
+                                  {t["symbol"] for rows in kept.values() for t in rows})
         bars, bar_shas = self._read_bars(table, symbols)
         self._dividend_rows = self._read_dividends(table["plan"]["source_pins"]["bars"], symbols)
         quotes = ChainQuotes(table["plan"]["source_pins"]["chain"], self._seal(),
@@ -594,8 +721,7 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         merged = {"books": [], "cells": [], "exposure": []}
         summaries = {}
         for method in p["methods"]:
-            trades = next(r for r in table["results"] if r["id"] == method)["result"]["trades"]
-            raw = {"method": method, "trades": trades, "bars": bars, "multiplier": multiplier}
+            raw = {"method": method, "trades": kept[method], "bars": bars, "multiplier": multiplier}
             out = super().run(ctx, {"books": raw, "quotes": quotes, "bars": bars})
             out["cells"] = [c for c in out["cells"] if c["rank"] is not None]
             ranked = [r for r in out["books"] if "rank_reason" in r]
@@ -604,12 +730,25 @@ class MIOGreeksDiagnostics(BookGreeksReport):
             for name in merged:
                 merged[name] += [{"method": method, **row} if "method" not in row else row
                                  for row in out[name]]
+            out["summary"]["n_books_total"] = len(trades[method])
+            out["summary"]["n_books_excluded"] = len(trades[method]) - len(kept[method])
             summaries[method] = out["summary"]
         summary = self._run_summary(summaries, flags, {**shas, **bar_shas, **{
             f"chain/{Path(f).stem}": d for f, d in quotes.files.items()}})
+        summary.update(self._a2_summary(kept, excluded))
         result = {**merged, "summary": summary}
         self._write(out_dir, result)
         return result
+
+    def _a2_summary(self, kept, excluded):
+        """Return the run-level A2 keys: quarter, dividends mode, seal crossing and shared books."""
+        sets = {frozenset(t["id"] for t in rows) for rows in kept.values()}
+        return {"quarter": self.params["quarter"], "dividends": self.params["dividends"],
+                "seal_crossing": self.params["seal_crossing"],
+                "seal_crossing_excluded": excluded, "unequal_method_sets": len(sets) > 1,
+                "total_excludes_seal_crossing": bool(excluded),
+                "formulations_share_books": True, "methods_compared": list(self.params["methods"]),
+                "shared_book_count": self._shared_book_count(kept)}
 
     @staticmethod
     def _null_rank_pnl(rows):
