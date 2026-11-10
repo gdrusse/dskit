@@ -225,12 +225,39 @@ def test_seal_single_owner():
 def test_no_other_definition_of_seal():
     root = pathlib.Path(mb.__file__).parents[2]
     owners = []
-    for path in list(root.glob("dskit/**/*.py")) + list(root.glob("children/*/*/*.py")):
+    paths = [p for top in ("dskit", "children") for p in root.glob(f"{top}/**/*.py")
+             if "tests" not in p.relative_to(root).parts]
+    for path in paths:
         tree = ast.parse(path.read_text())
         for node in tree.body:
             if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "DEVELOPMENT_SEAL" for t in node.targets):
                 owners.append(path.name)
-    assert owners == ["method_blocks.py"]
+    assert owners == ["method_blocks.py"], (
+        f"DEVELOPMENT_SEAL is also defined in {owners}: replace the local definition with "
+        "`from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL`")
+
+
+@pytest.mark.parametrize("extra", [
+    {"hedge": None}, {"hedge": None, "calibration": CAL}, {"calibration": None},
+    {"hedge": None, "calibration": None}, {"exposure_limits": []}, {"hedge": "x", "calibration": CAL}])
+def test_every_present_block_must_be_a_mapping(extra):
+    with pytest.raises(ConfigError) as e:
+        owner().validate({"id": "n", **extra}, CTX)
+    assert "block_type" in codes(e)
+
+
+@pytest.mark.parametrize("value", [1.0, 2.0, True, "1", None])
+def test_regressors_exact_int(value):
+    with pytest.raises(ConfigError) as e:
+        owner().validate({"id": "n", "calibration": {**CAL, "regressors": value}}, CTX)
+    assert "block_param_value" in codes(e)
+
+
+@pytest.mark.parametrize("rho", ["0.5", True, None, float("nan")])
+def test_lcb_requires_real_number_rho(rho):
+    with pytest.raises(ConfigError) as e:
+        owner().validate({"id": "n", "calibration": {**CAL, "variant": "lcb"}, "rho": rho}, CTX)
+    assert "block_param_value" in codes(e)
 
 
 def test_all_and_purity():

@@ -15,6 +15,9 @@ A *block* is an optional JSON mapping on a method document (``calibration``, ``h
   named context parameter ``locked_method_ids``) and only under the development seal
   (``integration_seal``: ``clocks.tail_end_before <= DEVELOPMENT_SEAL``).
 
+Unknown-method-key refusal (``block_unknown``) runs only when the context carries ``method_keys``;
+stage I2 must always pass it (I2 pins this with a test), or an unknown key slips through silently.
+
 :data:`DEVELOPMENT_SEAL` is defined here and nowhere else; every module that needs it imports it.
 Import cost: stdlib only.
 """
@@ -154,7 +157,7 @@ class CalibrationBlock(BlockSpec):
         for name in ("state", "edge_scale"):
             if not isinstance(block[name], str) or not block[name]:
                 cls.bad(problems, name, f"must be a non-empty string, got {block[name]!r}")
-        if block["regressors"] not in (1, 2) or isinstance(block["regressors"], bool):
+        if not (_int_ok(block["regressors"]) and block["regressors"] in (1, 2)):
             cls.bad(problems, "regressors", f"must be 1 or 2, got {block['regressors']!r}")
         for name, allowed in (("line", cls.LINES), ("form", cls.FORMS), ("variant", cls.VARIANTS)):
             if block[name] not in allowed:
@@ -294,7 +297,10 @@ class MethodBlocks:
                 raise ConfigError(problems)
             return None
         for key in keys:
-            problems.extend(self._specs[key].validate(method[key]))
+            if isinstance(method[key], dict):
+                problems.extend(self._specs[key].validate(method[key]))
+            else:
+                problems.append(coded(BLOCK_TYPE, f"{key} block must be a mapping, got {type(method[key]).__name__}"))
         problems.extend(self._locked(method, context.get("locked_method_ids")))
         problems.extend(self.seal(context.get("clocks")))
         if not problems:
@@ -338,7 +344,9 @@ class MethodBlocks:
             problems.append(coded(LIMITS_WITH_KELLY, "an exposure_limits block cannot combine with kelly"))
         if has("calibration") and cal.get("variant") == "lcb":
             rho = method.get(_RHO)
-            if (number_ok(rho) and rho > 0) or _RISK_CHARGE in method:
+            if _RHO in method and not number_ok(rho):
+                problems.append(coded(PARAM_VALUE, f"rho must be a finite number with variant 'lcb', got {rho!r}"))
+            elif (_RHO in method and rho > 0) or _RISK_CHARGE in method:
                 problems.append(coded(DOUBLE_DISCOUNT, "variant 'lcb' with rho > 0 or a risk_charge discounts the "
                                                        "forecast uncertainty twice; use the point map"))
         if has("calibration") and has("hedge") and hedge.get("mode") == "program" and cal.get("regressors") != 2:
