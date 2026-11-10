@@ -5117,9 +5117,8 @@ def test_a_hedge_cannot_combine_with_a_sizer_and_other_blocks_stay_unattached():
         study._method(params["methods"][0], None)
 
 
-def test_program_mode_and_a_condition_stay_refused_in_this_stage():
-    for change, code in (({"mode": "program"}, "block_unattached"),
-                         ({"condition": {"vol_regime": "high"}}, "hedge_condition_unattached")):
+def test_a_condition_stays_refused_in_this_stage():
+    for change, code in (({"condition": {"vol_regime": "high"}}, "hedge_condition_unattached"),):
         params, inputs = _block_doc({"hedge": {**_REPLAY_BLOCK, **change}})
         study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
         with pytest.raises(ValueError, match=code):
@@ -5207,3 +5206,50 @@ def test_a_day_without_any_forward_carries_the_last_level_flagged_and_counted_ne
     previous = days[days.index("2019-01-22") - 1]
     assert path["2019-01-22"] == (path[previous][0], True)
     assert hedge.record()["counts"]["hedge_forward_missing"] == 1 and ("b1", "2019-01-22") in hedge.missing
+
+
+# --- ADR-0312 program mode 1: parity first (no hedge block, and hedge ratio 0, move nothing) ------------------------------
+
+_PROGRAM_BLOCK = {**_HEDGE, "mode": "program", "htb_lookback": 6}
+
+
+def _solved(params, inputs, monkeypatch):
+    """Run the first method; return ``(result, programs, program_identities)`` of every solve."""
+    from dskit.pipeline.libs.pyomo import TransportActionScore, TransportPortfolioSolve
+
+    seen, run = [], TransportPortfolioSolve.run
+    monkeypatch.setattr(TransportPortfolioSolve, "run",
+                        lambda self, ctx, inp: (seen.append(inp), run(self, ctx, inp))[1])
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    monkeypatch.undo()
+    tolerance = params["solver"]["parity_tolerance"]
+    return result, seen, [TransportActionScore(p, {"parity_tolerance": tolerance}).program_identity for p in seen]
+
+
+def _drop_hedge_fields(value):
+    """Return ``value`` without any ``hedge`` key at any depth."""
+    if isinstance(value, dict):
+        return {k: _drop_hedge_fields(v) for k, v in value.items() if k != "hedge"}
+    if isinstance(value, list):
+        return [_drop_hedge_fields(v) for v in value]
+    return value
+
+
+def test_program_mode_at_ratio_zero_is_the_unhedged_twin_except_for_its_hedge_fields(monkeypatch):
+    from dskit.pipeline.base import value_hash
+
+    plain = _solved(*_block_doc(), monkeypatch)
+    zero = _solved(*_block_doc({"hedge": {**_PROGRAM_BLOCK, "ratio": 0.0}}), monkeypatch)
+    assert len(plain[1]) >= 1
+    assert value_hash(zero[1]) == value_hash(plain[1]), "the programs the solver is handed"
+    assert zero[2] == plain[2], "program_identity"
+    assert _timeless_digest(_drop_hedge_fields(zero[0])) == _timeless_digest(_drop_hedge_fields(plain[0]))
+    assert zero[0]["hedge"]["mode"] == "program"
+    assert all(t["hedge"]["units"] == 0 for t in zero[0]["trades"])
+
+
+def test_program_mode_at_ratio_zero_excludes_nothing_and_adds_no_row(monkeypatch):
+    zero = _solved(*_block_doc({"hedge": {**_PROGRAM_BLOCK, "ratio": 0.0}}), monkeypatch)
+    counts = zero[0]["hedge"]["counts"]
+    assert not [k for k in counts if k.endswith("_excluded")], counts
+    assert all(len(g["reserve_rows"]) == len(zero[1][0]["groups"][0]["reserve_rows"]) for g in zero[1][0]["groups"])

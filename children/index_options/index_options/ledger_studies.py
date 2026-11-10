@@ -1332,9 +1332,9 @@ class ReplayHedge:
 
     @classmethod
     def validate_block(cls, block, parity):
-        """Refuse a block this stage cannot attach (program mode, a condition), a bad block or bad parity params."""
-        if not isinstance(block, dict) or block.get("mode") != "replay":
-            raise ValueError("block_unattached: only a replay-mode hedge is attached; program mode lands in ADR-0312 S4")
+        """Refuse a block this stage cannot attach (a condition), a bad block or bad parity params."""
+        if not isinstance(block, dict) or block.get("mode") not in ("replay", "program"):
+            raise ValueError("block_unattached: only a replay- or program-mode hedge is attached")
         if block.get("condition") is not None:
             raise ValueError("hedge_condition_unattached: the replay attaches the unconditional hedge only")
         HedgeOverlay.from_method({"hedge": block})
