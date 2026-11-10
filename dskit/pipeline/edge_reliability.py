@@ -2117,6 +2117,15 @@ class _BucketMap:
     rows: int
     dates: int
     names: int
+    #: Two-regressor maps only (ADR-0311 A1 part F): the shrunk ``(a, b_dir, b_shape)``, its standard errors,
+    #: degrees of freedom and the Student-t bands per configured level; ``None`` for a one-regressor map.
+    theta: tuple = None
+    se: tuple = None
+    df: float = None
+    bands: dict = None
+
+
+_EXTRA_FIELDS = ("theta", "se", "df", "bands")
 
 
 class EdgeCalibrationMap:
@@ -2187,11 +2196,53 @@ class EdgeCalibrationMap:
             The frozen map; before warm-up every name adjustment is 0 too.
         """
         out = pooling.fit(state)
-        keys = _BucketMap.__dataclass_fields__
-        rows = [_BucketMap(**{k: x[k] for k in keys}) for x in out["buckets"]]
-        pooled = _BucketMap(**{k: out["pooled"][k] for k in keys})
-        names = {n: adjust.adjust(n) for n in adjust.names()} if out["warm"] else {}
+        two = state.regressors == 2
+        keys = [k for k in _BucketMap.__dataclass_fields__ if two or k not in _EXTRA_FIELDS]
+
+        def record(x):
+            vals = {k: x[k] for k in keys if k in x}
+            if two:
+                vals = {k: x[k] for k in _EXTRA_FIELDS}
+                vals.update({k: x[k] for k in ("pooled", "clusters", "rows", "dates", "names")})
+                vals.update(a=x["theta"][0], b=x["theta"][1], se_a=None, se_b=None, b_lcb=None, w=0.0,
+                            se_w=None, w_lcb=0.0)
+                vals["theta"] = tuple(x["theta"])
+                vals["se"] = None if x["se"] is None else tuple(x["se"])
+            return _BucketMap(**vals)
+
+        rows = [record(x) for x in out["buckets"]]
+        pooled = record(out["pooled"])
+        if two:
+            names = {}
+        else:
+            names = {n: adjust.adjust(n) for n in adjust.names()} if out["warm"] else {}
         return cls(t, out["warm"], rows, pooled, names)
+
+    def bucket_only_two(self, bucket, e_dir, e_shape):
+        """Return ``a_b + b_dir e_dir + b_shape e_shape`` of a two-regressor map (the ``c2`` of a row).
+
+        Parameters
+        ----------
+        bucket : int
+            The bucket index.
+        e_dir, e_shape : float
+            The direction edge and the shape edge (``e - e_dir``) in the map's units.
+
+        Returns
+        -------
+        float
+            The calibrated edge; ``0.0`` before warm-up (every coefficient is the prior 0).
+
+        Raises
+        ------
+        ValueError
+            On a one-regressor map or a non-finite edge.
+        """
+        rec = self._bucket(bucket)
+        if rec.theta is None:
+            raise ValueError("bucket_only_two needs a map built from a two-regressor state")
+        d, sh = self._edge(e_dir), self._edge(e_shape)
+        return rec.theta[0] + rec.theta[1] * d + rec.theta[2] * sh
 
     def _bucket(self, bucket):
         """Return a bucket's record, refusing an index outside the map."""
@@ -2252,8 +2303,9 @@ class EdgeCalibrationMap:
 
 
 def _fields_of(record):
-    """Return a frozen record's fields as a dict."""
-    return {k: getattr(record, k) for k in record.__dataclass_fields__}
+    """Return a frozen record's fields as a dict (the two-regressor extras only when present)."""
+    return {k: (list(v) if isinstance(v, tuple) else v) for k in record.__dataclass_fields__
+            for v in [getattr(record, k)] if v is not None or k not in _EXTRA_FIELDS}
 
 
 class TrailingRegime:

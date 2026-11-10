@@ -28,8 +28,12 @@ RIGHTS = ("call", "put")
 EXPIRY_DAYS = (14, 21, 13)  # two Fridays and a Thursday (a holiday expiry settles Thursday)
 ABS_Z = {90.0: 1.6, 100.0: 0.0, 110.0: 0.5}
 STATES = ("expanding_fill", "decayed_fill", "expanding_decision", "decayed_decision")
+DIR_STATES = tuple("dir_" + k for k in STATES)
+EXTRA_STATES = ("reported_fill", "reported_dir", "forward", "fill_sensitivity", "reported_sensitivity", "dollar")
+FOURTEEN = STATES + DIR_STATES + EXTRA_STATES
 EDGES = {"dte_edges": [8, 22], "abs_z_edges": [1.0], "spread_edges": [0.15]}
-POOL = {"min_clusters": 2, "min_dates": 2, "tau2_floor": 1e-6, "weight_cap": 1.0, "lcb_k": 1.0, "band": "two"}
+POOL = {"min_clusters": 2, "min_dates": 2, "tau2_floor": 1e-6, "weight_cap": 1.0, "lcb_k": 1.0, "band": "two",
+        "min_blocks": 2, "ci_levels": [0.90, 0.95]}
 ADJUST = {"name_prior_clusters": 26, "name_min_clusters": 2}
 REGIME = {"regime_lookback_weeks": 4, "regime_min_weeks": 2}
 
@@ -47,7 +51,8 @@ class World:
     """Decision rows, fill quotes and bars, all dated; poisoned or deleted from a date on."""
 
     def __init__(self, poison_from=None, delete_from=None, quote_override=None, extra_rows=None,
-                 no_rows_before=None):
+                 no_rows_before=None, mult_factor=1.0):
+        self.mult_factor = mult_factor
         self.poison_from = poison_from
         self.delete_from = delete_from
         self.quote_override = quote_override
@@ -60,6 +65,13 @@ class World:
     def _check_alive(self, d):
         assert self.delete_from is None or d < self.delete_from, f"read data dated {d}, which is deleted"
 
+    def multiplier(self, name):
+        return 100.0 * self.mult_factor if name == "AAA" else 100.0
+
+    @staticmethod
+    def spot(name):
+        return {"AAA": 50.0, "BBB": 100.0, "CCC": 200.0}[name]
+
     @staticmethod
     def factor(name, d):
         return 2.0 if name == "CCC" and d >= "2020-02-09" else 1.0
@@ -71,16 +83,26 @@ class World:
         x = (u("x", *key) - 0.5) * 10.0
         spread = 0.05 + 0.3 * (u("s", *key) > 0.5)
         v = 0.2 * (1.0 + 0.5 * u("v", name, t))
-        e = x if sign > 0 else -x - 1.3
-        credit = -sign * price * 100.0 - 0.65
+        mult = self.multiplier(name)
+        e = (x if sign > 0 else -x - 1.3) * mult / 100.0
+        credit = -sign * price * mult - 0.65 * mult / 100.0
+        e_dir = 0.5 * e + (u("d", *key) - 0.5) * mult / 100.0
+        code = None
+        if u("nd", *key) < 0.03:
+            e_dir, code = None, "leg_no_iv"
+        sigma2 = 1e-6 * (1.0 + u("sg", *key))
+        scale = self.spot(name) * mult
         if self._bad(t):
             e, credit, v, spread = 1e9, -1e9, 1e6, 0.99
+            e_dir = None if e_dir is None else 1e9
         return {
             "group": f"{name}|{t}|{expiry}", "name": name, "expiry": expiry, "settle_date": expiry,
             "fill_date": fill or add_days(t, 3), "factor": self.factor(name, t), "right": right,
             "strike": strike, "sign": sign, "e": e, "dte": float((datetime.date.fromisoformat(expiry)
                                                                  - datetime.date.fromisoformat(t)).days),
-            "abs_z": ABS_Z[strike], "spread": spread, "v": v, "credit": credit, "multiplier": 100.0,
+            "abs_z": ABS_Z[strike], "spread": spread, "v": v, "credit": credit, "multiplier": mult,
+            "e_dir": e_dir, "direction_code": code, "sigma2": sigma2, "scale": scale, "mid": price,
+            "fee": 0.65, "cdf_repaired": False,
         }
 
     def rows_at(self, t):
@@ -112,7 +134,7 @@ class World:
             price = self.quote_override(*key) or price
         if self._bad(d):
             price = 1e6
-        return -r["sign"] * price * 100.0 - 0.65
+        return -r["sign"] * price * r["multiplier"] - 0.65 * r["multiplier"] / 100.0
 
     def level(self, r):
         s = r["settle_date"]
@@ -170,6 +192,7 @@ def params(out_dir, **over):
         "window": {"start": CAL[0], "end": CAL[-1]}, "report_from": CAL[13], "sealed_from": "2021-07-01",
         "out_dir": str(out_dir), "half_life_weeks": 26, "buckets": dict(EDGES), "regime": dict(REGIME),
         "pooling": dict(POOL), "name_adjust": dict(ADJUST), "checkpoint_every": 1, "ram_gb_limit": 64,
+        "direction_regressor": True,
     }
     p.update(over)
     return p
@@ -226,7 +249,7 @@ class TestPoisonedFuture:
         assert maps_upto(tmp_path / "clean", T) == maps_upto(tmp_path / "dirty", T)
         assert f"map-{T}.json" in maps_upto(tmp_path / "clean", T)
         assert checkpoint(tmp_path / "clean")["states"] == checkpoint(tmp_path / "dirty")["states"]
-        assert set(checkpoint(tmp_path / "clean")["states"]) == set(STATES)
+        assert set(checkpoint(tmp_path / "clean")["states"]) == set(FOURTEEN)
 
     def test_positive_control_the_poison_does_move_later_maps(self, tmp_path):
         late = add_days(T, 35)
@@ -242,7 +265,8 @@ class TestPoisonedFuture:
             def hook(walk, t):
                 if t == T:
                     seen[label] = (walk._regime.to_dict(), json.dumps(
-                        {k: [s.to_dict(), a.to_dict()] for k, (s, a) in walk._states.items()}, sort_keys=True))
+                        {k: [st.to_dict(), walk._adjust[k].to_dict() if k in walk._adjust else None]
+                     for k, st in walk._states.items()}, sort_keys=True))
             return hook
 
         run(make(tmp_path, World(), end=T, out="clean", on_decide=capture("clean")), tmp_path)
@@ -556,7 +580,7 @@ class TestResources:
                 return [{"group": f"{n}|{expiry}", "name": n, "expiry": expiry, "settle_date": expiry,
                          "fill_date": add_days(t, 3), "factor": 1.0, "right": "call", "strike": 50.0 + k,
                          "sign": 1, "e": 0.01 * k, "dte": 14.0, "abs_z": 0.5, "spread": 0.1, "v": 0.3,
-                         "credit": -1.0, "multiplier": 100.0} for n in names for k in range(100)]
+                         "credit": -1.0, "multiplier": 100.0, "scale": 1e4, "e_dir": 0.0, "direction_code": None} for n in names for k in range(100)]
 
         node = Big("walk", params(tmp_path / "big", window={"start": t, "end": t}, report_from=CAL[1]), World())
         tracemalloc.start()
@@ -574,7 +598,9 @@ def test_public_surface_and_hooks():
     assert ew.NODE_KINDS == ()
     assert EdgeReliabilityWalk._BASE_PARAMS == (
         "window", "report_from", "sealed_from", "out_dir", "half_life_weeks", "buckets", "regime", "pooling",
-        "name_adjust", "checkpoint_every", "ram_gb_limit")
+        "name_adjust", "checkpoint_every", "ram_gb_limit", "direction_regressor", "edge_scale", "row_weight",
+        "time_block_weeks", "min_fill_rate", "min_fill_sample", "ci_level", "bh_q", "bootstrap_draws",
+        "bootstrap_seed", "tail_level_floor", "b0_floor", "hac_lags")
     assert EdgeReliabilityWalk.__abstractmethods__ == frozenset(
         {"_decision_calendar", "_decision_rows", "_fill_credits", "_settlement_levels", "_next_session",
          "_input_pins"})
@@ -608,14 +634,16 @@ class TestFrozenResidual:
                 if row["t"] not in maps:
                     maps[row["t"]] = json.loads((root / f"map-{row['t']}.json").read_text())["states"][state_key]
                 bucket = maps[row["t"]]["buckets"][row["bucket"]]
-                cb = bucket["a"] + bucket["b"] * row["e"]
-                u = row[r_key] - cb
+                e = row["e"] / row["scale"]
+                cb = bucket["a"] + bucket["b"] * e
+                u = row[r_key] / row["scale"] - cb
+                w = row["w"]
                 rec = sums.setdefault(row["name"], [0.0] * 5)
-                rec[0] += 1
-                rec[1] += row["e"]
-                rec[2] += u
-                rec[3] += row["e"] ** 2
-                rec[4] += row["e"] * u
+                rec[0] += w
+                rec[1] += w * e
+                rec[2] += w * u
+                rec[3] += w * e ** 2
+                rec[4] += w * e * u
         return sums
 
     @pytest.mark.parametrize("state_key,r_key", [("expanding_fill", "r"), ("expanding_decision", "r_dec")])
@@ -636,7 +664,8 @@ class TestFrozenResidual:
         real = ew.EdgeReliabilityWalk._fold
 
         def swapped(self, t, s, name, cells):
-            return real(self, t, s, name, [(c[0][:13] + [c[0][14]] + c[0][14:], *c[1:]) for c in cells])
+            return real(self, t, s, name, [(c[0][:ew._CB] + [c[0][ew._CF]] + c[0][ew._CB + 1:], *c[1:])
+                                           for c in cells])
 
         run(make(tmp_path, World(no_rows_before=CAL[1]), report_from=CAL[1], out="good"), tmp_path)
         monkeypatch.setattr(ew.EdgeReliabilityWalk, "_fold", swapped)
@@ -731,3 +760,177 @@ class TestCheckpointVersion:
         path.write_text(json.dumps(blob))
         with pytest.raises(ValueError, match="checkpoint_mismatch"):
             run(make(tmp_path, end=CAL[8]), tmp_path)
+
+
+# --------------------------------------------------------------------------- ADR-0311 A1 F3.1: states and params
+
+
+def captured_states(tmp_path, at=8, **over):
+    seen = {}
+
+    def hook(walk, t):
+        if t == CAL[at]:
+            seen["states"] = dict(walk._states)
+            seen["adjust"] = dict(walk._adjust)
+
+    run(make(tmp_path, end=CAL[at], on_decide=hook, **over), tmp_path)
+    return seen
+
+
+class TestStatesAndParams:
+    def test_fourteen_states_with_direction_and_nine_without(self, tmp_path):
+        seen = captured_states(tmp_path, out="a")
+        assert tuple(seen["states"]) == FOURTEEN and len(seen["states"]) == 14
+        assert set(seen["adjust"]) == set(STATES)  # the name adjustment belongs to the one-regressor primary map
+        seen = captured_states(tmp_path, out="b", direction_regressor=False)
+        assert tuple(seen["states"]) == STATES + tuple(k for k in EXTRA_STATES if k != "reported_dir")
+        assert len(seen["states"]) == 9
+        assert set(checkpoint(tmp_path / "b")["states"]) == set(seen["states"])
+
+    def test_state_shapes_follow_the_state_list(self, tmp_path):
+        st = captured_states(tmp_path)["states"]
+        for key, state in st.items():
+            assert state.regressors == (2 if key.startswith("dir_") or key == "reported_dir" else 1), key
+            assert state.block_lengths == 2, key
+            assert (state.decay is not None) == ("decayed" in key), key
+
+    def test_defaults_are_the_amendments(self, tmp_path):
+        node = make(tmp_path)
+        node.params.pop("checkpoint_every")
+        assert node._param("time_block_weeks") == [4, 13]
+        assert node._param("hac_lags") == 2
+        assert node._param("b0_floor") == node._param("tail_level_floor") == 0.5
+        assert node._param("min_fill_rate") == 0.9 and node._param("min_fill_sample") == 20
+        assert node._param("ci_level") == 0.95 and node._param("bh_q") == 0.10
+        assert node._param("bootstrap_draws") == 999 and node._param("bootstrap_seed") == 20261109
+        assert node._param("edge_scale") == "notional" and node._param("row_weight") == "group_equal"
+        assert node._param("checkpoint_every") == 4
+
+    @pytest.mark.parametrize("over,code", [
+        ({"edge_scale": "bogus"}, "edge_scale_invalid"),
+        ({"row_weight": "bogus"}, "row_weight_invalid"),
+        ({"time_block_weeks": []}, "time_block_invalid"),
+        ({"time_block_weeks": [13, 4]}, "time_block_invalid"),
+        ({"time_block_weeks": [4, 4]}, "time_block_invalid"),
+        ({"time_block_weeks": [4, 1.5]}, "time_block_invalid"),
+        ({"time_block_weeks": [0, 4]}, "time_block_invalid"),
+        ({"pooling": {**POOL, "band": "three"}}, "band_invalid"),
+        ({"pooling": {**POOL, "min_blocks": 1}}, "min_blocks_invalid"),
+        ({"pooling": {**POOL, "ci_levels": [1.2]}}, "ci_levels_invalid"),
+        ({"pooling": {**POOL, "ci_levels": []}}, "ci_levels_invalid"),
+        ({"ci_level": 1.0}, "ci_level_invalid"),
+        ({"bh_q": 0.0}, "bh_q_invalid"),
+        ({"min_fill_rate": 0.0}, "min_fill_rate_invalid"),
+        ({"min_fill_rate": 1.5}, "min_fill_rate_invalid"),
+        ({"min_fill_sample": 1}, "min_fill_sample_invalid"),
+        ({"bootstrap_draws": 98}, "bootstrap_invalid"),
+        ({"bootstrap_seed": 1.5}, "bootstrap_invalid"),
+        ({"tail_level_floor": 0.0}, "tail_level_floor_invalid"),
+        ({"b0_floor": 1.5}, "b0_floor_invalid"),
+        ({"hac_lags": -1}, "hac_lags_invalid"),
+    ])
+    def test_each_bad_knob_refuses_with_its_code_before_any_hook(self, tmp_path, over, code):
+        node = make(tmp_path, **over)
+        with pytest.raises(ValueError, match=code) as err:
+            run(node, tmp_path)
+        assert err.value.code == code
+        assert node.events == []
+
+    @pytest.mark.parametrize("over", [
+        {"direction_regressor": False}, {"edge_scale": "none"}, {"row_weight": "none"},
+        {"time_block_weeks": [4, 8]}, {"min_fill_rate": 0.8}, {"min_fill_sample": 10}, {"ci_level": 0.9},
+        {"bh_q": 0.2}, {"bootstrap_draws": 500}, {"bootstrap_seed": 7}, {"tail_level_floor": 0.4},
+        {"b0_floor": 0.4}, {"hac_lags": 3},
+    ])
+    def test_every_new_knob_is_part_of_the_params_hash(self, tmp_path, over):
+        run(make(tmp_path, fail_at=CAL[8]) if False else make(tmp_path, end=CAL[6]), tmp_path)
+        with pytest.raises(ValueError, match="checkpoint_mismatch") as err:
+            run(make(tmp_path, end=CAL[8], **over), tmp_path)
+        assert err.value.code == "checkpoint_mismatch"
+
+    def test_an_absent_knob_and_its_default_hash_alike(self, tmp_path):
+        run(make(tmp_path, end=CAL[6]), tmp_path)
+        run(make(tmp_path, end=CAL[8], hac_lags=2, bh_q=0.10), tmp_path)  # equal to the defaults: resumes
+
+    def test_a_checkpoint_of_another_version_names_both_versions(self, tmp_path):
+        run(make(tmp_path, end=CAL[6]), tmp_path)
+        path = tmp_path / "out" / "checkpoint.json"
+        blob = json.loads(path.read_text())
+        blob["version"] = 2
+        path.write_text(json.dumps(blob))
+        with pytest.raises(ValueError, match="checkpoint_mismatch") as err:
+            run(make(tmp_path, end=CAL[8]), tmp_path)
+        assert "version 2" in str(err.value) and f"version {ew._VERSION}" in str(err.value)
+        assert ew._VERSION == 3
+
+
+class TestRowFeeds:
+    def test_a_row_without_a_direction_edge_leaves_only_the_two_regressor_states(self, tmp_path):
+        counts = run(make(tmp_path), tmp_path)["summary"]["counts"]
+        assert counts["no_direction_edge"] > 0
+        assert counts["no_direction_edge"] == sum(v for k, v in counts.items() if k.startswith("no_direction_edge."))
+        assert counts["no_direction_edge.leg_no_iv"] == counts["no_direction_edge"]
+        seen = captured_states(tmp_path, out="seen")
+        a, b = seen["states"]["expanding_fill"].fit(None), seen["states"]["dir_expanding_fill"].fit(None)
+        assert 0 < b["rows"] < a["rows"]
+
+    def test_with_direction_off_the_primary_states_are_unchanged(self, tmp_path):
+        on = captured_states(tmp_path, out="on")["states"]
+        off = captured_states(tmp_path, out="off", direction_regressor=False)["states"]
+        for key in STATES + ("dollar",):
+            assert on[key].to_dict() == off[key].to_dict(), key
+
+    def test_side_strata_partition_every_state(self, tmp_path):
+        for key, state in captured_states(tmp_path)["states"].items():
+            buy, sell, pooled = state.fit("buy"), state.fit("sell"), state.fit(None)
+            assert buy["rows"] + sell["rows"] == pooled["rows"], key
+            assert buy["n"] + sell["n"] == pytest.approx(pooled["n"], rel=1e-12), key
+
+    def test_group_equal_gives_each_group_weight_one_and_none_gives_rows(self, tmp_path):
+        eq = captured_states(tmp_path, out="eq")["states"]["dollar"].fit(None)
+        one = captured_states(tmp_path, out="one", row_weight="none")["states"]["dollar"].fit(None)
+        assert one["n"] == one["rows"]
+        assert eq["rows"] == one["rows"]
+        assert eq["n"] == pytest.approx(eq["rows"] / 6, rel=1e-12)  # six rows per group after the side rule
+        assert eq["n_groups"] == pytest.approx(eq["rows"] / 6, rel=1e-12)
+
+    def test_the_top_unit_belongs_to_the_reported_states_that_need_it(self, tmp_path):
+        st = captured_states(tmp_path, at=22)["states"]
+        top, rep = st["reported_fill"].fit("top"), st["reported_fill"].fit(None)
+        assert 0 < top["rows"] < rep["rows"]
+        assert top["rows"] <= 0.2 * rep["rows"]
+        assert st["expanding_fill"].fit("top")["rows"] == 0
+
+    def test_reported_states_hold_reported_rows_only(self, tmp_path):
+        st = captured_states(tmp_path, at=22)["states"]
+        assert 0 < st["reported_fill"].fit(None)["rows"] < st["expanding_fill"].fit(None)["rows"]
+        assert st["reported_dir"].fit(None)["rows"] <= st["reported_fill"].fit(None)["rows"]
+
+    def test_blocks_are_the_settlement_date_blocks_of_both_lengths(self, tmp_path):
+        node = make(tmp_path, end=CAL[10])
+        run(node, tmp_path)
+        joined = {row[0] for ev in node.events if ev[0] == "fill" for row in ev[1]}
+        start = datetime.date.fromisoformat(CAL[0])
+        for idx, weeks in enumerate((4, 13)):
+            want = {((datetime.date.fromisoformat(s) - start).days // (7 * weeks)) for s in joined}
+            state = checkpoint(tmp_path / "out")["states"]["dollar"]["state"]["pooled"]
+            assert len(state["blocks"][idx]) == len(want), weeks
+            assert {int(k) for k in state["blocks"][idx]} == want, weeks
+
+    def test_scaling_one_name_leaves_the_notional_slope_and_moves_the_dollar_one(self, tmp_path):
+        base = captured_states(tmp_path, out="b0", World=None) if False else None
+        del base
+
+        def fits(world, out):
+            seen = {}
+
+            def hook(walk, t):
+                if t == CAL[12]:
+                    seen["f"] = {k: walk._states[k].fit(None)["b"] for k in ("expanding_fill", "dollar")}
+
+            run(make(tmp_path, world, end=CAL[12], out=out, on_decide=hook), tmp_path)
+            return seen["f"]
+
+        a, b = fits(World(), "s1"), fits(World(mult_factor=7.0), "s7")
+        assert a["expanding_fill"] == pytest.approx(b["expanding_fill"], rel=1e-9)
+        assert abs(a["dollar"] - b["dollar"]) > 1e-3

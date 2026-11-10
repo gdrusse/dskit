@@ -2471,7 +2471,12 @@ _MC_START = datetime.date(2020, 1, 3)
 
 
 def _mc_rows(rho, rng, weeks=78, m=4, names=6):
-    """r = nu_b e + noise with nu an AR(1) series across 4-week blocks (true pooled slope 0), balanced e = +/-1."""
+    """r = nu_b e + noise with nu an AR(1) series across 4-week blocks (true pooled slope 0), balanced e = +/-1.
+
+    This generator is the SIGNAL-DOMINATED limit: the block slope sd (1 per block) is about 10x the per-block
+    noise in the pooled slope, so the dependence term dominates and the sizes below are the worst case of the
+    measured design, not typical ones. The seed is fixed (``REPS`` replications, seed 11).
+    """
     nu = np.zeros(weeks // 4 + 1)
     nu[0] = rng.normal()
     for b in range(1, len(nu)):
@@ -2561,8 +2566,13 @@ class TestCoverageUnderBlockDependence:
         assert 0.03 <= 1 - mc[0.0]["boot2_13"] <= 0.08
         # above nominal under dependence (the reviewers measured 0.098 on their draws; asserted as such, widened
         # to this generator's measured 0.13-0.15 so a silent change is still caught)
-        assert 0.06 <= 1 - mc[0.5]["boot2_13"] <= 0.20
-        assert 0.025 <= mc[0.5]["boot1_13"] <= 0.09
+        assert 0.06 <= 1 - mc[0.5]["boot2_13"] <= 0.16
+        assert 0.025 <= mc[0.5]["boot1_13"] <= 0.12
+
+    def test_quarter_block_coverage_exceeds_four_week_coverage(self, mc):
+        for rho in (0.5, 0.7):
+            assert mc[rho]["cr1_13"] > mc[rho]["cr1_4"]
+            assert mc[rho]["boot2_13"] > mc[rho]["boot2_4"]
 
     def test_quarter_block_cr1_t_coverage_and_ordering(self, mc):
         assert abs(mc[0.0]["cr1_13"] - 0.94) <= 0.04
@@ -2930,3 +2940,47 @@ class TestPoolingVectorBands:
         assert res["counts"]["direction_singular"] >= 1 and res["counts"]["pooled_bucket_direction"] >= 1
         assert res["buckets"][2]["pooled"] is True and res["buckets"][2]["theta"] == res["pooled"]["theta"]
         assert "w" not in res["buckets"][0]            # no through-origin variant on the two-regressor map
+
+
+class TestTwoRegressorMap:
+    """ADR-0311 A1 part F: the frozen map of a two-regressor state carries theta, bands and the warm flag."""
+
+    def _map(self, warm=True):
+        rng = np.random.default_rng(3)
+        st = LinearEdgeState(3, None, regressors=2, block_lengths=1)
+        for wk in range(30):
+            settle = datetime.date(2020, 1, 3) + datetime.timedelta(days=7 * wk)
+            t = _iso(settle + datetime.timedelta(days=1))
+            st.advance(t)
+            for n in range(4):
+                e = rng.normal(0, 2, 6)
+                ed = 0.5 * e + rng.normal(0, 1, 6)
+                st.add_cluster(t, f"N{n}", _iso(settle), _iso(settle - datetime.timedelta(days=3)), [0, 1, 2] * 2,
+                               [float(x) for x in e], [float(0.6 * x + rng.normal()) for x in e],
+                               blocks=[wk // 4], e_dir=[float(x) for x in ed])
+        pool = PartialPooling({**POOL, "band": "two", "min_clusters": 2, "min_dates": 2 if warm else 99})
+        return EdgeCalibrationMap.build("2020-08-01", st, pool, None), pool.fit(st)
+
+    def test_theta_bands_and_the_c2_formula(self):
+        cmap, fit = self._map()
+        assert cmap.warm
+        for b in range(3):
+            rec = cmap.buckets[b]
+            assert list(rec.theta) == pytest.approx(fit["buckets"][b]["theta"], abs=0)
+            assert rec.bands.keys() == fit["buckets"][b]["bands"].keys() == {"0.9", "0.95"}
+            want = rec.theta[0] + rec.theta[1] * 1.5 + rec.theta[2] * -0.5
+            assert cmap.bucket_only_two(b, 1.5, -0.5) == pytest.approx(want, abs=1e-15)
+
+    def test_before_warm_up_every_coefficient_is_zero(self):
+        cmap, _ = self._map(warm=False)
+        assert not cmap.warm and cmap.bucket_only_two(1, 2.0, 3.0) == 0.0
+
+    def test_dump_round_trips_and_a_one_regressor_map_is_unchanged(self):
+        cmap, _ = self._map()
+        again = EdgeCalibrationMap.from_dict(json.loads(json.dumps(cmap.to_dict())))
+        assert again.bucket_only_two(2, 0.3, 0.4) == pytest.approx(cmap.bucket_only_two(2, 0.3, 0.4), abs=1e-15)
+        state, _ = _built()
+        one = EdgeCalibrationMap.build("2020-08-01", state, PartialPooling({**POOL, "band": "two"}), NameAdjustment({"name_prior_clusters": 26, "name_min_clusters": 2}))
+        assert not set(one.to_dict()["pooled"]) & {"theta", "se", "df", "bands"}
+        with pytest.raises(ValueError, match="two-regressor"):
+            one.bucket_only_two(0, 1.0, 1.0)
