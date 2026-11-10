@@ -11,6 +11,7 @@ import datetime
 import itertools
 import json
 import math
+import random
 
 import numpy as np
 import pytest
@@ -1025,7 +1026,7 @@ class TestEdgeCalibrationMap:
 
 def test_stage_2a_public_surface():
     assert {"PartialPooling", "NameAdjustment", "EdgeCalibrationMap"} <= set(er.__all__)
-    assert er.__all__[-4:] == ["PartialPooling", "NameAdjustment", "EdgeCalibrationMap", "TrailingRegime"]
+    assert er.__all__[-5:-1] == ["PartialPooling", "NameAdjustment", "EdgeCalibrationMap", "TrailingRegime"]
 
 
 # ------------------------------------------------- TrailingRegime (stage 2b)
@@ -1178,7 +1179,7 @@ class TestTrailingRegime:
 
     def test_params_tuple_and_surface(self):
         assert TrailingRegime._PARAMS == ("regime_lookback_weeks", "regime_min_weeks")
-        assert er.__all__[-1] == "TrailingRegime"
+        assert er.__all__[-2] == "TrailingRegime" and er.__all__[-1] == "CalibratedObjective"
 
     def test_does_not_mutate_caller_params(self):
         p = dict(REGIME)
@@ -2035,7 +2036,7 @@ class TestRunningKishSums:
 
 
 def test_kish_in_the_public_surface():
-    assert "kish_effective" in er.__all__ and er.__all__[-4:] == [
+    assert "kish_effective" in er.__all__ and er.__all__[-5:-1] == [
         "PartialPooling", "NameAdjustment", "EdgeCalibrationMap", "TrailingRegime"]
 
 
@@ -3060,3 +3061,320 @@ class TestSandwichGuardPrecedesPairTable:
             st.add_cluster(t, "AA", _iso(settle), _iso(settle - datetime.timedelta(days=3)), [0, 0, 0],
                            [1.0, 2.0, 3.5 + k], [1.0, 0.5 * k, 2.0], blocks=[0])
         assert st.sandwich(None, (0.1, 0.2), way, block=0) is None
+
+
+# --------------------------------------------------------------------------- ADR-0313 I3: CalibratedObjective
+
+
+def _block(**over):
+    """A calibration block (the JSON of ADR-0313 section D) with ``over`` applied."""
+    blk = {"source": "edge_maps", "state": "expanding_fill", "edge_scale": "notional", "regressors": 1,
+           "line": "bucket", "form": "slope", "variant": "point", "warmup": "no_trade", "min_warm_weeks": 8}
+    blk.update(over)
+    return blk
+
+
+def _rec(w=0.6, a=0.0, b=0.5, w_lcb=None, b_lcb=None):
+    return {"a": a, "b": b, "se_a": None, "se_b": None, "b_lcb": b_lcb, "w": w, "se_w": None,
+            "w_lcb": w if w_lcb is None else w_lcb, "pooled": False, "clusters": 9, "rows": 9, "dates": 9,
+            "names": 3}
+
+
+def _map(ws=(0.6, 0.3), warm=True, state="expanding_fill", two=None, dir_warm=None, names=None, a=0.0):
+    """A walk-shaped ``map-<t>.json`` body: ``states``, ``direction`` and ``origin_two`` for each bucket."""
+    body = {"t": "2020-03-13", "states": {state: {"t": "2020-03-13", "warm": warm,
+                                                  "buckets": [_rec(w, a=a) for w in ws], "pooled": _rec(0.5),
+                                                  "names": names or {}}}}
+    if two is not None:
+        dw = warm if dir_warm is None else dir_warm
+        body["direction"] = {"dir_" + state: {
+            "t": "2020-03-13", "warm": dw, "pooled": _rec(0.5), "names": {},
+            "buckets": [dict(_rec(0.0, a=a), theta=[a, 0.4, 0.7]) for _ in two]}}
+        body["origin_two"] = {"warm": dw, "pooled": list(two[0]), "counts": {"origin_singular": 0},
+                              "buckets": [{"w": list(w), "pooled": False} for w in two]}
+    return body
+
+
+class TestCalibratedObjectiveParams:
+    def test_default_deny(self):
+        er.CalibratedObjective(_block())
+        for bad in (_block(extra=1), _block(source="rows"), _block(state="forward"), _block(regressors=3),
+                    _block(regressors=True), _block(form="quadratic"), _block(variant="mid"),
+                    _block(warmup="raw"), _block(min_warm_weeks=0), _block(min_warm_weeks=2.5),
+                    _block(edge_scale="x"), _block(line="name"), _block(control="yes")):
+            with pytest.raises(_Refusal):
+                er.CalibratedObjective(bad)
+        with pytest.raises(_Refusal):
+            er.CalibratedObjective({k: v for k, v in _block().items() if k != "state"})
+        with pytest.raises(_Refusal):
+            er.CalibratedObjective(["state"])
+
+    def test_params_tuple_is_the_documented_one(self):
+        assert er.CalibratedObjective._PARAMS == (
+            "source", "state", "edge_scale", "regressors", "line", "form", "variant", "warmup",
+            "min_warm_weeks", "control")
+
+    def test_identity_is_the_control_twin_and_only_it(self):
+        er.CalibratedObjective(_block(form="identity", control=True))
+        for bad in (_block(form="identity"), _block(form="slope", control=True),
+                    _block(form="identity", control=False)):
+            with pytest.raises(_Refusal, match="calibration_identity_not_control"):
+                er.CalibratedObjective(bad)
+
+    def test_affine_is_refused_until_it_is_read(self):
+        with pytest.raises(_Refusal, match="calibration_affine_unread"):
+            er.CalibratedObjective(_block(form="affine"))
+        assert er.CalibratedObjective(_block(form="affine"), affine_read=True).form == "affine"
+
+    def test_unsupported_combinations(self):
+        with pytest.raises(_Refusal, match="calibration_line_unsupported"):
+            er.CalibratedObjective(_block(line="bucket_name"))
+        with pytest.raises(_Refusal, match="calibration_variant_unsupported"):
+            er.CalibratedObjective(_block(regressors=2, variant="lcb"))
+
+    def test_double_discount(self):
+        lcb = er.CalibratedObjective(_block(variant="lcb"))
+        lcb.check_discount(0.0)
+        for rho, risk in ((0.1, False), (0.0, True)):
+            with pytest.raises(_Refusal, match="calibration_double_discount"):
+                lcb.check_discount(rho, risk_charge=risk)
+        er.CalibratedObjective(_block()).check_discount(0.1, risk_charge=True)
+
+    def test_weight_cap_above_one_is_refused(self):
+        obj = er.CalibratedObjective(_block())
+        obj.check_weight_cap(1.0)
+        obj.check_weight_cap(0.5)
+        with pytest.raises(_Refusal, match="calibration_weight_cap"):
+            obj.check_weight_cap(1.5)
+        with pytest.raises(_Refusal, match="calibration_weight_cap"):
+            obj.adjust(_map(ws=(1.5,)), 0, "AAA", 1.0)
+
+
+class TestCalibratedObjectiveSlope:
+    def test_hand_worked_sold_and_bought_sides(self):
+        obj = er.CalibratedObjective(_block())
+        m = _map(ws=(0.6,))
+        sold = obj.adjust(m, 0, "AAA", 0.60)          # c = 0.36
+        assert sold == pytest.approx(-0.24, abs=1e-15)
+        assert obj.mirror(sold) == pytest.approx(0.24, abs=1e-15)
+        bought = obj.adjust(m, 0, "AAA", -0.60)       # c = -0.36, adj = +0.24
+        assert bought == pytest.approx(0.24, abs=1e-15)
+        assert obj.mirror(bought) == pytest.approx(-0.24, abs=1e-15)
+
+    def test_never_flips_a_sign_or_exceeds_the_raw_edge(self):
+        rng = random.Random(7)
+        obj = er.CalibratedObjective(_block())
+        for _ in range(500):
+            w = rng.choice([0.0, 1.0, rng.random()])
+            e = rng.uniform(-50.0, 50.0)
+            c = e + obj.adjust(_map(ws=(w,)), 0, "AAA", e)
+            assert abs(c) <= abs(e) * (1 + 1e-12) and c * e >= 0.0
+
+    def test_weight_clipped_to_zero_gives_no_positive_value(self):
+        obj = er.CalibratedObjective(_block())
+        for e in (0.7, -0.7):
+            assert e + obj.adjust(_map(ws=(0.0,)), 0, "AAA", e) == 0.0
+
+    def test_zero_edge_item_is_never_subsidised(self):
+        obj = er.CalibratedObjective(_block())
+        for w in (0.0, 0.3, 1.0):
+            adj = obj.adjust(_map(ws=(w,), a=5.0), 0, "AAA", 0.0)
+            assert adj == 0.0 and math.copysign(1.0, adj) == 1.0
+
+    def test_unit_weight_is_exactly_zero(self):
+        obj = er.CalibratedObjective(_block())
+        for e in (0.1, -3.7, 1e-9, 12345.678):
+            assert obj.adjust(_map(ws=(1.0,)), 0, "AAA", e) == 0.0
+
+    def test_lcb_variant_reads_the_lower_weight(self):
+        m = _map(ws=(0.6,))
+        m["states"]["expanding_fill"]["buckets"][0]["w_lcb"] = 0.2
+        assert er.CalibratedObjective(_block(variant="lcb")).adjust(m, 0, "AAA", 1.0) == pytest.approx(-0.8)
+        assert er.CalibratedObjective(_block()).adjust(m, 0, "AAA", 1.0) == pytest.approx(-0.4)
+
+    def test_scale_is_irrelevant_to_the_slope(self):
+        obj = er.CalibratedObjective(_block())
+        m = _map(ws=(0.6,))
+        assert obj.adjust(m, 0, "AAA", 0.6, scale=5000.0) == obj.adjust(m, 0, "AAA", 0.6)
+        with pytest.raises(ValueError):
+            obj.adjust(m, 0, "AAA", 0.6, scale=-1.0)
+
+    def test_the_bucket_picks_its_own_weight(self):
+        obj = er.CalibratedObjective(_block())
+        m = _map(ws=(0.6, 0.3))
+        assert obj.adjust(m, 1, "AAA", 1.0) == pytest.approx(-0.7)
+
+    def test_inputs_are_checked(self):
+        obj = er.CalibratedObjective(_block())
+        for bad in (float("nan"), float("inf"), True, "1"):
+            with pytest.raises(ValueError):
+                obj.adjust(_map(), 0, "AAA", bad)
+        with pytest.raises(ValueError):
+            obj.adjust(_map(), 0, "AAA", 1.0, h_i=1.5)
+        with pytest.raises(_Refusal, match="calibration_map_malformed"):
+            obj.adjust({"t": "x"}, 0, "AAA", 1.0)
+
+
+class TestCalibratedObjectiveIdentityAndNoTrade:
+    def test_identity_is_exactly_zero_everywhere(self):
+        obj = er.CalibratedObjective(_block(form="identity", control=True))
+        for e in (0.0, 0.4, -9.0):
+            assert obj.adjust(_map(ws=(0.2,)), 0, "AAA", e) == 0.0
+
+    def test_identity_shares_the_warm_flag(self):
+        obj = er.CalibratedObjective(_block(form="identity", control=True))
+        assert obj.adjust(_map(warm=False), 0, "AAA", 1.0) is None
+
+    @pytest.mark.parametrize("form", ["slope", "identity"])
+    def test_no_trade_signals(self, form):
+        obj = er.CalibratedObjective(_block(form=form, control=form == "identity"))
+        cold, warm = _map(warm=False), _map(ws=(0.6, 0.3))
+        assert obj.warm(warm, 0) is True and obj.warm(cold, 0) is False
+        assert obj.warm(None, 0) is False
+        for bad in (None, 2, -1, True, "0", 1.0):
+            assert obj.warm(warm, bad) is False
+        assert obj.adjust(cold, 0, "AAA", 1.0) is None            # warm-up: no trade, never the raw edge
+        assert obj.adjust(None, 0, "AAA", 1.0) is None            # no map
+        assert obj.adjust(warm, 9, "AAA", 1.0) is None            # bucket missing
+        assert obj.adjust(warm, 0, "AAA", None) is None           # no walk row for the item
+
+    def test_other_states_of_the_map_do_not_make_it_warm(self):
+        m = _map(state="decayed_fill")
+        with pytest.raises(_Refusal, match="calibration_map_malformed"):
+            er.CalibratedObjective(_block()).warm(m, 0)
+
+    def test_mirror(self):
+        obj = er.CalibratedObjective(_block())
+        assert obj.mirror(None) is None
+        assert obj.mirror(0.0) == 0.0 and math.copysign(1.0, obj.mirror(0.0)) == 1.0
+        for adj in (-0.24, 0.31, 7.0):
+            assert adj + obj.mirror(adj) == 0.0                   # the round trip keeps its raw value
+
+
+class TestCalibratedObjectiveAffine:
+    def test_wing_toy_the_intercept_pays_a_zero_edge_item_and_the_slope_does_not(self):
+        m = _map(ws=(0.6,), a=2.0)
+        m["states"]["expanding_fill"]["buckets"][0]["b"] = 0.5
+        aff = er.CalibratedObjective(_block(form="affine"), affine_read=True)
+        slope = er.CalibratedObjective(_block())
+        assert slope.adjust(m, 0, "AAA", 0.0, scale=100.0) == 0.0
+        assert aff.adjust(m, 0, "AAA", 0.0, scale=100.0) == pytest.approx(200.0)
+        assert aff.adjust(m, 0, "AAA", 1.0, scale=100.0) == pytest.approx(200.0 - 0.5)
+        with pytest.raises(ValueError):
+            aff.adjust(m, 0, "AAA", 1.0)                          # the intercept needs a scale
+
+    def test_name_adjusted_line_is_a_param(self):
+        m = _map(ws=(0.6,), a=1.0, names={"AAA": [0.5, 0.1]})
+        m["states"]["expanding_fill"]["buckets"][0]["b"] = 0.5
+        obj = er.CalibratedObjective(_block(form="affine", line="bucket_name"), affine_read=True)
+        # c = (1 + 0.5) * 10 + (0.5 + 0.1) * 2 = 16.2, adj = 14.2
+        assert obj.adjust(m, 0, "AAA", 2.0, scale=10.0) == pytest.approx(14.2)
+        assert obj.adjust(m, 0, "ZZZ", 2.0, scale=10.0) == pytest.approx(10.0 - 1.0)
+
+
+class TestCalibratedObjectiveHedged:
+    TWO = ((0.5, 0.8),)
+
+    def objective(self, **over):
+        return er.CalibratedObjective(_block(regressors=2, **over))
+
+    @pytest.mark.parametrize("h, adj", [(0.0, -0.38), (0.5, -0.23), (1.0, -0.08)])
+    def test_hand_worked(self, h, adj):
+        # e_dir 0.6, e_shape 0.4, w_dir 0.5, w_shape 0.8:
+        # c = (1-h) 0.5 0.6 + 0.8 0.4, e^h = (1-h) 0.6 + 0.4, adj = (1-h)(0.5-1) 0.6 + (0.8-1) 0.4
+        m = _map(two=self.TWO, ws=(0.6,))
+        assert self.objective().adjust(m, 0, "AAA", 1.0, e_dir=0.6, h_i=h) == pytest.approx(adj, abs=1e-12)
+
+    def test_zero_direction_weight_makes_the_hedge_leave_the_calibrated_value_alone(self):
+        m = _map(two=((0.0, 0.8),), ws=(0.6,))
+        obj = self.objective()
+        # hedged raw edge is e_shape + (1-h) e_dir; c^h is w_shape e_shape only, whatever h is
+        for h in (0.0, 0.5, 1.0):
+            e_h = 0.4 + (1 - h) * 0.6
+            assert e_h + obj.adjust(m, 0, "A", 1.0, e_dir=0.6, h_i=h) == pytest.approx(0.32, abs=1e-12)
+
+    def test_unit_weights_give_exactly_zero(self):
+        m = _map(two=((1.0, 1.0),), ws=(1.0,))
+        for h in (0.0, 0.3, 1.0):
+            assert self.objective().adjust(m, 0, "AAA", 0.77, e_dir=0.31, h_i=h) == 0.0
+
+    def test_needs_the_direction_edge_and_the_direction_map(self):
+        m = _map(two=self.TWO, ws=(0.6,))
+        assert self.objective().adjust(m, 0, "AAA", 1.0, e_dir=None) is None   # no e_dir: no walk row
+
+    def test_one_regressor_map_refuses_a_hedge(self):
+        with pytest.raises(_Refusal, match="hedge_needs_direction_map"):
+            er.CalibratedObjective(_block()).adjust(_map(), 0, "AAA", 1.0, h_i=0.5)
+
+    def test_warm_needs_both_the_direction_map_and_the_origin_line(self):
+        assert self.objective().warm(_map(two=self.TWO, ws=(0.6,)), 0) is True
+        assert self.objective().warm(_map(two=self.TWO, ws=(0.6,), dir_warm=False), 0) is False
+        with pytest.raises(_Refusal, match="calibration_map_malformed"):
+            self.objective().warm(_map(ws=(0.6,)), 0)           # a walk without the direction regressor
+
+    def test_two_regressor_affine(self):
+        m = _map(two=self.TWO, ws=(0.6,), a=2.0)                  # theta = (2, 0.4, 0.7)
+        obj = er.CalibratedObjective(_block(regressors=2, form="affine"), affine_read=True)
+        # c = 10 * 2 + 0.5 * 0.4 * 0.6 + 0.7 * 0.4; e^h = 0.5 * 0.6 + 0.4
+        assert obj.adjust(m, 0, "A", 1.0, e_dir=0.6, scale=10.0, h_i=0.5) == pytest.approx(
+            20.0 + 0.12 + 0.28 - 0.7)
+
+    def test_bucket_weights_are_per_bucket(self):
+        m = _map(two=((0.5, 0.8), (1.0, 0.0)), ws=(0.6, 0.6))
+        assert self.objective().adjust(m, 1, "A", 1.0, e_dir=0.6) == pytest.approx(-0.4)
+
+
+@pytest.fixture(scope="module")
+def walk_maps(tmp_path_factory):
+    """Map files written by the real walk on its synthetic world (shape cannot drift from the walk)."""
+    pytest.importorskip("numpy")
+    from tests.pipeline_libs import test_edge_walk as tw
+
+    tmp = tmp_path_factory.mktemp("i3walk")
+    tw.run(tw.make(tmp, report_from=tw.CAL[2]), tmp)
+    out = tmp / "out"
+    return {"maps": {t: json.loads((out / f"map-{t}.json").read_text()) for t in tw.CAL},
+            "rows": tw.reported_rows(out), "cal": tw.CAL}
+
+
+class TestCalibratedObjectiveOnTheRealWalk:
+    def test_the_slope_adjust_reproduces_the_walks_stored_cw_bucket(self, walk_maps):
+        obj = er.CalibratedObjective(_block())
+        done = [r for r in walk_maps["rows"] if r["code"] is None]
+        warm = 0
+        for r in done:
+            m = walk_maps["maps"][r["t"]]
+            adj = obj.adjust(m, r["bucket"], r["name"], r["e"])
+            assert (adj is not None) == m["states"]["expanding_fill"]["warm"]
+            if adj is None:
+                continue
+            warm += 1
+            assert (r["e"] + adj) / r["scale"] == pytest.approx(r["cw_bucket"], rel=1e-9, abs=1e-12)
+            assert abs(r["e"] + adj) <= abs(r["e"]) * (1 + 1e-12)
+        assert 0 < warm < len(done)
+
+    def test_the_hedge_free_two_regressor_adjust_reproduces_c2w(self, walk_maps):
+        obj = er.CalibratedObjective(_block(regressors=2))
+        seen = 0
+        for r in (r for r in walk_maps["rows"] if r["code"] is None and r["e_dir"] is not None):
+            m = walk_maps["maps"][r["t"]]
+            adj = obj.adjust(m, r["bucket"], r["name"], r["e"], e_dir=r["e_dir"])
+            if adj is None:
+                assert not m["origin_two"]["warm"] or not m["direction"]["dir_expanding_fill"]["warm"]
+                continue
+            seen += 1
+            assert (r["e"] + adj) / r["scale"] == pytest.approx(r["c2w"], rel=1e-9, abs=1e-12)
+        assert seen > 0
+
+    def test_cold_weeks_are_no_trade_and_warm_weeks_are_not(self, walk_maps):
+        obj = er.CalibratedObjective(_block())
+        flags = [obj.warm(walk_maps["maps"][t], 0) for t in walk_maps["cal"]]
+        assert flags == [walk_maps["maps"][t]["states"]["expanding_fill"]["warm"] for t in walk_maps["cal"]]
+        assert flags[0] is False and any(flags)
+
+    def test_identity_twin_reads_the_same_warm_flag(self, walk_maps):
+        arm = er.CalibratedObjective(_block())
+        twin = er.CalibratedObjective(_block(form="identity", control=True))
+        for t in walk_maps["cal"]:
+            m = walk_maps["maps"][t]
+            assert arm.warm(m, 0) == twin.warm(m, 0)

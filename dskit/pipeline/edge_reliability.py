@@ -64,6 +64,7 @@ __all__ = [
     "NameAdjustment",
     "EdgeCalibrationMap",
     "TrailingRegime",
+    "CalibratedObjective",
 ]
 
 #: First day that is never readable, whatever the config says (ADR-0311 rule 7).
@@ -2590,3 +2591,262 @@ def _median(values):
     ordered = sorted(values)
     mid = len(ordered) // 2
     return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
+class CalibratedObjective:
+    """The calibrated-edge term of the integrated program: ``adj_i = c_i - e_i`` per item (ADR-0313 section A).
+
+    Pure functions over one loaded ``map-<t>.json`` body (a dict; this class reads no file). The program's
+    value is ``[credit . x - worst(x)] + adj . x``; the caller adds ``adj`` to the objective only and leaves
+    credit, losses, reserves and caps raw. Forms (``form``): ``slope`` (default) ``c = w_b e`` with the
+    bucket's clipped through-origin weight, so ``|c| <= |e|`` and a sign never flips; ``affine`` the stored
+    line ``scale a_b + b_b e`` (refused unless the caller passes ``affine_read=True`` after checking the
+    walk's per-side read); ``identity`` ``adj = 0.0`` (the ``control`` twin, which still reads the ``warm``
+    flag so it sits in cash on the same weeks).
+
+    No trade is signalled by ``None`` (:data:`NO_TRADE`): the map is missing or cold, the bucket is not in
+    the map, or the item has no walk row (``e`` or, with two regressors, ``e_dir`` is ``None``). The caller
+    excludes such items; it never falls back to the raw edge.
+
+    Parameters
+    ----------
+    params : dict
+        The ``calibration`` block, keys exactly :attr:`_PARAMS` (``control`` optional, ``form`` defaults to
+        ``slope``, ``variant`` to ``point``, ``line`` to ``bucket``, ``regressors`` to 1, ``edge_scale`` to
+        ``notional``, ``warmup`` to ``no_trade``, ``min_warm_weeks`` to 8; ``source`` and ``state`` required).
+    affine_read : bool, optional
+        Set by the attach owner once the walk's per-side read and a significant intercept exist.
+
+    Raises
+    ------
+    _Refusal
+        ``calibration_params`` (malformed), ``calibration_affine_unread``, ``calibration_identity_not_control``,
+        ``calibration_line_unsupported``, ``calibration_variant_unsupported``.
+
+    Examples
+    --------
+    ``w = 0.6`` and ``e = 0.60`` give ``c = 0.36`` and ``adj = -0.24``; the mirror side gets ``+0.24``::
+
+        obj = CalibratedObjective({"source": "edge_maps", "state": "expanding_fill"})
+        adj = obj.adjust(map_body, bucket=0, name="AAA", e=0.60)
+        mirror = obj.mirror(adj)
+    """
+
+    _PARAMS = ("source", "state", "edge_scale", "regressors", "line", "form", "variant", "warmup",
+               "min_warm_weeks", "control")
+    _REQUIRED = ("source", "state")
+    _STATES = ("expanding_fill", "decayed_fill", "expanding_decision", "decayed_decision")
+    _SCALES = ("notional", "scale", "none")
+    _FORMS = ("slope", "affine", "identity")
+    NO_TRADE = None
+
+    def __init__(self, params, affine_read=False):
+        if not isinstance(params, dict):
+            raise _Refusal("calibration_params", f"the calibration block must be an object, got {params!r}")
+        unknown = sorted(set(params) - set(self._PARAMS))
+        missing = [k for k in self._REQUIRED if k not in params]
+        if unknown or missing:
+            raise _Refusal("calibration_params", f"unknown keys {unknown}, missing keys {missing}")
+        p = {"edge_scale": "notional", "regressors": 1, "line": "bucket", "form": "slope", "variant": "point",
+             "warmup": "no_trade", "min_warm_weeks": 8, "control": False, **params}
+        for key, allowed in (("source", ("edge_maps",)), ("state", self._STATES), ("edge_scale", self._SCALES),
+                             ("line", ("bucket", "bucket_name")), ("form", self._FORMS),
+                             ("variant", ("point", "lcb")), ("warmup", ("no_trade",))):
+            if not isinstance(p[key], str) or p[key] not in allowed:
+                raise _Refusal("calibration_params", f"{key} must be one of {list(allowed)}, got {p[key]!r}")
+        if isinstance(p["regressors"], bool) or p["regressors"] not in (1, 2):
+            raise _Refusal("calibration_params", f"regressors must be 1 or 2, got {p['regressors']!r}")
+        if isinstance(p["min_warm_weeks"], bool) or not isinstance(p["min_warm_weeks"], int) \
+                or p["min_warm_weeks"] < 1:
+            raise _Refusal("calibration_params", f"min_warm_weeks must be an integer >= 1, got {p['min_warm_weeks']!r}")
+        if not isinstance(p["control"], bool):
+            raise _Refusal("calibration_params", f"control must be a boolean, got {p['control']!r}")
+        if (p["form"] == "identity") != p["control"]:
+            raise _Refusal("calibration_identity_not_control", "form identity needs control true, and only it")
+        if p["form"] == "affine" and not affine_read:
+            raise _Refusal("calibration_affine_unread", "affine needs the walk's per-side read and a significant "
+                           "intercept (ADR-0313 A4)")
+        if p["form"] == "slope" and p["line"] != "bucket":
+            raise _Refusal("calibration_line_unsupported", "the through-origin slope has no name-adjusted line")
+        if p["variant"] == "lcb" and p["regressors"] == 2:
+            raise _Refusal("calibration_variant_unsupported", "the two-regressor line has no lower-bound variant")
+        self._p = p
+
+    @property
+    def params(self):
+        """The resolved block (defaults filled in)."""
+        return dict(self._p)
+
+    def __getattr__(self, key):
+        """Expose each resolved param as an attribute (``form``, ``state``, ``regressors``, ...)."""
+        p = self.__dict__.get("_p")
+        if p is not None and key in p:
+            return p[key]
+        raise AttributeError(key)
+
+    def check_discount(self, rho, risk_charge=False):
+        """Refuse a lower-confidence map on a method that already pays a radius or a risk charge.
+
+        Raises
+        ------
+        _Refusal
+            ``calibration_double_discount`` when ``variant == "lcb"`` and ``rho > 0`` or ``risk_charge``.
+        """
+        if self._p["variant"] == "lcb" and (rho > 0 or risk_charge):
+            raise _Refusal("calibration_double_discount", "the lcb map is allowed only at rho 0 with no risk_charge")
+
+    @staticmethod
+    def check_weight_cap(weight_cap):
+        """Refuse a walk whose ``weight_cap`` exceeds 1 (``|c| <= |e|`` would not hold)."""
+        if isinstance(weight_cap, bool) or not number_ok(weight_cap) or weight_cap > 1.0:
+            raise _Refusal("calibration_weight_cap", f"weight_cap must be a number <= 1, got {weight_cap!r}")
+
+    @staticmethod
+    def mirror(adj):
+        """Return the adjustment of the mirror side of an option: ``-adj`` (``None`` stays ``None``)."""
+        return None if adj is None else 0.0 - adj
+
+    def _part(self, edge_map, key):
+        """Return ``edge_map[key]`` (a dict), refusing a map of the wrong shape."""
+        got = edge_map.get(key) if isinstance(edge_map, dict) else None
+        if not isinstance(got, dict):
+            raise _Refusal("calibration_map_malformed", f"the map has no {key!r} block")
+        return got
+
+    def _blocks(self, edge_map):
+        """Return ``(line_state, origin_two)`` blocks of the map this objective reads."""
+        if self._p["regressors"] == 1:
+            return self._part(self._part(edge_map, "states"), self._p["state"]), None
+        line = self._part(self._part(edge_map, "direction"), "dir_" + self._p["state"])
+        return line, self._part(edge_map, "origin_two")
+
+    @staticmethod
+    def _index(blocks, bucket):
+        """Return the valid bucket index or ``None``."""
+        if isinstance(bucket, bool) or not isinstance(bucket, int) or bucket < 0:
+            return None
+        return bucket if bucket < len(blocks) else None
+
+    def warm(self, edge_map, bucket):
+        """Return whether the item's bucket has a usable warm map (``False`` is a no-trade week for it).
+
+        Parameters
+        ----------
+        edge_map : dict or None
+            One loaded ``map-<t>.json`` body; ``None`` (no map) is not warm.
+        bucket : int
+            The item's bucket index; one outside the map is not warm.
+
+        Returns
+        -------
+        bool
+
+        Raises
+        ------
+        _Refusal
+            ``calibration_map_malformed`` when a present map lacks the block this objective reads.
+        """
+        if edge_map is None:
+            return False
+        line, origin = self._blocks(edge_map)
+        for blk in (line, origin):
+            if blk is not None and "warm" not in blk:
+                raise _Refusal("calibration_map_malformed", "a map block has no warm flag")
+        if not line["warm"] or (origin is not None and not origin["warm"]):
+            return False
+        return self._index(line.get("buckets", ()), bucket) is not None
+
+    @staticmethod
+    def _number(value, what):
+        if isinstance(value, bool) or not number_ok(value):
+            raise ValueError(f"{what} must be a finite number, got {value!r}")
+        return float(value)
+
+    def adjust(self, edge_map, bucket, name, e, e_dir=None, scale=None, h_i=0.0):
+        """Return ``adj = c - e`` for one item in the units of ``e``, or ``None`` for no trade.
+
+        Parameters
+        ----------
+        edge_map : dict or None
+            One loaded ``map-<t>.json`` body.
+        bucket : int
+            The item's bucket index.
+        name : str
+            The underlying (read only by the name-adjusted affine line).
+        e : float or None
+            The item's raw predicted edge (``None``: the walk gave it no row, so no trade).
+        e_dir : float or None
+            The direction part of ``e`` (two regressors only; ``None``: no row, so no trade).
+        scale : float or None
+            The per-contract scale of the intercept (affine only; the slope is scale-free).
+        h_i : float
+            The item's effective hedge ratio in ``[0, 1]``; nonzero needs two regressors.
+
+        Returns
+        -------
+        float or None
+            Two regressors: ``c = (1 - h) w_dir e_dir + w_shape (e - e_dir)`` against the hedged raw edge
+            ``(1 - h) e_dir + (e - e_dir)``. One regressor: ``c = w_b e`` against ``e``.
+
+        Raises
+        ------
+        _Refusal
+            ``hedge_needs_direction_map`` (``h_i > 0`` with one regressor), ``calibration_weight_cap`` (a stored
+            weight above 1), ``calibration_map_malformed``.
+        ValueError
+            On a non-finite input, ``h_i`` outside ``[0, 1]`` or an affine item without a positive ``scale``.
+        """
+        h = self._number(h_i, "h_i")
+        if not 0.0 <= h <= 1.0:
+            raise ValueError(f"h_i must be in [0, 1], got {h_i!r}")
+        if scale is not None and self._number(scale, "scale") <= 0.0:
+            raise ValueError(f"scale must be positive, got {scale!r}")
+        two = self._p["regressors"] == 2
+        if h > 0.0 and not two:
+            raise _Refusal("hedge_needs_direction_map", "a hedged item needs the two-regressor map")
+        if e is None or (two and e_dir is None):
+            return self.NO_TRADE
+        e = self._number(e, "e")
+        d = self._number(e_dir, "e_dir") if two else 0.0
+        if edge_map is None or not self.warm(edge_map, bucket):
+            return self.NO_TRADE
+        if self._p["form"] == "identity":
+            return 0.0
+        line, origin = self._blocks(edge_map)
+        if self._p["form"] == "slope":
+            return self._slope(line, origin, bucket, e, d, h)
+        return self._affine(line, bucket, name, e, d, h, scale)
+
+    def _weight(self, w):
+        """Return a stored through-origin weight, refusing one outside ``[0, 1]``."""
+        if isinstance(w, bool) or not number_ok(w) or w < 0.0:
+            raise _Refusal("calibration_map_malformed", f"a through-origin weight must be >= 0, got {w!r}")
+        if w > 1.0:
+            raise _Refusal("calibration_weight_cap", f"stored weight {w!r} exceeds 1")
+        return float(w)
+
+    def _slope(self, line, origin, bucket, e, d, h):
+        if origin is None:
+            rec = line["buckets"][bucket]
+            w = self._weight(rec["w_lcb" if self._p["variant"] == "lcb" else "w"])
+            return w * e - e
+        wd, ws = (self._weight(x) for x in origin["buckets"][bucket]["w"])
+        shape = e - d
+        return (1.0 - h) * wd * d + ws * shape - ((1.0 - h) * d + shape)
+
+    def _affine(self, line, bucket, name, e, d, h, scale):
+        sc = 1.0 if self._p["edge_scale"] == "none" else scale
+        if sc is None:
+            raise ValueError("the affine form needs the item's scale")
+        rec = line["buckets"][bucket]
+        if self._p["regressors"] == 2:
+            a, bd, bs = rec["theta"]
+            shape = e - d
+            return sc * a + (1.0 - h) * bd * d + bs * shape - ((1.0 - h) * d + shape)
+        a, b = rec["a"], rec["b"]
+        if self._p["variant"] == "lcb" and rec.get("b_lcb") is not None:
+            b = rec["b_lcb"]
+        if self._p["line"] == "bucket_name":
+            da, db = line.get("names", {}).get(name, (0.0, 0.0))
+            a, b = a + da, b + db
+        return sc * a + b * e - e
