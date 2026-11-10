@@ -73,7 +73,7 @@ from fractions import Fraction
 from typing import NamedTuple
 
 from dskit.pipeline.driver import resolve_json_artifact
-from dskit.pipeline.hedge_overlay import BOOKS_PREFIX, HedgeOverlay
+from dskit.pipeline.hedge_overlay import BOOKS_PREFIX, MARK_CARRIED, HedgeOverlay
 from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL, MethodBlocks
 from dskit.pipeline.option_exposure import HardToBorrowProxy, ParityForward, StaticDeltaHedge
 from dskit.pipeline.records import number_ok
@@ -1347,6 +1347,7 @@ class ReplayHedge:
         if mark_rule not in self.MARK_RULES:
             raise ValueError(f"mark_rule must be one of {list(self.MARK_RULES)}, got {mark_rule!r}")
         self.study, self.block, self.mark_rule = study, dict(block), mark_rule
+        self.missing = set()                                # (book id, day) marks on a carried-forward level
         self.overlay = HedgeOverlay.from_method({"hedge": self.block})
         self.parity = ParityForward(dict(parity))
         self._htb = HardToBorrowProxy({k: block[k] for k in HardToBorrowProxy._PARAMS})
@@ -1502,7 +1503,16 @@ class ReplayHedge:
             spot = self._spot(symbol, day, factor)
             if spot is not None:
                 out[day] = (spot * record["reference"] / s_fill, True)
+            else:                                           # one rule, both routes: carry the last level, flagged, counted
+                out[day] = (list(out.values())[-1][0], True)
+                self.missing.add((book["id"], day))
         return out
+
+    def marked(self, record, forward, carried):
+        """Return the leg's mark at ``forward`` and count it (and its carried flag) on the overlay's tally."""
+        self.overlay.counts["hedge_marks"] += 1
+        self.overlay.counts[MARK_CARRIED] += bool(carried)
+        return self.mark(record, forward)
 
     def forward_rows(self, book, index):
         """Return the shared ledger's ``hedge_forwards`` rows for one hedged order at input position ``index``."""
@@ -1511,7 +1521,10 @@ class ReplayHedge:
 
     def record(self):
         """Return what a result carries: the overlay's params and counts, the parity params and the mark rule."""
-        return {**self.overlay.record(), "parity": dict(self.parity.params), "mark_rule": self.mark_rule}
+        out = {**self.overlay.record(), "parity": dict(self.parity.params), "mark_rule": self.mark_rule}
+        if self.missing:
+            out["counts"]["hedge_forward_missing"] = len(self.missing)
+        return out
 
 
 

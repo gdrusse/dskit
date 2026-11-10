@@ -50,7 +50,7 @@ CRASH_QUARTER = "2020Q1"
 RATIOS = (0.25, 0.5, 0.75, 1.0)
 FAMILY = "mio_hedge_overlay"
 RHO2_PASS, RHO2_QUARTERS, RHO2_MIN_BOOKS = 0.67, 3, 5
-E4_LEVEL, E4_UPPER = "0.90", 0.25
+E4_LEVEL, E4_UPPER = "0.9", 0.25            # the walk keys a level f"{lvl:g}"
 SCENARIO_PREFIX = "static_forward_hedge_r"
 
 
@@ -105,6 +105,12 @@ def _hedgeable_share(unhedged, hedged):
     return got / gross if gross > 0 else None
 
 
+def _carried_share(result):
+    """Return the share of the hedged twin's forward-leg marks that fell back to the carry ratio (None without marks)."""
+    counts = result.get("hedge", {}).get("counts", {})
+    return counts.get("mark_forward_carried", 0) / counts["hedge_marks"] if counts.get("hedge_marks") else None
+
+
 def quarter_read(quarter, control, hedged, carry=None):
     """Return one account's E2 read: ``dDD``, ``dPnl``, ``B``, the ``d_t`` series and the flags that decide counting.
 
@@ -128,7 +134,7 @@ def quarter_read(quarter, control, hedged, carry=None):
     out = {"quarter": quarter, "dDD": d_dd, "dPnl": d_pnl, "B": b, "d_t": gap, "sessions": len(dates),
            "books_differ": {t["id"] for t in control["trades"]} != {t["id"] for t in hedged["trades"]},
            "hedgeable_share_gross": _hedgeable_share(control, hedged), "mark_sensitive": None,
-           "mark_forward_carried": hedged.get("hedge", {}).get("counts", {}).get("mark_forward_carried")}
+           "mark_forward_carried_share": _carried_share(hedged)}
     share = out["hedgeable_share_gross"]
     out["under_half_hedgeable"] = share is None or share < HEDGEABLE_SHARE
     if carry is not None:
@@ -172,7 +178,13 @@ def _per_session(series_by_account):
     return {(account, day): (d, 1) for account, series in series_by_account.items() for day, d in series}
 
 
-def bar_reads(attempts, adopted, k_declared, n_boot=10000, seed=0, alpha=0.05):
+def _clears(row, pass_mark, alpha):
+    """Return the explicit verdict on one ``max_bar`` row: ``t >= pass_mark and adj_p <= alpha and mean > 0 and lower > 0``."""
+    return bool(row and row["t"] is not None and row["t"] >= pass_mark and row["adj_p"] is not None
+                and row["adj_p"] <= alpha and row["mean"] > 0 and row["lower"] > 0)
+
+
+def bar_reads(attempts, adopted, k_declared, n_boot=10000, seed=0, alpha=0.05, also=()):
     """Run ``attempts.max_bar`` DIRECTLY on every attempt's gaps, per session and per (account, week); judge the adopted row.
 
     Parameters
@@ -194,8 +206,10 @@ def bar_reads(attempts, adopted, k_declared, n_boot=10000, seed=0, alpha=0.05):
             out[name] = {"passed": False, "unavailable": str(error)}
             continue
         row = next((r for r in bar["rows"] if r["cell"] == adopted), None)
-        passed = bool(row and row["t"] is not None and row["t"] >= bar["pass_mark"] and row["adj_p"] <= alpha
-                      and row["mean"] > 0 and row["lower"] > 0)
+        passed = _clears(row, bar["pass_mark"], alpha)
+        for extra in also:
+            other = next((r for r in bar["rows"] if r["cell"] == extra), None)
+            out.setdefault("also", {}).setdefault(extra, {})[name] = {"row": other, "passed": _clears(other, bar["pass_mark"], alpha)}
         out[name] = {"pass_mark": bar["pass_mark"], "c_star": bar["c_star"], "k": bar["k"], "k_declared": bar["k_declared"],
                      "adopted_row": row, "passed": passed, "notes": bar["notes"]}
     out["passed"] = bool(adopted) and out["session"]["passed"] and out["week"]["passed"]
@@ -211,6 +225,8 @@ def e1_read(reads, direction):
     """
     rows = []
     for quarter, block in sorted(direction.items()):
+        if block.get("quarter") != quarter:
+            raise ValueError(f"e1_quarter_mismatch: the file named {quarter} carries quarter {block.get('quarter')!r}")
         fh, conc = block["forward_hedge"], block["concentration"]
         counts = (fh["n_hedged"] >= fh["min_books"] and conc.get("loo_sign_stable_hedge_pnl") is True)
         rows.append({"quarter": quarter, "H": fh["hedge_pnl_usd"], "n_hedged": fh["n_hedged"], "counts": counts})
@@ -234,6 +250,25 @@ def e1_series(books, dates):
         if book.get("forward_hedge_status") == "ok" and book.get("hedge_pnl") is not None:
             settle[book["expiry"]] = settle.get(book["expiry"], 0.0) + float(book["hedge_pnl"])
     return [(day, settle.get(day, 0.0)) for day in dates]
+
+
+def books_from_csv(path, formulation):
+    """Return the ``books.csv`` rows (ADR-0310's ``mio_greeks`` output) of one formulation, numbers parsed."""
+    import csv
+
+    rows = []
+    with open(path, newline="") as handle:
+        for row in csv.DictReader(handle):
+            if row.get("method") not in (None, formulation):
+                continue
+            for name in ("hedge_pnl", "forward_hedged_pnl", "delta_f_sh", "forward", "s_fill", "s_settle"):
+                text = row.get(name)
+                row[name] = float(text) if text not in (None, "") else None
+            rows.append(row)
+    return rows
+
+
+E1B_NEEDS = ("beta", "basket_return")
 
 
 def _weighted_rho2(x, y, w):
@@ -267,28 +302,44 @@ def e1b_rho2(quarters):
 
 
 def e4_ratio(e4_input, e2_ratio):
-    """Return the single pooled E4 ratio (ADR-0312 A1 section 8) from a supplied ``e4_input``, else ``not available``.
+    """Return the single pooled E4 ratio (ADR-0312 A1 section 8) from the walk's ``e4_input``, else ``not available``.
 
-    ``e4_input`` is ``{"w_dir_shrunk": {"0.90": {"lower": x, "upper": y}}}`` (the pooled quarter-block band of
-    ADR-0311 A1). Lower band above 0: ``clip(1 - lower, 0, 1)``; else upper band below 0.25: 1; else the E2 ratio.
+    ``e4_input`` is ``summary["direction"]["e4_input"]`` of the edge walk (or the walk summary holding it):
+    ``{"warm": bool, "w_dir_shrunk": None | {"value", "se", "df", "bands": {"0.9": {"lcb", "ucb"}}}, ...}``.
+    ``None`` anywhere on the path (no input, or a pool that is not warm) is ``E4 not available: pool not warm``.
+    Lower band above 0: ``clip(1 - lcb, 0, 1)``; else upper band below 0.25: 1; else the E2 ratio.
     """
-    if not e4_input:
-        return {"status": "not available", "ratio": e2_ratio}
-    band = e4_input["w_dir_shrunk"][E4_LEVEL]
-    if band["lower"] > 0:
-        return {"status": "lower_band_positive", "ratio": min(max(1.0 - band["lower"], 0.0), 1.0)}
-    if band["upper"] < E4_UPPER:
+    if isinstance(e4_input, dict) and "direction" in e4_input:
+        e4_input = (e4_input["direction"] or {}).get("e4_input")
+    shrunk = e4_input.get("w_dir_shrunk") if isinstance(e4_input, dict) else None
+    if not shrunk:
+        return {"status": "E4 not available: pool not warm", "ratio": e2_ratio}
+    band = shrunk["bands"][E4_LEVEL]
+    if band["lcb"] > 0:
+        return {"status": "lower_band_positive", "ratio": min(max(1.0 - band["lcb"], 0.0), 1.0)}
+    if band["ucb"] < E4_UPPER:
         return {"status": "upper_band_small", "ratio": 1.0}
     return {"status": "inconclusive", "ratio": e2_ratio}
 
 
+CONDITIONS = ("none", "shock_held_share", "vol_regime")
+
+
 def register_attempts(path, formulation, ratios=RATIOS):
-    """Record every attempt BEFORE it is read (the registry id is derived from the knobs, so a rerun adds none)."""
+    """Record every declared attempt BEFORE any is read: 4 ratios x 3 conditions, the program twin, E1 (14).
+
+    The registry id is derived from the knobs, so a rerun adds none. Only the ``none`` condition is READ here
+    (E3 is ``not_run``); the others are declared because the multiplicity guard counts what was declared.
+    """
     registry = AttemptRegistry(path)
-    base = {"family": FAMILY, "formulation": formulation, "mode": "replay", "condition": "none"}
+    base = {"family": FAMILY, "formulation": formulation}
     for ratio in ratios:
-        registry.record({**base, "kind": "e2_sweep", "ratio": ratio, "read": "E2"})
-    registry.record({**base, "kind": "e1", "ratio": 1.0, "read": "E1"})
+        for condition in CONDITIONS:
+            registry.record({**base, "kind": "replay_sweep", "mode": "replay", "ratio": ratio, "condition": condition,
+                             "read": "E2"})
+    registry.record({**base, "kind": "program_twin", "mode": "program", "ratio": None, "condition": "none",
+                     "read": "E2"})
+    registry.record({**base, "kind": "e1", "mode": "replay", "ratio": 1.0, "condition": "none", "read": "E1"})
     return registry.count(family=FAMILY, formulation=formulation)
 
 
@@ -312,7 +363,10 @@ def read(stress_root, formulation, quarters, registry_path, greeks=None, books=N
     root = Path(stress_root)
 
     def result(cohort, scenario):
-        return _load(root / cohort / scenario / f"{formulation}.json")["result"]
+        document = _load(root / cohort / scenario / f"{formulation}.json")
+        if document.get("result") is None:
+            raise ValueError(f"scenario_failed: {cohort}/{scenario} carries no result ({document.get('error') or document.get('status')})")
+        return document["result"]
 
     sweep, series = {}, {}
     for ratio in RATIOS:
@@ -335,12 +389,16 @@ def read(stress_root, formulation, quarters, registry_path, greeks=None, books=N
         out["e1"] = e1_read(None, direction)
         if books:
             clock = {r["quarter"]: [d for d, _ in r["d_t"]] for r in sweep[RATIOS[-1]]["reads"]}
-            series["e1"] = {q: e1_series(books[q], clock[q]) for q in books}
-            out["e1b"] = e1b_rho2({q: [b for b in rows if b.get("forward_hedge_status") == "ok"] for q, rows in books.items()})
-    out["e3"] = {"status": "not_run", "why": "conditions need decision-time inputs the replay does not attach in S3"}
+            rows = {q: books_from_csv(p, formulation) for q, p in books.items()}
+            series["e1"] = {q: e1_series(rows[q], clock[q]) for q in rows}
+            absent = [f for f in E1B_NEEDS if not all(f in r for rs in rows.values() for r in rs)]
+            out["e1b"] = ({"status": "E1b unattached: needs " + ", ".join(absent) + " from mio_greeks"} if absent else
+                          e1b_rho2({q: [b for b in rs if b.get("forward_hedge_status") == "ok"] for q, rs in rows.items()}))
+    out["e3"] = {"status": "not_run", "why": "conditions need decision-time inputs (shock-held share, vol regime) that the "
+                 "replay does not attach in S3; the condition attempts are declared, not read"}
     out["e4"] = e4_ratio(_load(e4_input) if e4_input else None, adopted_ratio)
     adopted_name = _ratio_name(adopted_ratio) if adopted_ratio else None
-    out["bar"] = bar_reads(series, adopted_name, k_declared, n_boot=n_boot)
+    out["bar"] = bar_reads(series, adopted_name, k_declared, n_boot=n_boot, also=("e1",) if "e1" in series else ())
     out["adopted"] = bool(adopted_ratio and out["bar"]["passed"])
     return out
 
@@ -354,6 +412,7 @@ def main(argv=None):
     parser.add_argument("--registry", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--greeks", nargs="*", default=[], help="YYYYQn=path/to/greeks-summary.json")
+    parser.add_argument("--books", nargs="*", default=[], help="YYYYQn=path/to/books.csv (mio_greeks output)")
     parser.add_argument("--e4-input")
     args = parser.parse_args(argv)
     out = Path(args.out)
@@ -361,7 +420,8 @@ def main(argv=None):
         sys.stderr.write("verdict file exists: a fresh path is required\n")
         return 1
     verdict = read(args.stress_root, args.formulation, dict(q.split("=") for q in args.quarters), args.registry,
-                   greeks=dict(g.split("=") for g in args.greeks) or None, e4_input=args.e4_input)
+                   greeks=dict(g.split("=") for g in args.greeks) or None,
+                   books=dict(b.split("=") for b in args.books) or None, e4_input=args.e4_input)
     out.write_text(json.dumps(verdict, indent=2, sort_keys=True, allow_nan=False, default=str) + "\n")
     return 0
 

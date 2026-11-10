@@ -5156,3 +5156,54 @@ def _saved_book(study, filled):
     saved = {k: v for k, v in filled.items() if k not in ("hedge", "fill_date")}
     saved["legs"] = [{k: v for k, v in leg.items() if k != "fill_price"} for leg in saved["legs"]]
     return saved
+
+
+def test_a_short_forward_hedge_pays_no_borrow_whatever_the_configured_rate_says():
+    from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+    from dskit.pipeline.option_exposure import StaticDeltaHedge
+
+    study, hedge, spots = _hedge_study(spot_at_expiry=108., block={"hedge_borrow_rate": 0.25})
+    book = _filled(study, [("call", 1, 100., 3)])                  # a long call: positive delta, so a SHORT forward hedge
+    hedge.attach(book, "2019-01-16", None)
+    record = book["hedge"]
+    units, ref = record["units"], record["reference"]
+    assert record["status"] == "ok" and units < 0
+    assert "hedge_borrow_rate" not in record["rates"] and hedge.block["hedge_borrow_rate"] == 0.25
+    account = FundedOptionAccount(10000., 1000., 14, "2019-01-02")
+    account.open[book["id"]] = book
+    settled = study._settlements(account, "2019-02-01")
+    no_borrow = StaticDeltaHedge({**record["rates"], "hedge_borrow_rate": 0.}).carry_costs(units, ref, 108., record["days"])
+    charged = StaticDeltaHedge({**record["rates"], "hedge_borrow_rate": 0.25}).carry_costs(units, ref, 108., record["days"])
+    assert no_borrow["borrow"] == 0.0 and charged["borrow"] > 0.0, "the fixture would show a charged borrow"
+    legs = [{"instrument": "forward", "units": units, "reference": ref, "residual": 0.0}]
+    assert hedge.overlay.costs(legs, 108., record["days"])["borrow"] == 0.0
+    options = book["credit"] + 100 * 3 * (108. - 100.)
+    assert settled[book["id"]] == pytest.approx(options + units * (108. - ref) - no_borrow["trade_costs"])
+    account.advance("2019-02-01", settled)
+    ledger = study._ledger(account.closed, None, hedge)
+    assert ledger["trades"][0]["hedge_fees_usd"] == pytest.approx(no_borrow["trade_costs"])
+    assert hedge.record()["forward_borrow_rate"] == 0.0
+
+
+def test_the_parity_forward_reads_prices_on_the_books_basis_factor():
+    study, hedge, spots = _hedge_study()
+    for row in study._quotes["X"].values() if isinstance(study._quotes["X"], dict) else ():
+        row.update(bid=row["bid"] * 2, ask=row["ask"] * 2, basis_factor=2.0)
+    study._bars["X"] = {day: close * 2 for day, close in study._bars["X"].items()}
+    hedge = ledger_studies.ReplayHedge(study, _REPLAY_BLOCK, _PARITY)
+    forward, source = hedge.forward("X", "2019-01-22", "2019-02-01", 2.0)
+    assert source == "parity" and forward == pytest.approx(spots["2019-01-22"] * 1.001)
+
+
+def test_a_day_without_any_forward_carries_the_last_level_flagged_and_counted_never_a_gap():
+    study, hedge, spots = _hedge_study()
+    book = _filled(study, [("put", 1, 100., 3)])
+    hedge.attach(book, "2019-01-16", None)
+    study._bars["X"].pop("2019-01-22", None)
+    hedge = ledger_studies.ReplayHedge(study, _REPLAY_BLOCK, _PARITY)
+    path = hedge.path(book)
+    days = [d for d in study.calendar if "2019-01-16" <= d < "2019-02-01"]
+    assert list(path) == days, "every session has a level: no KeyError for a mark, no refused exit"
+    previous = days[days.index("2019-01-22") - 1]
+    assert path["2019-01-22"] == (path[previous][0], True)
+    assert hedge.record()["counts"]["hedge_forward_missing"] == 1 and ("b1", "2019-01-22") in hedge.missing

@@ -398,7 +398,7 @@ def _scenario_curve(study, account, snapshots, hedge=None):
                 raise ValueError("no opening mark for filled book: " + book["id"])
             leg = 0.0
             if hedge is not None and book.get("hedge", {}).get("units"):
-                leg = ReplayHedge.mark(book["hedge"], paths[book["id"]][day][0])
+                leg = hedge.marked(book["hedge"], *paths[book["id"]][day])
             marks[book["id"], day] = (book["credit"] + last_value + leg, carried)
     previous, nav, peak, max_dd = account.initial, 1.0, 1.0, 0.0
     curve = []
@@ -510,7 +510,12 @@ class FrozenMIOReplay:
                                 needed, self.factors)
         self.params = {**self.domain["params"], "selected_pairs": self.domain["pairs"]}
         self.hedge_spec = document.get("hedge") if document["schema"] == _HEDGE_SCHEMA else None
-        if self.hedge_spec is not None and max(bounds["end_before"], bounds["latest_expiry"] or "") > DEVELOPMENT_SEAL:
+        self.check_hedge_seal(self.hedge_spec, bounds, cohort)
+
+    @staticmethod
+    def check_hedge_seal(spec, bounds, cohort):
+        """Refuse a hedged replay whose window or latest expiry passes the development seal."""
+        if spec is not None and max(bounds["end_before"], bounds["latest_expiry"] or "") > DEVELOPMENT_SEAL:
             raise ValueError(f"hedge_seal: a hedged replay must end before {DEVELOPMENT_SEAL}: " + cohort)
 
     @staticmethod
@@ -692,6 +697,11 @@ class FrozenMIOReplay:
         study = self.study(scenario)
         hedge = None
         if "hedge_ratio" in scenario:
+            problems = WeeklyOptionPortfolioStudy._BLOCKS.cross_checks({**method, "hedge": self.hedge_spec["block"]})
+            if problems:
+                raise ValueError("; ".join(problems))       # hedge_with_sizer, as on the replay route
+            if getattr(study, "adjustments", None):
+                raise ValueError("hedge_split_unsupported: a hedged run takes no split adjustment")
             hedge = ReplayHedge(study, {**self.hedge_spec["block"], "ratio": scenario["hedge_ratio"]},
                                 self.hedge_spec["parity"], mark_rule=scenario["hedge_mark"])
         pending = None

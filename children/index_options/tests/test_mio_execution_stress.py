@@ -1326,3 +1326,41 @@ def test_v6_scenarios_are_the_v5_seven_plus_the_registered_sweep_with_a_carry_tw
         with pytest.raises(ValueError):
             stress._approved_scenarios("mio-execution-stress/v6", bad)
     assert stress._approved_scenarios("mio-execution-stress/v5") == v5, "earlier schemas do not move"
+
+
+def test_the_stress_route_refuses_a_hedge_past_the_seal_a_sizer_and_a_split_with_the_replay_codes():
+    check = stress.FrozenMIOReplay.check_hedge_seal
+    check(None, {"end_before": "2022-01-01", "latest_expiry": None}, "c")           # no hedge: no seal rule here
+    check({"block": {}}, {"end_before": "2021-07-01", "latest_expiry": "2021-07-01"}, "c")
+    with pytest.raises(ValueError, match="hedge_seal"):
+        check({"block": {}}, {"end_before": "2021-07-01", "latest_expiry": "2021-07-02"}, "c")
+    with pytest.raises(ValueError, match="hedge_seal"):
+        check({"block": {}}, {"end_before": "2021-07-02", "latest_expiry": None}, "c")
+    replay, packet, _ = _hedge_replay()
+    sized = {**packet["result"]["method"], "sizer": {"beta_lookback": 5}}
+    with pytest.raises(ValueError, match="hedge_with_sizer"):
+        replay.run_method({**packet, "result": {**packet["result"], "method": sized}}, _scenario(1.0))
+    replay.params = {**replay.params}
+    original = stress.FrozenMIOReplay.study
+
+    def with_split(self, scenario):
+        study = original(self, scenario)
+        study.adjustments = [{"symbol": "X"}]
+        return study
+
+    stress.FrozenMIOReplay.study = with_split
+    try:
+        with pytest.raises(ValueError, match="hedge_split_unsupported"):
+            replay.run_method(packet, _scenario(1.0))
+        replay.run_method(packet, CONTROL)                                          # the control twin is untouched
+    finally:
+        stress.FrozenMIOReplay.study = original
+
+def test_a_missing_later_day_forward_carries_the_last_level_flagged_and_counted_on_the_stress_route_too():
+    replay, packet, spots = _hedge_replay()
+    for day in ("2019-01-22", "2019-01-23"):
+        replay.bars["X"].pop(day, None)
+    result, _ = replay.run_method(packet, _scenario(1.0))
+    counts = result["hedge"]["counts"]
+    assert counts["hedge_forward_missing"] >= 2 and counts["mark_forward_carried"] >= 2 and counts["hedge_marks"] > 0
+    assert result["curve"]
