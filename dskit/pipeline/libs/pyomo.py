@@ -621,6 +621,7 @@ class PyomoSolve(Node):
         started = time.perf_counter()
         results = self._solve(solver, model)
         seconds = time.perf_counter() - started
+        self._after_solve(model)
         self.solve_record = self._build_solve_record(solver, model, results, name, seconds)
         extracted = self.extract(model, results)
         if not isinstance(extracted, dict):
@@ -692,6 +693,9 @@ class PyomoSolve(Node):
         condition overrides this (:class:`ScenarioUtilitySolve`).
         """
         return solver.solve(model)
+
+    def _after_solve(self, model):
+        """A hook between the solve and the record: the generic base does nothing (see TransportPortfolioSolve)."""
 
     def _solver_options(self):
         """The options :meth:`_resolve_solver` will apply, as one dict.
@@ -4880,6 +4884,58 @@ class TransportPortfolioSolve(PyomoSolve):
             variable.set_value(utility["w0"] if utility is not None and variable.parent_component() is m.W else 0)
         return m
 
+    def _after_solve(self, model):
+        """Price the incumbent exactly once the search is over (ADR-0305 amendment 2): :meth:`_reprice_incumbent`."""
+        self._reprice_incumbent(model)
+
+    def _reprice_incumbent(self, model):
+        """Replace a gap-limited incumbent's continuous variables by the least values its integer actions allow.
+
+        A MIP solver that stops inside its configured gap (the study's 50 dollars and 1 percent) returns an incumbent
+        whose integer actions are feasible but whose continuous variables (the W1 duals, the hinge, epigraph and
+        charge auxiliaries) may sit above their least values: the objective it records then understates the exact
+        value of those actions by up to the gap. The derived route recomputes that exact value (fix the actions, solve
+        the LP, :meth:`_price_duals`) and ``extract`` refuses the difference as ``certificate_objective``. The live
+        route therefore prices its own incumbent the same way, and the certificate records the exact objective, the
+        exact duals and the rows evaluated at them; the solver's bound stays the solver's and the gap is recomputed
+        against the exact value, so the live, recorded and derived routes compute one number.
+
+        A solve that certifies at optimality is left byte for byte as the solver returned it: the exact value is
+        adopted only when it differs from the incumbent's by more than ``parity_tolerance`` (below that the derived
+        route's own check already accepts the difference, so nothing a replay could refuse is lost). No incumbent, a
+        nonintegral one (``extract`` refuses it by name) or actions the LP cannot price (infeasible within tolerance)
+        also stand as returned: the live route refuses nothing it accepted before.
+        """
+        from pyomo.environ import Var
+
+        if getattr(model, "_transport_no_incumbent", False):
+            return
+        before = self._objective_value(model)
+        raw = [model.x[i, j].value for i, g in enumerate(self._groups) if i in self._active
+               for j in range(len(g["capacity"]))]
+        if before is None or any(v is None or not number_ok(v) or abs(v-round(v)) > 1e-5 for v in raw):
+            return
+        values = [(v, v.value, v.fixed) for v in model.component_data_objects(Var)]
+        after = None
+        try:
+            for i, g in enumerate(self._groups):
+                if i in self._active:
+                    for j in range(len(g["capacity"])):
+                        model.x[i, j].set_value(round(model.x[i, j].value))
+            self._price_duals(model)
+            after = self._objective_value(model)
+        except (RuntimeError, ValueError) as exc:   # appsi raises on infeasible fixed actions; a refusal is a ValueError
+            self.log.warning("incumbent not re-priced (%s): the solver's values stand", exc)
+        finally:
+            for variable, _value, fixed in values:
+                if variable.fixed and not fixed:
+                    variable.unfix()
+        if after is None or abs(after-before) <= self.params["parity_tolerance"]:
+            for variable, value, _fixed in values:
+                variable.set_value(value, skip_validation=True)
+            return
+        model._transport_repriced = True
+
     def _solve(self, solver, model):
         """Solve the model: a utility program by its declared strategy, a dollar program directly."""
         if (getattr(self, "_utility", None) is not None
@@ -5098,7 +5154,12 @@ class TransportPortfolioSolve(PyomoSolve):
     def _build_solve_record(solver, model, results, name, seconds):
         """Do not represent an unloaded warm start as a native incumbent; a relaxation bound tightens the record's."""
         from dataclasses import replace
-        record = PyomoSolve._build_solve_record(solver, model, results, name, seconds)
+        if getattr(model, "_transport_repriced", False):
+            # The incumbent was re-priced exactly (:meth:`_reprice_incumbent`): the model's values are the LP's, not the
+            # MIP solver's, so every row is evaluated through pyomo and the gap is the solver's bound against that value.
+            record = SolveRecord.from_solve(model, results, name, seconds)
+        else:
+            record = PyomoSolve._build_solve_record(solver, model, results, name, seconds)
         if getattr(model, "_transport_no_incumbent", False):
             record = replace(record, objective=None, gap=None, binding=())
         relaxed = getattr(model, "_transport_bound", None)

@@ -3488,7 +3488,7 @@ def test_transport_portfolio_requests_sparse_only_for_positive_radius():
 
 @pytest.mark.parametrize("radius", [0., .08])
 def test_transport_portfolio_cash_start_and_single_solve(monkeypatch, radius):
-    """Cash is a feasible warm start and profit needs only one solver call."""
+    """Cash is a feasible warm start and the integer search is one solver call (its incumbent is then priced exactly: a second, all-fixed LP)."""
     from pyomo.environ import Constraint, Var, value
     node = _roundtrip_selector()
     inputs = _roundtrip_portfolio(radius)
@@ -3511,6 +3511,9 @@ def test_transport_portfolio_cash_start_and_single_solve(monkeypatch, radius):
         solver = original()
         actual_solve = solver.solve
         def solve(model, **kwargs):
+            if all(v.fixed for v in model.x.values()):   # ADR-0305 amendment 2: the exact pricing of the incumbent
+                calls.append("priced")
+                return actual_solve(model, **kwargs)
             assert kwargs == {"warmstart": True}
             current = {v.name: v.value for v in model.component_data_objects(Var)}
             secondary = hasattr(model, "primary_floor")
@@ -3528,7 +3531,7 @@ def test_transport_portfolio_cash_start_and_single_solve(monkeypatch, radius):
         return solver
     monkeypatch.setattr(node, "_resolve_solver", resolve)
     got = node.run(None, inputs)["selection"]
-    assert calls == [False]
+    assert calls == [False, "priced"]
     assert len(got["certificates"]) == 1
     assert got["value"] > 0
 
@@ -6693,3 +6696,140 @@ def test_transport_derived_prices_exactly_under_a_gap_tolerant_solver(monkeypatc
     assert (caught.value.check, caught.value.category) == ("certificate_objective", "numeric")
     assert caught.value.ratio == pytest.approx(13500., rel=1e-3)
     monkeypatch.setattr(TransportPortfolioSolve, "_price_duals", original)
+
+
+# ---------------------------------------------------------------------------
+# ADR-0305 amendment 2: the live route prices its own incumbent exactly
+# ---------------------------------------------------------------------------
+
+def _gap_tolerant_live(node, inflate=27., break_integrality=False):
+    """Make ``node``'s MIP solves behave like a solver that stopped inside its gap.
+
+    Whenever an integer column is still free the real solve is followed by raising every hinge auxiliary by ``inflate``
+    (feasible, ``inflate`` x .5 dollars worse at the hinge price .5): what a 1 percent gap allows on a MIP. A solve with
+    every action and side fixed (the exact pricing) is untouched.
+    """
+    from pyomo.environ import Var
+
+    real = node._resolve_solver
+
+    class GapTolerant:
+        def __init__(self, solver):
+            self.solver, self.options = solver, solver.options
+
+        def solve(self, model, *args, **kwargs):
+            results = self.solver.solve(model, *args, **kwargs)
+            if any(v.is_integer() and not v.fixed for v in model.component_data_objects(Var, active=True)):
+                for variable in model.hinge.values():
+                    variable.set_value(variable.value+inflate)
+                if break_integrality:
+                    model.x[0, 0].set_value(model.x[0, 0].value+1e-3)
+            return results
+
+    node._resolve_solver = lambda: GapTolerant(real())
+    return node
+
+
+def _without_clock(selection):
+    import copy
+
+    out = copy.deepcopy(selection)
+    for certificate in out["certificates"]:
+        certificate["seconds"] = 0.
+    return out
+
+
+@pytest.mark.parametrize("carry,vt", [(True, False), (False, True), (True, True), (False, False)],
+                         ids=["carry+single", "vt+single", "carry+vt+single", "single"])
+def test_transport_live_gap_limited_incumbent_is_priced_exactly_and_the_derived_route_agrees(monkeypatch, carry, vt):
+    """The ratio-13,500 refusal at its source: a live incumbent with its hinge 27 above the least value.
+
+    Before the amendment the live certificate recorded the inflated objective (13.5 dollars under the exact value of
+    its actions) and the derived route, which prices the actions exactly, refused it as ``certificate_objective``.
+    The live route now records the exact objective, so all three routes compute one number.
+    """
+    import copy
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
+
+    params = {**_screen_params("none"), "parity_tolerance": 1e-3}
+    program = _hinged_book(carry, vt, True)
+    exact, _ = _solved_and_certified(program, params)
+    live = _gap_tolerant_live(TransportPortfolioSolve("live", params))
+    chosen = live.run(None, copy.deepcopy(program))["selection"]
+    certificate = {k: v for k, v in chosen["certificates"][0].items() if k != "binding"}
+    assert chosen["quantities"] == exact["quantities"] == [[3, 3, 0]]
+    assert certificate["objective"] == pytest.approx(exact["certificates"][0]["objective"], abs=1e-6)
+    assert chosen["model_value"] == pytest.approx(exact["model_value"], abs=1e-6)
+    assert chosen["value"] == pytest.approx(exact["value"], abs=1e-9) and chosen["gap"] <= 1e-6
+    assert certificate["gap"] == pytest.approx(exact["certificates"][0]["gap"], abs=1e-9)
+    # The derived route (plain solver) and the recorded route accept it.
+    derived = TransportPortfolioSolve("derived", params).derived(
+        program, TransportPortfolioSolve.actions(chosen), [certificate])["selection"]
+    assert derived["value"] == pytest.approx(chosen["value"], abs=1e-9)
+    assert derived["model_value"] == pytest.approx(chosen["model_value"], abs=1e-9)
+    envelope = {k: v for k, v in chosen.items() if k != "certificates"}
+    TransportPortfolioSolve("recorded", params)._recorded(program, envelope, [certificate])
+    # Without the re-pricing the same live solve records the inflated objective and the replay refuses it.
+    monkeypatch.setattr(TransportPortfolioSolve, "_reprice_incumbent", lambda self, model: None)
+    stale = _gap_tolerant_live(TransportPortfolioSolve("stale", params)).run(None, copy.deepcopy(program))["selection"]
+    assert stale["certificates"][0]["objective"] == pytest.approx(certificate["objective"]-13.5, abs=1e-6)
+    with pytest.raises(RecordedCheckRefusal) as caught:
+        TransportPortfolioSolve("derived", params).derived(
+            program, TransportPortfolioSolve.actions(stale),
+            [{k: v for k, v in stale["certificates"][0].items() if k != "binding"}])
+    assert (caught.value.check, caught.value.category) == ("certificate_objective", "numeric")
+    assert caught.value.ratio == pytest.approx(13500., rel=1e-3)
+
+
+@pytest.mark.parametrize("carry,vt,hinge", _HINDSIGHT_ARMS, ids=_ARM_IDS)
+def test_transport_live_solve_that_certifies_is_byte_identical_with_and_without_repricing(monkeypatch, carry, vt, hinge):
+    """An incumbent already at its least values is not touched: the whole selection, certificate rows included, is equal."""
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params = {**_screen_params("none"), "parity_tolerance": 1e-3}
+    program = _hinged_book(carry, vt, hinge)
+    priced = TransportPortfolioSolve("priced", params).run(None, copy.deepcopy(program))["selection"]
+    monkeypatch.setattr(TransportPortfolioSolve, "_reprice_incumbent", lambda self, model: None)
+    plain = TransportPortfolioSolve("plain", params).run(None, copy.deepcopy(program))["selection"]
+    assert _without_clock(priced) == _without_clock(plain)
+
+
+def test_transport_repricing_unfixes_what_it_fixed_and_adopts_the_exact_values(monkeypatch):
+    """The model handed to ``extract`` has free actions and sides again, and the hinge at its least value."""
+    from pyomo.environ import Var
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params = {**_screen_params("none"), "parity_tolerance": 1e-3}
+    seen, original = [], TransportPortfolioSolve.extract
+
+    def spy(self, model, results):
+        seen.append(({v.name for v in model.component_data_objects(Var) if v.fixed},
+                      sorted(v.value for v in model.hinge.values()), getattr(model, "_transport_repriced", False)))
+        return original(self, model, results)
+    monkeypatch.setattr(TransportPortfolioSolve, "extract", spy)
+    _gap_tolerant_live(TransportPortfolioSolve("live", params)).run(None, _hinged_book(True, False, True))
+    TransportPortfolioSolve("exact", params).run(None, _hinged_book(True, False, True))
+    assert seen[0][0] == set() and seen[0][2] is True and seen[1][2] is False
+    assert seen[0][1] == pytest.approx(seen[1][1], abs=1e-9), "the hinge is back at its least value"
+
+
+def test_transport_repricing_leaves_an_unpriceable_or_nonintegral_incumbent_to_the_checks_that_name_it(monkeypatch):
+    """Nothing the live route accepted before is refused by the re-pricing; a nonintegral incumbent still refuses."""
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params = {**_screen_params("none"), "parity_tolerance": 1e-3}
+    program = _hinged_book(True, False, True)
+    node = _gap_tolerant_live(TransportPortfolioSolve("live", params))
+
+    def infeasible(self, model):
+        raise RuntimeError("infeasible fixed actions")
+    # A pricing that cannot run (appsi raises on infeasible fixed actions): the solver values stand, as before.
+    with monkeypatch.context() as patch:
+        patch.setattr(TransportPortfolioSolve, "_price_duals", infeasible)
+        stood = node.run(None, copy.deepcopy(program))["selection"]
+    assert stood["value"]-stood["certificates"][0]["objective"] == pytest.approx(13.5, abs=1e-6), "the inflated hinge"
+    broken = _gap_tolerant_live(TransportPortfolioSolve("broken", params), break_integrality=True)
+    with pytest.raises(ValueError, match="nonintegral"):
+        broken.run(None, copy.deepcopy(program))
