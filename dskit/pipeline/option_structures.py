@@ -202,7 +202,22 @@ def leg_intrinsic(right, strike, level):
     return max(type(gap)(0), gap)
 
 
-def structure_payoff(legs, level, strikes):
+def _hedge_terms(hedge, multiplier):
+    """Return a hedge ``(U_sh, F_ref)`` as ``(h, F_ref)`` with ``h = U_sh / multiplier``, or ``None`` for no hedge.
+
+    The one hedge check and the one share-to-unit conversion (ADR-0312 Amendment 1): the book's net held
+    shares over the contract multiplier, never over a contract count (the legs already carry the quantities).
+    """
+    if hedge is None:
+        return None
+    if (not isinstance(hedge, (tuple, list)) or len(hedge) != 2
+            or not all(is_amount(v) and not isinstance(v, bool) for v in hedge) or not hedge[1] > 0):
+        raise ValueError(f"hedge must be (U_sh, F_ref) with a finite U_sh and a positive finite F_ref, got {hedge!r}")
+    _check_multiplier(multiplier)
+    return hedge[0] / multiplier, hedge[1]
+
+
+def structure_payoff(legs, level, strikes, hedge=None, multiplier=None):
     """Return a leg set's settlement payoff per unit, credit excluded.
 
     The one owner of the leg-sum (ADR-0193, generalized from the condor):
@@ -219,17 +234,25 @@ def structure_payoff(legs, level, strikes):
         Settlement level.
     strikes : sequence of float
         One strike per leg, in leg order.
+    hedge : (U_sh, F_ref) or None
+        A fixed cash-settled forward leg (ADR-0312): the book's net HELD
+        shares ``U_sh`` (negative is sold) settling against ``F_ref``. Per
+        option unit it adds ``(U_sh / multiplier) x (level - F_ref)``. ``None``
+        (default) is the bit-identical unhedged sum.
+    multiplier : int or None
+        Shares per contract; required with a ``hedge``, refused without.
 
     Returns
     -------
     float
         The signed sum: ``0`` when every leg expires worthless, negative
-        when the short legs finish in the money.
+        when the short legs finish in the money; plus the hedge term.
 
     Raises
     ------
     ValueError
-        When ``strikes`` do not match ``legs`` in number.
+        When ``strikes`` do not match ``legs`` in number, ``hedge`` is
+        malformed, or ``multiplier`` is missing with a hedge or given without.
 
     Examples
     --------
@@ -238,6 +261,18 @@ def structure_payoff(legs, level, strikes):
         structure_payoff(PUT_SPREAD_LEGS, 93.0, (90.0, 95.0))
         # -> -2.0
     """
+    if hedge is None:
+        if multiplier is not None:
+            raise ValueError("multiplier is only for a hedged payoff")
+        return _unhedged_payoff(legs, level, strikes)
+    if multiplier is None:
+        raise ValueError("a hedged payoff needs the multiplier")
+    h, reference = _hedge_terms(hedge, multiplier)
+    return _unhedged_payoff(legs, level, strikes) + h * (level - reference)
+
+
+def _unhedged_payoff(legs, level, strikes):
+    """Return the leg-sum of :func:`structure_payoff` with no hedge term."""
     terms = _float_terms(legs, level, strikes)
     if terms is not None:
         return sum(terms)
@@ -269,7 +304,7 @@ def payoff_total(legs, levels, strikes):
     return sum(structure_payoff(legs, level, strikes) for level in levels)
 
 
-def structure_max_loss(legs, strikes, credit_usd, multiplier):
+def structure_max_loss(legs, strikes, credit_usd, multiplier, hedge=None):
     """Return the most a leg set can lose at settlement, in USD, credit included.
 
     The one owner of the maximum-loss rule (ADR-0197). The settlement P&L is
@@ -292,6 +327,12 @@ def structure_max_loss(legs, strikes, credit_usd, multiplier):
         The cash received at entry in USD, net of fees; negative for a debit.
     multiplier : int
         Shares per contract, >= 1.
+    hedge : (U_sh, F_ref) or None
+        The forward leg of :func:`structure_payoff`, in the book's net HELD
+        shares (negative is sold), converted once by ``U_sh / multiplier``.
+        The slope above the top strike is then ``multiplier x`` the calls'
+        signed quantities plus ``U_sh``, and the loss is unbounded when that
+        is negative. ``None`` is the unhedged rule.
 
     Returns
     -------
@@ -304,8 +345,8 @@ def structure_max_loss(legs, strikes, credit_usd, multiplier):
     ------
     ValueError
         When there are no legs, ``strikes`` do not match them, a strike is not
-        a positive number, ``credit_usd`` is not finite or ``multiplier`` is not
-        an int >= 1.
+        a positive number, ``credit_usd`` is not finite, ``multiplier`` is not
+        an int >= 1 or ``hedge`` is malformed.
 
     Examples
     --------
@@ -323,9 +364,12 @@ def structure_max_loss(legs, strikes, credit_usd, multiplier):
         raise ValueError(f"credit_usd must be a finite number, got {credit_usd!r}")
     if not all(is_amount(k) and k > 0 for k in strikes):
         raise ValueError(f"strikes must be positive finite numbers, got {strikes!r}")
-    if sum(sign for right, sign in legs if right == "call") < 0:
+    terms = _hedge_terms(hedge, multiplier)
+    slope = multiplier * sum(sign for right, sign in legs if right == "call") + (0 if hedge is None else hedge[0])
+    if slope < 0:
         return math.inf
-    return -min(credit_usd + multiplier * structure_payoff(legs, level, strikes)
+    return -min(credit_usd + multiplier * (_unhedged_payoff(legs, level, strikes)
+                                           + (0 if terms is None else terms[0] * (level - terms[1])))
                 for level in (0, *strikes))
 
 
