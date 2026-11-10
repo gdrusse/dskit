@@ -290,6 +290,23 @@ legacy stage-list grammar (below).
 
 ## What ships
 
+`edge_reliability` (ADR-0311 stages 1-2, core): `SettledBefore` admits a row at `t` only if it settled strictly before
+`t` (`label_reaches`) and refuses dates outside the data rights; `ReliabilityBuckets` maps a row to one of 24 buckets
+from fixed config edges (quantile specs refuse, `bucket_edges_invalid`); `LinearEdgeState` keeps `r = a + b e` per bucket
+and pooled as running sums, expanding or decayed (`lambda`, cluster products `lambda^2`), with one-way (name, date) and
+two-way (name + date - both) CR1 sandwiches, and refuses `state_from_future`. ADR-0311 Amendment 1 adds a two-regressor
+state (`e_dir`, `e - e_dir`), row weights with side/top strata, Kish effective counts (`kish_effective`) in the CR1 factor and
+gates, time blocks (`block_index`), name + block and Driscoll-Kraay bands, `wild_cluster_test`, `fit_ratio`, `read_one`.
+`PartialPooling` shrinks each bucket's line (and a through-origin weight) toward the pooled one, `NameAdjustment` keeps a shrunk
+per-name offset on residuals frozen against the bucket-only map, `EdgeCalibrationMap` freezes one decision date's result, and
+`TrailingRegime` flags a name above its own trailing median (the warm-up fallback is `low`).
+
+`libs.edge_walk.EdgeReliabilityWalk` (ADR-0311 stage 3, by import path): replays a decision calendar through four states
+(expanding / decayed x fill / decision price), joins the fill-session quote and settlement level only when a row is
+admitted (`s < t`), writes one map snapshot per week before reading that week's rows, keeps pending rows in on-disk
+shards keyed by settlement date, and checkpoints atomically; a resume is byte-identical or refuses
+(`checkpoint_mismatch`, `state_from_future`, `ram_limit`). Six `@abstractmethod` hooks carry the domain (calendar, rows, fill credits, settlement levels, next session, input pins); a row whose fill session is not the next session refuses `fill_not_next_session`.
+
 `libs.pyomo.TransportPortfolioSolve.actions` and `.derived` (ADR-0297, proposed) move a solved
 decision between hosts as integers: `actions` returns the integer incumbent of a recorded
 selection, `derived` rebuilds a selection from those integers plus a foreign solve certificate,
@@ -1300,6 +1317,8 @@ dskit/pipeline/
 │                      volatility, beta, embedded gain, tax cost, break-even return (closed form per tax timing), opportunity cost; portfolio metrics
 │                      a wired table must be a mapping (None refuses; absent = unwired); betas unbounded, volatilities in VOLATILITY_BOUNDS
 ├── hold_verdict.py    HoldVerdict (by import path, ADR-0279 amendment 2026-10-28): summary rows + portfolio metrics -> one markdown verdict page per run
+├── edge_reliability.py SettledBefore (strictly-before admission gate over label_reaches, data-rights window), ReliabilityBuckets (24 fixed-edge buckets), LinearEdgeState (r = a + b e from running sums, expanding or decayed, one- and two-way cluster sandwich), PartialPooling (shrunk per-bucket lines and through-origin weights), NameAdjustment (shrunk per-name offset on frozen bucket-only residuals), EdgeCalibrationMap (frozen map at one decision date), TrailingRegime (name volatility vs its own trailing median); ADR-0311 stages 1-2
+├── libs/edge_walk.py  EdgeReliabilityWalk (by import path): the walk-forward replay over four states with on-disk pending shards, checkpoint/resume and a written-file manifest; six abstract hooks (ADR-0311 stage 3)
 ├── fee_mechanics.py   venue-neutral fee mechanics: FeeModel + RoundingPolicy ABCs, ProbabilityQuadraticFee,
 │                      ZeroFee, CeilToTick, a JSON spec; no venue table, rates are call arguments (ADR-0245)
 ├── option_pricing.py black76 (European on a forward) + black76_delta (its
