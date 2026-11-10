@@ -63,16 +63,6 @@ def two_maps(world, wd=0.5, ws=0.25):
     return maps
 
 
-def two_maps(world, wd=0.5, ws=0.25):
-    """Warm maps whose two-regressor origin line is ``(wd, ws)`` in every bucket."""
-    maps = reweighted(world.maps, 0.5, warm=True)
-    for body in maps.values():
-        body["origin_two"]["warm"] = True
-        for rec in body["origin_two"]["buckets"]:
-            rec["w"] = [wd, ws]
-    return maps
-
-
 def single_block_methods(world):
     return {"cal1": world.method("cal1"), "cal2": world.method("cal2", regressors=2),
             "hedge": hedged(world), "limits": limited(world),

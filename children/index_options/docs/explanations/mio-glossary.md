@@ -157,6 +157,7 @@ All are descriptive, over the filled books (trades) unless said otherwise.
   method must map it to `hold` and `timeout_skipped` to `skip` in its `actions`.
 - **Fitted vs fallback forecast**: a forecast is fitted when the method learned
   from earlier rows; otherwise it is the fallback. Reports count both per decision.
+- **Integration arm** (ADR-0313): a research method on a NEW id, beside the nine, that adds a `calibration` (the walk's map in the value term), `hedge` (program mode) or `exposure_limits` block to `w1_010_shock10_lp`; it is read only against its matched control (`twin_warm` or the unblocked twin), its selection-quarter verdict is `closed` or `insufficient`, and the templates are `docs/plans/mio-json/*-arm.template.json`.
 
 ## Stress and control
 

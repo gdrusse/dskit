@@ -784,6 +784,7 @@ docs/explanations/README.md # glossary and worked synthetic payoff
                             # mio-glossary.md: plain-language MIO run-report terms (ADR-0283)
 docs/plans/README.md        # gated research stages
 docs/plans/mio-json/       # study.json + plan/run/compare.template.json (proposed; not executable)
+                           # + calibrated-arm / hedged-program-arm / combined-arm / timing-check .template.json (ADR-0313 I8: new method ids on w1_010_shock10_lp, seal 2021-07-01, placeholders marked; run line in each `notes`; tests/test_mio_integration_templates.py)
 docs/memos/README.md        # execution-evidence convention; 2026-09-24 real-data closeout
 docs/research/              # README.md, .gitkeep; distribution-modeling/, real-data-backtest/ notes
 tests/                     # conftest.py; test_contracts, observations, nodes,
