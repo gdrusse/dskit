@@ -72,6 +72,8 @@ from fractions import Fraction
 from typing import NamedTuple
 
 from dskit.pipeline.driver import resolve_json_artifact
+from dskit.pipeline.hedge_overlay import HedgeOverlay
+from dskit.pipeline.method_blocks import MethodBlocks
 from dskit.pipeline.records import number_ok
 from dskit.pipeline.runs import NODES_DIR, RESULT_FILE, WALKFORWARD_FILE, walk_fold_dirs
 from dskit.pipeline.stats import lower_tail_mean, max_drawdown
@@ -1423,8 +1425,12 @@ class WeeklyOptionPortfolioStudy:
                "weekly_fraction", "correlation_lookback", "correlation_min_pairs",
                "correlation_threshold", "solver", "methods")
     _METHOD_KEYS = {"id", "rho", "portfolio_fraction", "name_fraction", "component_fraction"}
-    _OPTIONAL_METHOD_KEYS = {"reserve_per_contract", "short_notional_fraction", "shock", "risk_charge", "radius_scale",
-                             "kelly", "sizer"}
+    #: ADR-0313 D: the one owner of the per-method optional blocks (``calibration``, ``hedge``, ``exposure_limits``);
+    #: it validates them and names their keys, so no other code here handles a block key.
+    _BLOCKS = MethodBlocks.standard(hedge=HedgeOverlay)
+    _PLAIN_OPTIONAL_METHOD_KEYS = frozenset({"reserve_per_contract", "short_notional_fraction", "shock", "risk_charge",
+                                             "radius_scale", "kelly", "sizer"})
+    _OPTIONAL_METHOD_KEYS = _PLAIN_OPTIONAL_METHOD_KEYS | frozenset(_BLOCKS.keys())
     _RADIUS_SCALE = "reference_scale"
     _CHARGE_KEYS = ("reserve_per_contract", "short_notional_fraction")
     _SHOCK_KEYS = {"moves", "loss_fraction", "beta_lookback"}
@@ -1474,7 +1480,10 @@ class WeeklyOptionPortfolioStudy:
     KELLY_SHORT_NOTIONAL_FLOOR = .2
     _KELLY_RISK_INPUT = "kelly_risk_input"
     _FILLED_ACCOUNT = "filled_account"
-    _OPTIONAL_PARAMS = ("fill_sizing",)
+    #: ``locked_method_ids`` (ADR-0313 D): the ids that may carry no block; required beside any block.
+    #: ``decision_weeks`` (ADR-0313 M1/G5): exactly one decision date; every other week is ``week_not_selected``.
+    _OPTIONAL_PARAMS = ("fill_sizing", "locked_method_ids", "decision_weeks")
+    _WEEK_NOT_SELECTED = "week_not_selected"
     _FILL_SIZINGS = ("all_or_none", "available_size")
     _AVAILABLE_SIZE = "available_size"
 
@@ -1584,6 +1593,8 @@ class WeeklyOptionPortfolioStudy:
                 self.weeks.append(day)
                 seen.add(week)
         # Prepared features are only a function of the current decision prefix.
+        if "decision_weeks" in p and self._decision_week(p["decision_weeks"]) not in self.weeks:
+            raise ValueError("decision_weeks_invalid: the listed date is not one of the study's decision weeks")
         self._prepared_cache, self._component_cache, self._beta_cache = {}, {}, {}
 
     @classmethod
@@ -1614,6 +1625,12 @@ class WeeklyOptionPortfolioStudy:
         p = params
         if "fill_sizing" in p and p["fill_sizing"] not in cls._FILL_SIZINGS:
             raise ValueError("unsupported fill sizing")
+        if "locked_method_ids" in p and not (
+                isinstance(p["locked_method_ids"], list) and len(set(p["locked_method_ids"])) == len(p["locked_method_ids"])
+                and all(isinstance(i, str) and i for i in p["locked_method_ids"])):
+            raise ValueError("locked_method_ids must be a list of distinct nonempty method ids")
+        if "decision_weeks" in p:
+            cls._decision_week(p["decision_weeks"])
         defects = TransportPortfolioSolve.validate_params(p["solver"])
         if defects:
             raise ValueError("; ".join(defects))
@@ -1655,6 +1672,10 @@ class WeeklyOptionPortfolioStudy:
             # A kelly method needs a 1-dollar gap; the locked formulations were certified at theirs, and the
             # document has one solver block: a kelly method runs alone.
             raise ValueError("a kelly method runs alone: no non-kelly method in its document")
+        context = {"method_keys": cls._METHOD_KEYS | cls._PLAIN_OPTIONAL_METHOD_KEYS,
+                   "locked_method_ids": p.get("locked_method_ids"), "clocks": p.get("clocks")}
+        for method in p["methods"]:
+            cls._BLOCKS.validate(method, context)
         for method in p["methods"]:
             if "sizer" in method and method["sizer"]["beta_lookback"] < p["correlation_min_pairs"]:
                 # Fewer sessions in the loadings' window than the study needs to estimate would hold every week.
@@ -1677,6 +1698,33 @@ class WeeklyOptionPortfolioStudy:
             if problems:
                 raise ValueError("; ".join(problems))
         FundedOptionAccount(p["initial"], p["deposit"], p["deposit_every_days"], p["bridge"]["start"])
+
+    @staticmethod
+    def _decision_week(value):
+        """Return the one date of a valid ``decision_weeks``; refuse anything else as ``decision_weeks_invalid``."""
+        from datetime import date
+
+        try:
+            ok = (isinstance(value, list) and len(value) == 1 and isinstance(value[0], str)
+                  and date.fromisoformat(value[0]).isoformat() == value[0])
+        except ValueError:
+            ok = False
+        if not ok:
+            raise ValueError("decision_weeks_invalid: a list of exactly one canonical decision date is required")
+        return value[0]
+
+    def _week_selected(self, day):
+        """Say whether the document asks for this decision week (all of them unless ``decision_weeks`` is declared)."""
+        weeks = self.params.get("decision_weeks")
+        return weeks is None or day == weeks[0]
+
+    @classmethod
+    def check_document_not_evidence(cls, document):
+        """Refuse a run document (or a method result) cut to a ``decision_weeks`` check week: timing only, never evidence."""
+        params = document.get("params") if isinstance(document, dict) else None
+        if isinstance(document, dict) and ("decision_weeks" in document
+                                           or (isinstance(params, dict) and "decision_weeks" in params)):
+            raise ValueError("check_document_not_evidence: a decision_weeks document is a timing check, not evidence")
 
     @staticmethod
     def validate_pairs(pairs, symbols):
@@ -2795,7 +2843,7 @@ class WeeklyOptionPortfolioStudy:
         trades = account.closed
         if account.open:
             raise ValueError("study ended with unsettled books")
-        return {"method": method, "decisions": decisions, "trades": trades, "rejected": rejected,
+        result = {"method": method, "decisions": decisions, "trades": trades, "rejected": rejected,
                 "curve": curve, "deposits": account.deposits, "contributions": account.contributions,
                 "pnl": account.realized, "stress_pnl": account.realized-sum(t["stress_extra"] for t in trades),
                 "final_equity": account.funding, "twr": nav-1., "max_drawdown": max_dd,
@@ -2806,6 +2854,10 @@ class WeeklyOptionPortfolioStudy:
                 "unfilled": len(rejected), "contracts": sum(t["contracts"] for t in trades),
                 "unbounded_books": sum(not math.isfinite(t["max_loss"]) for t in trades),
                 "fees": sum(t["fees"] for t in trades), "ledger_summary": ledger["summary"]}
+        if "decision_weeks" in self.params:
+            # A check week is timing only: the key makes every read of the result refuse it as evidence.
+            result["decision_weeks"] = list(self.params["decision_weeks"])
+        return result
 
     def _verify_quote_indexes(self):
         for quotes in self._quotes.values():
@@ -2883,6 +2935,12 @@ class WeeklyOptionPortfolioStudy:
         defects = TransportPortfolioSolve.validate_params(p["solver"])
         if defects:
             raise ValueError("; ".join(defects))
+        if self._BLOCKS.present(method):
+            if derived is not None or policy:
+                raise ValueError("block_not_derived: a method with a block is solved locally, never derived or policy-scored")
+            # ADR-0313 I2 registers and validates the blocks only; each feature lands in its own stage (I5, I6, I7,
+            # ADR-0312 S3). Until then a block must not be silently ignored by a run.
+            raise ValueError("block_unattached: a method with a block cannot run until its feature is attached")
         if recorded is not None and derived is not None:
             raise ValueError("recorded replay and derived actions are exclusive")
         if (derived is not None or policy) and self._sizer(method) is not None:
@@ -2940,226 +2998,233 @@ class WeeklyOptionPortfolioStudy:
                     rejected.extend({**b, "status": "unfilled", "reason": "repriced_shared_cap"} for b in survivors)
                 pending = None
             if day in self.weeks:
-                groups, metadata, refusals = self._prepare(day)
-                components = self._components(day) if method["component_fraction"] is not None else {"groups": []}
-                limits = self._limits(account, method, components)
-                record = {"date": day, "candidate_books": len(groups),
-                          "candidate_contracts": sum(len(g["capacity"])//2 for g in groups),
-                          "eligible_by_symbol": dict(Counter(m["symbol"] for m in metadata)),
-                          "refusals": refusals, "components": components, "funding": account.funding,
-                          "open_reserve": sum(b["reserve"] for b in account.open.values())}
-                repaired = {m["id"]: m["cdf_noise_raised"] for m in metadata if "cdf_noise_raised" in m}
-                if repaired:
-                    # Only a repaired week carries the key, so a monotone forecast's record is unchanged.
-                    record["cdf_noise_repaired"] = {"rows": len(repaired), "largest": max(repaired.values()),
-                                                    "raised": repaired}
-                if self.pairs is not None:
-                    record["eligible_by_pair"] = dict(Counter(m["pair_id"] for m in metadata))
-                    record["fitted"] = sum(bool(m["method_fitted"]) for m in metadata)
-                    record["fallback"] = len(metadata)-record["fitted"]
-                shock = self._shock(method)
-                held = None
-                if self._filled_scope(shock):
-                    estimate, held = self._account_shock(list(account.open.values()), day, shock)
-                    limit = shock["loss_fraction"]*max(0., account.funding)
-                    tolerance = p["solver"]["parity_tolerance"]
-                    record["shock"] = {
-                        "scope": shock["scope"], "betas": dict(estimate["betas"]),
-                        "observations": estimate["observations"], "limit": limit,
-                        "held_ids": sorted(account.open), "held": held, "losses": None,
-                        "projected": None,
-                        "status": "input_unavailable" if held is None
-                        else "held_breach" if any(v > limit+tolerance for v in held.values())
-                        else "within"}
-                kelly = self._kelly(method)
-                if kelly is not None:
-                    estimate = self._kelly_estimate(day, kelly["beta_lookback"])
-                    # A name whose window holds a nonfinite bar is dropped, with its candidates, for this week.
-                    if estimate["dropped"]:
-                        kept = [i for i, m in enumerate(metadata) if m["symbol"] not in estimate["dropped"]]
-                        groups, metadata = [groups[i] for i in kept], [metadata[i] for i in kept]
-                        # The counts are of the candidates the week can trade, after the drop.
-                        record.update(candidate_books=len(groups),
-                                      candidate_contracts=sum(len(g["capacity"])//2 for g in groups),
-                                      eligible_by_symbol=dict(Counter(m["symbol"] for m in metadata)))
-                        if self.pairs is not None:
-                            record["eligible_by_pair"] = dict(Counter(m["pair_id"] for m in metadata))
-                            record["fitted"] = sum(bool(m["method_fitted"]) for m in metadata)
-                            record["fallback"] = len(metadata)-record["fitted"]
-                    # Wealth to size on is the capital not already committed: funding less every open book's reserve.
-                    w0 = account.remaining(self.params["symbols"], 1.)
-                    weights = self._move_weights(day, kelly, self._mean_dte(metadata), estimate["names"])
-                    record["kelly"] = {
-                        "fraction": kelly["fraction"], "gamma": 1./kelly["fraction"], "w0": w0,
-                        "funding": account.funding, "open_reserve": record["open_reserve"],
-                        "cash_buffer": kelly["cash_buffer"], "gap": dict(kelly["gap"]),
-                        "wealth_lo": kelly["wealth_floor"]*w0,
-                        "betas": dict(estimate["betas"]), "dropped": list(estimate["dropped"]),
-                        "candidates": len(metadata), **weights,
-                        "status": (weights["status"] if w0 > 0 else "nonpositive_capital")
-                        if metadata or not estimate["dropped"] else "no_candidate_with_history"}
-                sizer = self._sizer(method)
-                if sizer is not None:
-                    # ADR-0300: the sizer's risk inputs are read before stage 1, as the kelly estimate is, so a week
-                    # it cannot size solves nothing.
-                    record["sizer"] = self._sizer_inputs(day, method, account)
-                if any(lim["upper"] < -1e-5 for lim in limits):
-                    record["status"] = "existing_cap_breach_cash"
-                elif (self.clocks and (day == self.calendar[-1]
-                      or self.calendar[self.calendar.index(day)+1] >= self.clocks["entry_end_before"])):
-                    record["status"] = "no_entry_fill_session"
-                elif "shock" in record and record["shock"]["status"] != "within":
-                    record["status"] = ("shock_risk_input" if held is None else "shock_held_breach")
-                elif "kelly" in record and record["kelly"]["status"] != "estimated":
-                    record["status"] = self._KELLY_RISK_INPUT
-                elif "sizer" in record and record["sizer"]["status"] != "estimated":
-                    record["status"] = self._KELLY_RISK_INPUT
-                elif not groups or day == self.calendar[-1]:
-                    record["status"] = "no_eligible_candidates"
+                if not self._week_selected(day):
+                    # ADR-0313 M1: a week the document did not list is plain cash: no prepare, no solve.
+                    record = {"date": day, "candidate_books": 0, "candidate_contracts": 0, "eligible_by_symbol": {},
+                              "refusals": [], "components": {"groups": []}, "funding": account.funding,
+                              "open_reserve": sum(b["reserve"] for b in account.open.values()),
+                              "status": self._WEEK_NOT_SELECTED}
                 else:
-                    mult = p["bridge"]["solver"]["multiplier"]
-                    risk = self._risk_charge(method)
-                    configured = [{**g, "radius": method["rho"], "scale": self._group_scale(method, g, meta),
-                                   "reserve_rows": g["reserve_rows"]
-                                   + self._charge_coefficients(charge, meta["items"], mult),
-                                   **({} if risk is None else {"risk_charge": dict(risk)})}
-                                  for g, meta in zip(groups, metadata)]
-                    solver_params = p["solver"]
-                    if kelly is not None and "max_groups" in kelly:
-                        # ADR-0301: after the lp screen keep only the best max_groups groups by standalone relaxed value.
-                        solver_params = {**p["solver"], "group_screen_keep": kelly["max_groups"]}
-                    solver = TransportPortfolioSolve("portfolio", solver_params)
-                    program = {"groups": configured,
-                               "caps": self._caps(self._limits(account, method, components, solve=True), metadata)}
-                    if shock is not None:
-                        estimate = self._betas(day, shock["beta_lookback"])
-                        rows = self._shock_rows(shock, estimate["betas"], metadata, configured,
-                                                mult, account.funding, held)
-                        program["joint_rows"] = rows
+                    groups, metadata, refusals = self._prepare(day)
+                    components = self._components(day) if method["component_fraction"] is not None else {"groups": []}
+                    limits = self._limits(account, method, components)
+                    record = {"date": day, "candidate_books": len(groups),
+                              "candidate_contracts": sum(len(g["capacity"])//2 for g in groups),
+                              "eligible_by_symbol": dict(Counter(m["symbol"] for m in metadata)),
+                              "refusals": refusals, "components": components, "funding": account.funding,
+                              "open_reserve": sum(b["reserve"] for b in account.open.values())}
+                    repaired = {m["id"]: m["cdf_noise_raised"] for m in metadata if "cdf_noise_raised" in m}
+                    if repaired:
+                        # Only a repaired week carries the key, so a monotone forecast's record is unchanged.
+                        record["cdf_noise_repaired"] = {"rows": len(repaired), "largest": max(repaired.values()),
+                                                        "raised": repaired}
+                    if self.pairs is not None:
+                        record["eligible_by_pair"] = dict(Counter(m["pair_id"] for m in metadata))
+                        record["fitted"] = sum(bool(m["method_fitted"]) for m in metadata)
+                        record["fallback"] = len(metadata)-record["fitted"]
+                    shock = self._shock(method)
+                    held = None
+                    if self._filled_scope(shock):
+                        estimate, held = self._account_shock(list(account.open.values()), day, shock)
+                        limit = shock["loss_fraction"]*max(0., account.funding)
+                        tolerance = p["solver"]["parity_tolerance"]
+                        record["shock"] = {
+                            "scope": shock["scope"], "betas": dict(estimate["betas"]),
+                            "observations": estimate["observations"], "limit": limit,
+                            "held_ids": sorted(account.open), "held": held, "losses": None,
+                            "projected": None,
+                            "status": "input_unavailable" if held is None
+                            else "held_breach" if any(v > limit+tolerance for v in held.values())
+                            else "within"}
+                    kelly = self._kelly(method)
                     if kelly is not None:
-                        # The shock's move terms become joint wealth scenarios: each scenario's profit is the move's
-                        # terminal loss against the no-move loss (the credit cancels), beside the expected profit the
-                        # solver adds itself; a move the history gives no weight is recorded but not modelled (its
-                        # floor would be a cap). Each book's deviation is centred so that its probability-weighted
-                        # deviation over the quiet cell and the moves is zero: the expectation stays its forecast's.
-                        terms = self._move_terms([*kelly["moves"], 0.], estimate["betas"], metadata, configured, mult)
-                        rows = [{"id": f"shock:{move}", "terms": terms[move], "upper": 0.} for move in kelly["moves"]]
-                        program["utility"] = {
-                            "w0": record["kelly"]["w0"], "gamma": record["kelly"]["gamma"],
-                            "n_tangents": kelly["n_tangents"], "core": kelly["core"],
-                            "wealth_lo": record["kelly"]["wealth_lo"],
-                            # A name's expiries are one risk: the solver charges them on their summed dispersion.
-                            "aggregate": {meta["id"]: meta["symbol"] for meta in metadata},
-                            "joint": self._centred_scenarios(terms, kelly["moves"], record["kelly"]["weights"],
-                                                             record["kelly"]["quiet"])}
-                    if policy:
-                        from dskit.pipeline.libs.pyomo import TransportActionScore
+                        estimate = self._kelly_estimate(day, kelly["beta_lookback"])
+                        # A name whose window holds a nonfinite bar is dropped, with its candidates, for this week.
+                        if estimate["dropped"]:
+                            kept = [i for i, m in enumerate(metadata) if m["symbol"] not in estimate["dropped"]]
+                            groups, metadata = [groups[i] for i in kept], [metadata[i] for i in kept]
+                            # The counts are of the candidates the week can trade, after the drop.
+                            record.update(candidate_books=len(groups),
+                                          candidate_contracts=sum(len(g["capacity"])//2 for g in groups),
+                                          eligible_by_symbol=dict(Counter(m["symbol"] for m in metadata)))
+                            if self.pairs is not None:
+                                record["eligible_by_pair"] = dict(Counter(m["pair_id"] for m in metadata))
+                                record["fitted"] = sum(bool(m["method_fitted"]) for m in metadata)
+                                record["fallback"] = len(metadata)-record["fitted"]
+                        # Wealth to size on is the capital not already committed: funding less every open book's reserve.
+                        w0 = account.remaining(self.params["symbols"], 1.)
+                        weights = self._move_weights(day, kelly, self._mean_dte(metadata), estimate["names"])
+                        record["kelly"] = {
+                            "fraction": kelly["fraction"], "gamma": 1./kelly["fraction"], "w0": w0,
+                            "funding": account.funding, "open_reserve": record["open_reserve"],
+                            "cash_buffer": kelly["cash_buffer"], "gap": dict(kelly["gap"]),
+                            "wealth_lo": kelly["wealth_floor"]*w0,
+                            "betas": dict(estimate["betas"]), "dropped": list(estimate["dropped"]),
+                            "candidates": len(metadata), **weights,
+                            "status": (weights["status"] if w0 > 0 else "nonpositive_capital")
+                            if metadata or not estimate["dropped"] else "no_candidate_with_history"}
+                    sizer = self._sizer(method)
+                    if sizer is not None:
+                        # ADR-0300: the sizer's risk inputs are read before stage 1, as the kelly estimate is, so a week
+                        # it cannot size solves nothing.
+                        record["sizer"] = self._sizer_inputs(day, method, account)
+                    if any(lim["upper"] < -1e-5 for lim in limits):
+                        record["status"] = "existing_cap_breach_cash"
+                    elif (self.clocks and (day == self.calendar[-1]
+                          or self.calendar[self.calendar.index(day)+1] >= self.clocks["entry_end_before"])):
+                        record["status"] = "no_entry_fill_session"
+                    elif "shock" in record and record["shock"]["status"] != "within":
+                        record["status"] = ("shock_risk_input" if held is None else "shock_held_breach")
+                    elif "kelly" in record and record["kelly"]["status"] != "estimated":
+                        record["status"] = self._KELLY_RISK_INPUT
+                    elif "sizer" in record and record["sizer"]["status"] != "estimated":
+                        record["status"] = self._KELLY_RISK_INPUT
+                    elif not groups or day == self.calendar[-1]:
+                        record["status"] = "no_eligible_candidates"
+                    else:
+                        mult = p["bridge"]["solver"]["multiplier"]
+                        risk = self._risk_charge(method)
+                        configured = [{**g, "radius": method["rho"], "scale": self._group_scale(method, g, meta),
+                                       "reserve_rows": g["reserve_rows"]
+                                       + self._charge_coefficients(charge, meta["items"], mult),
+                                       **({} if risk is None else {"risk_charge": dict(risk)})}
+                                      for g, meta in zip(groups, metadata)]
+                        solver_params = p["solver"]
+                        if kelly is not None and "max_groups" in kelly:
+                            # ADR-0301: after the lp screen keep only the best max_groups groups by standalone relaxed value.
+                            solver_params = {**p["solver"], "group_screen_keep": kelly["max_groups"]}
+                        solver = TransportPortfolioSolve("portfolio", solver_params)
+                        program = {"groups": configured,
+                                   "caps": self._caps(self._limits(account, method, components, solve=True), metadata)}
+                        if shock is not None:
+                            estimate = self._betas(day, shock["beta_lookback"])
+                            rows = self._shock_rows(shock, estimate["betas"], metadata, configured,
+                                                    mult, account.funding, held)
+                            program["joint_rows"] = rows
+                        if kelly is not None:
+                            # The shock's move terms become joint wealth scenarios: each scenario's profit is the move's
+                            # terminal loss against the no-move loss (the credit cancels), beside the expected profit the
+                            # solver adds itself; a move the history gives no weight is recorded but not modelled (its
+                            # floor would be a cap). Each book's deviation is centred so that its probability-weighted
+                            # deviation over the quiet cell and the moves is zero: the expectation stays its forecast's.
+                            terms = self._move_terms([*kelly["moves"], 0.], estimate["betas"], metadata, configured, mult)
+                            rows = [{"id": f"shock:{move}", "terms": terms[move], "upper": 0.} for move in kelly["moves"]]
+                            program["utility"] = {
+                                "w0": record["kelly"]["w0"], "gamma": record["kelly"]["gamma"],
+                                "n_tangents": kelly["n_tangents"], "core": kelly["core"],
+                                "wealth_lo": record["kelly"]["wealth_lo"],
+                                # A name's expiries are one risk: the solver charges them on their summed dispersion.
+                                "aggregate": {meta["id"]: meta["symbol"] for meta in metadata},
+                                "joint": self._centred_scenarios(terms, kelly["moves"], record["kelly"]["weights"],
+                                                                 record["kelly"]["quiet"])}
+                        if policy:
+                            from dskit.pipeline.libs.pyomo import TransportActionScore
 
-                        scorer = TransportActionScore(program, {
-                            "parity_tolerance": p["solver"]["parity_tolerance"]})
-                        request = {"date": day, "program": program, "metadata": metadata,
-                                   "account": {"funding": account.funding, "cash": account.cash,
-                                               "contributions": account.contributions,
-                                               "realized": account.realized,
-                                               "open": account.open}}
-                        quantities = yield copy.deepcopy(request)
-                        selection = scorer.evaluate(quantities)
-                        record["decision_source"] = "policy"
-                    elif derived_decisions is not None:
-                        if day not in derived_decisions:
-                            raise ValueError("derived actions lack an eligible week: "+day)
-                        claimed = derived_decisions[day]
-                        consumed.add(day)
-                        try:
-                            selection = solver.derived(program, claimed["actions"],
-                                                       claimed["certificates"])["selection"]
-                        except QuoteIndexIntegrityError:
-                            raise
-                        except Exception as exc:  # name the week of any refusal, typed or not
-                            if not isinstance(exc, RecordedCheckRefusal):
-                                exc = RecordedCheckRefusal(str(exc), "derived_actions", "other")
-                            exc.week = day
-                            raise exc
-                    elif recorded_decisions is None:
-                        selection = solver.run(None, program)["selection"]
-                    else:
-                        claimed = recorded_decisions[day]
-                        if sizer is not None and "stage1" in claimed:
-                            # A sized week records stage 1 apart: its selection and certificate are what the stage-1
-                            # program certifies; the sized counts are checked by the sizer's own replay below.
-                            claimed = claimed["stage1"]
-                        if (not isinstance(claimed, dict) or "selection" not in claimed
-                                or "certificates" not in claimed):
-                            raise ValueError("eligible decision lacks recorded solve evidence")
-                        selection = solver._recorded(program, claimed["selection"], claimed["certificates"])
-                    timed_out = "timeout" in selection
-                    uncertified = None
-                    if (timed_out and kelly is not None and kelly.get("accept_uncertified")
-                            and selection.get("timeout") == "gap" and selection.get("candidate") is not None
-                            and (selection.get("certificates") or [{}])[0].get("strategy_outcome") == "declined"):
-                        # ADR-0301 amendment: the support incumbent of a declined certification is traded, and the
-                        # week says so. The envelope stays the recorded selection, so a replay re-derives the same choice.
-                        candidate = selection["candidate"]
-                        uncertified = {"outcome": "declined", "value": candidate.get("value"),
-                                       "bound": candidate.get("bound"), "gap": candidate.get("gap")}
-                        timed_out = False
-                    else:
-                        candidate = selection
-                    books = [] if timed_out else self._books(candidate, metadata, charge)
-                    status = "timeout_skipped" if timed_out else "selected" if books else "cash"
-                    certificates = [{k: v for k, v in c.items() if k != "binding"}
-                                    for c in selection.get("certificates", [])]
-                    if sizer is not None and not timed_out and books:
-                        # ADR-0300: stage 1 (above, the locked formulation's program) chose the books; stage 2 sizes
-                        # them. The stage-1 selection and certificate stay in the record so a replay checks both.
-                        record["stage1"] = {"selection": {k: copy.deepcopy(v) for k, v in selection.items()
-                                                          if k != "certificates"},
-                                            "certificates": copy.deepcopy(certificates)}
-                        claimed = recorded_decisions[day] if recorded_decisions is not None else None
-                        sized = self._size_books(day, method, configured, metadata, account, selection, books, mult,
-                                                 record["sizer"], claimed)
-                        certificates = certificates+[sized["certificate"]]
-                        if sized["status"] == "sized":
-                            selection, books = sized["selection"], sized["books"]
-                            status = "selected" if books else "cash"
+                            scorer = TransportActionScore(program, {
+                                "parity_tolerance": p["solver"]["parity_tolerance"]})
+                            request = {"date": day, "program": program, "metadata": metadata,
+                                       "account": {"funding": account.funding, "cash": account.cash,
+                                                   "contributions": account.contributions,
+                                                   "realized": account.realized,
+                                                   "open": account.open}}
+                            quantities = yield copy.deepcopy(request)
+                            selection = scorer.evaluate(quantities)
+                            record["decision_source"] = "policy"
+                        elif derived_decisions is not None:
+                            if day not in derived_decisions:
+                                raise ValueError("derived actions lack an eligible week: "+day)
+                            claimed = derived_decisions[day]
+                            consumed.add(day)
+                            try:
+                                selection = solver.derived(program, claimed["actions"],
+                                                           claimed["certificates"])["selection"]
+                            except QuoteIndexIntegrityError:
+                                raise
+                            except Exception as exc:  # name the week of any refusal, typed or not
+                                if not isinstance(exc, RecordedCheckRefusal):
+                                    exc = RecordedCheckRefusal(str(exc), "derived_actions", "other")
+                                exc.week = day
+                                raise exc
+                        elif recorded_decisions is None:
+                            selection = solver.run(None, program)["selection"]
                         else:
-                            books, timed_out, status = [], True, "timeout_skipped"
-                    record.update(status=status,
-                                  selection={k: copy.deepcopy(v) for k, v in selection.items()
-                                             if k != "certificates"},
-                                  certificates=certificates,
-                                  books=copy.deepcopy(books))
-                    if uncertified is None:
-                        candidate = selection
-                    if shock is not None:
-                        losses = ({row["id"].split(":", 1)[1]: None for row in rows} if timed_out
-                                  else self._shock_losses(rows, metadata, candidate["quantities"]))
-                        if held is None:
-                            record["shock"] = {
-                                "betas": dict(estimate["betas"]), "observations": estimate["observations"],
-                                "limit": rows[0]["upper"], "losses": losses}
+                            claimed = recorded_decisions[day]
+                            if sizer is not None and "stage1" in claimed:
+                                # A sized week records stage 1 apart: its selection and certificate are what the stage-1
+                                # program certifies; the sized counts are checked by the sizer's own replay below.
+                                claimed = claimed["stage1"]
+                            if (not isinstance(claimed, dict) or "selection" not in claimed
+                                    or "certificates" not in claimed):
+                                raise ValueError("eligible decision lacks recorded solve evidence")
+                            selection = solver._recorded(program, claimed["selection"], claimed["certificates"])
+                        timed_out = "timeout" in selection
+                        uncertified = None
+                        if (timed_out and kelly is not None and kelly.get("accept_uncertified")
+                                and selection.get("timeout") == "gap" and selection.get("candidate") is not None
+                                and (selection.get("certificates") or [{}])[0].get("strategy_outcome") == "declined"):
+                            # ADR-0301 amendment: the support incumbent of a declined certification is traded, and the
+                            # week says so. The envelope stays the recorded selection, so a replay re-derives the same choice.
+                            candidate = selection["candidate"]
+                            uncertified = {"outcome": "declined", "value": candidate.get("value"),
+                                           "bound": candidate.get("bound"), "gap": candidate.get("gap")}
+                            timed_out = False
                         else:
-                            record["shock"].update(losses=losses, projected=None if timed_out else {
-                                move: held[move]+loss for move, loss in losses.items()})
-                    if kelly is not None:
-                        record["kelly"]["losses"] = ({row["id"].split(":", 1)[1]: None for row in rows} if timed_out
-                                                     else self._shock_losses(rows, metadata, candidate["quantities"]))
-                        if kelly.get("accept_uncertified"):
-                            # Only a method that declares the key carries the field: earlier kelly records are unchanged.
-                            record["kelly"]["uncertified"] = uncertified
-                        # The lp screen is a restriction: it drops candidate groups with no edge that could hedge.
-                        # How many it dropped this week is a decision field, not only a log line.
-                        record["kelly"]["screen"] = (None if policy else dict(solver.last_screen))
-                        # How the charge compares with the book it sized (exact sd, its dispersion, their ratio and the
-                        # fraction actually applied): the labelled fraction is nominal. A record only; None when no solve.
-                        record["kelly"]["book"] = None if timed_out else dict(candidate["utility"]["book"])
-                        # How the strategy decided the week and where the bound came from (the termination fields keep
-                        # their usual meaning): a failed relaxation is a skipped week that says so here.
-                        certificates = selection.get("certificates") or [{}]
-                        record["kelly"]["solve"] = {k: certificates[0].get(k)
-                                                    for k in ("strategy_outcome", "bound_source")}
-                    if books:
-                        pending = {"books": books, "components": components, "record": record}
+                            candidate = selection
+                        books = [] if timed_out else self._books(candidate, metadata, charge)
+                        status = "timeout_skipped" if timed_out else "selected" if books else "cash"
+                        certificates = [{k: v for k, v in c.items() if k != "binding"}
+                                        for c in selection.get("certificates", [])]
+                        if sizer is not None and not timed_out and books:
+                            # ADR-0300: stage 1 (above, the locked formulation's program) chose the books; stage 2 sizes
+                            # them. The stage-1 selection and certificate stay in the record so a replay checks both.
+                            record["stage1"] = {"selection": {k: copy.deepcopy(v) for k, v in selection.items()
+                                                              if k != "certificates"},
+                                                "certificates": copy.deepcopy(certificates)}
+                            claimed = recorded_decisions[day] if recorded_decisions is not None else None
+                            sized = self._size_books(day, method, configured, metadata, account, selection, books, mult,
+                                                     record["sizer"], claimed)
+                            certificates = certificates+[sized["certificate"]]
+                            if sized["status"] == "sized":
+                                selection, books = sized["selection"], sized["books"]
+                                status = "selected" if books else "cash"
+                            else:
+                                books, timed_out, status = [], True, "timeout_skipped"
+                        record.update(status=status,
+                                      selection={k: copy.deepcopy(v) for k, v in selection.items()
+                                                 if k != "certificates"},
+                                      certificates=certificates,
+                                      books=copy.deepcopy(books))
+                        if uncertified is None:
+                            candidate = selection
+                        if shock is not None:
+                            losses = ({row["id"].split(":", 1)[1]: None for row in rows} if timed_out
+                                      else self._shock_losses(rows, metadata, candidate["quantities"]))
+                            if held is None:
+                                record["shock"] = {
+                                    "betas": dict(estimate["betas"]), "observations": estimate["observations"],
+                                    "limit": rows[0]["upper"], "losses": losses}
+                            else:
+                                record["shock"].update(losses=losses, projected=None if timed_out else {
+                                    move: held[move]+loss for move, loss in losses.items()})
+                        if kelly is not None:
+                            record["kelly"]["losses"] = ({row["id"].split(":", 1)[1]: None for row in rows} if timed_out
+                                                         else self._shock_losses(rows, metadata, candidate["quantities"]))
+                            if kelly.get("accept_uncertified"):
+                                # Only a method that declares the key carries the field: earlier kelly records are unchanged.
+                                record["kelly"]["uncertified"] = uncertified
+                            # The lp screen is a restriction: it drops candidate groups with no edge that could hedge.
+                            # How many it dropped this week is a decision field, not only a log line.
+                            record["kelly"]["screen"] = (None if policy else dict(solver.last_screen))
+                            # How the charge compares with the book it sized (exact sd, its dispersion, their ratio and the
+                            # fraction actually applied): the labelled fraction is nominal. A record only; None when no solve.
+                            record["kelly"]["book"] = None if timed_out else dict(candidate["utility"]["book"])
+                            # How the strategy decided the week and where the bound came from (the termination fields keep
+                            # their usual meaning): a failed relaxation is a skipped week that says so here.
+                            certificates = selection.get("certificates") or [{}]
+                            record["kelly"]["solve"] = {k: certificates[0].get(k)
+                                                        for k in ("strategy_outcome", "bound_source")}
+                        if books:
+                            pending = {"books": books, "components": components, "record": record}
                 decisions.append(record)
                 if events is not None and day in self.weeks:
                     selection = record.get("selection", {})
@@ -3241,10 +3306,13 @@ class WeeklyOptionPortfolioStudy:
         import copy
 
         methods = [self._method(m, progress) for m in self.params["methods"]]
-        return {"params": copy.deepcopy(self.params), "methods": methods,
-                "calendar": self.calendar, "decision_dates": self.weeks,
-                "research_only": True, "pricing": "next_session_eod_nbbo",
-                "american_assignment_unmodeled": True}
+        document = {"params": copy.deepcopy(self.params), "methods": methods,
+                    "calendar": self.calendar, "decision_dates": self.weeks,
+                    "research_only": True, "pricing": "next_session_eod_nbbo",
+                    "american_assignment_unmodeled": True}
+        if "decision_weeks" in self.params:
+            document["decision_weeks"] = list(self.params["decision_weeks"])
+        return document
 
 
 if __name__ == "__main__":

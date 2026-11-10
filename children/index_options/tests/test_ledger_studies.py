@@ -4612,3 +4612,244 @@ def test_accept_uncertified_is_a_boolean_kelly_key(value, ok):
             ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
     top = TOP_FORMULATIONS["kelly025_top100_uncert_lp"]["kelly"]
     assert top == {**TOP_FORMULATIONS["kelly025_top100_lp"]["kelly"], "accept_uncertified": True}
+
+
+# --- ADR-0313 I2: MethodBlocks wiring with locked-formulation parity, and the decision_weeks study param -------------
+
+#: Per formulation of A0010 on the weekly fixture, pinned from main's 7f2d03b BEFORE this stage: the `_method` digest
+#: (decision `seconds` removed), the number of programs solved, the hash of their `program_identity` list and the hash of
+#: the programs themselves. No block and no `decision_weeks`: all four stay byte-identical (A0010 binding).
+NINE_PINS = {
+    "w1_010_shock10_lp": ("c2398f4db0ad1a8abdabaac627e13a05288de4e7b89c7d27bb4a7c47f3d2aa25", 2, "b72b643c09063a09beafdbde6743052d520f15471b50c227e33f3b896e3c7eee", "866373de3fe65245dbb01f8d90f1bd6d03e8a7d50e02ca914446b51996cae37f"),
+    "w1_003_shock10_lp": ("0f137de760cedf430b49cc5eda24c71c51acbd8a4c5ff6cdbe69ae0c35f20fa5", 2, "6dd9f701e6d29792b5b6d39d98dbc06b81f97e5743b965bb8c45b53dd8db16b6", "29a2117ebc2d9961ada0d00e276f839942a2f2f62324376d61775ba22bfc227a"),
+    "w1_003_shock10_mad050_lp": ("eeae2dca4ca90eb51cf552ac7409f2eb15b0d86e5dea22ae5d313c06d111f77d", 2, "3d35538c065bd84d59a7177a376529cb5033279c2a1f572b711f58beae735f7e", "e4e0a742ba6bc13c87001ff8e838bd8d0848c3f79bb818f3b377cf0502de0767"),
+    "nominal_lp": ("562379a02524e6ce9bde42771aa7cdd886eed8577d06dfefeeed81dec64c8145", 2, "4f6ceb270596e97433382e81593e5093318c58b45f09e10d7a9f13f81ecc72a0", "fe2ae803fa3d54be3ccd810dcc08f8cedae82a345eeb9c62a9528231ac116569"),
+    "w1_010z_shock10_lp": ("88cdd3f25093d2b03766d36ed80de8ddaf1ab35185737769c6c30647f73a49be", 2, "b0ae29f057df93a35aff6a025d27e1491fc240b94a8afe3e4f8e9bb02002a843", "185e5ffe434a2426fec61285793de19390c368b4b5966331fa0b6ed981b8e2fa"),
+    "w1_010_shock10_fine_lp": ("1603389287c1b48ec63de88401d40337d852d3ac25aa5cc4ba5aba73a5d94860", 2, "b72b643c09063a09beafdbde6743052d520f15471b50c227e33f3b896e3c7eee", "866373de3fe65245dbb01f8d90f1bd6d03e8a7d50e02ca914446b51996cae37f"),
+    "w1_010_component25_shock10_lp": ("7489be7f79bf289e19eed9992f76cc9b70a76914d3abb9952f27c48b4c4e130c", 2, "b3be2b4f31a9cb0a8d2e1ab5be737bb630a362d4dabe6702b4388570f656a715", "08f9eb7b402e1d7485cf7785fe64359c0b98bcc81002cc29e81b38145100d5b0"),
+    "w1_010_name25_shock10_lp": ("83be73c942f3dde2dc70c3612fa962eb321a625250595bb44ea65ae5e2d29fdc", 2, "ca3a74986d9e2359de6c2d49e4c3a13cd8f401ee30922ac5ddd0bd5397fff1d8", "a83b9415164406eb55c0d421e8a0eccbceb9a3bc6f62bf4e4a92d40f598bbd59"),
+    "w1_010_shock05_book_lp": ("2de47444d6a369051f98d9a48ea86d0d28dd369e6be0f10cf36c895898046df3", 2, "b55be71131a4990da4fb974fbca4cffa022127da451d2119e86c50305f6cc6f8", "6604160f6dcdede2fc38a4fd7dde9d1f687594f80f042c7e8ae6726d90b920d7"),
+}
+_CAL = {"source": "edge_maps", "state": "expanding_fill", "edge_scale": "notional", "regressors": 1,
+        "line": "bucket", "form": "slope", "variant": "point", "warmup": "no_trade", "min_warm_weeks": 8}
+_LIM = {"beta_delta_fraction": 0.5, "vega_fraction_per_pt": 0.02, "dte_edges": [8, 22], "beta_lookback": 60,
+        "scope": "account"}
+_HEDGE = {"kind": "fixed_delta_forward", "mode": "program", "ratio": 1.0, "delta_source": "black76_chain_forward",
+          "iv_source": "vendor", "rate": 0.0, "margin_fraction": 0.15, "round_units": True, "condition": None,
+          "small_delta": 0.0, "hedge_cost_source": "placeholder", "htb_lookback": 20, "htb_vol_threshold": 2.5,
+          "htb_jump_threshold": 0.75, "hedge_fee_per_share": 0.005, "hedge_half_spread_bps": 5.0,
+          "hedge_borrow_rate": 0.005}
+_BLOCKS = {"calibration": _CAL, "exposure_limits": _LIM, "hedge": _HEDGE}
+
+
+def test_the_nine_formulations_are_byte_identical_to_main_before_the_wiring(monkeypatch):
+    """A0010 binding: digests, program_identity and the programs of the nine do not move."""
+    import hashlib
+    import json
+
+    from dskit.pipeline.libs.pyomo import TransportActionScore, TransportPortfolioSolve
+
+    assert set(NINE_PINS) == set(FORMULATIONS)
+    for name, method in FORMULATIONS.items():
+        params, inputs = _weekly_portfolio_fixture()
+        params["methods"][0].update(method, id=name)
+        if "shock" in method:
+            params["methods"][0]["shock"] = {**method["shock"], "beta_lookback": 2}
+        seen, run = [], TransportPortfolioSolve.run
+        monkeypatch.setattr(TransportPortfolioSolve, "run",
+                            lambda self, ctx, inp, run=run, seen=seen: (seen.append(inp), run(self, ctx, inp))[1])
+        result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+        monkeypatch.setattr(TransportPortfolioSolve, "run", run)
+        tolerance = params["solver"]["parity_tolerance"]
+        identities = [TransportActionScore(p, {"parity_tolerance": tolerance}).program_identity for p in seen]
+        from dskit.pipeline.base import value_hash
+        assert (_timeless_digest(result), len(seen), hashlib.sha256(json.dumps(identities).encode()).hexdigest(),
+                value_hash(seen)) == NINE_PINS[name], name
+
+
+def test_the_nine_ids_are_the_queue_configs_selection_formulations():
+    import json
+    import pathlib
+
+    config = json.loads((pathlib.Path(__file__).parent.parent / "docs/plans/mio-parallel/queue.example.json").read_text())
+    assert list(FORMULATIONS) == config["selection_formulations"]
+
+
+def _block_doc(block=None, *, method_id="research_arm", locked=True):
+    """A clocked document (tail before the development seal) with one method carrying ``block``."""
+    params, inputs = _packet_clock_fixture()
+    method = {**params["methods"][0], "id": method_id}
+    for key, value in (block or {}).items():
+        method[key] = value
+    params["methods"] = [method]
+    if locked:
+        params["locked_method_ids"] = list(FORMULATIONS)
+    return params, inputs
+
+
+def _refused_block(params, code):
+    with pytest.raises(ValueError, match=code):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_the_three_block_keys_come_from_the_owner():
+    keys = ledger_studies.WeeklyOptionPortfolioStudy._OPTIONAL_METHOD_KEYS
+    assert {"calibration", "hedge", "exposure_limits"} <= keys
+    assert {"reserve_per_contract", "short_notional_fraction", "shock", "risk_charge", "radius_scale", "kelly",
+            "sizer"} <= keys
+
+
+@pytest.mark.parametrize("key", sorted(_BLOCKS))
+def test_a_block_is_accepted_on_a_new_method_id(key):
+    params, _ = _block_doc({key: dict(_BLOCKS[key])})
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+@pytest.mark.parametrize("key", sorted(_BLOCKS))
+def test_a_block_is_refused_on_every_one_of_the_nine(key):
+    for locked_id in FORMULATIONS:
+        params, _ = _block_doc({key: dict(_BLOCKS[key])}, method_id=locked_id)
+        _refused_block(params, "block_on_locked_formulation")
+
+
+@pytest.mark.parametrize("key", sorted(_BLOCKS))
+def test_a_block_needs_the_locked_ids_and_the_seal(key):
+    params, _ = _block_doc({key: dict(_BLOCKS[key])}, locked=False)
+    _refused_block(params, "locked_ids_missing")
+    params, _ = _block_doc({key: dict(_BLOCKS[key])})
+    params["clocks"]["tail_end_before"] = "2021-07-02"
+    params["bridge"]["protected_end_before"] = "2022-01-01"
+    _refused_block(params, "integration_seal")
+    params, _ = _block_doc({key: dict(_BLOCKS[key])})
+    del params["clocks"], params["selected_pairs"]
+    _refused_block(params, "integration_seal")
+
+
+def test_unknown_keys_and_bad_block_params_are_still_refused():
+    params, _ = _block_doc()
+    params["methods"][0]["calibratio"] = dict(_CAL)
+    _refused_block(params, "invalid fixed method")
+    params, _ = _block_doc({"calibration": {**_CAL, "typo": 1}})
+    _refused_block(params, "block_unknown_key")
+    params, _ = _block_doc({"calibration": {**_CAL, "form": "cubic"}})
+    _refused_block(params, "block_param_value")
+    params, _ = _block_doc({"exposure_limits": "all"})
+    _refused_block(params, "block_type")
+    params, _ = _block_doc({"calibration": dict(_CAL)})
+    params["methods"][0]["kelly"] = {}
+    with pytest.raises(ValueError):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_locked_method_ids_is_an_optional_list_of_ids():
+    for bad in ("w1_010_shock10_lp", [1], [""], None):
+        params, _ = _block_doc({"calibration": dict(_CAL)})
+        params["locked_method_ids"] = bad
+        with pytest.raises(ValueError):
+            ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    params, _ = _weekly_portfolio_fixture()
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)  # absent: fine, the nine need none
+
+
+def test_the_owner_is_always_given_method_keys_and_locked_method_ids(monkeypatch):
+    from dskit.pipeline.method_blocks import MethodBlocks
+
+    seen = []
+    real = MethodBlocks.validate
+    monkeypatch.setattr(MethodBlocks, "validate", lambda self, method, context=None: (seen.append(context), real(self, method, context))[1])
+    params, _ = _block_doc({"calibration": dict(_CAL)})
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    params, _ = _weekly_portfolio_fixture()
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    assert len(seen) == 2 and all("method_keys" in c and "locked_method_ids" in c and "clocks" in c for c in seen)
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    assert set(seen[0]["method_keys"]) == study._METHOD_KEYS | (study._OPTIONAL_METHOD_KEYS - {"calibration", "hedge", "exposure_limits"})
+    assert seen[0]["locked_method_ids"] == list(FORMULATIONS)
+
+
+def test_a_block_method_is_not_derived_and_not_run_before_its_feature_lands():
+    params, inputs = _block_doc({"calibration": dict(_CAL)})
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    with pytest.raises(ValueError, match="block_not_derived"):
+        study._method(params["methods"][0], None, derived={"method": "research_arm", "weeks": study.weeks, "decisions": {}})
+    with pytest.raises(ValueError, match="block_unattached"):
+        study._method(params["methods"][0], None)
+
+
+def test_a_document_with_no_block_carries_no_new_key():
+    params, inputs = _weekly_portfolio_fixture()
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()
+    assert "decision_weeks" not in result and "decision_weeks" not in result["methods"][0]
+    assert "locked_method_ids" not in result["params"]
+
+
+def _only(weeks_index):
+    params, inputs = _weekly_portfolio_fixture()
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    params["decision_weeks"] = [study.weeks[weeks_index]]
+    return params, inputs, study.weeks
+
+
+def test_one_listed_week_solves_only_that_week(monkeypatch):
+    base_params, base_inputs = _weekly_portfolio_fixture()
+    base = ledger_studies.WeeklyOptionPortfolioStudy(base_params, base_inputs)._method(base_params["methods"][0], None)
+    params, inputs, weeks = _only(1)
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    prepared = []
+    real = ledger_studies.WeeklyOptionPortfolioStudy._prepare
+    monkeypatch.setattr(ledger_studies.WeeklyOptionPortfolioStudy, "_prepare",
+                        lambda self, day: (prepared.append(day), real(self, day))[1])
+    result = study._method(params["methods"][0], None)
+    assert prepared == [weeks[1]]
+    assert [d["date"] for d in result["decisions"]] == weeks == [d["date"] for d in base["decisions"]]
+    assert [d["status"] for d in result["decisions"] if d["date"] != weeks[1]] == ["week_not_selected"] * (len(weeks) - 1)
+    listed = next(d for d in result["decisions"] if d["date"] == weeks[1])
+    assert listed["status"] == "selected" and "selection" in listed
+    assert len(result["trades"]) == 1
+    assert result["decision_weeks"] == [weeks[1]]
+
+
+def test_skipped_weeks_are_plain_cash_and_the_account_continues():
+    base_params, base_inputs = _weekly_portfolio_fixture()
+    base = ledger_studies.WeeklyOptionPortfolioStudy(base_params, base_inputs)._method(base_params["methods"][0], None)
+    params, inputs, weeks = _only(1)
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert result["contributions"] == base["contributions"] == 12000. and result["deposits"] == base["deposits"]
+    assert [c["date"] for c in result["curve"]] == [c["date"] for c in base["curve"]]
+    before = [c for c in result["curve"] if c["date"] <= weeks[1]]
+    assert before and all(c["reserve"] == 0 and c["cash"] == c["funding"] == c["contributions"] and not c["open_ids"]
+                          for c in before), "skipped weeks are cash, deposits still arrive"
+    skipped = result["decisions"][0]
+    assert skipped["funding"] == base["decisions"][0]["funding"] and skipped["open_reserve"] == 0.
+
+
+def test_a_decision_weeks_result_replays_and_is_not_evidence():
+    params, inputs, weeks = _only(1)
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    document = study.run()
+    method = params["methods"][0]
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(method, None, recorded=document["methods"][0]) \
+        == document["methods"][0]
+    assert document["decision_weeks"] == [weeks[1]]
+    with pytest.raises(ValueError, match="check_document_not_evidence"):
+        ledger_studies.WeeklyOptionPortfolioStudy.check_document_not_evidence(document)
+    with pytest.raises(ValueError, match="check_document_not_evidence"):
+        ledger_studies.WeeklyOptionPortfolioStudy.check_document_not_evidence(document["methods"][0])
+    plain = ledger_studies.WeeklyOptionPortfolioStudy(*_weekly_portfolio_fixture()).run()
+    ledger_studies.WeeklyOptionPortfolioStudy.check_document_not_evidence(plain)
+
+
+@pytest.mark.parametrize("bad", [[], "2019-01-07", ["2019-01-02", "2019-01-07"], ["2019-01-02", "2019-01-02"],
+                                 ["2019-01-03"], ["2019-1-2"], [20190102], None, ["2018-01-02"]])
+def test_decision_weeks_must_be_one_date_that_is_a_study_week(bad):
+    params, inputs = _weekly_portfolio_fixture()
+    params["decision_weeks"] = bad
+    with pytest.raises(ValueError, match="decision_weeks_invalid"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+
+
+def test_decision_weeks_shape_is_refused_by_validate_configuration_too():
+    params, _ = _weekly_portfolio_fixture()
+    params["decision_weeks"] = ["2019-01-02", "2019-01-07"]
+    with pytest.raises(ValueError, match="decision_weeks_invalid"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
