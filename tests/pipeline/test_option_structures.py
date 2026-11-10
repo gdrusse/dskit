@@ -257,3 +257,115 @@ def test_option_strategy_preserves_arbitrary_finite_integer_strikes():
         [("call", 1), ("call", -2), ("call", 1)], [large, large+1, large+2])
     assert got["name"] == "long_call_butterfly" and got["variant"] == "equal_wings"
     assert [leg["strike"] for leg in got["legs"]] == [large, large+1, large+2]
+
+
+# ---- hedge keyword (ADR-0312 Amendment 1, S1a) ---------------------------------------------
+# hedge=(U_sh, F_ref): the book's net HELD shares (negative = sold) and the reference level. Legs are
+# (right, signed quantity) at quantity 1, multiplier 100, F_ref 100: the amendment's section 1 table.
+MULT = 100
+LONG_CALL_L = (("call", 1),)
+LONG_PUT_L = (("put", 1),)
+BULL_CALL_SPREAD = (("call", 1), ("call", -1))
+BEAR_PUT_SPREAD = (("put", 1), ("put", -1))
+BEAR_CALL_SPREAD = (("call", -1), ("call", 1))
+RISK_REVERSAL = (("call", 1), ("put", -1))
+SHORT_PUT_L = (("put", -1),)
+BULL_PUT_SPREAD = (("put", -1), ("put", 1))
+F100 = 100.0
+
+
+@pytest.mark.parametrize("legs, strikes, credit, hedge, hedged, unhedged", [
+    (LONG_CALL_L, (105.0,), -200.0, (-35.0, F100), 375.0, 200.0),
+    (LONG_PUT_L, (95.0,), -200.0, (30.0, F100), 350.0, 200.0),
+    (BEAR_PUT_SPREAD, (95.0, 90.0), -120.0, (12.0, F100), 820.0, 120.0),
+    (BEAR_CALL_SPREAD, (105.0, 110.0), 120.0, (15.0, F100), 1380.0, 380.0),
+    (STRADDLE, (100.0, 100.0), -800.0, (0.0, F100), 800.0, 800.0),
+    (RISK_REVERSAL, (100.0, 100.0), 0.0, (-80.0, F100), 2000.0, 10000.0),
+    (RISK_REVERSAL, (100.0, 100.0), 0.0, (-100.0, F100), 0.0, 10000.0),
+])
+def test_the_amendment_table_reserves(legs, strikes, credit, hedge, hedged, unhedged):
+    assert structure_max_loss(legs, strikes, credit, MULT, hedge=hedge) == pytest.approx(hedged, abs=1e-9)
+    assert structure_max_loss(legs, strikes, credit, MULT) == pytest.approx(unhedged, abs=1e-9)
+
+
+def test_a_straddle_with_a_small_net_delta_stays_near_its_debit():
+    assert structure_max_loss(STRADDLE, (100.0, 100.0), -800.0, MULT, hedge=(-1.0, F100)) == pytest.approx(800.0, abs=1.0)
+
+
+@pytest.mark.parametrize("legs, strikes, credit, sold", [
+    (BULL_CALL_SPREAD, (105.0, 110.0), -150.0, 15.0),
+    (SHORT_PUT_L, (95.0,), 200.0, 30.0),
+    (BULL_PUT_SPREAD, (95.0, 90.0), 120.0, 12.0),
+])
+@pytest.mark.parametrize("scale", [0.1, 0.5, 1.0])
+def test_bullish_verticals_and_short_puts_are_unbounded_at_any_positive_hedge(legs, strikes, credit, sold, scale):
+    assert structure_max_loss(legs, strikes, credit, MULT, hedge=(-sold * scale, F100)) == math.inf
+
+
+def test_the_zero_slope_is_bounded_and_the_negative_slope_is_not():
+    assert math.isfinite(structure_max_loss(LONG_CALL_L, (100.0,), -500.0, MULT, hedge=(-100.0, F100)))
+    assert structure_max_loss(LONG_CALL_L, (100.0,), -500.0, MULT, hedge=(-100.5, F100)) == math.inf
+
+
+def test_the_glossary_five_to_one_book_reserve_is_pinned_and_a_contract_division_would_fail():
+    legs, strikes, credit = (("call", 5), ("call", 1)), (450.0, 455.0), 938.90 * -1
+    hedge = (-288.0, 451.0)
+    assert structure_max_loss(legs, strikes, credit, MULT) == pytest.approx(938.90)
+    assert structure_max_loss(legs, strikes, credit, MULT, hedge=hedge) == pytest.approx(650.90)
+    pnl = {s: credit + MULT * structure_payoff(legs, s, strikes, hedge=hedge, multiplier=MULT) for s in (0.0, 450.0, 455.0)}
+    assert pnl[0.0] == pytest.approx(128949.10) and pnl[450.0] == pytest.approx(-650.90) and pnl[455.0] == pytest.approx(409.10)
+    # slope above the top strike: 6 calls x 100 - 288 = 312
+    assert (pnl[455.0] - pnl[450.0]) / 5.0 > 0
+    # the wrong conversion (shares over the six contracts) gives a different reserve
+    divided = structure_max_loss(legs, strikes, credit, MULT, hedge=(-288.0 / 6, 451.0))
+    assert divided != pytest.approx(650.90, abs=1.0) and divided == pytest.approx(890.9, abs=0.1)
+
+
+def test_hedged_payoff_is_per_unit_shares_over_the_multiplier_times_the_move():
+    # long call 105 at level 110: payoff 5 ; sold 35 shares against 100 over 100 shares/contract: -0.35 x 10
+    assert structure_payoff(LONG_CALL_L, 110.0, (105.0,), hedge=(-35.0, F100), multiplier=MULT) == pytest.approx(1.5)
+    out = structure_payoff(LONG_CALL_L, Decimal("110"), (Decimal("105"),), hedge=(Decimal("-35"), Decimal("100")), multiplier=MULT)
+    assert out == Decimal("1.5") and isinstance(out, Decimal)
+
+
+def test_the_sign_of_the_hedge_decides_the_direction_of_the_hedge_pnl():
+    below, above = 90.0, 110.0
+    sold, held = (-20.0, F100), (20.0, F100)
+    base_b = structure_payoff(LONG_PUT_L, below, (95.0,))
+    base_a = structure_payoff(LONG_PUT_L, above, (95.0,))
+    assert structure_payoff(LONG_PUT_L, below, (95.0,), hedge=sold, multiplier=MULT) == pytest.approx(base_b + 2.0)
+    assert structure_payoff(LONG_PUT_L, above, (95.0,), hedge=sold, multiplier=MULT) == pytest.approx(base_a - 2.0)
+    assert structure_payoff(LONG_PUT_L, below, (95.0,), hedge=held, multiplier=MULT) == pytest.approx(base_b - 2.0)
+    assert structure_payoff(LONG_PUT_L, above, (95.0,), hedge=held, multiplier=MULT) == pytest.approx(base_a + 2.0)
+
+
+@pytest.mark.parametrize("level", [0.0, 80.0, 93.0, 100.0, 120.0])
+def test_no_hedge_and_a_zero_hedge_give_the_unhedged_values(level):
+    strikes = (90.0, 95.0)
+    base = structure_payoff(PUT_SPREAD, level, strikes)
+    assert structure_payoff(PUT_SPREAD, level, strikes, hedge=None) == base
+    assert structure_payoff(PUT_SPREAD, level, strikes, hedge=(0.0, F100), multiplier=MULT) == base
+
+
+def test_a_none_hedge_max_loss_is_the_existing_value():
+    condor = (("put", 1), ("put", -1), ("call", -1), ("call", 1))
+    k = (90.0, 95.0, 105.0, 115.0)
+    assert structure_max_loss(condor, k, 150.0, MULT, hedge=None) == structure_max_loss(condor, k, 150.0, MULT) == 850.0
+
+
+@pytest.mark.parametrize("hedge", [(1.0,), "x", (float("nan"), 100.0), (0.5, 0.0), (0.5, -1.0),
+                                   (0.5, float("inf")), (True, 100.0), (0.5, None), (1.0, 2.0, 3.0)])
+def test_a_malformed_hedge_is_refused_in_both_functions(hedge):
+    with pytest.raises(ValueError, match="hedge"):
+        structure_payoff(LONG_CALL_L, 100.0, (100.0,), hedge=hedge, multiplier=MULT)
+    with pytest.raises(ValueError, match="hedge"):
+        structure_max_loss(LONG_CALL_L, (100.0,), -500.0, MULT, hedge=hedge)
+
+
+def test_a_hedged_payoff_needs_the_multiplier_and_a_multiplier_needs_a_hedge():
+    with pytest.raises(ValueError, match="multiplier"):
+        structure_payoff(LONG_CALL_L, 100.0, (100.0,), hedge=(-10.0, F100))
+    with pytest.raises(ValueError, match="multiplier"):
+        structure_payoff(LONG_CALL_L, 100.0, (100.0,), multiplier=MULT)
+    with pytest.raises(ValueError, match="multiplier"):
+        structure_payoff(LONG_CALL_L, 100.0, (100.0,), hedge=(-10.0, F100), multiplier=0)
