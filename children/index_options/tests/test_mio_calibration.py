@@ -295,12 +295,23 @@ def test_warmup_weeks_are_cash_in_the_arm_and_in_twin_warm_alike_never_the_raw_e
     assert c["calibration"]["control"] is True and a["calibration"]["control"] is False
 
 
-def test_a_missing_map_is_a_warmup_week_never_the_raw_edge(harness):
+def test_a_missing_map_refuses_calibration_map_missing_and_a_truncated_stream_is_not_hidden(harness):
     arm = harness.method()
     gone = {t: m for t, m in harness.maps.items() if t != "2019-11-18"}
-    result = harness.study([arm], maps=gone)._method(arm, None)
-    assert dict(statuses(result))["2019-11-18"] == "calibration_warmup"
-    assert result["decisions"][[d["date"] for d in result["decisions"]].index("2019-11-18")]["calibration"]["map"] is False
+    with pytest.raises(ValueError, match="calibration_map_missing.*2019-11-18"):
+        harness.study([arm], maps=gone)._method(arm, None)
+    last = sorted(harness.maps)[-4:]
+    truncated = {t: m for t, m in harness.maps.items() if t not in last}
+    with pytest.raises(ValueError, match="calibration_map_missing"):
+        harness.study([arm], maps=truncated)._method(arm, None)
+
+
+def test_a_present_but_cold_map_is_still_a_warmup_week(harness):
+    arm = harness.method()
+    cold = reweighted(harness.maps, 0.5, warm=False)
+    result = harness.study([arm], maps=cold)._method(arm, None)
+    assert {s for _, s in statuses(result)} == {"calibration_warmup"}
+    assert result["calibration"]["counts_as_evidence"] is False
 
 
 def test_identity_on_a_warm_control_gives_the_base_programs_except_the_zero_value_adjust(harness, monkeypatch):
@@ -428,6 +439,29 @@ def test_an_option_with_no_walk_row_is_excluded_and_counted_never_left_at_its_ra
     kept, meta, refusals, week, adjusts = cal.candidates(day, groups, metadata)
     assert kept == [] and week["calibration_no_row_excluded"] == sum(len(m["items"]) for m in metadata)
     assert all(r["reason"] == "insufficient_eligible_legs" for r in refusals) and adjusts == {}
+
+
+def test_a_mirror_item_whose_best_side_was_excluded_is_excluded_with_it(harness):
+    arm = harness.method()
+    study = harness.study([arm], maps=reweighted(harness.maps, 0.5, warm=True))
+    day = study.weeks[5]
+    cal = ledger_studies.CalibratedEdge(study, arm)
+    groups, metadata, _ = study._prepare(day)
+    whole = cal.candidates(day, groups, metadata)
+    target = metadata[0]["items"][0]
+    option = (target["right"], target["strike"])
+    real = cal._adjust
+
+    def cold_for_one_option(row, emap):
+        return (None, "not_warm_bucket") if (row["right"], row["strike"]) == option and row["group"] == metadata[0]["id"] \
+            else real(row, emap)
+
+    cal._adjust = cold_for_one_option
+    kept, meta, _, week, adjusts = cal.candidates(day, groups, metadata)
+    before = [(i["right"], i["strike"], i["sign"]) for i in whole[1][0]["items"]]
+    after = [(i["right"], i["strike"], i["sign"]) for i in meta[0]["items"]]
+    assert [x for x in before if (x[0], x[1]) != option] == after, "both sides of the option left, nothing else"
+    assert len(adjusts[meta[0]["id"]]) == len(after) and week["not_warm_bucket"] == 1
 
 
 def test_every_a9_refusal_names_its_code(harness):

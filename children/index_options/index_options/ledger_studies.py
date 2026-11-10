@@ -1905,6 +1905,10 @@ class CalibratedEdge:
             self._check_walk(hashlib, CalibratedObjective, ReliabilityBuckets)
         except _Refusal as exc:
             raise ValueError(str(exc)) from exc
+        absent = [d for d in study.weeks if study._week_selected(d) and d not in self.maps]
+        if absent:
+            # ADR-0313 A9: a truncated or gappy stream must not read as warm-up (a cold map is PRESENT, a missing one is not).
+            raise ValueError(f"calibration_map_missing: no map for decision week(s) {absent}")
         self._rows_cache = (None, None)
         #: ``(group, right, strike)`` -> the walk-row equivalent of the LAST :meth:`candidates` call (bucket, e, side, c).
         self.last = {}

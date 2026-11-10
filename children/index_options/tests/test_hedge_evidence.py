@@ -463,3 +463,14 @@ def test_a_mark_sensitive_quarter_is_uncounted_and_never_re_levers_the_verdict()
     carry = _twin([0, -1000, -500, 9000, 9000, 9000], 9000.0, trades=PROGRAM_BOOKS, contracts=30)
     read = he.program_quarter_read("2019Q1", control, levered, carry)
     assert read["mark_sensitive"] is True and read["counts"] is False and read["re_levered"] is False
+
+
+def test_main_with_an_explicit_empty_argv_is_a_usage_error_not_sys_argv(monkeypatch):
+    import sys
+
+    from tools import hedge_evidence
+
+    monkeypatch.setattr(sys, "argv", ["hedge_evidence.py", "SHOULD", "NOT", "BE", "READ"])
+    with pytest.raises(SystemExit) as exc:
+        hedge_evidence.main([])
+    assert exc.value.code == 2

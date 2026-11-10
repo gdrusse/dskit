@@ -26,6 +26,8 @@ Fixed before any read (the amendment's section 2; the owner may change the numbe
   quarter whose drawdown is not cut (``dDD <= 0``) while contracts rose is ``re_levered`` and the twin FAILS whatever
   its P&L. ``timing_check`` (M7) evaluates, from two runs' ``decision_weeks`` check documents, the median solved-week
   slowdown limit (1.5x) and "no week that solved unhedged may time out hedged";
+* ``control_block_mismatch`` (a control twin whose blocks differ from its arm's) belongs to ADR-0313's read tool and
+  is deferred there, not checked here;
 * E1 reads ADR-0310's ``direction_read`` per decision quarter; E1b is information only; E3 and E4 are reported
   as ``not_run`` / ``not available`` unless their inputs exist.
 
@@ -576,7 +578,6 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv and argv[0] == "program":
         return main_program(argv[1:])
-    argv = argv or None
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("stress_root")
     parser.add_argument("formulation")
