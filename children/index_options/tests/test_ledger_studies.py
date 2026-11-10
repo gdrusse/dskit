@@ -5149,3 +5149,10 @@ def test_the_packet_route_validates_a_replay_hedge_block_with_its_settlement_tai
     ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params, tail_end_before="2019-02-09")
     with pytest.raises(ValueError, match="integration_seal"):
         ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params, tail_end_before="2021-07-02")
+
+
+def _saved_book(study, filled):
+    """The decision-time form of a filled hand-built book (what a saved selection holds): no fill fields."""
+    saved = {k: v for k, v in filled.items() if k not in ("hedge", "fill_date")}
+    saved["legs"] = [{k: v for k, v in leg.items() if k != "fill_price"} for leg in saved["legs"]]
+    return saved

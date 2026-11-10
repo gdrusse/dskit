@@ -1234,3 +1234,95 @@ def test_v4_document_presented_as_v5_refuses_and_v4_refuses_v5_fields(tmp_path, 
     with pytest.raises(ValueError, match='invalid execution-stress document'):
         stress.execute(_rewrite({**document, 'period_label': '2019'}, path))
     assert not (tmp_path / 'out').exists()
+
+
+# --- ADR-0312 Amendment 1 S3.3: the no-solve static_forward_hedge scenarios over a saved selection ---------------------
+
+def _hedge_replay(spot_at_expiry=92., legs=(("put", 1, 100., 3),), extra_books=()):
+    """A FrozenMIOReplay (built without its pinned files) over the hedge world and one saved selection."""
+    import test_ledger_studies as tls
+
+    study, _, spots = tls._hedge_study(spot_at_expiry=spot_at_expiry)
+    book = tls._filled(study, [(r, s, k, q) for r, s, k, q in legs])
+    saved = {k: v for k, v in book.items() if k not in ("fill_date", "decision_credit", "premium", "fees", "stress_extra")}
+    saved.update(status="selected", credit=0., reserve=0., max_loss=0.)
+    replay = stress.FrozenMIOReplay.__new__(stress.FrozenMIOReplay)
+    replay.params, replay.calendar, replay.bars = study.params, study.calendar, study._bars
+    replay.quotes, replay.factors, replay.symbols = study._quotes, study._factors, ["X"]
+    replay.original = {"results": []}
+    replay.hedge_spec = {"block": {k: v for k, v in tls._REPLAY_BLOCK.items() if k != "ratio"},
+                         "parity": dict(tls._PARITY), "ratios": list(stress.HEDGE_RATIOS)}
+    # the saved selection is decided on the day before the fill, with the fill-day reprice the study makes
+    saved = tls._saved_book(study, saved)
+    decision = {"date": "2019-01-15", "books": [saved], "components": {"groups": []}, "candidate_books": 1,
+                "candidate_contracts": 3, "status": "selected", "refusals": []}
+    packet = {"id": "m", "result": {"method": study.params["methods"][0], "decisions": [decision]}}
+    return replay, packet, spots
+
+
+def _scenario(ratio, mark="parity"):
+    return {"id": stress.hedge_scenario_id(ratio, mark), "price_fraction": 0, "half_size": False,
+            "expiry_multiplier": 1, "hedge_ratio": ratio, "hedge_mark": mark}
+
+
+CONTROL = {"id": "static_control", "price_fraction": 0, "half_size": False, "expiry_multiplier": 1}
+
+
+def test_the_hedged_scenario_settles_the_forward_leg_and_the_control_has_no_hedge_field():
+    import json as j
+
+    replay, packet, spots = _hedge_replay()
+    plain, _ = replay.run_method(packet, CONTROL)
+    assert "hedge" not in j.dumps(plain), "no hedge field in the unhedged twin"
+    hedged, daily = replay.run_method(packet, _scenario(1.0))
+    book, base = hedged["trades"][0], plain["trades"][0]
+    record = book["hedge"]
+    assert record["status"] == "ok" and record["units"] > 0
+    from index_options.ledger_studies import ReplayHedge
+
+    assert book["pnl"] == pytest.approx(base["pnl"] + ReplayHedge.net_settle(record, 92.))
+    assert hedged["pnl"] == pytest.approx(book["pnl"]) and hedged["hedge"]["mark_rule"] == "parity"
+    assert hedged["hedge"]["ratio"] == 1.0 and len(hedged["curve"]) == len(plain["curve"])
+
+
+def test_the_hedged_curve_marks_the_leg_at_the_days_forward_and_contributions_are_untouched():
+    replay, packet, spots = _hedge_replay()
+    plain, _ = replay.run_method(packet, CONTROL)
+    hedged, _ = replay.run_method(packet, _scenario(1.0))
+    record = hedged["trades"][0]["hedge"]
+    day = "2019-01-23"
+    p, h = next(c for c in plain["curve"] if c["date"] == day), next(c for c in hedged["curve"] if c["date"] == day)
+    assert h["contributions"] == p["contributions"]
+    forward = spots[day] * 1.001
+    entry = (record["units"] * 0 + 0)  # noqa: F841
+    from index_options.ledger_studies import ReplayHedge
+
+    assert h["equity"] - p["equity"] == pytest.approx(ReplayHedge.mark(record, forward))
+
+
+def test_the_carry_ratio_twin_marks_every_day_on_the_carry_ratio_and_ratio_zero_changes_nothing():
+    replay, packet, spots = _hedge_replay()
+    plain, _ = replay.run_method(packet, CONTROL)
+    zero, _ = replay.run_method(packet, _scenario(0.0))
+    assert zero["pnl"] == pytest.approx(plain["pnl"]) and [c["equity"] for c in zero["curve"]] == \
+        pytest.approx([c["equity"] for c in plain["curve"]])
+    carry, _ = replay.run_method(packet, _scenario(1.0, "carry_ratio"))
+    primary, _ = replay.run_method(packet, _scenario(1.0))
+    assert carry["pnl"] == pytest.approx(primary["pnl"]), "settlement does not depend on the mark rule"
+    assert carry["hedge"]["mark_rule"] == "carry_ratio"
+
+
+def test_v6_scenarios_are_the_v5_seven_plus_the_registered_sweep_with_a_carry_twin():
+    import test_ledger_studies as tls
+
+    hedge = {"block": {k: v for k, v in tls._REPLAY_BLOCK.items() if k != "ratio"}, "parity": dict(tls._PARITY),
+             "ratios": list(stress.HEDGE_RATIOS)}
+    v5 = stress._approved_scenarios("mio-execution-stress/v5")
+    v6 = stress._approved_scenarios("mio-execution-stress/v6", hedge)
+    assert v6[:len(v5)] == v5 and len(v6) == len(v5) + 8
+    assert [s["id"] for s in v6[len(v5):]][:2] == ["static_forward_hedge_r025", "static_forward_hedge_r025_carry"]
+    for bad in ({**hedge, "ratios": [0.5]}, {**hedge, "block": {**hedge["block"], "mode": "program"}},
+                {**hedge, "block": {**hedge["block"], "ratio": 1.0}}, {**hedge, "extra": 1}):
+        with pytest.raises(ValueError):
+            stress._approved_scenarios("mio-execution-stress/v6", bad)
+    assert stress._approved_scenarios("mio-execution-stress/v5") == v5, "earlier schemas do not move"

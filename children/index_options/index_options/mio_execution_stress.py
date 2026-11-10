@@ -25,7 +25,9 @@ from pathlib import Path
 from dskit.onboarding.artifacts import PinnedPayloadSource
 from dskit.pipeline.libs.option_ledger import FundedOptionAccount
 from dskit.pipeline.option_structures import quote_defect, structure_max_loss
+from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL
 from index_options.ledger_studies import (
+    ReplayHedge,
     WeeklyOptionPortfolioStudy,
     _AllQuotedOptionContext,
     _SQLiteQuoteView,
@@ -130,7 +132,14 @@ def _missing_expiry_factors(binding, symbols, needed, factors):
 
 _AVAILABLE_SIZE_SCHEMA = "mio-execution-stress/v4"
 _RANGE_SCHEMA = "mio-execution-stress/v5"
-_AVAILABLE_SIZE_SCHEMAS = (_AVAILABLE_SIZE_SCHEMA, _RANGE_SCHEMA)
+# v6 (ADR-0312 Amendment 1 S3) is v5 plus a ``hedge`` document key: the no-solve static_forward_hedge scenarios.
+_HEDGE_SCHEMA = "mio-execution-stress/v6"
+_RANGE_SCHEMAS = (_RANGE_SCHEMA, _HEDGE_SCHEMA)
+_AVAILABLE_SIZE_SCHEMAS = (_AVAILABLE_SIZE_SCHEMA, _RANGE_SCHEMA, _HEDGE_SCHEMA)
+#: The pre-registered ratio sweep (ADR-0312 A1 section 2): read in this order, the smallest passing ratio adopted.
+HEDGE_RATIOS = (0.25, 0.5, 0.75, 1.0)
+HEDGE_MARKS = ("parity", "carry_ratio")
+_HEDGE_KEYS = frozenset({"block", "parity", "ratios"})
 # Path A0003: the holdout opens on this session; no v5 bound may reach it.
 _PROTECTED_FROM = "2024-01-02"
 # v1-v4 keep the 2019 layout ADR-0280 confined the replay to.
@@ -177,7 +186,7 @@ def _range_bounds(entry):
 def _cohort_order(document):
     """Return the cohorts in replay order after validating their names and fields."""
     cohorts = document["cohorts"]
-    if document["schema"] != _RANGE_SCHEMA:
+    if document["schema"] not in _RANGE_SCHEMAS:
         if set(cohorts) != set(_LEGACY_COHORTS):
             raise ValueError("missing exact cohort")
         return _LEGACY_COHORTS
@@ -347,14 +356,20 @@ def _attempt_evidence(study, book, day, scenario):
             "legs": legs, "outcome": None}
 
 
-def _scenario_curve(study, account, snapshots):
-    """Mark held books at unchanged observed mids while entry credit varies."""
+def _scenario_curve(study, account, snapshots, hedge=None):
+    """Mark held books at unchanged observed mids while entry credit varies.
+
+    ``hedge`` (a :class:`~index_options.ledger_studies.ReplayHedge`) adds each hedged book's forward leg, marked at its
+    day's forward (``ReplayHedge.mark``), to the mark.
+    """
     from dskit.pipeline.records import number_ok
 
-    marks = {}
+    marks, paths = {}, {}
     multiplier = study.params["bridge"]["solver"]["multiplier"]
     for book in account.closed:
         last_value = None
+        if hedge is not None and book.get("hedge", {}).get("units"):
+            paths[book["id"]] = hedge.path(book)
         for day in study.calendar:
             if not book["fill_date"] <= day < book["expiry"]:
                 continue
@@ -381,7 +396,10 @@ def _scenario_curve(study, account, snapshots):
                 last_value = multiplier * sum(mids)
             if last_value is None:
                 raise ValueError("no opening mark for filled book: " + book["id"])
-            marks[book["id"], day] = (book["credit"] + last_value, carried)
+            leg = 0.0
+            if hedge is not None and book.get("hedge", {}).get("units"):
+                leg = ReplayHedge.mark(book["hedge"], paths[book["id"]][day][0])
+            marks[book["id"], day] = (book["credit"] + last_value + leg, carried)
     previous, nav, peak, max_dd = account.initial, 1.0, 1.0, 0.0
     curve = []
     for snap in snapshots:
@@ -400,13 +418,13 @@ def _scenario_curve(study, account, snapshots):
     return curve, nav, max_dd
 
 
-def _scenario_finish(study, method, account, decisions, rejected, snapshots):
+def _scenario_finish(study, method, account, decisions, rejected, snapshots, hedge=None):
     """Reuse the funded account and produce a mark curve for changed entry prices."""
     if account.open:
         raise ValueError("scenario ended with unsettled books")
-    curve, nav, max_dd = _scenario_curve(study, account, snapshots)
+    curve, nav, max_dd = _scenario_curve(study, account, snapshots, hedge)
     trades = account.closed
-    return {
+    result = {
         "method": method, "decisions": decisions, "trades": trades,
         "rejected": rejected, "curve": curve, "deposits": account.deposits,
         "contributions": account.contributions, "pnl": account.realized,
@@ -422,6 +440,9 @@ def _scenario_finish(study, method, account, decisions, rejected, snapshots):
                            "closed_trades": len(trades),
                            "pnl_usd": account.realized,
                            "carried_marks": sum(c["carried_books"] for c in curve)}}
+    if hedge is not None:
+        result["hedge"] = hedge.record()
+    return result
 
 
 class FrozenMIOReplay:
@@ -431,7 +452,7 @@ class FrozenMIOReplay:
         self.cohort = cohort
         self.document = document
         self.pins = pins
-        self.ranged = document["schema"] == _RANGE_SCHEMA
+        self.ranged = document["schema"] in _RANGE_SCHEMAS
         entry = document["cohorts"][cohort]
         bounds = _range_bounds(entry) if self.ranged else _LEGACY_BOUNDS
         original = self._result_dir(document, cohort)
@@ -488,11 +509,14 @@ class FrozenMIOReplay:
         _missing_expiry_factors(self.domain["sources"]["chain"], self.symbols,
                                 needed, self.factors)
         self.params = {**self.domain["params"], "selected_pairs": self.domain["pairs"]}
+        self.hedge_spec = document.get("hedge") if document["schema"] == _HEDGE_SCHEMA else None
+        if self.hedge_spec is not None and max(bounds["end_before"], bounds["latest_expiry"] or "") > DEVELOPMENT_SEAL:
+            raise ValueError(f"hedge_seal: a hedged replay must end before {DEVELOPMENT_SEAL}: " + cohort)
 
     @staticmethod
     def _result_dir(document, cohort):
         """v5 names each cohort's result folder; v1-v4 use <original_root>/<cohort>."""
-        if document["schema"] == _RANGE_SCHEMA:
+        if document["schema"] in _RANGE_SCHEMAS:
             return Path(document["cohorts"][cohort]["result_dir"])
         return Path(document["original_root"]) / cohort
 
@@ -506,7 +530,7 @@ class FrozenMIOReplay:
         """
         configs = Path(document["repository_root"]) / "children/index_options/configs"
         entry = document["cohorts"][cohort]
-        if document["schema"] == _RANGE_SCHEMA:
+        if document["schema"] in _RANGE_SCHEMAS:
             name = entry.get("config")
             if (not isinstance(name, str) or not name
                     or any(part in ("", ".", "..") for part in name.split("/"))
@@ -530,7 +554,7 @@ class FrozenMIOReplay:
         """Bind available-size fills to schema v4/v5, and v4/v5 to available-size fills."""
         available = params.get("fill_sizing") == WeeklyOptionPortfolioStudy._AVAILABLE_SIZE
         if available != (schema in _AVAILABLE_SIZE_SCHEMAS):
-            version = "v5" if schema == _RANGE_SCHEMA else "v4"
+            version = "v6" if schema == _HEDGE_SCHEMA else "v5" if schema == _RANGE_SCHEMA else "v4"
             raise ValueError("available-size fill sizing and schema " + version
                              + " require each other")
 
@@ -666,6 +690,10 @@ class FrozenMIOReplay:
             self.params["initial"], self.params["deposit"], self.params["deposit_every_days"],
             self.calendar[0], deposit_end_before=self.params["bridge"]["end_before"])
         study = self.study(scenario)
+        hedge = None
+        if "hedge_ratio" in scenario:
+            hedge = ReplayHedge(study, {**self.hedge_spec["block"], "ratio": scenario["hedge_ratio"]},
+                                self.hedge_spec["parity"], mark_rule=scenario["hedge_mark"])
         pending = None
         rejected, snapshots, daily = [], [], []
         self.last_progress = {"daily": daily, "rejected": rejected,
@@ -690,6 +718,8 @@ class FrozenMIOReplay:
                     evidence = _attempt_evidence(study, book, day, scenario)
                     attempt_evidence.append(evidence)
                     filled, reason = _scenario_fill(study, book, day, method, scenario)
+                    if filled is not None and hedge is not None:
+                        hedge.attach(filled, day, study._charge(method))
                     if filled is None:
                         refusal = {**book, "status": "unfilled", "fill_date": day, "reason": reason}
                         rejected.append(refusal)
@@ -767,7 +797,7 @@ class FrozenMIOReplay:
                         or expected["carried_books"] != observed["carried_books"]):
                     raise ValueError("scenario mark diverges from control")
         else:
-            result = _scenario_finish(study, method, account, decisions, rejected, snapshots)
+            result = _scenario_finish(study, method, account, decisions, rejected, snapshots, hedge)
         if scenario["id"] == "control":
             for key, value in original.items():
                 if result.get(key) != value:
@@ -1056,14 +1086,33 @@ def _unsupported_metrics(selected, reason, rejected):
 
 
 _SCHEMA_VERSIONS = ("mio-execution-stress/v1", "mio-execution-stress/v2",
-                    "mio-execution-stress/v3", _AVAILABLE_SIZE_SCHEMA, _RANGE_SCHEMA)
+                    "mio-execution-stress/v3", _AVAILABLE_SIZE_SCHEMA, _RANGE_SCHEMA, _HEDGE_SCHEMA)
 _LEGACY_DOCUMENT = frozenset({"schema", "repository_root", "original_root", "results_pins",
                               "results_pins_sha256", "cohorts", "scenarios", "output_root"})
 _RANGE_DOCUMENT = (_LEGACY_DOCUMENT - {"original_root"}) | {"period_label"}
+_HEDGE_DOCUMENT = _RANGE_DOCUMENT | {"hedge"}
 
 
-def _approved_scenarios(schema):
-    """Return the exact approved scenario list for one document version."""
+def hedge_scenario_id(ratio, mark="parity"):
+    """Return the id of the ``static_forward_hedge`` scenario at ``ratio`` (the carry-ratio robustness twin adds a suffix)."""
+    return f"static_forward_hedge_r{round(ratio * 100):03d}" + ("" if mark == "parity" else "_carry")
+
+
+def _hedge_document(hedge):
+    """Validate a v6 document's ``hedge`` entry: the block (replay mode, no condition), the parity params, the sweep."""
+    if not isinstance(hedge, dict) or set(hedge) != _HEDGE_KEYS:
+        raise ValueError("v6 hedge must carry exactly " + str(sorted(_HEDGE_KEYS)))
+    if list(hedge["ratios"]) != list(HEDGE_RATIOS):
+        raise ValueError(f"v6 hedge ratios are the pre-registered sweep {list(HEDGE_RATIOS)}")
+    block = hedge["block"]
+    if not isinstance(block, dict) or "ratio" in block or block.get("mode") != "replay" or block.get("condition") is not None:
+        raise ValueError("v6 hedge block must be a replay-mode block without a ratio (the sweep sets it) and no condition")
+    ReplayHedge.validate_block({**block, "ratio": HEDGE_RATIOS[0]}, hedge["parity"])
+    return hedge
+
+
+def _approved_scenarios(schema, hedge=None):
+    """Return the exact approved scenario list for one document version (v6 appends the hedge sweep)."""
     if schema not in _SCHEMA_VERSIONS:
         raise ValueError("invalid execution-stress document")
     expected = [
@@ -1084,6 +1133,12 @@ def _approved_scenarios(schema):
             {"id": "single_leg_half_size", "price_fraction": 0,
              "half_size": True, "expiry_multiplier": 1,
              "single_leg_fill": True}]
+    if schema == _HEDGE_SCHEMA:
+        _hedge_document(hedge)
+        expected += [
+            {"id": hedge_scenario_id(r, mark), "price_fraction": 0, "half_size": False, "expiry_multiplier": 1,
+             "hedge_ratio": r, "hedge_mark": mark}
+            for r in HEDGE_RATIOS for mark in HEDGE_MARKS]
     if schema == "mio-execution-stress/v3":
         expected.append(
             {"id": "proportional_available_size", "price_fraction": 0,
@@ -1096,8 +1151,9 @@ def execute(document_path):
     """Validate one JSON contract, replay all methods, then pin fresh outputs."""
     doc_path = Path(document_path).resolve()
     document = _load_json(doc_path)
-    required = (_RANGE_DOCUMENT if isinstance(document, dict)
-                and document.get("schema") == _RANGE_SCHEMA else _LEGACY_DOCUMENT)
+    required = (_HEDGE_DOCUMENT if isinstance(document, dict) and document.get("schema") == _HEDGE_SCHEMA
+                else _RANGE_DOCUMENT if isinstance(document, dict) and document.get("schema") == _RANGE_SCHEMA
+                else _LEGACY_DOCUMENT)
     if (not isinstance(document, dict) or set(document) != required
             or document["schema"] not in _SCHEMA_VERSIONS):
         raise ValueError("invalid execution-stress document")
@@ -1105,7 +1161,7 @@ def execute(document_path):
         raise ValueError("results pins identity drift")
     pins = _load_json(document["results_pins"])
     scenarios = document["scenarios"]
-    if scenarios != _approved_scenarios(document["schema"]):
+    if scenarios != _approved_scenarios(document["schema"], document.get("hedge")):
         raise ValueError("scenario values differ from approved contract")
     cohorts = _cohort_order(document)
     period = document.get("period_label")

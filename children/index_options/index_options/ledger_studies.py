@@ -1330,11 +1330,20 @@ class ReplayHedge:
 
     MARK_RULES = ("parity", "carry_ratio")
 
-    def __init__(self, study, block, parity, *, mark_rule="parity"):
+    @classmethod
+    def validate_block(cls, block, parity):
+        """Refuse a block this stage cannot attach (program mode, a condition), a bad block or bad parity params."""
         if not isinstance(block, dict) or block.get("mode") != "replay":
             raise ValueError("block_unattached: only a replay-mode hedge is attached; program mode lands in ADR-0312 S4")
         if block.get("condition") is not None:
             raise ValueError("hedge_condition_unattached: the replay attaches the unconditional hedge only")
+        HedgeOverlay.from_method({"hedge": block})
+        problems = ParityForward.validate_params(parity) if isinstance(parity, dict) else ["parity must be a mapping"]
+        if problems:
+            raise ValueError("hedge_parity_invalid: " + "; ".join(problems))
+
+    def __init__(self, study, block, parity, *, mark_rule="parity"):
+        self.validate_block(block, parity)
         if mark_rule not in self.MARK_RULES:
             raise ValueError(f"mark_rule must be one of {list(self.MARK_RULES)}, got {mark_rule!r}")
         self.study, self.block, self.mark_rule = study, dict(block), mark_rule
@@ -1355,9 +1364,10 @@ class ReplayHedge:
             quotes = self.study._quotes[symbol]
             if hasattr(quotes, "iter_for"):
                 raw = list(quotes.iter_for(day, expiry))
+            elif symbol in getattr(self.study, "_by_day", {}):
+                raw = [r for k, r in self.study._by_day[symbol].get(day, {}).items() if k[1] == expiry]
             else:
-                raw = [r for k, r in getattr(self.study, "_by_day", {}).get(symbol, {}).get(day, {}).items()
-                       if k[1] == expiry]
+                raw = [r for k, r in quotes.items() if k[0] == day and k[1] == expiry]
             self._rows[key] = [{"right": r["type"], "strike": float(r["strike_raw"]), "bid": r.get("bid"),
                                 "ask": r.get("ask"), "iv": r.get("iv"), "bid_size": r.get("bid_size"),
                                 "ask_size": r.get("ask_size"), "basis_factor": r.get("basis_factor")} for r in raw]
