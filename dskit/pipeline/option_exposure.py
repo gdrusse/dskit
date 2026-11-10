@@ -54,7 +54,7 @@ from dskit.pipeline.stats import sample_quantile
 
 __all__ = ["BookGreeks", "BookGreeksReport", "CellAttribution", "Concentration", "ExpiryDelta",
            "ExposureSnapshot", "ForwardHedge", "HardToBorrowProxy", "LegGreeks", "ParityForward",
-           "StaticDeltaHedge", "StockEquivalent", "fit_betas"]
+           "StaticDeltaHedge", "StockEquivalent", "fit_betas", "DirectionEdge"]
 
 #: Calendar days per year: the one divisor for years-to-expiry and per-day theta.
 DAYS_PER_YEAR = 365
@@ -191,7 +191,54 @@ class ParityForward(_Configured):
                        if r.get("right") in RIGHTS and _is_positive(r.get("strike")))
         return sorted(key for key, n in seen.items() if n > 1)
 
-    def from_chain(self, rows, spot):
+    def pairs(self, rows, spot, exclude_strikes=()):
+        """Return the pair forwards ``K + C_mid - P_mid``, nearest the spot first.
+
+        The one owner of the parity pairs (ADR-0310 A2.11, ADR-0311 A1 part A,
+        ADR-0312 A1 marks): :meth:`from_chain` takes their median.
+
+        Parameters
+        ----------
+        rows : list of dict
+            One expiry's quotes (see :meth:`from_chain`), already screened by
+            the caller's own quote rule.
+        spot : float
+            Positive underlying price: the centre the pairs are ranked around.
+        exclude_strikes : iterable of float, optional
+            Strikes whose pairs are dropped BEFORE the ``parity_strikes``
+            nearest are taken (a mark excludes the book's own strikes), so the
+            next-nearest pairs take their place.
+
+        Returns
+        -------
+        list of float
+            At most ``parity_strikes`` forwards, nearest strike first (ties to
+            the lower strike); empty when no usable pair remains.
+
+        Raises
+        ------
+        ValueError
+            As :meth:`from_chain`: a non-positive ``spot`` or a duplicate quote.
+        """
+        if not _is_positive(spot):
+            raise ValueError(f"spot must be a positive finite number, got {spot!r}")
+        duplicated = self.duplicates(rows)
+        if duplicated:
+            raise ValueError(f"{self.DUPLICATE_QUOTE}: {duplicated}")
+        excluded = set(exclude_strikes)
+        mids = {}
+        for row in rows:
+            right, strike = row.get("right"), row.get("strike")
+            if right in RIGHTS and _is_positive(strike) and strike not in excluded:
+                mid = self._mid(row)
+                if mid is not None:
+                    mids.setdefault(strike, {})[right] = mid
+        ranked = sorted((k for k, legs in mids.items() if len(legs) == len(RIGHTS)),
+                        key=lambda k: (abs(k - spot), k))
+        return [k + mids[k]["call"] - mids[k]["put"]
+                for k in ranked[:self.params["parity_strikes"]]]
+
+    def from_chain(self, rows, spot, exclude_strikes=()):
         """Return ``(forward, source)`` for one expiry's chain rows.
 
         Parameters
@@ -201,6 +248,8 @@ class ParityForward(_Configured):
             ``bid``, ``ask``.
         spot : float
             Positive underlying price: the fallback forward and the centre.
+        exclude_strikes : iterable of float, optional
+            Strikes whose pairs are left out (see :meth:`pairs`); default none.
 
         Returns
         -------
@@ -213,22 +262,7 @@ class ParityForward(_Configured):
             When ``spot`` is not a positive finite number, or (starting
             ``duplicate_quote``) when a right and strike is quoted twice.
         """
-        if not _is_positive(spot):
-            raise ValueError(f"spot must be a positive finite number, got {spot!r}")
-        duplicated = self.duplicates(rows)
-        if duplicated:
-            raise ValueError(f"{self.DUPLICATE_QUOTE}: {duplicated}")
-        mids = {}
-        for row in rows:
-            right, strike = row.get("right"), row.get("strike")
-            if right in RIGHTS and _is_positive(strike):
-                mid = self._mid(row)
-                if mid is not None:
-                    mids.setdefault(strike, {})[right] = mid
-        pairs = sorted((k for k, legs in mids.items() if len(legs) == len(RIGHTS)),
-                       key=lambda k: (abs(k - spot), k))
-        forwards = [k + mids[k]["call"] - mids[k]["put"]
-                    for k in pairs[:self.params["parity_strikes"]]]
+        forwards = self.pairs(rows, spot, exclude_strikes)
         if len(forwards) < self.params["min_pairs"]:
             return float(spot), self.SOURCE_SPOT
         forward = median(forwards)
@@ -1820,3 +1854,150 @@ class BookGreeksReport(Node):
                 "iv_disagree_legs": sum(r["iv_disagree_legs"] or 0 for r in attributed),
                 "rate": self.params["rate"], "iv_source": self.params.get("iv_source",
                                                                            DEFAULT_IV_SOURCE)}
+
+
+# ---- ADR-0311 Amendment 1 part A: the direction edge ---------------------------------------
+class DirectionEdge(_Configured):
+    """The drift part of one item's edge: ``e_dir = delta_f_sh x (m_F - F_t)``.
+
+    ``m_F`` is the forecast's mean, ``F_t`` the decision-session parity forward
+    and ``delta_f_sh`` the Black-76 FORWARD delta of :class:`LegGreeks` (already
+    times ``sign x quantity x multiplier``; nothing is re-derived here). Every
+    input is the decision session's: there is no fill-session argument. The
+    forward's standard error ``F_se`` comes from the dispersion of the parity
+    pairs, and ``sigma2_usd = (delta_f_sh x F_se)^2`` is the error variance the
+    state turns into a reliability ratio. ``rate`` must be 0.0 (the edge is
+    undiscounted and the parity forward is rate 0).
+
+    Parameters
+    ----------
+    params : dict
+        :attr:`LegGreeks._PARAMS` and :attr:`ParityForward._PARAMS` (their
+        rules; ``rate`` must be 0.0) plus ``forward_se_floor_frac`` (number > 0,
+        required) — the floor on ``F_se`` as a fraction of the forward.
+
+    Examples
+    --------
+    A bought call, forecast mean 101.4 against a parity forward of 101::
+
+        de = DirectionEdge({"rate": 0.0, "multiplier": 100, "min_years": 0.001,
+                            "vol_floor": 0.01, "parity_strikes": 5, "min_pairs": 2,
+                            "max_pair_spread_frac": 0.5, "forward_se_floor_frac": 0.001})
+        m_f = de.forecast_mean([0.5, 0.5], [101.0, 101.8])     # 101.4
+        out, code = de.of(item, quote, usable_rows, 100.5, m_f, "2024-03-01")
+    """
+
+    _PARAMS = LegGreeks._PARAMS + ParityForward._PARAMS + ("forward_se_floor_frac",)
+    NO_DIRECTION_EDGE = "no_direction_edge"
+    RATE_NONZERO = "direction_rate_nonzero"
+    #: Leg refusal -> the sub-code counted beside ``no_direction_edge``.
+    _SUBCODES = {LegGreeks.NO_FILL_QUOTE: "no_quote", LegGreeks.NO_IV: LegGreeks.NO_IV,
+                 LegGreeks.BELOW_MIN_YEARS: LegGreeks.BELOW_MIN_YEARS}
+    #: Normal-consistent scale of the median absolute deviation.
+    MAD_SCALE = 1.4826
+    #: Fewer pairs than this cannot give a dispersion.
+    MIN_DISPERSION_PAIRS = 3
+
+    @classmethod
+    def _check(cls, problems, params):
+        for owner in (LegGreeks, ParityForward):
+            problems.extend(owner.validate_params(
+                {k: v for k, v in params.items() if k in owner._PARAMS}))
+        if "rate" in params and params["rate"] != 0.0:
+            problems.append(f"{cls.RATE_NONZERO}: rate must be 0.0, got {params['rate']!r}")
+        if "forward_se_floor_frac" in params and not _is_positive(params["forward_se_floor_frac"]):
+            problems.append("forward_se_floor_frac must be a positive finite number, got "
+                            f"{params['forward_se_floor_frac']!r}")
+        _required(problems, params, ("forward_se_floor_frac",))
+
+    def __init__(self, params=None):
+        super().__init__(params)
+        self._legs = LegGreeks({k: v for k, v in self.params.items() if k in LegGreeks._PARAMS})
+        self._parity = ParityForward(
+            {k: v for k, v in self.params.items() if k in ParityForward._PARAMS})
+
+    @staticmethod
+    def forecast_mean(masses, grid):
+        """Return ``m_F = sum masses x grid`` (no renormalisation).
+
+        Raises
+        ------
+        ValueError
+            On empty or unequal-length inputs or a non-finite entry.
+        """
+        if not masses or len(masses) != len(grid):
+            raise ValueError("masses and grid must be non-empty and the same length, got "
+                             f"{len(masses)} and {len(grid)}")
+        if not all(number_ok(v) for v in (*masses, *grid)):
+            raise ValueError("masses and grid must be finite numbers")
+        return math.fsum(m * g for m, g in zip(masses, grid))
+
+    def _forward_se(self, pairs, forward, name_week_se):
+        """Return ``(F_se, fallback)``: pair dispersion, or the fallback with the floor."""
+        floor = self.params["forward_se_floor_frac"] * forward
+        if len(pairs) >= self.MIN_DISPERSION_PAIRS:
+            centre = median(pairs)
+            mad = median(abs(p - centre) for p in pairs)
+            return max(self.MAD_SCALE * mad / math.sqrt(len(pairs)), floor), False
+        if name_week_se is not None and _is_positive(name_week_se):
+            return max(name_week_se, floor), True
+        return floor, True
+
+    def of(self, item, quote, usable_rows, spot, forecast_mean, day, name_week_se=None):
+        """Return ``(row, None)`` or ``(None, "no_direction_edge:<sub>")`` for one item.
+
+        Parameters
+        ----------
+        item : dict
+            ``right``, ``strike``, ``sign`` (+1 bought / -1 sold), ``expiry``;
+            one contract is valued (``quantity`` 1).
+        quote : dict or None
+            The item's decision-session quote: ``bid``, ``ask``, ``iv``.
+        usable_rows : list of dict
+            The decision-session chain rows of the item's expiry, already
+            through the caller's quote filter.
+        spot : float
+            Positive decision-session underlying price.
+        forecast_mean : float
+            ``m_F`` from :meth:`forecast_mean`.
+        day : str
+            ISO decision date.
+        name_week_se : float, optional
+            Median ``F_se`` of the same name's other expiries that day: the
+            stand-in for the dispersion when fewer than 3 pairs exist.
+
+        Returns
+        -------
+        tuple
+            A dict ``e_dir, forward, forward_source, forward_se, forward_se_fallback,
+            sigma2_usd, delta_f_sh`` (``forward_se`` and ``sigma2_usd`` are ``None`` on
+            a spot forward) and ``None``; or ``None`` and the code. Sub-codes:
+            ``no_quote``, ``leg_no_iv``, ``leg_below_min_years``, ``duplicate_quote``.
+
+        Raises
+        ------
+        ValueError
+            On a non-positive ``spot``, a non-finite ``forecast_mean`` or a malformed item.
+        """
+        if not number_ok(forecast_mean):
+            raise ValueError(f"forecast_mean must be a finite number, got {forecast_mean!r}")
+        try:
+            pairs = self._parity.pairs(usable_rows, spot)
+        except ValueError as exc:
+            if str(exc).startswith(ParityForward.DUPLICATE_QUOTE):
+                return None, f"{self.NO_DIRECTION_EDGE}:{ParityForward.DUPLICATE_QUOTE}"
+            raise
+        forward, source = self._parity.from_chain(usable_rows, spot)
+        leg = {"right": item.get("right"), "strike": item.get("strike"),
+               "sign": item.get("sign"), "quantity": 1, "expiry": item.get("expiry")}
+        greeks, refusal = self._legs.of(leg, quote, forward, spot, day)
+        if greeks is None:
+            return None, f"{self.NO_DIRECTION_EDGE}:{self._SUBCODES[refusal]}"
+        delta = greeks["delta_f_sh"]
+        spot_source = source == ParityForward.SOURCE_SPOT
+        se, fallback = (None, False) if spot_source else self._forward_se(pairs, forward,
+                                                                          name_week_se)
+        return {"e_dir": delta * (forecast_mean - forward), "forward": forward,
+                "forward_source": source, "forward_se": se, "forward_se_fallback": fallback,
+                "sigma2_usd": None if se is None else (delta * se) ** 2,
+                "delta_f_sh": delta}, None

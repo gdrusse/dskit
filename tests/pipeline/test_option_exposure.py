@@ -34,7 +34,7 @@ def chain(forward, strikes, vol=0.2, years=30 / 365, half=0.05):
 
 def test_all_exports():
     assert sorted(ox.__all__) == sorted(
-        ["ParityForward", "LegGreeks", "BookGreeks", "StockEquivalent", "CellAttribution",
+        ["ParityForward", "LegGreeks", "BookGreeks", "StockEquivalent", "CellAttribution", "DirectionEdge",
          "ExposureSnapshot", "fit_betas", "BookGreeksReport", "StaticDeltaHedge",
          "ExpiryDelta", "ForwardHedge", "Concentration", "HardToBorrowProxy"])
 
@@ -1784,3 +1784,219 @@ def test_the_new_count_columns_are_declared_and_written_by_the_report():
 def test_direction_read_has_no_lambda():
     import inspect
     assert "lambda" not in inspect.getsource(BookGreeksReport.direction_read)
+
+
+# ---- ADR-0311 Amendment 1 stage A2: shared parity pairs and DirectionEdge ----------------
+import inspect  # noqa: E402
+
+from dskit.pipeline.option_exposure import DirectionEdge  # noqa: E402
+
+DE_DIRECTION = {**LEG, **{**PARITY, "min_pairs": 2, "parity_strikes": 5},
+             "forward_se_floor_frac": 0.001}
+
+
+def de_pair_rows(forwards):
+    """Rows whose strike-``k`` pair has parity forward exactly ``forwards[k]``."""
+    rows = []
+    for k, f in forwards.items():
+        for right, sgn in (("call", 1), ("put", -1)):
+            mid = 5.0 + sgn * (f - k) / 2
+            rows.append({"right": right, "strike": k, "bid": mid - 0.05, "ask": mid + 0.05})
+    return rows
+
+
+DE_FIVE = {100: 100.0, 99: 100.2, 101: 99.8, 98: 100.4, 102: 99.6}
+
+
+def test_pairs_nearest_first_and_from_chain_is_their_median():
+    pf = ParityForward({**PARITY, "parity_strikes": 5})
+    rows = de_pair_rows(DE_FIVE)
+    assert pf.pairs(rows, 100.0) == pytest.approx([100.0, 100.2, 99.8, 100.4, 99.6])
+    assert pf.pairs(rows, 100.0, exclude_strikes=()) == pf.pairs(rows, 100.0)
+    assert pf.from_chain(rows, 100.0) == (pytest.approx(100.0), "parity")
+    assert pf.from_chain(rows, 100.0) == pf.from_chain(rows, 100.0, exclude_strikes=())
+
+
+def test_pairs_keeps_only_parity_strikes_nearest():
+    pf = ParityForward({**PARITY, "parity_strikes": 2})
+    assert pf.pairs(de_pair_rows(DE_FIVE), 100.0) == pytest.approx([100.0, 100.2])
+
+
+def test_exclude_strikes_removes_exactly_those_pairs():
+    pf = ParityForward({**PARITY, "parity_strikes": 5})
+    rows = de_pair_rows(DE_FIVE)
+    got = pf.pairs(rows, 100.0, exclude_strikes=(100, 98.0))
+    assert got == pytest.approx([100.2, 99.8, 99.6])
+    assert pf.pairs(rows, 100.0, exclude_strikes=[777]) == pf.pairs(rows, 100.0)
+    # the next-nearest pair takes an excluded one's place within parity_strikes
+    two = ParityForward({**PARITY, "parity_strikes": 2})
+    assert two.pairs(rows, 100.0, exclude_strikes=(100,)) == pytest.approx([100.2, 99.8])
+
+
+def test_exclusion_leaving_too_few_pairs_falls_back_to_spot():
+    pf = ParityForward(PARITY)  # min_pairs 2
+    rows = de_pair_rows({100: 100.0, 101: 100.4})
+    assert pf.from_chain(rows, 100.3)[1] == "parity"
+    assert pf.from_chain(rows, 100.3, exclude_strikes=(100,)) == (100.3, "spot")
+    assert pf.pairs(rows, 100.3, exclude_strikes=(100, 101)) == []
+
+
+def test_pairs_shares_the_spot_and_duplicate_refusals():
+    pf = ParityForward(PARITY)
+    rows = de_pair_rows(DE_FIVE)
+    with pytest.raises(ValueError, match="spot"):
+        pf.pairs(rows, 0.0)
+    with pytest.raises(ValueError, match="duplicate_quote"):
+        pf.pairs(rows + rows[:1], 100.0)
+    with pytest.raises(ValueError, match="duplicate_quote"):
+        pf.from_chain(rows + rows[:1], 100.0, exclude_strikes=(100,))
+
+
+def test_from_chain_default_matches_the_pre_pairs_rule_on_noisy_chains():
+    rows = chain(101.5, [96, 98, 100, 102, 104, 106])
+    for r in rows:
+        r["bid"] += 0.01 * r["strike"] % 0.07
+    for n in (1, 2, 3, 6):
+        pf = ParityForward({**PARITY, "parity_strikes": n, "min_pairs": 1})
+        fwd, src = pf.from_chain(rows, 100.3)
+        assert (fwd, src) == (statistics.median(pf.pairs(rows, 100.3)), "parity")
+
+
+DE_GRID = [98.0, 100.0, 102.0, 104.0]
+DE_MASSES = [0.1, 0.3, 0.4, 0.2]
+DE_DAY, DE_EXPIRY = "2024-03-01", "2024-03-31"
+DE_ITEM = {"right": "call", "strike": 100.0, "sign": 1, "expiry": DE_EXPIRY}
+DE_QUOTE = {"bid": 2.0, "ask": 2.2, "iv": 0.25}
+
+
+def de_norm_cdf(x):
+    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+
+
+def de_forward_delta(right, f, k, vol, years):
+    d1 = (math.log(f / k) + 0.5 * vol * vol * years) / (vol * math.sqrt(years))
+    return de_norm_cdf(d1) if right == "call" else de_norm_cdf(d1) - 1
+
+
+def de_edge(item=DE_ITEM, quote=DE_QUOTE, rows=None, **kw):
+    rows = chain(101.0, [96, 98, 100, 102, 104, 106], vol=0.25) if rows is None else rows
+    de = DirectionEdge(DE_DIRECTION)
+    m_f = de.forecast_mean(DE_MASSES, DE_GRID)
+    return de.of(item, quote, rows, 100.5, m_f, DE_DAY, **kw)
+
+
+def test_forecast_mean_by_hand():
+    de = DirectionEdge(DE_DIRECTION)
+    assert de.forecast_mean(DE_MASSES, DE_GRID) == pytest.approx(101.4, abs=1e-12)
+    with pytest.raises(ValueError, match="same length"):
+        de.forecast_mean([1.0], [1.0, 2.0])
+    with pytest.raises(ValueError, match="finite"):
+        de.forecast_mean([float("nan")], [1.0])
+
+
+def test_e_dir_hand_worked_example():
+    out, code = de_edge()
+    assert code is None
+    delta = de_forward_delta("call", 101.0, 100.0, 0.25, 30 / 365)
+    assert out["forward"] == pytest.approx(101.0, abs=1e-9) and out["forward_source"] == "parity"
+    assert out["delta_f_sh"] == pytest.approx(100 * delta, rel=1e-9)
+    assert out["e_dir"] == pytest.approx(100 * delta * (101.4 - 101.0), rel=1e-9)
+    assert out["sigma2_usd"] == pytest.approx((100 * delta * out["forward_se"]) ** 2, rel=1e-12)
+
+
+@pytest.mark.parametrize("right,sign", [("call", 1), ("call", -1), ("put", 1), ("put", -1)])
+def test_e_dir_sign_follows_side_and_right(right, sign):
+    item = {**DE_ITEM, "right": right, "sign": sign}
+    out, _ = de_edge(item)
+    delta = de_forward_delta(right, 101.0, 100.0, 0.25, 30 / 365)
+    assert out["e_dir"] == pytest.approx(sign * 100 * delta * 0.4, rel=1e-9)
+    assert (out["e_dir"] > 0) == (sign * (1 if right == "call" else -1) > 0)
+    flipped, _ = de_edge({**item, "sign": -sign})
+    assert flipped["e_dir"] == pytest.approx(-out["e_dir"], rel=1e-12)
+
+
+def test_rate_must_be_zero():
+    with pytest.raises(ConfigError, match="direction_rate_nonzero"):
+        DirectionEdge({**DE_DIRECTION, "rate": 0.01})
+    assert DirectionEdge.validate_params({**DE_DIRECTION, "rate": 0.0}) == []
+
+
+def test_forward_se_from_pair_dispersion_by_hand():
+    out, _ = de_edge(rows=de_pair_rows(DE_FIVE))
+    # median 100, MAD 0.2, five pairs
+    assert out["forward"] == pytest.approx(100.0)
+    assert out["forward_se"] == pytest.approx(1.4826 * 0.2 / math.sqrt(5), rel=1e-9)
+    assert out["forward_se_fallback"] is False
+
+
+def test_forward_se_floor_binds_on_a_tight_chain():
+    out, _ = de_edge(rows=de_pair_rows({100: 100.0, 99: 100.0, 101: 100.0}))
+    assert out["forward_se"] == pytest.approx(0.001 * 100.0, rel=1e-9)
+    assert out["forward_se_fallback"] is False
+
+
+def test_forward_se_with_two_pairs_uses_the_name_week_se_or_the_floor():
+    rows = de_pair_rows({100: 100.0, 101: 100.4})
+    with_week, _ = de_edge(rows=rows, name_week_se=0.5)
+    assert with_week["forward_se"] == pytest.approx(0.5) and with_week["forward_se_fallback"]
+    floor_only, _ = de_edge(rows=rows)
+    assert floor_only["forward_se"] == pytest.approx(0.001 * 100.2, rel=1e-9)
+    assert floor_only["forward_se_fallback"] is True
+    tiny, _ = de_edge(rows=rows, name_week_se=1e-9)
+    assert tiny["forward_se"] == pytest.approx(0.001 * 100.2, rel=1e-9)
+
+
+def test_spot_fallback_keeps_the_row_and_flags_it():
+    out, code = de_edge(rows=[])
+    assert code is None and out["forward_source"] == "spot" and out["forward"] == 100.5
+    assert out["forward_se"] is None and out["sigma2_usd"] is None
+    delta = de_forward_delta("call", 100.5, 100.0, 0.25, 30 / 365)
+    assert out["e_dir"] == pytest.approx(100 * delta * (101.4 - 100.5), rel=1e-9)
+
+
+@pytest.mark.parametrize("kw,code", [
+    ({"quote": None}, "no_direction_edge:no_quote"),
+    ({"quote": {"bid": 2.2, "ask": 2.0, "iv": 0.25}}, "no_direction_edge:no_quote"),
+    ({"quote": {"bid": 2.0, "ask": 2.2}}, "no_direction_edge:leg_no_iv"),
+    ({"item": {**DE_ITEM, "expiry": DE_DAY}}, "no_direction_edge:leg_below_min_years"),
+    ({"rows": de_pair_rows(DE_FIVE) + de_pair_rows(DE_FIVE)[:1]}, "no_direction_edge:duplicate_quote"),
+])
+def test_no_direction_edge_codes(kw, code):
+    out, got = de_edge(**kw)
+    assert out is None and got == code and got.startswith(DirectionEdge.NO_DIRECTION_EDGE)
+
+
+def test_direction_edge_malformed_input_raises():
+    de = DirectionEdge(DE_DIRECTION)
+    with pytest.raises(ValueError, match="spot"):
+        de.of(DE_ITEM, DE_QUOTE, [], 0.0, 101.0, DE_DAY)
+    with pytest.raises(ValueError, match="forecast_mean"):
+        de.of(DE_ITEM, DE_QUOTE, [], 100.5, float("nan"), DE_DAY)
+    with pytest.raises(ValueError, match="malformed"):
+        de.of({**DE_ITEM, "sign": 2}, DE_QUOTE, [], 100.5, 101.0, DE_DAY)
+
+
+def test_direction_edge_has_no_fill_argument_and_reads_only_the_decision_day():
+    names = list(inspect.signature(DirectionEdge.of).parameters)
+    assert names == ["self", "item", "quote", "usable_rows", "spot", "forecast_mean", "day",
+                     "name_week_se"]
+    assert not any("fill" in n for n in names)
+    base, _ = de_edge()
+    # a chain row is only ever read through the rows handed in: poison nothing else
+    assert de_edge()[0] == base
+
+
+def test_direction_edge_params_compose_and_export():
+    assert DirectionEdge._PARAMS == (
+        LegGreeks._PARAMS + ParityForward._PARAMS + ("forward_se_floor_frac",))
+    assert "DirectionEdge" in ox.__all__ and len(set(ox.__all__)) == len(ox.__all__)
+    DirectionEdge(DE_DIRECTION)
+    assert any("unknown" in p for p in DirectionEdge.validate_params({**DE_DIRECTION, "typo": 1}))
+    for key in ("rate", "multiplier", "min_years", "vol_floor", "parity_strikes", "min_pairs",
+                "max_pair_spread_frac", "forward_se_floor_frac"):
+        trimmed = {k: v for k, v in DE_DIRECTION.items() if k != key}
+        assert any("missing" in p for p in DirectionEdge.validate_params(trimmed)), key
+    for bad in (0, -1.0, "x", float("nan"), True):
+        assert DirectionEdge.validate_params({**DE_DIRECTION, "forward_se_floor_frac": bad}), bad
+    assert DirectionEdge.validate_params({**DE_DIRECTION, "parity_strikes": 0})
+    assert DirectionEdge.validate_params({**DE_DIRECTION, "iv_source": "mid"})  # tol required
