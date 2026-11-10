@@ -67,6 +67,8 @@ __all__ = [
     "structure_credit",
     "structure_max_loss",
     "structure_payoff",
+    "usable_parity_rows",
+    "usable_quote",
 ]
 
 #: The one owner of an iron condor's leg order and signed quantity: long
@@ -222,6 +224,84 @@ def quote_problems(bid, ask, bid_size, ask_size, count, side=None):
         elif value < count:
             problems.append(f"{name} {value} does not cover count {count}")
     return problems
+
+
+def usable_quote(row, factor, min_quote_size, max_relative_spread, *, strict):
+    """Return ``(bid, ask)`` divided by ``factor`` for a usable archive quote row, else ``None``.
+
+    The ONE owner of MIO's quote-usability rule (ADR-0311 A1 part A, ADR-0310 A2.11):
+    ``CDFQuoteCondorSelect._usable_quote`` calls it with its own params, and
+    :func:`usable_parity_rows` calls it for the three forward consumers, so the rule has no
+    second copy. A row is usable when its ``basis_factor`` equals ``factor``, ``bid > 0``,
+    ``ask >= bid`` (``ask > bid`` when ``strict``, the weekly MIO's rule), both sizes are
+    ints ``>= min_quote_size`` and ``(ask - bid) / mid <= max_relative_spread``.
+
+    Parameters
+    ----------
+    row : dict or None
+        An archive row: ``basis_factor``, ``bid``, ``ask``, ``bid_size``, ``ask_size``.
+    factor : float
+        The day's basis (split) factor the prices are divided by.
+    min_quote_size : int
+        Smallest accepted bid and ask size.
+    max_relative_spread : float
+        Largest accepted ``(ask - bid) / mid``.
+    strict : bool
+        Require ``bid < ask`` (no locked quote).
+
+    Returns
+    -------
+    tuple of float or None
+        ``(bid / factor, ask / factor)``.
+    """
+    if row is None or not math.isclose(float(row.get("basis_factor", math.nan)), factor,
+                                       rel_tol=1e-9):
+        return None
+    bid, ask = row.get("bid"), row.get("ask")
+    if (not number_ok(bid) or not number_ok(ask) or bid <= 0 or ask < bid
+            or any(type(row.get(k)) is not int or row[k] < min_quote_size
+                   for k in ("bid_size", "ask_size"))):
+        return None
+    bid, ask = float(bid)/factor, float(ask)/factor
+    if (ask-bid)/((ask+bid)/2) > max_relative_spread or (strict and not bid < ask):
+        return None
+    return bid, ask
+
+
+def usable_parity_rows(rows, factor, min_quote_size, max_relative_spread, *, strict=True,
+                       rescale=False):
+    """Return the rows of one expiry whose quote :func:`usable_quote` accepts.
+
+    The one child filter every parity forward goes through before
+    ``ParityForward.from_chain(rows, spot, exclude_strikes)`` (ADR-0310 A2.11, ADR-0311 A1
+    part A, ADR-0312 A1): the Greeks diagnostics, the calibration walk's wrapper and the
+    hedge replay's ``hedge_forwards``. It takes params, not a node, and imports no solver or
+    study. Order is kept.
+
+    Parameters
+    ----------
+    rows : iterable of dict
+        One expiry's rows with ``bid``, ``ask``, ``bid_size``, ``ask_size``, ``basis_factor``.
+    factor : float
+        The book's basis factor.
+    min_quote_size, max_relative_spread : number
+        The run's own quote params (``result.json``'s bridge), never restated in a config.
+    strict : bool, default True
+        Require ``bid < ask``: the weekly MIO's rule.
+    rescale : bool, default False
+        Return copies with ``bid`` and ``ask`` divided by ``factor`` (the node's market
+        prices) instead of the rows unchanged (a caller whose spot and strikes are raw).
+
+    Returns
+    -------
+    list of dict
+    """
+    kept = []
+    for row in rows:
+        market = usable_quote(row, factor, min_quote_size, max_relative_spread, strict=strict)
+        if market is not None:
+            kept.append({**row, "bid": market[0], "ask": market[1]} if rescale else row)
+    return kept
 
 
 def condor_credit(strikes, quotes):
