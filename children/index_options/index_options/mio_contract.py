@@ -1371,8 +1371,17 @@ class MIOStudyContract(StudyContract):
         else:
             raise ValueError("unknown admission mode")
         expected = {"forecasts", "contexts", "chain", "bars", "sessions"}
-        if set(d["sources"]) not in (expected, expected | {"corporate_actions"}):
+        optional = {"corporate_actions", "edge_maps"}
+        if not expected <= set(d["sources"]) <= expected | optional:
             raise ValueError("five market source roles and optional corporate actions required")
+        # ADR-0313 A9: the walk's maps are bound exactly when a method declares a calibration block.
+        declared = any("calibration" in m for m in methods)
+        if declared and "edge_maps" not in d["sources"]:
+            raise ValueError("edge_maps_unbound: a method declares a calibration block but the study binds no "
+                             "edge_maps source")
+        if "edge_maps" in d["sources"] and not declared:
+            raise ValueError("edge_maps_unused: the study binds an edge_maps source but no method declares a "
+                             "calibration block")
         missing, pins = [], {}
         for role, binding in d["sources"].items():
             if binding is None:
@@ -1381,7 +1390,8 @@ class MIOStudyContract(StudyContract):
             if set(binding) != {"pin", "files"}:
                 raise ValueError("invalid source binding")
             keys = (set(p["symbols"]) if role in {"chain", "bars"} else
-                    {"shared", "memo"} if role == "corporate_actions" else {"shared"})
+                    {"shared", "memo"} if role == "corporate_actions" else
+                    {"shared", "summary"} if role == "edge_maps" else {"shared"})
             if set(binding["files"]) != keys:
                 raise ValueError("source file universe differs")
             source = PinnedPayloadSource(binding["pin"])
@@ -1398,6 +1408,9 @@ class MIOStudyContract(StudyContract):
             "chain": {"start": packet["start"], "end_before": tail},
             "bars": {"start": d["history_start"], "end_before": tail},
             "sessions": {"start": d["history_start"], "end_before": tail}}
+        if "edge_maps" in d["sources"]:
+            # ADR-0313 A9: a map is read by the decision session it belongs to, so the bound is the entry window.
+            bounds["edge_maps"] = {"start": packet["start"], "end_before": packet["end_before"]}
         return {"missing": missing, "read_bounds": bounds,
                 "cohort": [m["id"] for m in methods], "source_pins": pins}
 
@@ -1567,6 +1580,9 @@ class MIOStudyContract(StudyContract):
         if "corporate_actions" in study["domain"]["sources"] and (
                 audit.get("adjustments_sha256") != provenance.get("adjustments_sha256")):
             raise ValueError("split event identity differs")
+        if "edge_maps" in study["domain"]["sources"] and (
+                audit.get("method_inputs_sha256") != provenance.get("method_inputs_sha256")):
+            raise ValueError("calibration map identity differs")
         for method, result in zip(study["domain"]["params"]["methods"], results):
             if result["status"] not in {"completed", "failed"}:
                 raise ValueError("unknown method disposition")

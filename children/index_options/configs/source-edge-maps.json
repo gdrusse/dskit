@@ -1,0 +1,5 @@
+{
+  "path": "/PUBLISH/DIR/OF/ONE/EDGE/WALK",
+  "notes": "ADR-0313 I5 registration input, not a run input: the weekly MIO's edge-calibration walk output as the study's edge_maps source role. The directory holds exactly edge-maps.json (EdgeMapStream.publish: {\"maps\": {<t>: map-<t>.json body}}) and summary.json (the walk's own summary, its pins, reads and calendar). Replace path with that directory before registering; one source per walk, a new walk is a new source. Register: python -m dskit.onboarding register-source edge-maps --catalog-source edge-maps --connector localblobs --config @configs/source-edge-maps.json --activate --root <store root>; then acquire --source edge-maps --stream files --mode backfill. A packet binds both files as sources.edge_maps.files {shared: edge-maps.json, summary: summary.json}; the study reads the map of decision day t by that exact key and refuses a walk whose pins, calendar or reads do not match its document. Synthetic data only until the owner approves a real walk.",
+  "as_of": "2026-11-10T00:00:00+00:00"
+}

@@ -1867,13 +1867,19 @@ class WeeklyOptionPortfolioStudy:
     _FILL_SIZINGS = ("all_or_none", "available_size")
     _AVAILABLE_SIZE = "available_size"
 
-    def __init__(self, params, inputs, *, adjustments=None):
+    def __init__(self, params, inputs, *, adjustments=None, method_inputs=None):
         import copy
         from datetime import date
         from dskit.pipeline.libs.option_ledger import StandardSplitAdjustment
 
         self.validate_configuration(params)
         self.params = copy.deepcopy(params)
+        self.method_inputs = copy.deepcopy(method_inputs)
+        declared = any("calibration" in m for m in self.params["methods"])
+        if declared and not self.method_inputs:
+            raise ValueError("edge_maps_unbound: a calibrated method needs the walk's maps (method_inputs)")
+        if self.method_inputs and not declared:
+            raise ValueError("edge_maps_unused: method_inputs given but no method declares a calibration block")
         p, symbols = self.params, self.params["symbols"]
         self.adjustments = StandardSplitAdjustment.parse(adjustments, p["bridge"]["solver"]["multiplier"])
         if (set(self.adjustments)-set(symbols)
@@ -3975,6 +3981,13 @@ class MIOPacketStudy(StudyNode):
         if "corporate_actions" not in domain["sources"] and (
                 "adjustments" in bounded_inputs or "adjustments_sha256" in provenance):
             raise ValueError("unbound split event intake")
+        if "edge_maps" in domain["sources"] and (
+                provenance.get("method_inputs_sha256") != value_hash(bounded_inputs.get("method_inputs"))
+                or not bounded_inputs.get("method_inputs")):
+            raise ValueError("unverified calibration map intake")
+        if "edge_maps" not in domain["sources"] and (
+                "method_inputs" in bounded_inputs or "method_inputs_sha256" in provenance):
+            raise ValueError("unbound calibration map intake")
         MIOPacketStudy.validate_indexed_inputs(
             study, bounded_inputs, plan, artifact_root)
         params = {**domain["params"], "selected_pairs": domain["pairs"],
@@ -4043,8 +4056,8 @@ class MIOPacketStudy(StudyNode):
 
         plan, registry, permit, bounded, provenance, params = self.validate_intake(ctx, inputs)
         d = self.params["study"]["domain"]
-        study = WeeklyOptionPortfolioStudy(params, bounded["inputs"],
-                                          adjustments=bounded.get("adjustments"))
+        study = WeeklyOptionPortfolioStudy(params, bounded["inputs"], adjustments=bounded.get("adjustments"),
+                                          method_inputs=bounded.get("method_inputs"))
         results = []
         packet_id = permit.get("packet_id", permit.get("id"))
         def event(payload):
@@ -4068,7 +4081,8 @@ class MIOPacketStudy(StudyNode):
 
                 def replayed(result):
                     replay_study = WeeklyOptionPortfolioStudy(params, bounded["inputs"],
-                                                             adjustments=bounded.get("adjustments"))
+                                                             adjustments=bounded.get("adjustments"),
+                                                             method_inputs=bounded.get("method_inputs"))
                     try:
                         replay = replay_study._method(method, None, recorded=result)
                         replay_study.close_quote_indexes(verify=True)
@@ -4130,6 +4144,8 @@ class MIOPacketStudy(StudyNode):
                  "research_only": True, "american_assignment_unmodeled": True}
         if "corporate_actions" in d["sources"]:
             audit["adjustments_sha256"] = provenance["adjustments_sha256"]
+        if "edge_maps" in d["sources"]:
+            audit["method_inputs_sha256"] = provenance["method_inputs_sha256"]
         from .mio_contract import MIOStudyContract
         tail, capped = MIOStudyContract.settlement_tail(self.params["study"])
         if capped:

@@ -4771,7 +4771,7 @@ def test_the_owner_is_always_given_method_keys_and_locked_method_ids(monkeypatch
 
 
 def test_a_block_method_is_not_derived_and_not_run_before_its_feature_lands():
-    params, inputs = _block_doc({"calibration": dict(_CAL)})
+    params, inputs = _block_doc({"exposure_limits": dict(_LIM)})
     study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
     with pytest.raises(ValueError, match="block_not_derived"):
         study._method(params["methods"][0], None, derived={"method": "research_arm", "weeks": study.weeks, "decisions": {}})
@@ -5112,9 +5112,8 @@ def test_a_hedge_cannot_combine_with_a_sizer_and_other_blocks_stay_unattached():
     params["methods"][0]["short_notional_fraction"] = .2
     _refused_block(params, "hedge_with_sizer")
     params, inputs = _block_doc({"hedge": dict(_REPLAY_BLOCK), "calibration": dict(_CAL)})
-    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
-    with pytest.raises(ValueError, match="block_unattached"):
-        study._method(params["methods"][0], None)
+    with pytest.raises(ValueError, match="edge_maps_unbound"):      # ADR-0313 I5: a calibration block needs the walk's maps
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
 
 
 def test_a_condition_stays_refused_in_this_stage():
