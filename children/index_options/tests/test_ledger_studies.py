@@ -4641,6 +4641,7 @@ _HEDGE = {"kind": "fixed_delta_forward", "mode": "program", "ratio": 1.0, "delta
           "hedge_borrow_rate": 0.005}
 _BLOCKS = {"calibration": _CAL, "exposure_limits": _LIM, "hedge": _HEDGE}
 _PARITY = {"parity_strikes": 3, "min_pairs": 1, "max_pair_spread_frac": 0.5}
+_GREEKS_LEG = {"rate": 0.0, "iv_source": "vendor", "min_years": 0.001, "vol_floor": 0.01}
 
 
 def test_the_nine_formulations_are_byte_identical_to_main_before_the_wiring(monkeypatch):
@@ -4687,6 +4688,8 @@ def _block_doc(block=None, *, method_id="research_arm", locked=True):
         params["locked_method_ids"] = list(FORMULATIONS)
     if "hedge" in (block or {}):
         params["hedge_parity"] = dict(_PARITY)
+    if "exposure_limits" in (block or {}):
+        params["exposure_greeks"] = {"leg": dict(_GREEKS_LEG), "parity": dict(_PARITY)}
     return params, inputs
 
 
@@ -4770,13 +4773,11 @@ def test_the_owner_is_always_given_method_keys_and_locked_method_ids(monkeypatch
     assert seen[0]["locked_method_ids"] == list(FORMULATIONS)
 
 
-def test_a_block_method_is_not_derived_and_not_run_before_its_feature_lands():
+def test_a_block_method_is_not_derived():
     params, inputs = _block_doc({"exposure_limits": dict(_LIM)})
     study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
     with pytest.raises(ValueError, match="block_not_derived"):
         study._method(params["methods"][0], None, derived={"method": "research_arm", "weeks": study.weeks, "decisions": {}})
-    with pytest.raises(ValueError, match="block_unattached"):
-        study._method(params["methods"][0], None)
 
 
 def test_a_document_with_no_block_carries_no_new_key():
@@ -5602,3 +5603,219 @@ def test_a_binding_margin_floor_is_the_physical_reserve_of_a_program_book_and_pa
     book = result["decisions"][0]["books"][0]
     floor = 3.0 * book["program_hedge"]["reference"] * abs(book["program_hedge"]["units_raw"])
     assert book["reserve"] == pytest.approx(floor) and floor > book["max_loss"]
+
+
+# --- ADR-0313 I6 (child): the exposure-limit rows in the study -------------------------------------------------------
+_GREEKS = {"leg": dict(_GREEKS_LEG), "parity": dict(_PARITY)}
+_WIDE = {"beta_delta_fraction": 50.0, "vega_fraction_per_pt": 50.0, "dte_edges": [20, 40], "beta_lookback": 2,
+         "scope": "account"}
+
+
+def _limit_world(limits=None, *, block=None, two_weeks=False, greeks=None):
+    """The program world with an ``exposure_limits`` block on its one method (``limits`` overrides the wide defaults)."""
+    import copy
+
+    params, inputs = _program_world(block)
+    if two_weeks:
+        # The second decision (2019-01-07) trades the same 2019-02-01 expiry, 25 days out, so week 1's book is held.
+        params["clocks"]["entry_end_before"] = "2019-01-10"
+        params["selected_pairs"] = [{"id": "X30", "symbol": "X", "dte_min": 20, "dte_max": 32}]
+        for kind in ("forecasts", "contexts"):
+            for row in inputs["X"][kind]:
+                if row["quote_date"] == "2019-01-07":
+                    row["expiry"] = "2019-02-01"
+                    if kind == "contexts":
+                        row["settlement_date"] = "2019-02-01"
+    if limits is not None:
+        params["methods"][0]["exposure_limits"] = {**_WIDE, **limits}
+        params["exposure_greeks"] = copy.deepcopy(greeks or _GREEKS)
+        params["locked_method_ids"] = list(FORMULATIONS)
+    return params, inputs
+
+
+def _hand_greeks(inputs, day, legs, expiry="2019-02-01", mult=100):
+    """``(delta_f_sh, vega_usd_per_pt)`` of ``legs`` (right, strike, signed quantity) from the core Black-76 functions."""
+    from datetime import date as d_
+
+    from dskit.pipeline.option_pricing import black76_delta, black76_vega
+
+    spot = next(r["close"] for r in inputs["X"]["bars"] if r["date"] == day)
+    forward, years = spot * 1.001, (d_.fromisoformat(expiry) - d_.fromisoformat(day)).days / 365
+    delta = sum(q * mult * black76_delta(r, forward, k, 0.3, years, 0.0) for r, k, q in legs)
+    vega = sum(q * mult * black76_vega(r, forward, k, 0.3, years, 0.0) * 0.01 for r, k, q in legs)
+    return delta, vega, forward
+
+
+def _book_legs(book):
+    return [(leg["right"], leg["strike"], leg["sign"] * leg["quantity"]) for leg in book["legs"]]
+
+
+def _run_limited(monkeypatch, params, inputs):
+    programs = _capture_programs(monkeypatch)
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    result = study._method(params["methods"][0], None)
+    monkeypatch.undo()
+    return study, result, programs
+
+
+def test_exposure_limits_run_and_the_row_coefficients_carry_the_m2_sign_pin(monkeypatch):
+    params, inputs = _limit_world({})
+    study, result, programs = _run_limited(monkeypatch, params, inputs)
+    rows = {r["id"]: r for r in programs[0]["joint_rows"]}
+    assert set(rows) == {"exposure:delta:+", "exposure:delta:-", "exposure:vega:20_40:+", "exposure:vega:20_40:-"}
+    meta = study._prepare("2019-01-02")[1][0]
+    gid = meta["id"]
+    for i, item in enumerate(meta["items"]):
+        delta, vega, forward = _hand_greeks(inputs, "2019-01-02", [(item["right"], item["strike"], item["sign"])])
+        assert rows["exposure:delta:+"]["terms"][gid][i] == pytest.approx(delta * forward)
+        assert rows["exposure:delta:-"]["terms"][gid][i] == pytest.approx(-delta * forward)
+        assert rows["exposure:vega:20_40:+"]["terms"][gid][i] == pytest.approx(vega)
+        if item["sign"] < 0:
+            assert vega < 0, "a sold option's vega is negative"
+            assert (rows["exposure:delta:+"]["terms"][gid][i] < 0) == (item["right"] == "call"), "sold call short, sold put long delta"
+    assert rows["exposure:delta:+"]["upper"] == pytest.approx(50.0 * 60000.0), "no held book: the cap alone"
+    assert result["decisions"][0]["exposure"]["status"] == "within"
+
+
+def test_a_limit_that_never_binds_leaves_the_selection_unchanged(monkeypatch):
+    free = ledger_studies.WeeklyOptionPortfolioStudy(*_limit_world())._method(_limit_world()[0]["methods"][0], None)
+    params, inputs = _limit_world({})
+    limited = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert [d.get("books") for d in limited["decisions"]] == [d.get("books") for d in free["decisions"]]
+    assert limited["trades"] == free["trades"]
+
+
+def test_a_binding_delta_cap_holds_the_book_to_the_cap(monkeypatch):
+    params, inputs = _limit_world()
+    free = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    free_delta, _, forward = _hand_greeks(inputs, "2019-01-02", _book_legs(free["decisions"][0]["books"][0]))
+    assert abs(free_delta * forward) > 18000.0, "the free book is beyond the cap the next run sets"
+    params, inputs = _limit_world({"beta_delta_fraction": 0.3})
+    _, result, programs = _run_limited(monkeypatch, params, inputs)
+    row = next(r for r in programs[0]["joint_rows"] if r["id"] == "exposure:delta:+")
+    assert row["upper"] == pytest.approx(0.3 * 60000.0)
+    book = result["decisions"][0]["books"][0]
+    delta, _, forward = _hand_greeks(inputs, "2019-01-02", _book_legs(book))
+    assert 0 < abs(delta * forward) <= 18000.0 + 1e-6
+
+
+def test_a_binding_vega_bucket_cap_holds_the_bucket_to_the_cap(monkeypatch):
+    params, inputs = _limit_world()
+    free = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    _, free_vega, _ = _hand_greeks(inputs, "2019-01-02", _book_legs(free["decisions"][0]["books"][0]))
+    assert abs(free_vega) > 60.0
+    params, inputs = _limit_world({"vega_fraction_per_pt": 0.001})
+    _, result, programs = _run_limited(monkeypatch, params, inputs)
+    assert next(r for r in programs[0]["joint_rows"] if r["id"] == "exposure:vega:20_40:-")["upper"] == pytest.approx(60.0)
+    book = result["decisions"][0]["books"][0]
+    _, vega, _ = _hand_greeks(inputs, "2019-01-02", _book_legs(book))
+    assert 0 < abs(vega) <= 60.0 + 1e-6
+
+
+def test_held_books_move_the_bound_over_every_held_book_outside_the_edges_too(monkeypatch):
+    params, inputs = _limit_world({"beta_delta_fraction": 1.2, "dte_edges": [27, 40]}, two_weeks=True)
+    study, result, programs = _run_limited(monkeypatch, params, inputs)
+    held = result["decisions"][0]["books"][0]
+    # Week 2 (25 days out) lies OUTSIDE the edges [27, 40): its candidates add to the delta row, the held book counts there too.
+    delta, _, forward = _hand_greeks(inputs, "2019-01-07", _book_legs(held))
+    rows = {r["id"]: r for r in programs[1]["joint_rows"]}
+    cap = 1.2 * result["decisions"][1]["funding"]
+    assert rows["exposure:delta:+"]["upper"] == pytest.approx(cap - delta * forward)
+    assert rows["exposure:delta:-"]["upper"] == pytest.approx(cap + delta * forward)
+    assert not any(r.startswith("exposure:vega") for r in rows), "outside the edges, no vega row"
+    assert result["decisions"][1]["exposure"]["held_delta_usd"] == pytest.approx(delta * forward)
+
+
+def test_a_held_book_beyond_a_limit_makes_the_week_cash_exposure_held_breach():
+    params, inputs = _limit_world({"beta_delta_fraction": 0.1}, two_weeks=True)
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert result["decisions"][0]["status"] == "selected"
+    assert result["decisions"][1]["status"] == "exposure_held_breach" and not result["decisions"][1].get("books")
+
+
+def test_a_held_leg_without_a_usable_quote_makes_the_week_cash_exposure_risk_input():
+    params, inputs = _limit_world({"beta_delta_fraction": 50.0}, two_weeks=True)
+    for row in inputs["X"]["chain"]:
+        if row["date"] == "2019-01-07" and row["type"] == "call" and row["strike"] == 90.:
+            row["iv"] = None                                  # a held leg (the week-1 book is long the 90 call)
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert result["decisions"][1]["status"] == "exposure_risk_input" and not result["decisions"][1].get("books")
+    assert len(result["trades"]) == 1, "only week 1 traded"
+
+
+def test_an_item_without_iv_is_excluded_from_the_limited_candidates_and_counted(monkeypatch):
+    params, inputs = _limit_world({})
+    for row in inputs["X"]["chain"]:
+        if row["date"] == "2019-01-02" and row["type"] == "call":
+            row["iv"] = None
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    excluded = result["decisions"][0]["exposure"]["excluded"]
+    assert excluded["leg_no_iv_excluded"] > 0
+    assert all(leg["right"] == "put" for leg in result["decisions"][0]["books"][0]["legs"])
+
+
+def test_without_an_exposure_block_no_key_no_row_no_param(monkeypatch):
+    params, inputs = _program_world()
+    _, result, programs = _run_limited(monkeypatch, params, inputs)
+    assert all("joint_rows" not in p for p in programs)
+    assert not any("exposure" in d for d in result["decisions"]) and "exposure" not in result
+
+
+def test_exposure_greeks_is_required_exactly_when_a_method_carries_limits():
+    validate = ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration
+    params, _ = _limit_world({})
+    validate(params)
+    del params["exposure_greeks"]
+    _refused_block(params, "exposure_greeks_missing")
+    params, _ = _limit_world({})
+    params["exposure_greeks"]["leg"]["min_years"] = 0
+    _refused_block(params, "exposure_greeks_invalid")
+    params, _ = _limit_world({})
+    params["exposure_greeks"]["parity"]["min_pairs"] = 0
+    _refused_block(params, "exposure_greeks_invalid")
+    params, _ = _program_world()
+    params["exposure_greeks"] = {**_GREEKS}
+    _refused_block(params, "exposure_greeks_unused")
+
+
+def test_limits_beside_kelly_are_refused_and_greeks_must_agree_with_the_hedge():
+    params, _ = _kelly_fixture()
+    params["methods"][0].update(id="kelly_limits", exposure_limits={**_WIDE, "dte_edges": [20, 40]})
+    params["exposure_greeks"] = dict(_GREEKS)
+    params["locked_method_ids"] = list(FORMULATIONS)
+    clocked = _packet_clock_fixture()[0]
+    params.update(clocks=clocked["clocks"], selected_pairs=clocked["selected_pairs"])
+    _refused_block(params, "exposure_limits_with_kelly")
+    params, _ = _limit_world({}, block=dict(_PROGRAM_BLOCK))
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    for path, value in ((("leg", "rate"), 0.01), (("leg", "iv_source"), "mid"), (("leg", "min_years"), 0.002),
+                        (("leg", "vol_floor"), 0.02), (("parity", "min_pairs"), 2)):
+        params, _ = _limit_world({}, block=dict(_PROGRAM_BLOCK))
+        params["exposure_greeks"][path[0]][path[1]] = value
+        if path == ("leg", "iv_source"):
+            params["exposure_greeks"]["leg"]["iv_disagree_tol"] = 0.05
+        _refused_block(params, "block_params_disagree")
+
+
+def test_limits_beside_a_program_hedge_count_the_hedge_units_in_the_coefficients(monkeypatch):
+    params, inputs = _limit_world({}, block=dict(_PROGRAM_BLOCK))
+    study, result, programs = _run_limited(monkeypatch, params, inputs)
+    meta = study._prepare("2019-01-02")[1][0]
+    rows = {r["id"]: r for r in programs[0]["joint_rows"]}
+    gid = programs[0]["groups"][0]["id"]
+    units = result["decisions"][0]["exposure"]["units"][gid]
+    assert len(units) == len(programs[0]["groups"][0]["capacity"]) and any(abs(u) > 0 for u in units)
+    for i, u in enumerate(units):
+        item = meta["items"][i]
+        delta, _, forward = _hand_greeks(inputs, "2019-01-02", [(item["right"], item["strike"], item["sign"])])
+        assert rows["exposure:delta:+"]["terms"][gid][i] == pytest.approx((delta + u) * forward)
+
+
+def test_held_delta_counts_the_hedge_units_of_a_program_hedged_book(monkeypatch):
+    params, inputs = _limit_world({"beta_delta_fraction": 50.0, "dte_edges": [20, 40]}, block=dict(_PROGRAM_BLOCK), two_weeks=True)
+    _, result, _ = _run_limited(monkeypatch, params, inputs)
+    held = result["decisions"][0]["books"][0]
+    units = result["trades"][0]["hedge"]["units"]
+    assert units != 0, "the week-1 book is hedged"
+    delta, _, forward = _hand_greeks(inputs, "2019-01-07", _book_legs(held))
+    assert result["decisions"][1]["exposure"]["held_delta_usd"] == pytest.approx((delta + units) * forward)
