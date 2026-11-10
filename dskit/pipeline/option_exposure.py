@@ -1969,7 +1969,7 @@ class ExposureLimits(_Configured):
             raise self._risk("held Greeks are unreadable")
         return float(held["beta_delta_usd"]), [float(v) for v in held["vega_usd_per_pt"]]
 
-    def rows(self, groups, betas, funding, held=None):
+    def rows(self, groups, betas, funding, held=None, held_delta_usd=None):
         """Return the joint rows ``{"id", "terms", "upper"}``, two per limit.
 
         Parameters
@@ -1982,6 +1982,13 @@ class ExposureLimits(_Configured):
         held : dict or None
             The open books' ``beta_delta_usd`` and ``vega_usd_per_pt`` (a list,
             one per bucket) at decision-day Greeks; ``None`` for no held book.
+            Vega rows cover in-edge buckets only (the :class:`ExposureSnapshot`
+            rule), so its ``beta_delta_usd`` omits books outside ``dte_edges``.
+        held_delta_usd : float or None
+            The held beta-weighted delta over ALL held books, outside-edge ones
+            included, which the caller computes; candidate groups outside the
+            edges add to the delta row, so the held side must count them too.
+            ``None`` falls back to ``held["beta_delta_usd"]``.
 
         Raises
         ------
@@ -1992,16 +1999,22 @@ class ExposureLimits(_Configured):
         if not number_ok(funding):
             raise self._risk(f"funding {funding!r}")
         held_delta, held_vega = self._held(held)
+        if held_delta_usd is not None:
+            if not number_ok(held_delta_usd):
+                raise self._risk(f"held_delta_usd {held_delta_usd!r}")
+            held_delta = float(held_delta_usd)
         delta_cap = self.params["beta_delta_fraction"] * max(0.0, funding)
         vega_cap = self.params["vega_fraction_per_pt"] * max(0.0, funding)
         if abs(held_delta) > delta_cap or any(abs(v) > vega_cap for v in held_vega):
             raise ValueError(f"{self.HELD_BREACH}: held exposure beyond a limit")
         coef = self.coefficients(groups, betas)
         edges = self.params["dte_edges"]
-        rows = self._pair("delta", coef["delta"], delta_cap, held_delta)
+        rows = []
+        if any(coef["delta"].values()):
+            rows += self._pair("delta", coef["delta"], delta_cap, held_delta)
         for b, (low, high) in enumerate(zip(edges, edges[1:])):
             members = {g: v for g, v in coef["vega"].items() if coef["bucket"][g] == b}
-            if members:
+            if any(members.values()):
                 rows += self._pair(f"vega:{low:g}_{high:g}", members, vega_cap, held_vega[b])
         return rows
 

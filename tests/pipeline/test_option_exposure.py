@@ -1959,3 +1959,26 @@ def test_exposure_limits_params_are_the_declared_tuple_and_default_deny():
         assert ox.ExposureLimits.validate_params(params), params
     for name in ox.ExposureLimits._PARAMS:
         assert ox.ExposureLimits.validate_params({k: v for k, v in LIMITS.items() if k != name})
+
+
+def test_exposure_limits_held_delta_usd_counts_outside_edge_books_against_the_delta_cap():
+    # a held book below the first edge (dte < 8) is in no vega bucket but is still delta
+    held = {"beta_delta_usd": 0.0, "vega_usd_per_pt": [0.0, 0.0]}
+    rows = ox.ExposureLimits(LIMITS).rows(
+        [xgroup("a", 1.0)], {"A": 1.0}, 10_000.0, held=held, held_delta_usd=4_000.0)
+    upper = {r["id"]: r["upper"] for r in rows}
+    assert upper["exposure:delta:+"] == pytest.approx(1_000.0)
+    assert upper["exposure:delta:-"] == pytest.approx(9_000.0)
+    with pytest.raises(ValueError, match="^exposure_held_breach"):
+        ox.ExposureLimits(LIMITS).rows([xgroup("a", 1.0)], {"A": 1.0}, 10_000.0, held=held,
+                                       held_delta_usd=5_000.5)
+    with pytest.raises(ValueError, match="^exposure_risk_input"):
+        ox.ExposureLimits(LIMITS).rows([xgroup("a", 1.0)], {"A": 1.0}, 10_000.0, held=held,
+                                       held_delta_usd=float("nan"))
+
+
+def test_exposure_limits_no_groups_emit_no_rows():
+    assert ox.ExposureLimits(LIMITS).rows([], {"A": 1.0}, 10_000.0) == []
+    assert ox.ExposureLimits(LIMITS).rows(
+        [{"id": "g", "symbol": "A", "dte": 10, "forward": 100.0, "items": []}],
+        {"A": 1.0}, 10_000.0) == []
