@@ -430,3 +430,36 @@ def test_read_program_end_to_end_registers_first_and_carries_every_read(tmp_path
     assert out["bar"]["session"]["adopted_row"]["cell"] == "program_twin" if "adopted_row" in out["bar"]["session"] else True
     with pytest.raises(ValueError, match="check_document_not_evidence"):
         he.read_program(controls, {**programs, "2019Q1": {**programs["2019Q1"], "decision_weeks": ["x"]}}, "w1", path)
+
+
+def _write(path, result):
+    path.write_text(json.dumps({"result": result}))
+    return str(path)
+
+
+def test_the_program_subcommand_reads_the_program_twin_end_to_end(tmp_path, capsys):
+    quarters = ["2019Q1", "2019Q2", "2019Q3", "2020Q1"]
+    controls = [f"{q}={_write(tmp_path / f'c{q}.json', _twin([0, -5000, -3000, -1000, -2000, 0], -100.0))}" for q in quarters]
+    programs = [f"{q}={_write(tmp_path / f'p{q}.json', _twin([0, -2000, -1500, -500, -800, 100], 100.0, trades=PROGRAM_BOOKS, contracts=12, peak_reserve=1500.0))}"
+                for q in quarters]
+    unhedged = _write(tmp_path / "tu.json", _timed("2019-01-07", "selected", 10.0))
+    hedged = _write(tmp_path / "th.json", _timed("2019-01-07", "selected", 12.0))
+    registry, out = tmp_path / "attempts.jsonl", tmp_path / "verdict.json"
+    argv = ["program", "w1", "--controls", *controls, "--programs", *programs, "--timing", f"2019-01-07={unhedged},{hedged}",
+            "--registry", str(registry), "--out", str(out)]
+    assert he.main(argv) == 0
+    verdict = json.loads(out.read_text())
+    assert verdict["mode"] == "program" and verdict["program"]["verdict"] == "pass" and verdict["timing"]["verdict"] == "pass"
+    assert [r["quarter"] for r in verdict["reads"]] == quarters and registry.exists()
+    assert he.main(argv) == 1, "an existing verdict file is never overwritten"
+    mismatched = ["program", "w1", "--controls", controls[0], "--programs", programs[1], "--registry", str(registry),
+                  "--out", str(tmp_path / "other.json")]
+    assert he.main(mismatched) == 1 and not (tmp_path / "other.json").exists()
+
+
+def test_a_mark_sensitive_quarter_is_uncounted_and_never_re_levers_the_verdict():
+    control = _twin([0, -1000, -500, 0, 0, 0], -100.0, contracts=10)
+    levered = _twin([0, -3000, -500, 9000, 9000, 9000], 9000.0, trades=PROGRAM_BOOKS, contracts=30)
+    carry = _twin([0, -1000, -500, 9000, 9000, 9000], 9000.0, trades=PROGRAM_BOOKS, contracts=30)
+    read = he.program_quarter_read("2019Q1", control, levered, carry)
+    assert read["mark_sensitive"] is True and read["counts"] is False and read["re_levered"] is False

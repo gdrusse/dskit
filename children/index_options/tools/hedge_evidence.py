@@ -165,15 +165,21 @@ def program_quarter_read(quarter, control, program, carry=None):
     The program twin chooses its own books, so ``books_differ`` is reported and does not stop a quarter counting; a
     quarter counts unless ``mark_sensitive``. ``contracts_ratio`` and ``peak_reserve_ratio`` are the result's
     ``contracts`` and ``peak_reserve`` hedged over unhedged (information only); ``re_levered`` is the amendment's
-    fail condition: the drawdown is not cut (``dDD <= 0``) while contracts rose.
+    fail condition: the drawdown is not cut (``dDD <= 0``) while contracts rose, read on COUNTING quarters only (a
+    ``mark_sensitive`` quarter is uncounted and never fails the verdict).
+
+    Known conservative bias (review of d864c39): program mode charges a self-hedged book's forward leg on GROSS
+    shares per item (``program_gross_units``), not the net units the replay trades, so ``program_cost_excess_usd``
+    is positive (3,605 gross against 42 net shares in the review's run, +392 dollars); the program twin's cost is
+    overstated, never understated.
     """
     out = quarter_read(quarter, control, program, carry)
     out["contracts_ratio"] = _ratio(program.get("contracts"), control.get("contracts"))
     out["peak_reserve_ratio"] = _ratio(program.get("peak_reserve"), control.get("peak_reserve"))
     rose = program.get("contracts") is not None and control.get("contracts") is not None \
         and program["contracts"] > control["contracts"]
-    out["re_levered"] = bool(out["dDD"] <= 0 and rose)
     out["counts"] = not out["mark_sensitive"]
+    out["re_levered"] = bool(out["counts"] and out["dDD"] <= 0 and rose)     # a COUNTING quarter only: a mark-sensitive one is not read
     return out
 
 
@@ -520,8 +526,57 @@ def read(stress_root, formulation, quarters, registry_path, greeks=None, books=N
     return out
 
 
+def _result_of(path):
+    """Return the ``result`` of a method document file (the shape ``read`` takes), refusing a check-week document."""
+    document = _load(path)
+    if document.get("result") is None:
+        raise ValueError(f"scenario_failed: {path} carries no result ({document.get('error') or document.get('status')})")
+    return document["result"]
+
+
+def _pairs(items):
+    """Parse ``KEY=path`` words into a dict."""
+    return dict(item.split("=", 1) for item in items)
+
+
+def main_program(argv):
+    """Write the program twin's verdict JSON (``hedge_evidence.py program FORMULATION --controls Q=path ... --out V``)."""
+    parser = argparse.ArgumentParser(prog="hedge_evidence.py program", description=read_program.__doc__)
+    parser.add_argument("formulation")
+    parser.add_argument("--controls", nargs="+", required=True, help="YYYYQn=path to the unhedged twin's method document")
+    parser.add_argument("--programs", nargs="+", required=True, help="YYYYQn=path to the program-mode twin's document")
+    parser.add_argument("--carries", nargs="*", default=[], help="YYYYQn=path to the program twin on the carry-ratio marks")
+    parser.add_argument("--timing", nargs="*", default=[], help="WEEK=unhedged_path,hedged_path (decision_weeks check documents)")
+    parser.add_argument("--registry", required=True)
+    parser.add_argument("--out", required=True)
+    args = parser.parse_args(argv)
+    out = Path(args.out)
+    if out.exists():
+        sys.stderr.write("verdict file exists: a fresh path is required\n")
+        return 1
+    controls = {q: _result_of(p) for q, p in _pairs(args.controls).items()}
+    programs = {q: _result_of(p) for q, p in _pairs(args.programs).items()}
+    if set(controls) != set(programs):
+        sys.stderr.write("controls and programs must name the same quarters\n")
+        return 1
+    timing = [{"week": week, "unhedged": _result_of(u), "hedged": _result_of(h)}
+              for week, both in _pairs(args.timing).items() for u, h in [both.split(",", 1)]]
+    verdict = read_program(controls, programs, args.formulation, args.registry,
+                           carries={q: _result_of(p) for q, p in _pairs(args.carries).items()} or None,
+                           timing=timing or None)
+    out.write_text(json.dumps(verdict, indent=2, sort_keys=True, allow_nan=False, default=str) + "\n")
+    return 0
+
+
 def main(argv=None):
-    """Write the verdict JSON: ``hedge_evidence.py ROOT FORMULATION COHORT=QUARTER... --registry R --out V``."""
+    """Write the verdict JSON: ``hedge_evidence.py ROOT FORMULATION COHORT=QUARTER... --registry R --out V``.
+
+    ``hedge_evidence.py program FORMULATION --controls ... --programs ... --registry R --out V`` reads the program twin.
+    """
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "program":
+        return main_program(argv[1:])
+    argv = argv or None
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("stress_root")
     parser.add_argument("formulation")

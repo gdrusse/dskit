@@ -5564,3 +5564,41 @@ def test_a_replay_mode_result_carries_no_program_cost_field():
     result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
     assert not [k for k in result["hedge"] if "program" in k]
     assert all("program_cost_usd" not in t["hedge"] for t in result["trades"])
+
+
+def test_a_partially_filled_program_book_recomputes_its_hedge_units_from_the_filled_legs_and_truncates_once():
+    """Review of d864c39 minor 1: half the quantities filled -> half the raw units, truncated ONCE (not the full book's)."""
+    import copy
+
+    params, inputs = _program_world(dict(_PROGRAM_BLOCK))
+    params["fill_sizing"] = "available_size"
+    selected = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    book = copy.deepcopy(selected["decisions"][0]["books"][0])
+    for leg in book["legs"]:
+        leg["quantity"] *= 4                    # gcd 4: every leg fills in multiples of 1/4 of the book
+    book["contracts"] = sum(leg["quantity"] for leg in book["legs"])
+
+    def attached(depth):
+        for row in inputs["X"]["chain"]:
+            if row["date"] == "2019-01-03":
+                row["ask_size"] = row["bid_size"] = depth
+        study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+        filled, why = study._fill(copy.deepcopy(book), "2019-01-03")
+        ledger_studies.ReplayHedge(study, params["methods"][0]["hedge"], params["hedge_parity"]).attach(filled, "2019-01-03")
+        return filled
+
+    full, half = attached(999), attached(20)
+    assert [leg["quantity"] * 2 for leg in half["legs"]] == [leg["quantity"] for leg in full["legs"]]
+    program_raw = selected["decisions"][0]["books"][0]["program_hedge"]["units_raw"]       # the solver's units for 1x the book
+    assert half["hedge"]["raw"] == pytest.approx(2 * program_raw), "recomputed from the FILLED legs (2x), not the program's"
+    assert half["hedge"]["status"] == "ok" and half["hedge"]["raw"] == pytest.approx(full["hedge"]["raw"] / 2)
+    assert half["hedge"]["units"] == math.trunc(half["hedge"]["raw"]) and half["hedge"]["units"] != full["hedge"]["units"]
+
+
+def test_a_binding_margin_floor_is_the_physical_reserve_of_a_program_book_and_parity_holds():
+    """Review of d864c39 minor 2: with margin_fraction 3.0 the floor, not the option loss, is the reserve."""
+    params, inputs = _program_world({**_PROGRAM_BLOCK, "margin_fraction": 3.0})
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    book = result["decisions"][0]["books"][0]
+    floor = 3.0 * book["program_hedge"]["reference"] * abs(book["program_hedge"]["units_raw"])
+    assert book["reserve"] == pytest.approx(floor) and floor > book["max_loss"]
