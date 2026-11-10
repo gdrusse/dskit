@@ -168,3 +168,113 @@ def test_study_scope_quarter_equals_window_across_three_quarters(disk, tmp_path)
 def test_the_output_directory_inside_the_onboarding_root_is_refused(disk, tmp_path):
     root, _, files = disk
     refused(params(tmp_path, files, out="x") | {"out_dir": str(root / "ob" / "results")}, tmp_path, "out_dir_inside_inputs")
+
+
+# ---- ADR-0311 child fix round 2: per-quarter documents, per-year chain files, chain coverage ----------------
+
+def per_quarter_files(root, w=None, **kw):
+    return (w or world()).write(root, per_quarter=True, chain_by_year=True, **kw)
+
+
+def test_per_quarter_documents_with_per_year_chain_files_run_end_to_end(tmp_path):
+    files = per_quarter_files(tmp_path / "data")
+    docs = files["mio_documents"]
+    chains = {q: json.loads(Path(d["path"]).read_text())["pipeline"]["plan"]["params"]["study"]["domain"]
+              ["sources"]["chain"]["files"]["AAA"] for q, d in docs.items()}
+    assert chains == {"2019Q4": "chain-AAA-2019.parquet", "2020Q1": "chain-AAA-2020.parquet",
+                      "2020Q2": "chain-AAA-2020.parquet"}
+    node, summary = run(params(tmp_path, files), tmp_path)
+    assert set(node._passes()) == {"2019Q4", "2020Q1", "2020Q2"}
+    decided = set()
+    for f in (Path(node.params["out_dir"]) / "rows").glob("rows-*.jsonl"):
+        decided |= {json.loads(x)["t"] for x in f.read_text().splitlines()}
+    assert {t[:4] for t in decided} == {"2019", "2020"} and any(t >= "2020-04-06" for t in decided)
+    assert summary["mio_quote_values"]["min_quote_size"] == 1 and summary["symbols_absent"] == {}
+
+
+def test_the_per_quarter_run_equals_the_single_document_run_on_one_chain_file(tmp_path):
+    one = world().write(tmp_path / "one")
+    many = per_quarter_files(tmp_path / "many")
+    run(params(tmp_path, one, out="a"), tmp_path)
+    run(params(tmp_path, many, out="b"), tmp_path)
+    keep = lambda t: {k: v for k, v in t.items() if k.startswith(("map-", "rows/"))}
+    assert keep(tree(tmp_path / "a")) and keep(tree(tmp_path / "a")) == keep(tree(tmp_path / "b"))
+
+
+def test_a_chain_cut_short_by_year_refuses_chain_not_covered(tmp_path):
+    """The 2020 quarters bind the 2019 file: zero chain rows for them, and the run must not finish empty."""
+    files = per_quarter_files(tmp_path / "data", chain_year_for={"2020Q1": "2019", "2020Q2": "2019"})
+    refused(params(tmp_path, files), tmp_path, "chain_not_covered")
+
+
+def test_a_chain_that_ends_before_the_last_fill_refuses_chain_not_covered(tmp_path):
+    files = per_quarter_files(tmp_path / "data", chain_ends={"2020": "2020-05-01"})
+    refused(params(tmp_path, files), tmp_path, "chain_not_covered")
+
+
+def test_the_single_document_form_with_a_2019_chain_refuses_chain_not_covered(tmp_path):
+    files = world().write(tmp_path / "data", chain_by_year=True)
+    refused(params(tmp_path, files), tmp_path, "chain_not_covered")
+
+
+@pytest.mark.parametrize("key,value", [("min_quote_size", 2), ("max_relative_spread", 0.4), ("max_abs_z", 2.0)])
+def test_differing_quote_params_across_quarter_documents_refuse(tmp_path, key, value):
+    def edit(quarter, domain):
+        if quarter == "2020Q2":
+            domain["params"]["bridge"][key] = value
+
+    files = per_quarter_files(tmp_path / "data", doc_edits=edit)
+    refused(params(tmp_path, files), tmp_path, "quote_params_differ")
+
+
+def test_a_symbol_outside_a_quarters_universe_is_a_counted_named_drop_not_a_refusal(tmp_path):
+    def edit(quarter, domain):
+        if quarter == "2019Q4":
+            domain["params"]["symbols"] = ["AAA"]
+            domain["pairs"] = [x for x in domain["pairs"] if x["symbol"] == "AAA"]
+
+    w = DiskWorld(symbols=("AAA", "BBB"), decision_days=DAYS, last="2020-07-03", bars_from="2019-06-03", window=WINDOW)
+    files = w.write(tmp_path / "data", per_quarter=True, chain_by_year=True, doc_edits=edit)
+    _, summary = run(params(tmp_path, files), tmp_path)
+    assert summary["symbols_absent"] == {"BBB": ["2019Q4"]}
+
+
+def test_a_document_mapping_must_cover_every_quarter_of_the_window(tmp_path):
+    files = per_quarter_files(tmp_path / "data")
+    del files["mio_documents"]["2020Q2"]
+    refused(params(tmp_path, files), tmp_path, "mio_document_not_pinned")
+
+
+def test_both_document_forms_together_are_invalid(tmp_path):
+    files = per_quarter_files(tmp_path / "data")
+    problems = IndexOptionsEdgeWalk.validate_params(params(tmp_path, files, mio_document=next(
+        iter(files["mio_documents"].values()))))
+    assert any("mio_document" in p for p in problems)
+
+
+# ---- the two pin guards each catch a swap with the other disabled ----------------------------------------
+
+def swapped(tmp_path, files):
+    p = params(tmp_path, files)
+    pin = p["forecast_pins"]["2020Q1"]
+    pin["forecasts"], pin["contexts"] = pin["contexts"], pin["forecasts"]
+    return p
+
+
+def test_guard_pins_alone_catches_a_swap(disk, tmp_path, monkeypatch):
+    _, _, files = disk
+    monkeypatch.setattr(IndexOptionsEdgeWalk, "_check_opened_pin", lambda *a, **k: None)
+    refused(swapped(tmp_path, files), tmp_path, "forecast_not_pinned")
+
+
+def test_the_per_file_sha_check_alone_catches_a_swap(disk, tmp_path, monkeypatch):
+    _, _, files = disk
+    monkeypatch.setattr(IndexOptionsEdgeWalk, "_guard_pins", lambda *a, **k: None)
+    refused(swapped(tmp_path, files), tmp_path, "forecast_not_pinned")
+
+
+def test_history_not_covered_checks_every_symbols_first_bar(tmp_path):
+    late = DiskWorld(symbols=("AAA", "BBB"), decision_days=DAYS, last="2020-07-03", bars_from="2019-06-03",
+                     window=WINDOW, late_start={"BBB": "2019-09-02"})
+    files = late.write(tmp_path / "late")
+    refused(params(tmp_path, files), tmp_path, "history_not_covered")

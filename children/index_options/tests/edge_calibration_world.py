@@ -96,10 +96,10 @@ class World:
     """The synthetic inputs of one run and the files that pin them."""
 
     def __init__(self, symbols=("AAA",), split=None, last=LAST, window=None, decision_days=None, bars_from=BARS_FROM,
-                 missing_bars=None):
+                 missing_bars=None, late_start=None):
         self.symbols, self.split, self.last = tuple(symbols), split, last
         self.window = dict(window or WINDOW)
-        self.bars_from, self.missing_bars = bars_from, missing_bars or {}
+        self.bars_from, self.missing_bars, self.late_start = bars_from, missing_bars or {}, late_start or {}
         self.cal = sessions(last, bars_from)
         self.decisions = list(decision_days) if decision_days else weeks(self.cal, self.window["start"], self.window["end"])
         self.market, self.forecasts = {}, {}
@@ -110,7 +110,8 @@ class World:
                 bars.append({"symbol": symbol, "date": day, "close": close_of(symbol, i, day, split),
                              "basis_factor": factor})
             closes = {b["date"]: b["close"] / b["basis_factor"] for b in bars}
-            bars = [b for b in bars if b["date"] != self.missing_bars.get(symbol)]
+            bars = [b for b in bars if b["date"] != self.missing_bars.get(symbol)
+                    and b["date"] >= self.late_start.get(symbol, "0")]
             for day in self.decisions:
                 for days in (8, 15):
                     expiry = friday_after(day, days)
@@ -209,7 +210,12 @@ class DiskWorld(World):
     whose OWN clocks follow its packet (history_start after the walk's window.start, protected_end_before below
     sealed_from)."""
 
-    def write(self, root, empty_quarters=(), extra_bar=None):
+    def write(self, root, empty_quarters=(), extra_bar=None, per_quarter=False, chain_by_year=False,
+              chain_year_for=None, chain_ends=None, doc_edits=None):
+        """Write the world; ``per_quarter`` gives one pinned MIO document per quarter (the owner's layout) and
+        ``chain_by_year`` one chain parquet per year (``chain-<symbol>-<year>.parquet``, each bound by the documents of
+        its year; ``chain_year_for`` rebinds a quarter, ``chain_ends`` cuts a year's file after a date).
+        ``doc_edits(quarter, domain)`` edits a quarter's document before it is written."""
         import pyarrow as pa
         import pyarrow.parquet as pq
 
@@ -237,7 +243,14 @@ class DiskWorld(World):
                 pq.write_table(table, fc / q / f"{name}.parquet")
         mkt.mkdir(parents=True, exist_ok=True)
         for symbol in self.symbols:
-            pq.write_table(pa.Table.from_pylist(self.market[symbol]["chain"]), mkt / f"chain-{symbol}.parquet")
+            chain = self.market[symbol]["chain"]
+            if chain_by_year:
+                for year in sorted({r["date"][:4] for r in chain}):
+                    cut = (chain_ends or {}).get(year, "9999")
+                    rows = [r for r in chain if r["date"][:4] == year and r["date"] <= cut]
+                    pq.write_table(pa.Table.from_pylist(rows), mkt / f"chain-{symbol}-{year}.parquet")
+            else:
+                pq.write_table(pa.Table.from_pylist(chain), mkt / f"chain-{symbol}.parquet")
             bars = [{"symbol": b["symbol"], "date": b["date"], "close": b["close"]} for b in self.market[symbol]["bars"]]
             if extra_bar and symbol == self.symbols[0]:
                 bars.append({"symbol": symbol, "date": extra_bar, "close": 100.})
@@ -256,22 +269,39 @@ class DiskWorld(World):
             pins[name] = {"root": ob.root, "source": name, "stream": "files", "snapshot": got["snapshot"],
                           "manifest_sha256": got["manifest_sha256"], "files": got["sha256"]}
         quarters = sorted(by_quarter)
-        domain = {"params": {**copy.deepcopy(STUDY_PARAMS), "symbols": list(self.symbols)},
-                  "pairs": [{"id": f"p{i}", "symbol": s, "dte_min": 1, "dte_max": 40}
-                            for i, s in enumerate(self.symbols)],
-                  "history_start": "2020-02-03",
-                  "sources": {
-                      "forecasts": {"pin": pins["fc"], "files": {"shared": f"{quarters[0]}/forecasts.parquet"}},
-                      "contexts": {"pin": pins["fc"], "files": {"shared": f"{quarters[0]}/contexts.parquet"}},
-                      "chain": {"pin": pins["mkt"], "files": {s: f"chain-{s}.parquet" for s in self.symbols}},
-                      "bars": {"pin": pins["mkt"], "files": {s: f"bars-{s}.parquet" for s in self.symbols}},
-                      "sessions": {"pin": pins["mkt"], "files": {"shared": "sessions.parquet"}}}}
-        domain["params"]["bridge"] = {**domain["params"]["bridge"], "protected_end_before": "2020-07-01"}
-        document = {"pipeline": {"plan": {"params": {"study": {"domain": domain}}}}}
-        path = root / "mio-document.json"
-        raw = (json.dumps(document, sort_keys=True) + "\n").encode()
-        path.write_bytes(raw)
         files = pins["fc"]["files"]
-        return {"mio_document": {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest()},
-                "forecast_pins": {q: {"forecasts": files[f"{q}/forecasts.parquet"],
-                                      "contexts": files[f"{q}/contexts.parquet"]} for q in quarters}}
+
+        def chain_name(symbol, quarter):
+            if not chain_by_year:
+                return f"chain-{symbol}.parquet"
+            return f"chain-{symbol}-{(chain_year_for or {}).get(quarter, quarter[:4])}.parquet"
+
+        def make(quarter, bound):
+            domain = {"params": {**copy.deepcopy(STUDY_PARAMS), "symbols": list(self.symbols)},
+                      "pairs": [{"id": f"p{i}", "symbol": s, "dte_min": 1, "dte_max": 40}
+                                for i, s in enumerate(self.symbols)],
+                      "history_start": "2020-02-03",
+                      "sources": {
+                          "forecasts": {"pin": pins["fc"], "files": {"shared": f"{bound}/forecasts.parquet"}},
+                          "contexts": {"pin": pins["fc"], "files": {"shared": f"{bound}/contexts.parquet"}},
+                          "chain": {"pin": pins["mkt"], "files": {s: chain_name(s, quarter) for s in self.symbols}},
+                          "bars": {"pin": pins["mkt"], "files": {s: f"bars-{s}.parquet" for s in self.symbols}},
+                          "sessions": {"pin": pins["mkt"], "files": {"shared": "sessions.parquet"}}}}
+            domain["params"]["bridge"] = {**domain["params"]["bridge"], "protected_end_before": "2020-07-01"}
+            if doc_edits:
+                doc_edits(quarter, domain)
+            return {"pipeline": {"plan": {"params": {"study": {"domain": domain}}}}}
+
+        def put(name, document):
+            path = root / name
+            raw = (json.dumps(document, sort_keys=True) + "\n").encode()
+            path.write_bytes(raw)
+            return {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest()}
+
+        out = {"forecast_pins": {q: {"forecasts": files[f"{q}/forecasts.parquet"],
+                                     "contexts": files[f"{q}/contexts.parquet"]} for q in quarters}}
+        if per_quarter:
+            out["mio_documents"] = {q: put(f"mio-document-{q}.json", make(q, q)) for q in quarters}
+        else:
+            out["mio_document"] = put("mio-document.json", make(quarters[0], quarters[0]))
+        return out

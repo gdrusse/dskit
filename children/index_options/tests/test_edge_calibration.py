@@ -309,7 +309,7 @@ def test_calendar_is_the_studys_and_next_session_is_its_next(walk, world):
 def test_walk_hooks_are_the_only_abstract_surface():
     assert not inspect.isabstract(IndexOptionsEdgeWalk)
     assert issubclass(IndexOptionsEdgeWalk, EdgeReliabilityWalk)
-    assert set(IndexOptionsEdgeWalk._EXTRA_PARAMS) == {"mio_document", "forecast_pins", "side_rule", "study_scope", "direction", "history_start",
+    assert set(IndexOptionsEdgeWalk._EXTRA_PARAMS) == {"mio_document", "mio_documents", "forecast_pins", "side_rule", "study_scope", "direction", "history_start",
                                                           "protected_end_before"}
 
 
@@ -505,6 +505,10 @@ def test_the_template_has_the_prescribed_window_and_marks_its_placeholders():
     assert p["report_from"] == "2020-01-01"
     for k in ("out_dir",):
         assert p[k].startswith("PLACEHOLDER")
-    assert p["mio_document"]["path"].startswith("PLACEHOLDER") and p["mio_document"]["sha256"].startswith("PLACEHOLDER")
+    assert "mio_document" not in p and set(p["mio_documents"]) == set(p["forecast_pins"])
+    assert all(v["path"].startswith("PLACEHOLDER") and v["sha256"].startswith("PLACEHOLDER")
+               for v in p["mio_documents"].values())
+    notes = json.loads((CHILD / "configs/edge-calibration-template.json").read_text())["pipeline"]["edge"]["notes"]
+    assert "dskit.pipeline run <cfg>.json --asof" in notes and "quarterly_forecasts pin" in notes
     assert all(v["forecasts"].startswith("PLACEHOLDER") for v in p["forecast_pins"].values())
     assert set(p["forecast_pins"]) == {"2019Q4", "2020Q1", "2020Q2", "2020Q3", "2020Q4", "2021Q1", "2021Q2"}
