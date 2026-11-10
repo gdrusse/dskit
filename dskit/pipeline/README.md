@@ -294,7 +294,9 @@ legacy stage-list grammar (below).
 `t` (`label_reaches`) and refuses dates outside the data rights; `ReliabilityBuckets` maps a row to one of 24 buckets
 from fixed config edges (quantile specs refuse, `bucket_edges_invalid`); `LinearEdgeState` keeps `r = a + b e` per bucket
 and pooled as running sums, expanding or decayed (`lambda`, cluster products `lambda^2`), with one-way (name, date) and
-two-way (name + date - both) CR1 sandwiches, and refuses `state_from_future`.
+two-way (name + date - both) CR1 sandwiches, and refuses `state_from_future`. ADR-0311 Amendment 1 adds a two-regressor
+state (`e_dir`, `e - e_dir`), row weights with side/top strata, Kish effective counts (`kish_effective`) in the CR1 factor and
+gates, time blocks (`block_index`), name + block and Driscoll-Kraay bands, `wild_cluster_test`, `fit_ratio`, `read_one`.
 `PartialPooling` shrinks each bucket's line (and a through-origin weight) toward the pooled one, `NameAdjustment` keeps a shrunk
 per-name offset on residuals frozen against the bucket-only map, `EdgeCalibrationMap` freezes one decision date's result, and
 `TrailingRegime` flags a name above its own trailing median (the warm-up fallback is `low`).
