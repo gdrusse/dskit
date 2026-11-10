@@ -1271,7 +1271,8 @@ class MIOStudyContract(StudyContract):
             return {"missing": ["selected_pairs"], "read_bounds": {},
                     "cohort": [m["id"] for m in p["methods"]], "source_pins": {}}
         WeeklyOptionPortfolioStudy.validate_pairs(d["pairs"], p["symbols"])
-        WeeklyOptionPortfolioStudy.validate_configuration(p)
+        tail, capped = self.settlement_tail(study)
+        WeeklyOptionPortfolioStudy.validate_configuration(p, tail_end_before=tail)
         methods = p["methods"]
         padding = d["tail_padding_days"]
         if type(padding) is not int or padding < 0:
@@ -1281,7 +1282,6 @@ class MIOStudyContract(StudyContract):
             raise ValueError("strictly prior history start required")
         # ADR-0297 (owner, 2026-11-05, 2023Q4): never read past the protected boundary. A tail that would
         # reach it is capped there; the weekly study already trades only expiries before the tail.
-        tail, capped = self.settlement_tail(study)
         if capped:
             _LOG.info("MIO settlement tail capped at protected_end_before %s for the packet ending %s",
                       p["bridge"]["protected_end_before"], packet["end_before"])

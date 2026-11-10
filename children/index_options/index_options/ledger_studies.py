@@ -1814,13 +1814,16 @@ class WeeklyOptionPortfolioStudy:
         self._prepared_cache, self._component_cache, self._beta_cache = {}, {}, {}
 
     @classmethod
-    def validate_configuration(cls, params):
+    def validate_configuration(cls, params, *, tail_end_before=None):
         """Refuse unsupported universe, funding, bridge and method parameters.
 
         Parameters
         ----------
         params : dict
             Explicit weekly study configuration, without any market values.
+        tail_end_before : str, optional
+            The packet route validates before its clocks exist; it passes the settlement tail here so a method
+            block's seal rule (``integration_seal``) reads it. Ignored when ``params`` carries ``clocks``.
 
         Returns
         -------
@@ -1889,7 +1892,8 @@ class WeeklyOptionPortfolioStudy:
             # document has one solver block: a kelly method runs alone.
             raise ValueError("a kelly method runs alone: no non-kelly method in its document")
         context = {"method_keys": cls._METHOD_KEYS | cls._PLAIN_OPTIONAL_METHOD_KEYS,
-                   "locked_method_ids": p.get("locked_method_ids"), "clocks": p.get("clocks")}
+                   "locked_method_ids": p.get("locked_method_ids"),
+                   "clocks": p.get("clocks") or ({"tail_end_before": tail_end_before} if tail_end_before else None)}
         for method in p["methods"]:
             cls._BLOCKS.validate(method, context)
         cls._hedge_configuration(p)

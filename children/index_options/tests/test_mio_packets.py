@@ -3025,3 +3025,14 @@ def test_a_fine_file_changed_after_it_was_pinned_is_refused(tmp_path, monkeypatc
     with pytest.raises(ValueError):
         _select(fine_study(world))
     assert _select(world["study"]), "the untouched 13-point file still verifies"
+
+
+def test_resolve_hands_the_settlement_tail_to_the_configuration_validator(study, monkeypatch):
+    from index_options.mio_contract import MIOStudyContract
+    from index_options.ledger_studies import WeeklyOptionPortfolioStudy as W
+
+    seen, real = [], W.validate_configuration.__func__
+    monkeypatch.setattr(W, "validate_configuration",
+                        classmethod(lambda cls, p, **kw: (seen.append(kw), real(cls, p, **kw))[1]))
+    MIOStudyContract().resolve(study)
+    assert seen and seen[0]["tail_end_before"] == MIOStudyContract.settlement_tail(study)[0]

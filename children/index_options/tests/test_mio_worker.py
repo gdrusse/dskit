@@ -1241,3 +1241,16 @@ def _skill_module_or_none():
     import mio_parallel_queue
     real = "/mnt/c/Users/russe/.codex/skills/mac-compute-worker/scripts"
     return mio_parallel_queue._skill_module(real, "compute_run") if os.path.isdir(real) else None
+
+
+def test_a_check_week_result_is_not_digested_as_evidence_by_the_worker():
+    params, inputs = _packet_clock_fixture()
+    params["decision_weeks"] = ["2019-01-02"]
+    result = WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert "decision_weeks" in result
+    with pytest.raises(ValueError, match="check_document_not_evidence"):
+        MIOMethodWorker.evidence_guard(result, False)
+    assert MIOMethodWorker.evidence_guard(result, True) is True        # a --check timing run says so
+    plain, inputs = _packet_clock_fixture()
+    assert MIOMethodWorker.evidence_guard(
+        WeeklyOptionPortfolioStudy(plain, inputs)._method(plain["methods"][0], None), False) is False

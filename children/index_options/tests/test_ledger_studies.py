@@ -5139,3 +5139,13 @@ def test_a_replay_hedge_method_runs_like_its_unhedged_twin_when_no_book_can_be_h
     assert all(t["hedge"] == {"status": "leg_no_iv", "units": 0} for t in result["trades"])
     assert result["hedge"]["mark_rule"] == "parity" and result["hedge"]["parity"] == _PARITY
     assert study._method(method, None, recorded=result) == result
+
+
+def test_the_packet_route_validates_a_replay_hedge_block_with_its_settlement_tail():
+    """ADR-0313 I2 review: the packet route has no `clocks` at `resolve`; it passes the tail so the seal rule reads it."""
+    params, _ = _block_doc({"hedge": dict(_REPLAY_BLOCK)})
+    del params["clocks"], params["selected_pairs"]
+    _refused_block(params, "integration_seal")
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params, tail_end_before="2019-02-09")
+    with pytest.raises(ValueError, match="integration_seal"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params, tail_end_before="2021-07-02")
