@@ -4171,10 +4171,12 @@ class TransportPortfolioSolve(PyomoSolve):
     @staticmethod
     def _checked_value_adjust(raw, n):
         """Return ``value_adjust`` as ``n`` finite floats; refuse any other shape or value."""
+        import numbers
+
         import numpy as np
 
         if not isinstance(raw, (list, tuple)) or len(raw) != n or any(
-                isinstance(v, (bool, str)) or not isinstance(v, (int, float)) for v in raw):
+                isinstance(v, (bool, np.bool_)) or not isinstance(v, numbers.Real) for v in raw):
             raise ValueError("invalid value_adjust shape or coefficients")
         a = np.asarray(raw, dtype=float)
         if not np.isfinite(a).all():
@@ -4189,6 +4191,8 @@ class TransportPortfolioSolve(PyomoSolve):
         reserves, shock rows and book parity read it); the adjust is objective-only. The mirror-side rule is the
         CALLER's: the two sides of one option are separate items, so a caller that adds ``+a`` to one must add
         ``-a`` to its mirror, or a buy-and-sell round trip would be paid; this solver does not enforce it.
+        Under a utility objective the adjust enters only through :meth:`_expected_profit` (the mean wealth), never
+        the dispersion charge or the scenario terms; the child refuses ``calibration_with_kelly``.
         """
         adjust = group.get("value_adjust")
         return None if adjust is None else [float(v) for v in adjust]
