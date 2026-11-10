@@ -5633,7 +5633,7 @@ def _limit_world(limits=None, *, block=None, two_weeks=False, greeks=None):
     return params, inputs
 
 
-def _hand_greeks(inputs, day, legs, expiry="2019-02-01", mult=100):
+def _hand_greeks(inputs, day, legs, expiry="2019-02-01", mult=100, vol=0.3):
     """``(delta_f_sh, vega_usd_per_pt)`` of ``legs`` (right, strike, signed quantity) from the core Black-76 functions."""
     from datetime import date as d_
 
@@ -5641,8 +5641,8 @@ def _hand_greeks(inputs, day, legs, expiry="2019-02-01", mult=100):
 
     spot = next(r["close"] for r in inputs["X"]["bars"] if r["date"] == day)
     forward, years = spot * 1.001, (d_.fromisoformat(expiry) - d_.fromisoformat(day)).days / 365
-    delta = sum(q * mult * black76_delta(r, forward, k, 0.3, years, 0.0) for r, k, q in legs)
-    vega = sum(q * mult * black76_vega(r, forward, k, 0.3, years, 0.0) * 0.01 for r, k, q in legs)
+    delta = sum(q * mult * black76_delta(r, forward, k, vol, years, 0.0) for r, k, q in legs)
+    vega = sum(q * mult * black76_vega(r, forward, k, vol, years, 0.0) * 0.01 for r, k, q in legs)
     return delta, vega, forward
 
 
@@ -5819,3 +5819,63 @@ def test_held_delta_counts_the_hedge_units_of_a_program_hedged_book(monkeypatch)
     assert units != 0, "the week-1 book is hedged"
     delta, _, forward = _hand_greeks(inputs, "2019-01-07", _book_legs(held))
     assert result["decisions"][1]["exposure"]["held_delta_usd"] == pytest.approx((delta + units) * forward)
+
+
+# --- ADR-0313 I6 fix round: the held-vega side of the bounds (review of 747f3c5, Major) -------------------------------
+
+def test_held_vega_moves_the_bucket_bound_by_the_held_books_vega_hand_computed(monkeypatch):
+    params, inputs = _limit_world({"vega_fraction_per_pt": 0.01, "dte_edges": [20, 40]}, two_weeks=True)
+    _, result, programs = _run_limited(monkeypatch, params, inputs)
+    held = result["decisions"][0]["books"][0]
+    _, vega, _ = _hand_greeks(inputs, "2019-01-07", _book_legs(held))
+    assert abs(vega) > 1.0, "the held book carries vega, so a flipped sign or a dropped term shows"
+    cap = 0.01 * result["decisions"][1]["funding"]
+    rows = {r["id"]: r for r in programs[1]["joint_rows"]}
+    assert rows["exposure:vega:20_40:+"]["upper"] == pytest.approx(cap - vega, abs=1e-6)
+    assert rows["exposure:vega:20_40:-"]["upper"] == pytest.approx(cap + vega, abs=1e-6)
+    assert result["decisions"][1]["exposure"]["held_vega"] == pytest.approx([vega])
+
+
+def test_a_held_book_outside_the_edges_adds_no_held_vega(monkeypatch):
+    params, inputs = _limit_world({"vega_fraction_per_pt": 0.01, "dte_edges": [27, 40]}, two_weeks=True)
+    _, result, _ = _run_limited(monkeypatch, params, inputs)
+    assert result["decisions"][1]["exposure"]["held_vega"] == [0.0]
+
+
+def test_a_held_vega_beyond_a_bucket_cap_alone_is_exposure_held_breach():
+    # Week 1 trades under a 250 cap at 30 percent volatility; week 2 quotes 20 percent, where the same book's vega is
+    # larger (hand: -294 against -211 for the free book), so the held vega alone breaches the bucket cap.
+    params, inputs = _limit_world({"vega_fraction_per_pt": 250.0 / 60000.0, "dte_edges": [20, 40],
+                                   "beta_delta_fraction": 50.0}, two_weeks=True)
+    for row in inputs["X"]["chain"]:
+        if row["date"] == "2019-01-07":
+            row["iv"] = 0.2
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert result["decisions"][0]["status"] == "selected"
+    _, vega, _ = _hand_greeks(inputs, "2019-01-07", _book_legs(result["decisions"][0]["books"][0]), vol=0.2)
+    assert abs(vega) > 250.0, "only the vega bucket is beyond its cap; delta is far inside its own"
+    assert result["decisions"][1]["status"] == "exposure_held_breach"
+
+
+def test_a_held_book_whose_forward_or_beta_is_unreadable_is_exposure_risk_input(monkeypatch):
+    import inspect
+
+    params, inputs = _limit_world({}, two_weeks=True)
+    real = ledger_studies.ParityForwards.forward
+
+    def forward(self, symbol, day, expiry, factor, exclude=()):
+        if day == "2019-01-07" and inspect.stack()[1].function == "_held":
+            return None, "no_forward"
+        return real(self, symbol, day, expiry, factor, exclude)
+
+    monkeypatch.setattr(ledger_studies.ParityForwards, "forward", forward)
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert result["decisions"][1]["status"] == "exposure_risk_input"
+    monkeypatch.undo()
+    params, inputs = _limit_world({}, two_weeks=True)
+    real_betas = ledger_studies.WeeklyOptionPortfolioStudy._betas
+    monkeypatch.setattr(ledger_studies.WeeklyOptionPortfolioStudy, "_betas",
+                        lambda self, day, lookback: {**real_betas(self, day, lookback),
+                                                 "betas": {} if day == "2019-01-07" else real_betas(self, day, lookback)["betas"]})
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert result["decisions"][0]["status"] == "selected" and result["decisions"][1]["status"] == "exposure_risk_input"
