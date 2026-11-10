@@ -1,8 +1,8 @@
-"""Rolling edge calibration, core mechanism (ADR-0311, stage 1).
+"""Rolling edge calibration, core mechanism (ADR-0311, stages 1-2).
 
 Does a forecast's predicted edge ``e`` become realized edge ``r``? This
 module holds the three domain-neutral pieces that question needs before any
-walk exists, all stdlib:
+walk exists, all stdlib (stage 1), and the stage-2 pieces built on them (below):
 
 * :class:`SettledBefore` is the one admission gate. A row enters the state
   used at decision time ``t`` only when its label settled STRICTLY before
@@ -21,6 +21,15 @@ walk exists, all stdlib:
   ``lambda`` per decision week and the cluster cross-products by
   ``lambda ** 2``; because every row of a cluster shares its weight, the
   sandwich equals the explicitly weighted batch one.
+
+* :class:`PartialPooling` shrinks every bucket's line and its through-origin weight toward the
+  pooled one (method-of-moments between-bucket variance, floored); :class:`NameAdjustment`
+  keeps a shrunk per-name offset on residuals frozen against the bucket-only map of the row's
+  own decision date; :class:`EdgeCalibrationMap` freezes the result at one date;
+  :class:`TrailingRegime` labels a name high or low against its own trailing median. Every
+  float sum over a name or date table runs in sorted key order, so a resumed state equals a
+  fresh one under any ``sum``. The walk that drives them is
+  :class:`dskit.pipeline.libs.edge_walk.EdgeReliabilityWalk` (tier 2).
 
 Refusals that carry a stable code raise a private ``ValueError`` subclass
 whose ``code`` attribute and message prefix are that code.
@@ -746,21 +755,26 @@ class PartialPooling:
 
     @staticmethod
     def _origin(unit):
-        """``(w, variance, df)`` of the slope through the origin (two-way band), or ``None``."""
+        """``(w, variance, df)`` of the slope through the origin (two-way band), or ``None``.
+
+        The variance carries the same CR1 factor as :func:`_sandwich_matrix`; every sum over the
+        name or date table runs in sorted key order, so a resumed state equals a fresh one.
+        """
         n, _, _, see, ser, _ = unit.tot
-        if unit.rows < 2 or unit.clusters < 2 or see <= 0.0 or n <= 0:
+        if unit.rows < 3 or unit.clusters < 2 or see <= 0.0 or n <= 0:
             return None
         w = ser / see
         i, j, k = _TRI.index((3, 3)), _TRI.index((3, 4)), _TRI.index((4, 4))
+        small = (unit.rows - 1) / (unit.rows - 2)
 
         def one(meat, g):
-            return g / (g - 1) * meat / (see * see)
+            return g / (g - 1) * small * meat / (see * see)
 
         pair = one(unit.cross[k] - 2 * w * unit.cross[j] + w * w * unit.cross[i], unit.clusters)
         gn, gd = len(unit.names), len(unit.dates)
         if gn < 2 or gd < 2:
             return None
-        by = [one(sum((v[4] - w * v[3]) ** 2 for v in table.values()), len(table))
+        by = [one(sum((table[key][4] - w * table[key][3]) ** 2 for key in sorted(table)), len(table))
               for table in (unit.names, unit.dates)]
         var = by[0] + by[1] - pair
         if not var > 0.0:
@@ -1275,7 +1289,8 @@ class TrailingRegime:
         self._days = {}
         self._vals = {}
         self._evicted = {}
-        #: Rows answered with the fallback ``low`` for lack of history (``regime_warmup``).
+        self._warm_seen = set()  # (name, ordinal day) already counted as a warm-up
+        #: Distinct ``(name, t)`` queries answered with the fallback ``low`` for lack of history (``regime_warmup``).
         self.warmups = 0
 
     @staticmethod
@@ -1370,6 +1385,7 @@ class TrailingRegime:
         return {
             "params": {"regime_lookback_weeks": self._lookback, "regime_min_weeks": self._min},
             "warmups": self.warmups,
+            "warm_seen": sorted([k, d] for k, d in self._warm_seen),
             "names": {k: {"days": list(self._days[k]), "vals": list(self._vals[k]),
                           "evicted": self._evicted.get(k)} for k in sorted(self._days)},
         }
@@ -1386,6 +1402,7 @@ class TrailingRegime:
         try:
             reg = cls(blob["params"])
             reg.warmups = int(blob["warmups"])
+            reg._warm_seen = {(k, int(d)) for k, d in blob["warm_seen"]}
             for k, rec in blob["names"].items():
                 reg._days[k] = [int(x) for x in rec["days"]]
                 reg._vals[k] = [float(x) for x in rec["vals"]]
@@ -1422,9 +1439,12 @@ class TrailingRegime:
             On a bad ``v`` or when the window at ``t`` has been evicted.
         """
         value = self._scale(v)
-        window = self._window(name, date.fromisoformat(_iso(t, "t")))
+        day = date.fromisoformat(_iso(t, "t"))
+        window = self._window(name, day)
         if len(window) < self._min:
-            self.warmups += 1
+            if (name, day.toordinal()) not in self._warm_seen:
+                self._warm_seen.add((name, day.toordinal()))
+                self.warmups += 1
             return "low", True
         return ("high" if value > _median(window) else "low"), False
 

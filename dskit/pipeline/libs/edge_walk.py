@@ -9,7 +9,7 @@ state, then (d) decides: the day's rows get their bucket and the snapshot's cali
 keyed by settlement date, in an on-disk shard. The map at ``t`` is written before a single row of
 ``t`` is read, so nothing dated at or after ``t`` can reach it.
 
-The domain enters only through four ``@abstractmethod`` hooks, here synthetic in the tests and a thin
+The domain enters only through six ``@abstractmethod`` hooks, here synthetic in the tests and a thin
 child in a real run. A row is a mapping with ``group, name, expiry, settle_date, fill_date, factor,
 right, strike, sign, e, dte, abs_z, spread, v, credit, multiplier`` (``credit`` is the decision-price
 credit in dollars, ``right`` is ``call`` or ``put``, ``sign`` is +1 to buy and -1 to sell). Realized
@@ -18,7 +18,9 @@ credit (secondary).
 
 Checkpoint and resume: the checkpoint holds the four states, the name sums, the regime history, the
 pending index (the shards stay on disk), the counts, the cursor, the params hash and the input pins.
-A resume refuses ``checkpoint_mismatch`` on a changed param or pin and ``state_from_future`` when the
+The checkpoint also holds the manifest of the map and row files this run wrote, and the summary digest
+covers exactly those, so a stray file in ``out_dir`` cannot move it. A resume refuses
+``checkpoint_mismatch`` on a changed param, pin or checkpoint version and ``state_from_future`` when the
 checkpoint is later than the requested window. Every file lands through ``atomic_write``.
 
 Wiring is by import path; :data:`NODE_KINDS` is empty. Import cost: stdlib and the pipeline core.
@@ -48,7 +50,8 @@ __all__ = ["NODE_KINDS", "EdgeReliabilityWalk"]
 #: No node kind is registered: a document names ``dskit.pipeline.libs.edge_walk:EdgeReliabilityWalk``.
 NODE_KINDS = ()
 
-_VERSION = 1
+#: Bump on ANY change to the checkpoint's content or meaning; a checkpoint of another version refuses.
+_VERSION = 2
 #: The four states, in the order every stored per-row list holds them.
 _STATES = ("expanding_fill", "decayed_fill", "expanding_decision", "decayed_decision")
 _FILL_CODES = ("session", "basis", "quote")
@@ -90,7 +93,8 @@ class EdgeReliabilityWalk(Node):
     ValueError
         Run-level refusals carry a stable ``code``: ``sealed_from_missing``, ``development_seal_exceeded``,
         ``window_outside_data_rights`` (before any hook runs), ``report_from_invalid``,
-        ``bucket_edges_invalid``, ``calendar_mismatch``, ``checkpoint_mismatch``, ``state_from_future``,
+        ``bucket_edges_invalid``, ``calendar_mismatch``, ``fill_not_next_session``, ``checkpoint_mismatch``,
+        ``state_from_future``,
         ``ram_limit``.
 
     Examples
@@ -102,6 +106,8 @@ class EdgeReliabilityWalk(Node):
             def _decision_rows(self, t): ...
             def _fill_credits(self, rows): ...
             def _settlement_levels(self, rows): ...
+            def _next_session(self, t): ...
+            def _input_pins(self): ...
 
         MyWalk("walk", params).run(ctx, {})["summary"]["counts"]
     """
@@ -148,9 +154,22 @@ class EdgeReliabilityWalk(Node):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    def _next_session(self, t):
+        """Return the first session of the study's own calendar after decision session ``t`` (ISO text).
+
+        Every row's ``fill_date`` must equal it; anything else refuses ``fill_not_next_session``.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def _input_pins(self):
-        """Return the input pins (name -> sha256) the checkpoint must match; none by default."""
-        return {}
+        """Return the input pins (name -> sha256) the checkpoint must match.
+
+        A child pins every input file its hooks read; a child with no input files returns ``{}``
+        on purpose, never by omission.
+        """
+        raise NotImplementedError
 
     # -- params ----------------------------------------------------------------------------
 
@@ -231,6 +250,7 @@ class EdgeReliabilityWalk(Node):
         for sub in ("rows", "pending"):
             os.makedirs(os.path.join(self._out, sub), exist_ok=True)
         self._consumed = []
+        self._manifest = set()
         cursor = self._resume(weeks)
         todo = [t for t in weeks if cursor is None or t > cursor]
         every = self._param("checkpoint_every")
@@ -306,6 +326,10 @@ class EdgeReliabilityWalk(Node):
         self._regime = TrailingRegime.from_dict(blob["regime"])
         self._pending = {s: list(ts) for s, ts in blob["pending"].items()}
         self._counts = dict(blob["counts"])
+        self._manifest = set(blob["manifest"])
+        for rel in sorted(self._manifest):
+            if not os.path.exists(os.path.join(self._out, rel)):
+                raise _Refusal("checkpoint_mismatch", f"written file {rel} is missing")
         for s, ts in self._pending.items():
             for t in ts:
                 if not os.path.exists(self._shard(s, t)):
@@ -319,6 +343,7 @@ class EdgeReliabilityWalk(Node):
             "cursor": cursor,
             "states": {k: {"state": st.to_dict(), "adjust": adj.to_dict()} for k, (st, adj) in self._states.items()},
             "regime": self._regime.to_dict(), "pending": self._pending, "counts": self._counts,
+            "manifest": sorted(self._manifest),
         }
         atomic_write(os.path.join(self._out, "checkpoint.json"), (_canon(blob) + "\n").encode())
         for path in self._consumed:
@@ -365,6 +390,7 @@ class EdgeReliabilityWalk(Node):
         maps = {k: EdgeCalibrationMap.build(t, st, self._pool, adj) for k, (st, adj) in self._states.items()}
         atomic_write(os.path.join(self._out, f"map-{t}.json"),
                      (_canon({"t": t, "states": {k: m.to_dict() for k, m in maps.items()}}) + "\n").encode())
+        self._manifest.add(f"map-{t}.json")
         self._decide(t, maps)
 
     def _settle(self, t):
@@ -387,6 +413,7 @@ class EdgeReliabilityWalk(Node):
         levels = list(self._settlement_levels(views))
         if len(fills) != len(rows) or len(levels) != len(rows):
             raise ValueError("the fill and settlement hooks must return one answer per row")
+        self._check_ram()
         self._count("rows_admitted", len(rows))
         clusters, out = {}, []
         for r, fill, level in zip(rows, fills, levels):
@@ -439,11 +466,12 @@ class EdgeReliabilityWalk(Node):
                  for r, code, rf, rd in keep]
         self._count("rows_reported", len(lines))
         atomic_write(os.path.join(self._out, "rows", f"rows-{s}.jsonl"), ("\n".join(lines) + "\n").encode())
+        self._manifest.add(f"rows/rows-{s}.jsonl")
 
     # -- decide ----------------------------------------------------------------------------
 
-    def _row(self, raw, t):
-        """Validate one hook row and return it as a clean dict."""
+    def _row(self, raw, t, nxt):
+        """Validate one hook row (its fill session must be ``nxt``, the next session) and return it as a clean dict."""
         if not isinstance(raw, dict) or any(k not in raw for k in _ROW_KEYS):
             raise ValueError(f"a decision row needs {list(_ROW_KEYS)}, got {raw!r}")
         row = dict(raw)
@@ -461,15 +489,18 @@ class EdgeReliabilityWalk(Node):
                 raise ValueError(f"{key} must be a finite number, got {row[key]!r}")
         if row["fill_date"] <= t:
             raise _Refusal("calendar_mismatch", f"fill session {row['fill_date']} is not after the decision {t}")
+        if row["fill_date"] != nxt:
+            raise _Refusal("fill_not_next_session", f"fill session {row['fill_date']} is not the next session {nxt} after {t}")
         return row
 
     def _decide(self, t, maps):
         """Bucket and map the day's rows, then store them in shards keyed by settlement date."""
+        nxt = _iso(self._next_session(t), "next session")
         raw = self._decision_rows(t)
         self._check_ram()
         best = {}
         for item in raw:
-            row = self._row(item, t)
+            row = self._row(item, t, nxt)
             key = (row["name"], row["expiry"], row["right"], row["strike"])
             old = best.get(key)
             if old is None:
@@ -509,6 +540,7 @@ class EdgeReliabilityWalk(Node):
                 [row["group"], name, row["expiry"], row["fill_date"], row["factor"], row["right"], row["strike"],
                  row["sign"], e, b, row["credit"], row["multiplier"], cb, cf])
             self._count("rows_decided")
+        self._check_ram()
         for name, v in vols.items():
             self._regime.add(name, t, v)
         for s, rows in shards.items():
@@ -520,13 +552,10 @@ class EdgeReliabilityWalk(Node):
 
     def _summary(self, weeks):
         digest = hashlib.sha256()
-        for sub in ([""], ["rows"]):
-            folder = os.path.join(self._out, *sub)
-            for fname in sorted(os.listdir(folder)):
-                if fname.startswith(("map-", "rows-")):
-                    digest.update(fname.encode())
-                    with open(os.path.join(folder, fname), "rb") as fh:
-                        digest.update(fh.read())
+        for rel in sorted(self._manifest):
+            digest.update(os.path.basename(rel).encode())
+            with open(os.path.join(self._out, rel), "rb") as fh:
+                digest.update(fh.read())
         return {"params_hash": self._params_hash(), "pins": self._input_pins(), "first": weeks[0],
                 "last": weeks[-1], "weeks": len(weeks), "counts": dict(sorted(self._counts.items())),
                 "output_sha256": digest.hexdigest()}

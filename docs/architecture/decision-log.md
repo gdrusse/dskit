@@ -36126,6 +36126,7 @@ No change to `ledger_studies.py`, `nodes.py`, `predictive_cdf.py`, any MIO confi
 1. Core `SettledBefore`, `ReliabilityBuckets`, `LinearEdgeState` (expanding and decayed, one- and two-way sandwich) + leakage guard + parity tests (8).
 2. Core `PartialPooling`, `NameAdjustment`, `TrailingRegime`, `EdgeCalibrationMap` + tests 6, 7, 11.
 3. Tier-2 `EdgeReliabilityWalk` on synthetic hooks: four states, pending, fill join at settlement, checkpoint/resume + tests 1-5, 12.
+   Tracked deferral (stage 3 review, 2026-11-09): `forward-reliability.csv`, `divergence.csv` and the `out_dir_inside_inputs` refusal are NOT in the walk; they move to the child, stage 4.
 4. Child `ChainEdgeCalibration`: study construction from a synthetic pinned document, items to rows, fill and settlement hooks, refusals, outputs, config template (no real run) + tests 9, 10.
 5. Owner-approved: time one real week on WSL (counts, seconds, peak RSS only); if RSS exceeds the budget, stop and amend.
 6. Owner-approved: the 2019Q4-seeded run, reported 2020Q1-2021Q2. Later and separate: validation 2021Q3-2023Q4 after the 3 picks; MIO integration only after the owner reads the curves.

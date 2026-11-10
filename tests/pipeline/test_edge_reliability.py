@@ -801,7 +801,7 @@ def _origin_oracle(rows):
         for lab, ei, ri, wi in zip(labels, e, r, wt):
             s[lab] = s.get(lab, 0.0) + wi * ei * (ri - w * ei)
         g = len(s)
-        return g / (g - 1) * sum(v * v for v in s.values()) / see ** 2
+        return g / (g - 1) * (len(rows) - 1) / (len(rows) - 2) * sum(v * v for v in s.values()) / see ** 2
 
     names = [q["name"] for q in rows]
     dates = [q["date"] for q in rows]
@@ -1201,3 +1201,217 @@ class TestTrailingRegimeDump:
     def test_malformed_dump_refuses(self):
         with pytest.raises(ValueError):
             er.TrailingRegime.from_dict({"params": {}})
+
+
+# ------------------------------------------------- ADR-0311 fix round (stage 1-3 review findings)
+
+
+def _left_fold(items, start=0):
+    """Python 3.11's naive ``sum`` (3.12+ compensates): a strict left fold."""
+    acc = start
+    for v in items:
+        acc = acc + v
+    return acc
+
+
+def _tiny_state(per_date, decay=None, n_buckets=1):
+    """A state of ``per_date`` dates x names A, B: one-row clusters with chosen edges."""
+    state = LinearEdgeState(n_buckets, decay)
+    for k in range(per_date):
+        day = _iso(FIRST_SETTLE + datetime.timedelta(days=7 * k))
+        fill = _iso(FIRST_SETTLE + datetime.timedelta(days=7 * k - 3))
+        for j, name in enumerate(("A", "B")):
+            state.add_cluster("2021-01-01", name, day, fill, [0, 0], [1.0 + k + j, 2.0 - j * k],
+                              [0.5 * k + j, 3.0 - k * j + 0.25])
+    return state
+
+
+LOW_FLOOR = {**POOL, "tau2_floor": 1e-15, "weight_cap": 100.0}
+
+
+class TestDeterminismAcrossResume:
+    """Finding 1: no float accumulation may depend on dict insertion order."""
+
+    def _state(self):
+        rng = np.random.default_rng(21)
+        names = ["ZZ", "MM", "AA", "QQ", "BB", "XX", "CC", "KK", "DD", "WW", "EE", "JJ"]
+        state = LinearEdgeState(4, 0.93)
+        for k in range(8):
+            t = _iso(FIRST_SETTLE + datetime.timedelta(days=7 * k + 1))
+            day = _iso(FIRST_SETTLE + datetime.timedelta(days=7 * k))
+            fill = _iso(FIRST_SETTLE + datetime.timedelta(days=7 * k - 3))
+            state.advance(t)
+            order = list(names)
+            rng.shuffle(order)  # unsorted first arrival
+            for i, name in enumerate(order):
+                scale = 10.0 ** (i % 6 - 2)
+                e = [float(x) * scale for x in rng.normal(0, 2, 8)]
+                r = [float((0.4 + j % 4) * x + rng.normal(0, 1) * scale) for j, x in enumerate(e)]
+                state.add_cluster(t, name, day, fill, [j % 4 for j in range(8)], e, r)
+        return state
+
+    def test_resumed_pooling_equals_fresh_under_naive_sum(self, monkeypatch):
+        import builtins
+
+        fresh = self._state()
+        resumed = LinearEdgeState.from_dict(json.loads(json.dumps(fresh.to_dict())))
+        assert list(fresh._pooled.names) != sorted(fresh._pooled.names)  # the test really has unsorted arrival
+        with monkeypatch.context() as m:
+            m.setattr(builtins, "sum", _left_fold)
+            a = json.dumps(PartialPooling(LOW_FLOOR).fit(fresh), sort_keys=True)
+            b = json.dumps(PartialPooling(LOW_FLOOR).fit(resumed), sort_keys=True)
+        assert a == b
+
+    def test_resumed_sandwich_and_origin_equal_fresh_under_naive_sum(self, monkeypatch):
+        import builtins
+
+        fresh = self._state()
+        resumed = LinearEdgeState.from_dict(json.loads(json.dumps(fresh.to_dict())))
+        with monkeypatch.context() as m:
+            m.setattr(builtins, "sum", _left_fold)
+            for b in (None, 0, 1, 2, 3):
+                th = (0.1, 0.2)
+                assert fresh.sandwich(b, th, "two") == resumed.sandwich(b, th, "two")
+                assert PartialPooling._origin(fresh._unit(b)) == PartialPooling._origin(resumed._unit(b))
+
+
+class TestBoundaryExact:
+    """Finding 9: each gate is pinned at its exact boundary."""
+
+    def test_max_one_way_takes_the_wider_one_way_matrix(self):
+        rng = np.random.default_rng(0)
+        state, rows = LinearEdgeState(1, None), []
+        for k in range(3):
+            day = _iso(FIRST_SETTLE + datetime.timedelta(days=7 * k))
+            for n in ("A", "B", "C"):
+                if rng.random() < 0.3:
+                    continue
+                m = int(rng.integers(1, 4))
+                e, r = [float(x) for x in rng.normal(0, 2, m)], [float(x) for x in rng.normal(0, 2, m)]
+                state.add_cluster("2021-01-01", n, day, _iso(FIRST_SETTLE + datetime.timedelta(days=7 * k - 3)),
+                                  [0] * m, e, r)
+                rows += [{"name": n, "date": day, "e": a, "r": c, "w": 1.0} for a, c in zip(e, r)]
+        f = state.fit(None)
+        sw = state.sandwich(None, (f["a"], f["b"]), "two")
+        assert sw["rule"] == "max_one_way"
+        _, _, _, _, beta = _wls(rows)
+        by_name = _cov(rows, [q["name"] for q in rows], beta)
+        by_date = _cov(rows, [q["date"] for q in rows], beta)
+        wide = by_name if by_name[1, 1] >= by_date[1, 1] else by_date
+        assert by_name[1, 1] != by_date[1, 1]
+        assert np.allclose(_arr(sw["cov"]), wide, rtol=1e-9)
+
+    def test_warm_up_min_dates_is_inclusive(self):
+        state = _tiny_state(3)
+        pool = {**POOL, "min_clusters": 2, "min_dates": 3}
+        assert state.fit(None)["dates"] == 3
+        assert PartialPooling(pool).fit(state)["warm"] is True
+        assert PartialPooling({**pool, "min_dates": 4}).fit(state)["warm"] is False
+
+    def test_warm_up_min_clusters_is_inclusive(self):
+        state = _tiny_state(3)
+        assert state.fit(None)["clusters"] == 6
+        pool = {**POOL, "min_clusters": 6, "min_dates": 1}
+        assert PartialPooling(pool).fit(state)["warm"] is True
+        assert PartialPooling({**pool, "min_clusters": 7}).fit(state)["warm"] is False
+
+    def test_bucket_stands_alone_at_exactly_min_clusters(self):
+        state = _tiny_state(3)
+        pool = {**POOL, "min_clusters": 6, "min_dates": 1}
+        pp = PartialPooling(pool)
+        assert pp._enough(state.fit(0)["clusters"]) is True
+        assert PartialPooling({**pool, "min_clusters": 7})._enough(6) is False
+        assert PartialPooling(pool).fit(state)["buckets"][0]["pooled"] is False
+
+    def test_name_adjustment_applies_at_exactly_name_min_clusters(self):
+        cl = _name_clusters("AA", 2)
+        adj = NameAdjustment({**NAME, "name_min_clusters": 2})
+        for c in cl:
+            adj.add_cluster("2021-01-01", "AA", c["settle"], c["e"], c["r"], c["c"])
+        assert adj.adjust("AA") != (0.0, 0.0)
+        tight = NameAdjustment({**NAME, "name_min_clusters": 3})
+        for c in cl:
+            tight.add_cluster("2021-01-01", "AA", c["settle"], c["e"], c["r"], c["c"])
+        assert tight.adjust("AA") == (0.0, 0.0)
+
+    def test_cold_map_carries_no_name_adjustment(self):
+        state = _tiny_state(3)
+        adj = NameAdjustment({**NAME, "name_min_clusters": 2})
+        for c in _name_clusters("AA", 4):
+            adj.add_cluster("2021-01-01", "AA", c["settle"], c["e"], c["r"], c["c"])
+        assert adj.adjust("AA") != (0.0, 0.0)
+        cold = {**POOL, "min_clusters": 100}
+        cmap = EdgeCalibrationMap.build("2021-01-01", state, PartialPooling(cold), adj)
+        assert cmap.warm is False
+        assert dict(cmap.names) == {}
+        assert cmap.calibrated(0, "AA", 3.0) == 0.0
+
+    def test_near_constant_edge_is_no_variance_not_a_garbage_slope(self):
+        state = LinearEdgeState(1, None)
+        for k in range(3):
+            day = _iso(FIRST_SETTLE + datetime.timedelta(days=7 * k))
+            for n in ("A", "B"):
+                state.add_cluster("2021-01-01", n, day, _iso(FIRST_SETTLE + datetime.timedelta(days=7 * k - 3)),
+                                  [0] * 3, [0.7] * 3, [float(k + j) for j in range(3)])
+        n, se, _, see, _, _ = state._pooled.tot
+        assert 0.0 < see - se * se / n <= 1e-12 * see  # rounding noise, positive
+        f = state.fit(None)
+        assert f["a"] is None and f["b"] is None
+        assert state.sandwich(None, (0.0, 0.0), "one") is None
+
+    def test_sandwich_needs_three_rows(self):
+        state = LinearEdgeState(1, None)
+        for k, name in enumerate(("A", "B")):
+            state.add_cluster("2021-01-01", name, "2020-01-10", "2020-01-07", [0], [float(k + 1)], [float(2 * k)])
+        assert state._pooled.rows == 2 and state._pooled.clusters == 2
+        assert state.sandwich(None, (0.0, 0.0), "one") is None
+
+
+class TestOriginVarianceFactor:
+    """Finding 11: the through-origin sandwich uses the same CR1 factor as the line sandwich."""
+
+    def test_matches_clustered_calibration_slope_when_the_lines_coincide(self):
+        # sum(e) = 0 and sum(r) = 0 make the intercept fit pass through the origin
+        state, e_all, r_all, names, dates = LinearEdgeState(1, None), [], [], [], []
+        rng = np.random.default_rng(4)
+        for k in range(4):
+            day = _iso(FIRST_SETTLE + datetime.timedelta(days=7 * k))
+            for n in ("A", "B", "C"):
+                x, y = [float(v) for v in rng.normal(0, 2, 2)], [float(v) for v in rng.normal(0, 2, 2)]
+                e, r = [x[0], -x[0], x[1], -x[1]], [y[0], -y[0], y[1], -y[1]]
+                state.add_cluster("2021-01-01", n, day, _iso(FIRST_SETTLE + datetime.timedelta(days=7 * k - 3)),
+                                  [0] * 4, e, r)
+                e_all += e
+                r_all += r
+                names += [n] * 4
+                dates += [day] * 4
+        res = clustered_calibration_slope(r_all, e_all, [names, dates])
+        out = PartialPooling({**POOL, "weight_cap": 100.0}).fit(state)["pooled"]
+        assert out["w"] == pytest.approx(res["slope"], rel=1e-9)
+        assert out["se_w"] == pytest.approx(res["slope_se"], rel=1e-9)
+
+    def test_needs_three_rows(self):
+        state = LinearEdgeState(1, None)
+        for k, name in enumerate(("A", "B")):
+            state.add_cluster("2021-01-01", name, "2020-01-10", "2020-01-07", [0], [float(k + 1)], [float(2 * k)])
+        assert PartialPooling._origin(state._pooled) is None
+
+
+class TestRegimeWarmupCountedOnce:
+    """Finding 10: a repeated query of one (name, t) is one warm-up."""
+
+    def test_repeat_query_does_not_double_count(self):
+        reg = _regime(regime_min_weeks=3)
+        assert reg.of("AA", _wk(0), 1.0) == ("low", True)
+        assert reg.of("AA", _wk(0), 1.0) == ("low", True)
+        assert reg.warmups == 1
+        reg.of("BB", _wk(0), 1.0)
+        reg.of("AA", _wk(1), 1.0)
+        assert reg.warmups == 3
+
+    def test_the_count_survives_a_dump(self):
+        reg = _regime(regime_min_weeks=3)
+        reg.of("AA", _wk(0), 1.0)
+        back = TrailingRegime.from_dict(json.loads(json.dumps(reg.to_dict())))
+        back.of("AA", _wk(0), 1.0)
+        assert back.warmups == 1 and back.to_dict() == reg.to_dict()

@@ -139,6 +139,10 @@ class SynthWalk(EdgeReliabilityWalk):
     def _input_pins(self):
         return dict(self.pins)
 
+    def _next_session(self, t):
+        self.events.append(("next_session", t))
+        return add_days(t, 3)
+
     def _decision_calendar(self):
         self.events.append(("calendar",))
         return list(CAL)
@@ -572,6 +576,158 @@ def test_public_surface_and_hooks():
         "window", "report_from", "sealed_from", "out_dir", "half_life_weeks", "buckets", "regime", "pooling",
         "name_adjust", "checkpoint_every", "ram_gb_limit")
     assert EdgeReliabilityWalk.__abstractmethods__ == frozenset(
-        {"_decision_calendar", "_decision_rows", "_fill_credits", "_settlement_levels"})
+        {"_decision_calendar", "_decision_rows", "_fill_credits", "_settlement_levels", "_next_session",
+         "_input_pins"})
     with pytest.raises(TypeError):
         EdgeReliabilityWalk("walk", {})
+
+
+# --------------------------------------------------------------------------- ADR-0311 fix round
+
+
+def _left_fold(items, start=0):
+    """Python 3.11's naive ``sum`` (3.12+ compensates): a strict left fold."""
+    acc = start
+    for v in items:
+        acc = acc + v
+    return acc
+
+
+class TestFrozenResidual:
+    """ADR test 7: the name sums fold ``r - c`` with the BUCKET-ONLY ``c`` stored at the row's own decision."""
+
+    def _oracle(self, out, state_key, r_key, fill_state):
+        root = Path(out)
+        maps = {}
+        sums = {}
+        for path in sorted((root / "rows").glob("rows-*.jsonl")):
+            for line in path.read_text().splitlines():
+                row = json.loads(line)
+                if row["code"] is not None:
+                    continue
+                if row["t"] not in maps:
+                    maps[row["t"]] = json.loads((root / f"map-{row['t']}.json").read_text())["states"][state_key]
+                bucket = maps[row["t"]]["buckets"][row["bucket"]]
+                cb = bucket["a"] + bucket["b"] * row["e"]
+                u = row[r_key] - cb
+                rec = sums.setdefault(row["name"], [0.0] * 5)
+                rec[0] += 1
+                rec[1] += row["e"]
+                rec[2] += u
+                rec[3] += row["e"] ** 2
+                rec[4] += row["e"] * u
+        return sums
+
+    @pytest.mark.parametrize("state_key,r_key", [("expanding_fill", "r"), ("expanding_decision", "r_dec")])
+    def test_name_sums_equal_an_independent_bucket_only_recomputation(self, tmp_path, state_key, r_key):
+        run(make(tmp_path, World(no_rows_before=CAL[1]), report_from=CAL[1]), tmp_path)
+        out = tmp_path / "out"
+        warm_names = [m for p in sorted(out.glob("map-*.json"))
+                      for m in json.loads(p.read_text())["states"][state_key]["names"].values()
+                      if any(abs(x) > 1e-9 for x in m)]
+        assert warm_names, "the world never produced a nonzero name adjustment: the test would be vacuous"
+        want = self._oracle(out, state_key, r_key, state_key)
+        got = checkpoint(out)["states"][state_key]["adjust"]["names"]
+        assert set(got) == set(want)
+        for name, rec in want.items():
+            assert got[name]["s"] == pytest.approx(rec, rel=1e-9, abs=1e-9)
+
+    def test_swapping_in_the_name_adjusted_value_is_caught(self, tmp_path, monkeypatch):
+        real = ew.EdgeReliabilityWalk._fold
+
+        def swapped(self, t, s, name, cells):
+            return real(self, t, s, name, [(c[0][:13] + [c[0][14]] + c[0][14:], *c[1:]) for c in cells])
+
+        run(make(tmp_path, World(no_rows_before=CAL[1]), report_from=CAL[1], out="good"), tmp_path)
+        monkeypatch.setattr(ew.EdgeReliabilityWalk, "_fold", swapped)
+        run(make(tmp_path, World(no_rows_before=CAL[1]), report_from=CAL[1], out="bad"), tmp_path)
+        good = checkpoint(tmp_path / "good")["states"]["expanding_fill"]["adjust"]["names"]
+        bad = checkpoint(tmp_path / "bad")["states"]["expanding_fill"]["adjust"]["names"]
+        assert good != bad  # the stored bucket-only value and the name-adjusted one really differ here
+
+
+class TestDeterminism:
+    def test_resume_is_byte_identical_under_a_naive_float_sum(self, tmp_path, monkeypatch):
+        import builtins
+
+        with monkeypatch.context() as m:
+            m.setattr(builtins, "sum", _left_fold)
+            run(make(tmp_path, out="whole"), tmp_path)
+            with pytest.raises(RuntimeError):
+                run(make(tmp_path, out="cut", fail_at=CAL[17]), tmp_path)
+            run(make(tmp_path, out="cut"), tmp_path)
+        assert tree(tmp_path / "whole") == tree(tmp_path / "cut")
+
+
+class TestSummaryManifest:
+    def test_the_digest_covers_only_files_this_run_wrote(self, tmp_path):
+        clean = run(make(tmp_path, out="clean"), tmp_path)["summary"]
+        dirty = tmp_path / "dirty"
+        (dirty / "rows").mkdir(parents=True)
+        (dirty / "map-2099-01-01.json").write_text("{}")
+        (dirty / "rows" / "rows-2099-01-01.jsonl").write_text("{}\n")
+        again = run(make(tmp_path, out="dirty"), tmp_path)["summary"]
+        assert again["output_sha256"] == clean["output_sha256"]
+
+    def test_the_digest_survives_a_resume(self, tmp_path):
+        whole = run(make(tmp_path, out="whole"), tmp_path)["summary"]
+        with pytest.raises(RuntimeError):
+            run(make(tmp_path, out="cut", fail_at=CAL[17]), tmp_path)
+        (tmp_path / "cut" / "map-2099-01-01.json").write_text("{}")
+        cut = run(make(tmp_path, out="cut"), tmp_path)["summary"]
+        assert cut["output_sha256"] == whole["output_sha256"]
+
+
+    def test_a_missing_written_file_refuses_checkpoint_mismatch(self, tmp_path):
+        with pytest.raises(RuntimeError):
+            run(make(tmp_path, fail_at=CAL[8]), tmp_path)
+        (tmp_path / "out" / f"map-{CAL[2]}.json").unlink()
+        with pytest.raises(ValueError, match="checkpoint_mismatch"):
+            run(make(tmp_path), tmp_path)
+
+
+class TestNextSession:
+    def test_a_fill_session_that_is_not_the_next_session_refuses(self, tmp_path):
+        t = CAL[5]
+        late = World().row("AAA", t, add_days(t, 14), "call", 100.0, 1, fill=add_days(t, 4))
+        with pytest.raises(ValueError, match="fill_not_next_session") as err:
+            run(make(tmp_path, World(extra_rows={t: [late]})), tmp_path)
+        assert err.value.code == "fill_not_next_session"
+
+    def test_the_next_session_is_asked_once_per_decision(self, tmp_path):
+        node = make(tmp_path, end=CAL[6])
+        run(node, tmp_path)
+        asked = [ev[1] for ev in node.events if ev[0] == "next_session"]
+        assert asked == CAL[:7]
+
+
+class TestRamPeaks:
+    def test_ram_is_checked_after_the_settle_join_and_the_decide_build(self, tmp_path, monkeypatch):
+        import sys
+
+        callers = []
+
+        def spy(self_or_none=None):
+            callers.append(sys._getframe(2).f_code.co_name)
+            return 0.0
+
+        monkeypatch.setattr(EdgeReliabilityWalk, "_rss_gb", staticmethod(spy))
+        run(make(tmp_path, end=CAL[6]), tmp_path)
+        assert {"_week", "_admit", "_decide"} <= set(callers)
+        assert callers.count("_decide") == 2 * 7  # after the hook returns and after the shards are built
+
+
+class TestCheckpointVersion:
+    def test_a_checkpoint_of_another_version_refuses(self, tmp_path):
+        run(make(tmp_path, end=CAL[6]), tmp_path)
+        path = tmp_path / "out" / "checkpoint.json"
+        blob = json.loads(path.read_text())
+        blob["version"] = ew._VERSION + 1
+        path.write_text(json.dumps(blob))
+        with pytest.raises(ValueError, match="checkpoint_mismatch") as err:
+            run(make(tmp_path, end=CAL[8]), tmp_path)
+        assert err.value.code == "checkpoint_mismatch"
+        blob["version"] = ew._VERSION - 1
+        path.write_text(json.dumps(blob))
+        with pytest.raises(ValueError, match="checkpoint_mismatch"):
+            run(make(tmp_path, end=CAL[8]), tmp_path)
