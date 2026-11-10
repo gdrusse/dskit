@@ -5,13 +5,12 @@ Parity first (a method with one block is unchanged), then B2's order, ``hedge_ne
 """
 
 import copy
-import json
 
 import pytest
 
 from index_options import ledger_studies
 from test_ledger_studies import _timeless_digest
-from test_mio_calibration import CAL, Harness, programs_of, reweighted, untimed
+from test_mio_calibration import Harness, programs_of, reweighted, untimed
 
 #: The direction params that agree with ``HEDGE`` below (rate 0, mid iv, the overlay's own floors and tolerance).
 DIRECTION = {"rate": 0.0, "iv_source": "mid", "iv_disagree_tol": 0.05, "multiplier": 100, "min_years": 0.001,
