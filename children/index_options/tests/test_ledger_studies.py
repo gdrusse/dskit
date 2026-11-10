@@ -4640,6 +4640,7 @@ _HEDGE = {"kind": "fixed_delta_forward", "mode": "program", "ratio": 1.0, "delta
           "htb_jump_threshold": 0.75, "hedge_fee_per_share": 0.005, "hedge_half_spread_bps": 5.0,
           "hedge_borrow_rate": 0.005}
 _BLOCKS = {"calibration": _CAL, "exposure_limits": _LIM, "hedge": _HEDGE}
+_PARITY = {"parity_strikes": 3, "min_pairs": 1, "max_pair_spread_frac": 0.5}
 
 
 def test_the_nine_formulations_are_byte_identical_to_main_before_the_wiring(monkeypatch):
@@ -4684,6 +4685,8 @@ def _block_doc(block=None, *, method_id="research_arm", locked=True):
     params["methods"] = [method]
     if locked:
         params["locked_method_ids"] = list(FORMULATIONS)
+    if "hedge" in (block or {}):
+        params["hedge_parity"] = dict(_PARITY)
     return params, inputs
 
 
@@ -4869,3 +4872,270 @@ def test_a_method_without_a_hedge_block_is_byte_identical_and_carries_no_hedge_f
     assert _timeless_digest(result) == PLAIN_NOMINAL_DIGEST
     assert "hedge" not in json.dumps(result), "hedge fields are ABSENT, not null, without a block"
     assert all("hedge" not in book for book in result["trades"] + result["rejected"])
+
+
+
+# --- ADR-0312 Amendment 1 S3.2: the replay-mode hedge on the study (ReplayHedge) ------------------------------------------
+
+_REPLAY_BLOCK = {**_HEDGE, "mode": "replay", "htb_lookback": 6}
+
+
+def _hedge_world(bump=None):
+    """The weekly fixture with a full call/put chain for the 2019-02-01 expiry and a drifting synthetic spot.
+
+    Every day's rows price at forward 1.001 x spot with vol 0.3 (so every parity pair returns that forward exactly).
+    ``bump(day, right, strike, row)`` may change a row. Returns ``(params, inputs, spots)``.
+    """
+    from datetime import date as d_
+
+    from dskit.pipeline.option_pricing import black76
+
+    params, inputs = _weekly_portfolio_fixture()
+    days = [r["date"] for r in inputs["X"]["bars"]]
+    spots = {day: 100.0 + 0.5 * i for i, day in enumerate(days)}
+    expiry, chain = "2019-02-01", []
+    chain.append({"symbol": "X", "date": expiry, "expiration": expiry, "type": "put", "strike_raw": 90.,
+                  "strike": 90., "bid": .05, "ask": .06, "bid_size": 10, "ask_size": 10, "basis_factor": 1.,
+                  "underlying_price": spots[expiry], "iv": 0.3})        # the expiry session's basis factor
+    for day in days:
+        if day >= expiry:
+            continue
+        years = (d_.fromisoformat(expiry) - d_.fromisoformat(day)).days / 365
+        for right in ("call", "put"):
+            for strike in (90., 95., 100., 105., 110.):
+                mid = black76(right, spots[day] * 1.001, strike, 0.3, years)
+                row = {"symbol": "X", "date": day, "expiration": expiry, "type": right, "strike_raw": strike,
+                       "strike": strike, "bid": mid * .99, "ask": mid * 1.01, "bid_size": 10, "ask_size": 10,
+                       "basis_factor": 1., "underlying_price": spots[day], "iv": 0.3}
+                if bump:
+                    bump(day, right, strike, row)
+                chain.append(row)
+    inputs["X"]["chain"] = chain
+    inputs["X"]["bars"] = [{"symbol": "X", "date": day, "close": spots[day]} for day in days]
+    return params, inputs, spots
+
+
+def _hedge_study(bump=None, block=None, spot_at_expiry=None):
+    params, inputs, spots = _hedge_world(bump)
+    if spot_at_expiry is not None:
+        spots["2019-02-01"] = spot_at_expiry
+        for row in inputs["X"]["bars"]:
+            if row["date"] == "2019-02-01":
+                row["close"] = spot_at_expiry
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    return study, ledger_studies.ReplayHedge(study, {**_REPLAY_BLOCK, **(block or {})}, _PARITY), spots
+
+
+def _filled(study, legs, decision="2019-01-15", fill="2019-01-16"):
+    """Fill a hand-built book of ``(right, sign, strike, quantity)`` legs on ``fill`` through the study's own `_fill`."""
+    book = {"id": "b1", "symbol": "X", "expiry": "2019-02-01", "factor": 1., "decision_date": decision,
+            "legs": [{"right": r, "sign": sg, "strike": k, "quantity": q} for r, sg, k, q in legs],
+            "contracts": sum(q for *_, q in legs), "credit": 0., "reserve": 0., "max_loss": 0.}
+    filled, reason = study._fill(book, fill, None)
+    assert reason is None
+    return filled
+
+
+def test_the_units_come_from_the_decision_session_forward_delta_truncated_once():
+    from dskit.pipeline.option_pricing import black76_delta
+
+    study, hedge, spots = _hedge_study()
+    book = _filled(study, [("put", 1, 100., 3)])
+    hedge.attach(book, "2019-01-16", None)
+    decision_forward = spots["2019-01-15"] * 1.001
+    delta = 3 * 100 * black76_delta("put", decision_forward, 100., 0.3, 17 / 365)
+    record = book["hedge"]
+    assert record["status"] == "ok" and record["units"] == math.trunc(-1.0 * delta) > 0
+    assert record["raw"] == pytest.approx(-delta) and record["rounding_sh"] == pytest.approx(record["units"] + delta)
+    assert isinstance(record["units"], int), "truncated once, here: the ledger is told not to round again"
+    # the fill session's forward is the strike of the leg, NOT the decision's, NOT the spot
+    assert record["reference"] == pytest.approx(spots["2019-01-16"] * 1.001) and record["reference_source"] == "parity"
+
+
+def test_the_fill_and_mark_forwards_exclude_the_books_own_strikes():
+    one = {**_PARITY, "parity_strikes": 1}        # the single nearest pair: the book's own strike would be the one used
+    study, _, spots = _hedge_study(bump=lambda day, right, k, row: row.update(
+        bid=row["bid"] + 20., ask=row["ask"] + 20.) if (right == "call" and k == 105. and day >= "2019-01-16") else None)
+    hedge = ledger_studies.ReplayHedge(study, _REPLAY_BLOCK, one)
+    book = _filled(study, [("put", 1, 105., 3)])
+    hedge.attach(book, "2019-01-16", None)
+    assert spots["2019-01-16"] == 105.0
+    assert book["hedge"]["reference"] == pytest.approx(spots["2019-01-16"] * 1.001), "the poisoned 105 pair is excluded"
+    path = hedge.path(book)
+    assert path["2019-01-22"] == (pytest.approx(spots["2019-01-22"] * 1.001), False)
+    assert hedge.forward("X", "2019-01-22", "2019-02-01", 1., ())[0] != pytest.approx(spots["2019-01-22"] * 1.001), \
+        "without the exclusion the poisoned pair would be the nearest"
+
+
+def test_a_mark_without_a_parity_pair_falls_back_to_the_carry_ratio_flagged_and_the_robustness_rule_uses_it_everywhere():
+    study, hedge, spots = _hedge_study(bump=lambda day, right, k, row: row.update(bid_size=0, ask_size=0)
+                                       if day == "2019-01-22" else None)
+    book = _filled(study, [("put", 1, 100., 3)])
+    hedge.attach(book, "2019-01-16", None)
+    ref = book["hedge"]["reference"]
+    path = hedge.path(book)
+    assert path["2019-01-22"] == (pytest.approx(spots["2019-01-22"] * ref / spots["2019-01-16"]), True)
+    assert path["2019-01-23"][1] is False and list(path)[0] == "2019-01-16" and "2019-02-01" not in path
+    carry = ledger_studies.ReplayHedge(study, _REPLAY_BLOCK, _PARITY, mark_rule="carry_ratio").path(book)
+    assert path["2019-01-16"] == carry["2019-01-16"] and all(v[1] for d, v in carry.items() if d > "2019-01-16")
+    assert carry["2019-01-23"][0] == pytest.approx(spots["2019-01-23"] * ref / spots["2019-01-16"])
+
+
+def test_the_hedged_reserve_is_the_hedged_max_loss_plus_the_closing_allowance_by_hand():
+    study, hedge, spots = _hedge_study()
+    book = _filled(study, [("put", 1, 100., 3)])
+    before = dict(book)
+    hedge.attach(book, "2019-01-16", None)
+    record, units, ref = book["hedge"], book["hedge"]["units"], book["hedge"]["reference"]
+    credit = book["credit"]
+    loss_at_zero = -(credit + 3 * 100 * 100. - units * ref)        # put payoff 100 a share on 300 shares; the shares go to 0
+    loss_at_strike = -(credit + units * (100. - ref))
+    allowance = record["closing_cost_allowance"]
+    rule = StaticDeltaHedge_ = None  # noqa: F841
+    from dskit.pipeline.option_exposure import StaticDeltaHedge
+    expect = StaticDeltaHedge({"hedge_fee_per_share": .005, "hedge_half_spread_bps": 5.0, "hedge_borrow_rate": 0.})\
+        .carry_costs(units, ref, 2 * ref, record["days"])["trade_costs"]
+    assert allowance == pytest.approx(expect)
+    hedged_loss = max(0., loss_at_zero, loss_at_strike)
+    assert book["max_loss"] == pytest.approx(max(loss_at_zero, loss_at_strike))
+    assert book["reserve"] == pytest.approx(max(hedged_loss + allowance, 0.15 * units * ref))
+    assert record["option_reserve"] == before["reserve"] and record["unhedged_max_loss"] == before["max_loss"]
+
+
+def test_the_forward_leg_settles_with_the_book_and_the_shared_ledger_agrees_to_the_cent():
+    from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+    from dskit.pipeline.option_exposure import StaticDeltaHedge
+
+    study, hedge, spots = _hedge_study(spot_at_expiry=92.)
+    book = _filled(study, [("put", 1, 100., 3)])
+    hedge.attach(book, "2019-01-16", None)
+    record = book["hedge"]
+    units, ref = record["units"], record["reference"]
+    account = FundedOptionAccount(10000., 1000., 14, "2019-01-02")
+    account.open[book["id"]] = book
+    settled = study._settlements(account, "2019-02-01")
+    costs = StaticDeltaHedge({"hedge_fee_per_share": .005, "hedge_half_spread_bps": 5.0, "hedge_borrow_rate": 0.}) \
+        .carry_costs(units, ref, 92., record["days"])["trade_costs"]
+    options = book["credit"] + 100 * 3 * (100. - 92.)
+    assert settled[book["id"]] == pytest.approx(options + units * (92. - ref) - costs)
+    account.advance("2019-02-01", settled)
+    assert account.realized == pytest.approx(settled[book["id"]]) and account.funding == account.contributions + account.realized
+    ledger = study._ledger(account.closed, None, hedge)             # raises on any PnL or reserve mismatch
+    row = ledger["trades"][0]
+    assert row["pnl_usd"] == pytest.approx(settled[book["id"]]) and row["hedge_fees_usd"] == pytest.approx(costs)
+    assert row["hedge_pnl_usd"] == pytest.approx(units * (92. - ref)) and row["mark_forward_carried"] == 0
+    mid = next(m for m in ledger["marks"] if m["date"] == "2019-01-23")
+    assert mid["hedge_pnl_usd"] == pytest.approx(units * (hedge.path(book)["2019-01-23"][0] - ref))
+    assert ledger["summary"]["hedge"]["mark_forward_carried"] == 0
+
+
+def test_a_book_without_a_hedge_leg_goes_through_the_plain_ledger_and_the_two_passes_merge_in_account_order():
+    from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+
+    study, hedge, spots = _hedge_study(spot_at_expiry=92.)
+    first, second = _filled(study, [("put", 1, 100., 3)]), _filled(study, [("put", -1, 95., 1)])
+    second["id"] = "b2"
+    for book in (first, second):
+        hedge.attach(book, "2019-01-16", None)
+    assert second["hedge"]["status"] == "hedge_unbounded_above" and second["hedge"]["units"] == 0
+    account = FundedOptionAccount(10000., 1000., 14, "2019-01-02")
+    account.open.update({"b2": second, "b1": first})
+    account.advance("2019-02-01", study._settlements(account, "2019-02-01"))
+    order = [b["id"] for b in account.closed]
+    ledger = study._ledger(account.closed, None, hedge)
+    assert [t["order_index"] for t in ledger["trades"]] == [0, 1]
+    assert {m["order_index"] for m in ledger["marks"]} == {0, 1}
+    by_index = {t["order_index"]: t for t in ledger["trades"]}
+    hedged_index = order.index("b1")
+    assert by_index[hedged_index]["hedge_fees_usd"] > 0 and by_index[1 - hedged_index]["hedge_fees_usd"] == 0
+    assert "hedged" in ledger["summary"]
+    with pytest.raises(ValueError, match="ReplayHedge"):
+        study._ledger(account.closed, None)
+
+
+def test_unhedgeable_books_are_left_unhedged_and_counted():
+    study, hedge, _ = _hedge_study()
+    short_put = _filled(study, [("put", -1, 95., 2)])
+    bull_call = _filled(study, [("call", 1, 100., 1), ("call", -1, 105., 1)])
+    long_put = _filled(study, [("put", 1, 100., 3)])
+    for book in (short_put, bull_call, long_put):
+        hedge.attach(book, "2019-01-16", None)
+    assert short_put["hedge"]["status"] == bull_call["hedge"]["status"] == "hedge_unbounded_above"
+    assert long_put["hedge"]["status"] == "ok"
+    for book in (short_put, bull_call):
+        assert book["hedge"]["units"] == 0 and book["reserve"] == book["hedge"].get("option_reserve", book["reserve"])
+    assert hedge.counts["books_hedge_unbounded_above"] == 2 and hedge.record()["counts"]["books_hedge_unbounded_above"] == 2
+
+
+def test_a_leg_without_iv_leaves_the_whole_book_unhedged_and_counts_the_code():
+    study, hedge, _ = _hedge_study(bump=lambda day, right, k, row: row.update(iv=None)
+                                   if (day == "2019-01-15" and right == "put" and k == 100.) else None)
+    book = _filled(study, [("put", 1, 100., 3)])
+    hedge.attach(book, "2019-01-16", None)
+    assert book["hedge"] == {"status": "leg_no_iv", "units": 0}
+    assert hedge.counts["leg_no_iv"] == 1 and hedge.counts["books_leg_no_iv"] == 1
+
+
+def test_a_short_hedge_on_a_hard_to_borrow_name_is_left_unhedged_and_a_long_hedge_is_kept():
+    params, inputs, spots = _hedge_world()
+    for row in inputs["X"]["bars"]:                       # six violent closes before the decision session
+        if "2019-01-04" <= row["date"] <= "2019-01-14":
+            row["close"] = 100. * (3. if row["date"] in ("2019-01-04", "2019-01-08", "2019-01-10", "2019-01-14") else 1.)
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    hedge = ledger_studies.ReplayHedge(study, _REPLAY_BLOCK, _PARITY)
+    call = _filled(study, [("call", 1, 100., 3)])           # a long call sells shares: a SHORT hedge
+    put = _filled(study, [("put", 1, 100., 3)])             # a long put buys shares: a LONG hedge
+    hedge.attach(call, "2019-01-16", None)
+    hedge.attach(put, "2019-01-16", None)
+    assert call["hedge"] == {"status": "hedge_hard_to_borrow", "units": 0}
+    assert put["hedge"]["status"] == "ok" and put["hedge"]["units"] > 0
+    assert hedge.counts["books_hedge_hard_to_borrow"] == 1
+
+
+def test_a_hedged_document_is_confined_below_the_seal_and_needs_its_parity_params():
+    params, _ = _block_doc({"hedge": dict(_REPLAY_BLOCK)})
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    del params["hedge_parity"]
+    _refused_block(params, "hedge_parity_missing")
+    params["hedge_parity"] = {**_PARITY, "min_pairs": 0}
+    _refused_block(params, "hedge_parity_invalid")
+    params, _ = _block_doc({"hedge": dict(_REPLAY_BLOCK)})
+    params["bridge"]["protected_end_before"], params["bridge"]["end_before"] = "2022-01-01", "2021-07-02"
+    _refused_block(params, "hedge_seal")
+    params, _ = _block_doc({"calibration": dict(_CAL)})
+    params["hedge_parity"] = dict(_PARITY)
+    _refused_block(params, "hedge_parity_unused")
+
+
+def test_a_hedge_cannot_combine_with_a_sizer_and_other_blocks_stay_unattached():
+    params, _ = _block_doc({"hedge": dict(_REPLAY_BLOCK), "sizer": dict(SIZER)})
+    params["methods"][0]["short_notional_fraction"] = .2
+    _refused_block(params, "hedge_with_sizer")
+    params, inputs = _block_doc({"hedge": dict(_REPLAY_BLOCK), "calibration": dict(_CAL)})
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    with pytest.raises(ValueError, match="block_unattached"):
+        study._method(params["methods"][0], None)
+
+
+def test_program_mode_and_a_condition_stay_refused_in_this_stage():
+    for change, code in (({"mode": "program"}, "block_unattached"),
+                         ({"condition": {"vol_regime": "high"}}, "hedge_condition_unattached")):
+        params, inputs = _block_doc({"hedge": {**_REPLAY_BLOCK, **change}})
+        study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+        with pytest.raises(ValueError, match=code):
+            study._method(params["methods"][0], None)
+
+
+def test_a_replay_hedge_method_runs_like_its_unhedged_twin_when_no_book_can_be_hedged():
+    plain_params, inputs = _packet_clock_fixture()
+    plain = ledger_studies.WeeklyOptionPortfolioStudy(plain_params, inputs)._method(plain_params["methods"][0], None)
+    params, inputs = _block_doc({"hedge": dict(_REPLAY_BLOCK)}, method_id="nominal_hedged")
+    method = params["methods"][0]
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    result = study._method(method, None)
+    assert [t["pnl"] for t in result["trades"]] == [t["pnl"] for t in plain["trades"]]
+    assert result["pnl"] == plain["pnl"] and result["curve"] == plain["curve"]
+    assert result["hedge"]["counts"]["books_leg_no_iv"] == len(result["trades"]) >= 1    # the fixture quotes carry no iv
+    assert all(t["hedge"] == {"status": "leg_no_iv", "units": 0} for t in result["trades"])
+    assert result["hedge"]["mark_rule"] == "parity" and result["hedge"]["parity"] == _PARITY
+    assert study._method(method, None, recorded=result) == result

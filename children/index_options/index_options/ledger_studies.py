@@ -68,17 +68,19 @@ import os
 import sys
 from abc import ABC, abstractmethod
 from collections import Counter
+from datetime import date
 from fractions import Fraction
 from typing import NamedTuple
 
 from dskit.pipeline.driver import resolve_json_artifact
-from dskit.pipeline.hedge_overlay import HedgeOverlay
-from dskit.pipeline.method_blocks import MethodBlocks
+from dskit.pipeline.hedge_overlay import BOOKS_PREFIX, HedgeOverlay
+from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL, MethodBlocks
+from dskit.pipeline.option_exposure import HardToBorrowProxy, ParityForward, StaticDeltaHedge
 from dskit.pipeline.records import number_ok
 from dskit.pipeline.runs import NODES_DIR, RESULT_FILE, WALKFORWARD_FILE, walk_fold_dirs
 from dskit.pipeline.stats import lower_tail_mean, max_drawdown
 
-from .contracts import CONDOR_LEGS, STRUCTURES, structure_max_loss
+from .contracts import CONDOR_LEGS, STRUCTURES, structure_max_loss, usable_parity_rows
 from .nodes import CDFQuoteOptionSelect as _CDFQuoteOptionSelect
 from .nodes import (
     _iso_day,
@@ -98,7 +100,7 @@ from dskit.pipeline.study_protocol import StudyNode
 __all__ = ["MIOPacketPlan", "MIOPacketStudy", "MIOPacketCompare", "ACCOUNT_COLUMNS", "BACKTEST_NODE", "CAPITAL_LEVELS", "COLUMNS", "CVAR_ALPHA",
            "EVIDENCE_ARTIFACT", "NOMINAL_ARM", "SELECT_STAGE", "SETTLE_STAGE", "UNCAPPED",
            "REJECTION_REASONS", "STUDIES", "AccountRow", "AccountStudy", "AdmissionCaps",
-           "AllocationStudy", "EnteredCell", "HedgeStudy", "LedgerStudy", "AccountOrder", "SavedReplay",
+           "AllocationStudy", "EnteredCell", "HedgeStudy", "LedgerStudy", "AccountOrder", "ReplayHedge", "SavedReplay",
            "WalkLedger", "main"]
 
 #: The key the shipped grid documents give their backtest node.
@@ -1291,6 +1293,218 @@ class _SQLiteQuoteView:
             raise QuoteIndexIntegrityError(str(exc)) from exc
 
 
+class ReplayHedge:
+    """ADR-0312 Amendment 1 S3: the hedge of a saved selection, attached to a study's fills and settlements.
+
+    The CHILD side of the hedge (the core :class:`~dskit.pipeline.hedge_overlay.HedgeOverlay` computes no forward):
+    it builds every parity forward through the one filter and owner, ``usable_parity_rows`` then
+    ``ParityForward.from_chain(rows, spot, exclude_strikes)``, and supplies them as the shared ledger's
+    ``hedge_forwards``. Per filled book it sizes ONE net quantity ``U_b = trunc(sum_i q_i u_i)`` from the DECISION
+    session's forward delta (truncated once, here; the ledger is told not to round again), strikes it at the fill
+    session's forward excluding the book's own strikes, and leaves the book unhedged, counted, when a leg has no iv,
+    the hedge is unbounded above or a short hedge sits on a hard-to-borrow name. The hedged book's reserve is its
+    hedged maximum loss (``structure_max_loss(..., hedge=(U_b, F_fill))``) plus a closing-cost allowance, floored by
+    the overlay's margin fraction.
+
+    Parameters
+    ----------
+    study : WeeklyOptionPortfolioStudy
+        Supplies ``_quotes``, ``_bars``, ``params`` and ``calendar`` (a frozen replay's study is enough).
+    block : dict
+        The method's ``hedge`` block (``mode`` ``"replay"``, ``condition`` ``None``).
+    parity : dict
+        ``ParityForward`` params (``parity_strikes``, ``min_pairs``, ``max_pair_spread_frac``): child params,
+        never in the block.
+    mark_rule : str
+        ``"parity"`` (the day's parity forward excluding the book's strikes, carry-ratio fallback flagged) or
+        ``"carry_ratio"`` (every mark at ``S_t x F_fill / S_fill``: the robustness read).
+
+    Examples
+    --------
+    Attach to a filled book and read the settled leg::
+
+        hedge = ReplayHedge(study, method["hedge"], params["hedge_parity"])
+        hedge.attach(filled, fill_day, charge)         # sets filled["hedge"]
+        ReplayHedge.net_settle(filled["hedge"], settle_level)
+    """
+
+    MARK_RULES = ("parity", "carry_ratio")
+
+    def __init__(self, study, block, parity, *, mark_rule="parity"):
+        if not isinstance(block, dict) or block.get("mode") != "replay":
+            raise ValueError("block_unattached: only a replay-mode hedge is attached; program mode lands in ADR-0312 S4")
+        if block.get("condition") is not None:
+            raise ValueError("hedge_condition_unattached: the replay attaches the unconditional hedge only")
+        if mark_rule not in self.MARK_RULES:
+            raise ValueError(f"mark_rule must be one of {list(self.MARK_RULES)}, got {mark_rule!r}")
+        self.study, self.block, self.mark_rule = study, dict(block), mark_rule
+        self.overlay = HedgeOverlay.from_method({"hedge": self.block})
+        self.parity = ParityForward(dict(parity))
+        self._htb = HardToBorrowProxy({k: block[k] for k in HardToBorrowProxy._PARAMS})
+        self._rows = {}
+
+    @property
+    def counts(self):
+        """The overlay's counters (the ``LegGreeks`` codes, ``books_<status>``, ``forward_spot``, ...)."""
+        return self.overlay.counts
+
+    def _chain(self, symbol, day, expiry):
+        """Return one expiry's rows on ``day`` in the Greeks tool's shape (``right``, ``strike``, sizes, ``basis_factor``)."""
+        key = (symbol, day, expiry)
+        if key not in self._rows:
+            quotes = self.study._quotes[symbol]
+            if hasattr(quotes, "iter_for"):
+                raw = list(quotes.iter_for(day, expiry))
+            else:
+                raw = [r for k, r in getattr(self.study, "_by_day", {}).get(symbol, {}).get(day, {}).items()
+                       if k[1] == expiry]
+            self._rows[key] = [{"right": r["type"], "strike": float(r["strike_raw"]), "bid": r.get("bid"),
+                                "ask": r.get("ask"), "iv": r.get("iv"), "bid_size": r.get("bid_size"),
+                                "ask_size": r.get("ask_size"), "basis_factor": r.get("basis_factor")} for r in raw]
+        return self._rows[key]
+
+    def _spot(self, symbol, day, factor):
+        """Return the underlying on ``day`` on the book's basis, or ``None``."""
+        close = self.study._bars[symbol].get(day)
+        return close / factor if number_ok(close) and close > 0 else None
+
+    def forward(self, symbol, day, expiry, factor, exclude=()):
+        """Return ``(forward, source)``: the parity forward of the usable rows, ``(spot, "spot")`` without a pair.
+
+        ``(None, code)`` when the day has no spot (``no_spot``) or its chain quotes a contract twice
+        (``duplicate_quote``).
+        """
+        spot = self._spot(symbol, day, factor)
+        if spot is None:
+            return None, "no_spot"
+        bridge = self.study.params["bridge"]
+        rows = usable_parity_rows(self._chain(symbol, day, expiry), factor, bridge["min_quote_size"],
+                                  bridge["max_relative_spread"], rescale=True)
+        try:
+            return self.parity.from_chain(rows, spot, exclude)
+        except ValueError:
+            return None, ParityForward.DUPLICATE_QUOTE
+
+    def _decision_book(self, book, legs):
+        """Return ``(book units, None)`` from the decision session's forward delta, else ``(None, code)``."""
+        symbol, expiry, factor = book["symbol"], book["expiry"], book["factor"]
+        decision, mult = book["decision_date"], self.study.params["bridge"]["solver"]["multiplier"]
+        forward, source = self.forward(symbol, decision, expiry, factor)
+        if forward is None:
+            return None, source
+        self.counts["forward_spot"] += source != ParityForward.SOURCE_PARITY
+        rows = self._chain(symbol, decision, expiry)
+        items = []
+        for leg in legs:
+            row = next((r for r in rows if r["right"] == leg["right"]
+                        and math.isclose(r["strike"], leg["strike"], rel_tol=1e-9)), None)
+            quote = None if row is None or not (number_ok(row["bid"]) and number_ok(row["ask"])) else {
+                "bid": row["bid"] / factor, "ask": row["ask"] / factor, "iv": row["iv"]}
+            items.append({"legs": ((leg["right"], leg["sign"]),), "strikes": (leg["strike"],),
+                          "quotes": [quote], "expiry": expiry})
+        context = {"forward": forward, "spot": self._spot(symbol, decision, factor), "day": decision,
+                   "multiplier": mult}
+        closes = self._htb.closes_before(self.study._bars[symbol], decision)
+        if closes is None:
+            self.counts["htb_unreadable"] += 1
+        else:
+            context["closes"] = closes
+        entries = self.overlay.units(items, context)
+        return self.overlay.book_units(entries, [leg["quantity"] for leg in legs]), None
+
+    def attach(self, book, day, charge=None):
+        """Hedge a filled ``book`` (filled on ``day``) or record why not; sets ``book["hedge"]``.
+
+        An unhedged book keeps every field it had and gains ``hedge = {"status": <code>, "units": 0}``; a hedged
+        one gets its hedged ``reserve`` and ``max_loss`` (the unhedged ``option_reserve`` and
+        ``unhedged_max_loss`` kept) and the leg's ``units``, ``reference`` and cost rates.
+        """
+        ov, study = self.overlay, self.study
+        symbol, expiry, factor = book["symbol"], book["expiry"], book["factor"]
+        mult = study.params["bridge"]["solver"]["multiplier"]
+        legs = [leg for leg in book["legs"] if leg["quantity"]]
+        record = book["hedge"] = {"status": None, "units": 0}
+        hedged, code = self._decision_book(book, legs)
+        reference, source = self.forward(symbol, day, expiry, factor, {leg["strike"] for leg in legs})
+        if hedged is None or reference is None:
+            record["status"] = code or source
+            ov.counts[BOOKS_PREFIX + record["status"]] += 1
+            return
+        self.counts["forward_spot"] += source != ParityForward.SOURCE_PARITY
+        signed = [(leg["right"], leg["sign"] * leg["quantity"]) for leg in legs]
+        strikes = [leg["strike"] for leg in legs]
+        status = ov.classify_book(hedged, signed, strikes, book["credit"], mult, reference)
+        record["status"] = status
+        if status != "ok" or hedged["units"] == 0:
+            return
+        units = hedged["units"]
+        leg = ov.legs(hedged, {"forward": reference})
+        days = (date.fromisoformat(expiry) - date.fromisoformat(day)).days
+        allowance = ov.costs(leg, 2.0 * reference, days)["trade_costs"]
+        loss = ov.max_loss(signed, strikes, book["credit"], mult, units, reference)
+        reserve = study._floor(max(0., loss, -book["credit"]), charge or study._charge({}), book["legs"], mult)
+        record.update(units=units, raw=hedged["raw"], ratio=ov.params["ratio"], reference=reference,
+                      reference_source=source, days=days, rounding_sh=units - hedged["raw"],
+                      rates={k: ov.params[k] for k in ("hedge_fee_per_share", "hedge_half_spread_bps")},
+                      closing_cost_allowance=allowance, option_reserve=book["reserve"],
+                      unhedged_max_loss=book["max_loss"])
+        book.update(reserve=max(reserve + allowance, ov.book_floor(units, reference)), max_loss=loss)
+
+    @staticmethod
+    def _rule(record):
+        """Return the shared cost rule for a book's recorded rates (forward borrow rate 0, owner Q9a)."""
+        return StaticDeltaHedge({**record["rates"], "hedge_borrow_rate": 0.0})
+
+    @classmethod
+    def net_settle(cls, record, level):
+        """Return the leg's settled P&L net of its trade costs at ``level``: ``U (level - F_fill) - carry_costs``."""
+        costs = cls._rule(record).carry_costs(record["units"], record["reference"], level, record["days"])
+        return record["units"] * (level - record["reference"]) - costs["trade_costs"]
+
+    @classmethod
+    def mark(cls, record, forward):
+        """Return the leg's marked P&L at ``forward``: ``U (F_t - F_fill)`` less the entry half of its costs."""
+        entry = cls._rule(record).carry_costs(record["units"], record["reference"], record["reference"],
+                                               record["days"])["trade_costs"] / 2.0
+        return record["units"] * (forward - record["reference"]) - entry
+
+    def path(self, book):
+        """Return ``{day: (forward, carried)}`` for each session from the fill through the day before expiry.
+
+        ``"parity"``: the day's parity forward excluding the book's strikes, else ``S_t x F_fill / S_fill``
+        flagged carried; ``"carry_ratio"``: every mark on the carry ratio. The fill day is the reference.
+        """
+        record, symbol, factor = book["hedge"], book["symbol"], book["factor"]
+        strikes = {leg["strike"] for leg in book["legs"] if leg["quantity"]}
+        s_fill = self._spot(symbol, book["fill_date"], factor)
+        out = {}
+        for day in self.study.calendar:
+            if not book["fill_date"] <= day < book["expiry"]:
+                continue
+            if day == book["fill_date"]:
+                out[day] = (record["reference"], record["reference_source"] != ParityForward.SOURCE_PARITY)
+                continue
+            if self.mark_rule == "parity":
+                forward, source = self.forward(symbol, day, book["expiry"], factor, strikes)
+                if forward is not None and source == ParityForward.SOURCE_PARITY:
+                    out[day] = (forward, False)
+                    continue
+            spot = self._spot(symbol, day, factor)
+            if spot is not None:
+                out[day] = (spot * record["reference"] / s_fill, True)
+        return out
+
+    def forward_rows(self, book, index):
+        """Return the shared ledger's ``hedge_forwards`` rows for one hedged order at input position ``index``."""
+        return [{"order": index, "date": day, "forward": forward, "carried": bool(carried)}
+                for day, (forward, carried) in self.path(book).items()]
+
+    def record(self):
+        """Return what a result carries: the overlay's params and counts, the parity params and the mark rule."""
+        return {**self.overlay.record(), "parity": dict(self.parity.params), "mark_rule": self.mark_rule}
+
+
+
 class WeeklyOptionPortfolioStudy:
     """Replay fixed portfolio methods on a bounded archive and weekly clock.
 
@@ -1482,7 +1696,9 @@ class WeeklyOptionPortfolioStudy:
     _FILLED_ACCOUNT = "filled_account"
     #: ``locked_method_ids`` (ADR-0313 D): the ids that may carry no block; required beside any block.
     #: ``decision_weeks`` (ADR-0313 M1/G5): exactly one decision date; every other week is ``week_not_selected``.
-    _OPTIONAL_PARAMS = ("fill_sizing", "locked_method_ids", "decision_weeks")
+    #: ``hedge_parity`` (ADR-0312 A1 section 6): the child's ``ParityForward`` params for the hedge's decision, fill and mark
+    #: forwards (the overlay block carries none); required exactly when a method carries a ``hedge`` block.
+    _OPTIONAL_PARAMS = ("fill_sizing", "locked_method_ids", "decision_weeks", "hedge_parity")
     _WEEK_NOT_SELECTED = "week_not_selected"
     _FILL_SIZINGS = ("all_or_none", "available_size")
     _AVAILABLE_SIZE = "available_size"
@@ -1676,6 +1892,7 @@ class WeeklyOptionPortfolioStudy:
                    "locked_method_ids": p.get("locked_method_ids"), "clocks": p.get("clocks")}
         for method in p["methods"]:
             cls._BLOCKS.validate(method, context)
+        cls._hedge_configuration(p)
         for method in p["methods"]:
             if "sizer" in method and method["sizer"]["beta_lookback"] < p["correlation_min_pairs"]:
                 # Fewer sessions in the loadings' window than the study needs to estimate would hold every week.
@@ -1698,6 +1915,25 @@ class WeeklyOptionPortfolioStudy:
             if problems:
                 raise ValueError("; ".join(problems))
         FundedOptionAccount(p["initial"], p["deposit"], p["deposit_every_days"], p["bridge"]["start"])
+
+    @staticmethod
+    def _hedge_configuration(p):
+        """Refuse a hedged document that is not sealed (``hedge_seal``) or lacks its parity params (``hedge_parity_*``)."""
+        hedged = any("hedge" in m for m in p["methods"])
+        if "hedge_parity" in p and not hedged:
+            raise ValueError("hedge_parity_unused: hedge_parity is for a document with a hedged method")
+        if not hedged:
+            return
+        if p["bridge"]["end_before"] > DEVELOPMENT_SEAL:
+            raise ValueError(f"hedge_seal: a hedged document must end before {DEVELOPMENT_SEAL}, "
+                             f"got bridge.end_before {p['bridge']['end_before']!r}")
+        parity = p.get("hedge_parity")
+        if not isinstance(parity, dict):
+            raise ValueError("hedge_parity_missing: a hedged method needs the document's hedge_parity "
+                             f"({list(ParityForward._PARAMS)})")
+        problems = ParityForward.validate_params(parity)
+        if problems:
+            raise ValueError("hedge_parity_invalid: " + "; ".join(problems))
 
     @staticmethod
     def _decision_week(value):
@@ -2755,20 +2991,54 @@ class WeeklyOptionPortfolioStudy:
             strikes = [leg["strike"] for leg in active]
             result[key] = book["credit"]+self.params["bridge"]["solver"]["multiplier"]*structure_payoff(
                 legs, self._bars[symbol][day]/factor, strikes)
+            if book.get("hedge", {}).get("units"):
+                # ADR-0312 A1 S3: the forward leg settles with the book (units x (S - F_fill) less its trade costs).
+                result[key] += ReplayHedge.net_settle(book["hedge"], self._bars[symbol][day]/factor)
         return result
 
-    def _ledger(self, trades, charge=None):
-        """Delegate fills, daily mid marks and terminal cashflow to the shared ledger."""
+    def _ledger(self, trades, charge=None, hedge=None):
+        """Delegate fills, daily mid marks and terminal cashflow to the shared ledger.
+
+        Books carrying a hedge leg (``book["hedge"]["units"]`` nonzero) run in a second ledger pass with the shared
+        ledger's ``fixed`` forward hedge and the ``hedge`` object's forwards; the passes are merged back into the
+        account's order. With no hedged book this is the single pass it always was.
+        """
+        held = [b for b in trades if b.get("hedge", {}).get("units")]
+        if not held:
+            return self._ledger_pass(trades, charge)
+        if hedge is None:
+            raise ValueError("hedged books need their ReplayHedge to supply the forwards")
+        plain = [b for b in trades if not b.get("hedge", {}).get("units")]
+        position = {id(b): i for i, b in enumerate(trades)}
+        passes = [(plain, self._ledger_pass(plain, charge)),
+                  (held, self._ledger_pass(held, charge, hedge))]
+        merged = {"trades": [], "marks": []}
+        for books, done in passes:
+            for row in done["trades"]:
+                row["order_index"] = position[id(books[row["order_index"]])]
+                merged["trades"].append(row)
+            for row in done["marks"]:
+                row["order_index"] = position[id(books[row["order_index"]])]
+                merged["marks"].append(row)
+        merged["trades"].sort(key=lambda r: r["order_index"])
+        merged["marks"].sort(key=lambda r: r["order_index"])
+        merged["summary"] = {**passes[0][1]["summary"], "hedged": passes[1][1]["summary"]} if plain \
+            else passes[1][1]["summary"]
+        return merged
+
+    def _ledger_pass(self, trades, charge=None, hedge=None):
+        """One shared-ledger pass over ``trades`` (all unhedged, or all hedged with ``hedge`` supplying the forwards)."""
         from dskit.pipeline.libs.option_ledger import OptionStructureLedger
 
         if not trades:
             return {"trades": [], "marks": [], "summary": {}}
         rows, orders, structures = {}, [], {}
-        for b in trades:
+        for index, b in enumerate(trades):
             symbol, expiry, factor = b["symbol"], b["expiry"], b["factor"]
             structures[b["id"]] = [[leg["right"], leg["sign"]*leg["quantity"]] for leg in b["legs"]]
             orders.append({"date": b["fill_date"], "symbol": symbol, "expiration": expiry,
-                           "strikes": [leg["strike"] for leg in b["legs"]], "structure": b["id"]})
+                           "strikes": [leg["strike"] for leg in b["legs"]], "structure": b["id"],
+                           **({"hedge_units": b["hedge"]["units"]} if hedge else {})})
             for day in self.calendar:
                 if not b["fill_date"] <= day <= expiry:
                     continue
@@ -2799,11 +3069,23 @@ class WeeklyOptionPortfolioStudy:
         ledger_inputs = {"chain": list(rows.values()), "orders": orders}
         if self.adjustments:
             ledger_inputs["adjustments"] = [event.record() for event in self.adjustments.values()]
-        ledger = OptionStructureLedger("ledger", {
+        ledger_params = {
             "chain_fields": {k: k for k in fields}, "order_fields": {k: k for k in order_fields},
             "structures": structures, "multiplier": self.params["bridge"]["solver"]["multiplier"],
             "fee_per_contract": self.params["bridge"]["solver"]["fee_per_contract_usd"],
-            "fill": "nbbo", "close_rule": "expiry"}).run(None, ledger_inputs)
+            "fill": "nbbo", "close_rule": "expiry"}
+        if hedge:
+            # The units are already truncated (once, by the overlay): the ledger must not round them again.
+            first = trades[0]["hedge"]["rates"]
+            if any(b["hedge"]["rates"] != first for b in trades):
+                raise ValueError("hedged books of one pass must share their cost rates")
+            ledger_params["order_fields"] = {k: k for k in (*order_fields, "hedge_units")}
+            ledger_params["hedge"] = {"rebalance": "fixed", "instrument": "forward", "round_units": False,
+                                      "fee_per_share": first["hedge_fee_per_share"],
+                                      "half_spread_bps": first["hedge_half_spread_bps"]}
+            ledger_inputs["hedge_forwards"] = [row for index, b in enumerate(trades)
+                                               for row in hedge.forward_rows(b, index)]
+        ledger = OptionStructureLedger("ledger", ledger_params).run(None, ledger_inputs)
         if len(ledger["trades"]) != len(trades):
             raise ValueError("shared ledger refused an admitted book")
         for book, row in zip(trades, ledger["trades"]):
@@ -2812,13 +3094,14 @@ class WeeklyOptionPortfolioStudy:
             expected = self._floor(max(0., row["max_loss_usd"], -row["credit_usd"]),
                                    charge or self._charge({}), book["legs"],
                                    self.params["bridge"]["solver"]["multiplier"])
-            if abs(expected-book["reserve"]) > 1e-6:
+            held = book["hedge"]["option_reserve"] if hedge else book["reserve"]
+            if abs(expected-held) > 1e-6:
                 raise ValueError("shared ledger/chronological reserve mismatch")
         return ledger
 
-    def _finish(self, method, account, decisions, rejected, snapshots):
+    def _finish(self, method, account, decisions, rejected, snapshots, hedge=None):
         """Join shared-ledger daily marks with contribution-aware account snapshots."""
-        ledger = self._ledger(account.closed, self._charge(method))
+        ledger = self._ledger(account.closed, self._charge(method), hedge)
         order_keys = [t["id"] for t in account.closed]
         marks = {(order_keys[m["order_index"]], m["date"]): m for m in ledger["marks"]}
         previous, nav, peak, max_dd = account.initial, 1., 1., 0.
@@ -2935,12 +3218,18 @@ class WeeklyOptionPortfolioStudy:
         defects = TransportPortfolioSolve.validate_params(p["solver"])
         if defects:
             raise ValueError("; ".join(defects))
-        if self._BLOCKS.present(method):
+        hedge = None
+        present = self._BLOCKS.present(method)
+        if present:
             if derived is not None or policy:
                 raise ValueError("block_not_derived: a method with a block is solved locally, never derived or policy-scored")
             # ADR-0313 I2 registers and validates the blocks only; each feature lands in its own stage (I5, I6, I7,
-            # ADR-0312 S3). Until then a block must not be silently ignored by a run.
-            raise ValueError("block_unattached: a method with a block cannot run until its feature is attached")
+            # ADR-0312 S3 for the replay-mode hedge). Until then a block must not be silently ignored by a run.
+            if set(present) != {"hedge"}:
+                raise ValueError("block_unattached: a method with a block cannot run until its feature is attached")
+            if self.adjustments:
+                raise ValueError("hedge_split_unsupported: a hedged run takes no split adjustment")
+            hedge = ReplayHedge(self, method["hedge"], p["hedge_parity"])
         if recorded is not None and derived is not None:
             raise ValueError("recorded replay and derived actions are exclusive")
         if (derived is not None or policy) and self._sizer(method) is not None:
@@ -2984,6 +3273,8 @@ class WeeklyOptionPortfolioStudy:
                         rejected.append({**book, "status": "unfilled", "fill_date": day, "reason": reason})
                         refusals.append({"id": book["id"], "reason": reason})
                     else:
+                        if hedge is not None:
+                            hedge.attach(filled, day, charge)
                         survivors.append(filled)
                 shock = self._shock(method)
                 if self._filled_scope(shock):
@@ -3267,7 +3558,9 @@ class WeeklyOptionPortfolioStudy:
             raise ValueError("unprocessed order at study end")
         if derived_decisions is not None and set(derived_decisions) != consumed:
             raise ValueError("derived actions for an ineligible week")
-        result = self._finish(method, account, decisions, rejected, snapshots)
+        result = self._finish(method, account, decisions, rejected, snapshots, hedge)
+        if hedge is not None:
+            result["hedge"] = hedge.record()
         if events is not None:
             for point in result["curve"]:
                 events({"type": "marked_equity_point", "method": method["id"], "date": point["date"],

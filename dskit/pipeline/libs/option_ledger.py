@@ -32,7 +32,8 @@ The rules, fixed by the node and not by the data:
   negative is sold; the study sizes it from the forward delta, so study and ledger cannot disagree;
   ``round_units`` truncates toward zero) struck at the parity forward ``F_fill`` of the open date, held to
   the close with no rebalance. The ledger computes no forward and no delta: the child supplies ``F_t`` per
-  (order, day) through the ``hedge_forwards`` input, and a missing row refuses (``hedge_forward_missing``).
+  (order, day) through the ``hedge_forwards`` input; a missing row refuses the order at open (``hedge_forward_missing``),
+  refuses an exit (``exit_refused:hedge_forward_missing``) and, on a mark day, carries the last forward (flagged, counted).
   P&L is ``U * (F_t - F_fill)`` marked at the day's forward (the open day marks zero), ``U * (S_settle -
   F_fill)`` at the expiry and ``U * (F_exit - F_fill)`` when an ``exit`` close unwinds it; no cash at
   entry and no dividend (the carry is inside the forward). Costs are ``StaticDeltaHedge.carry_costs``
@@ -391,6 +392,7 @@ class _FixedForwardHedge(_Hedge):
         self.reference = self.forwards[order.opened][0] if order.opened in forwards else None
         self.level = self.reference
         self.entered = False
+        self.missing = 0
         self.carried = 0
         self.row_carried = False
 
@@ -403,8 +405,10 @@ class _FixedForwardHedge(_Hedge):
         if day == self.order.expiration:
             return under, False
         if day not in self.forwards:
-            raise ValueError(f"hedge_forward_missing: order {self.order.index} has no hedge_forwards row "
-                             f"for {day.isoformat()}")
+            # A later day without a supplied row carries the last forward, flagged and counted under the stable
+            # code (the open day and the exit day are refused instead); never the spot.
+            self.missing += 1
+            return self.level, True
         return self.forwards[day]
 
     def accrue(self, day, under):
@@ -446,7 +450,8 @@ class _FixedForwardHedge(_Hedge):
 
     def record_fields(self):
         """Return the reference and the count of marks that used a fallback forward."""
-        return {"hedge_reference": self.reference, "mark_forward_carried": self.carried}
+        return {"hedge_reference": self.reference, "mark_forward_carried": self.carried,
+                "hedge_forward_missing": self.missing}
 
 
 class _Trade:
@@ -639,7 +644,14 @@ class _Trade:
         self._row(day, "mark", self.last_value, 0.0, False, None)
 
     def _try_exit(self, day):
-        """Close at the NBBO on ``day``: ``(cash, fees)`` or ``None`` after counting why not."""
+        """Close at the NBBO on ``day``: ``(cash, fees)`` or ``None`` after counting why not.
+
+        A forward hedge unwinds at the exit day's supplied forward: a day without a ``hedge_forwards`` row
+        refuses the exit (``exit_refused:hedge_forward_missing``) and the trade runs on to its expiration.
+        """
+        if self.hedge and not self.hedge.priced(day):
+            self.tally["exit_refused:hedge_forward_missing"] += 1
+            return None
         quotes, reason = self._exit_quotes(day)
         if quotes is None:
             self.tally[f"exit_refused:{reason}"] += 1
