@@ -316,3 +316,117 @@ def test_the_carried_mark_share_is_reported_and_e3_says_why():
     read = he.quarter_read("q", UNHEDGED, hedged)
     assert read["mark_forward_carried_share"] == 0.25
     assert he.quarter_read("q", UNHEDGED, HEDGED)["mark_forward_carried_share"] is None
+
+
+# --- ADR-0312 program mode 4: the program twin read against its unhedged twin, re-levering reads, the timing check ------
+
+def _twin(equity, pnl, trades=None, contracts=10, peak_reserve=1000.0, close="2019-02-01"):
+    out = _result(equity, pnl, close=close, trades=trades)
+    out.update(contracts=contracts, peak_reserve=peak_reserve)
+    return out
+
+
+PROGRAM_BOOKS = [{"id": "p", "pnl": 120.0, "close_date": "2019-02-01", "hedge": {"units": 4}}]
+
+
+def test_the_program_twin_reads_b_q_in_the_form_of_e2_and_differing_books_still_count():
+    control = _twin([0, -5000, -3000, -1000, -2000, 0], -100.0)
+    program = _twin([0, -2000, -1500, -500, -800, 100], 100.0, trades=PROGRAM_BOOKS)
+    read = he.program_quarter_read("2019Q1", control, program)
+    assert read["dDD"] == pytest.approx(3000.0) and read["dPnl"] == pytest.approx(200.0) and read["B"] == pytest.approx(3000.0)
+    assert read["books_differ"] is True and read["counts"] is True, "the program re-chooses books: that is the point"
+    worse = _twin([0, -2000, -1500, -500, -800, -1000], -1000.0, trades=PROGRAM_BOOKS)
+    assert he.program_quarter_read("2019Q1", control, worse)["B"] == pytest.approx(he.quarter_read("2019Q1", control, worse)["dDD"] - 900.0)
+
+
+def test_the_re_levering_reads_are_ratios_of_contracts_and_peak_reserve_and_never_gate_by_themselves():
+    control = _twin([0, -5000, -3000, -1000, -2000, 0], -100.0, contracts=10, peak_reserve=1000.0)
+    calm = _twin([0, -2000, -1500, -500, -800, 100], 100.0, trades=PROGRAM_BOOKS, contracts=15, peak_reserve=2000.0)
+    read = he.program_quarter_read("2019Q1", control, calm)
+    assert read["contracts_ratio"] == pytest.approx(1.5) and read["peak_reserve_ratio"] == pytest.approx(2.0)
+    assert read["re_levered"] is False, "more contracts with the drawdown cut is information, not a failure"
+    assert read["counts"] is True
+
+
+def test_a_program_twin_whose_drawdown_is_not_cut_while_contracts_rose_has_re_levered_and_fails_whatever_its_pnl():
+    control = _twin([0, -1000, -500, 0, 0, 0], -100.0, contracts=10)
+    levered = _twin([0, -3000, -500, 9000, 9000, 9000], 9000.0, trades=PROGRAM_BOOKS, contracts=30)
+    read = he.program_quarter_read("2019Q1", control, levered)
+    assert read["dDD"] < 0 and read["dPnl"] > 0 and read["re_levered"] is True
+    reads = [read, {**read, "quarter": "2019Q2"}, {**read, "quarter": "2019Q3"}, {**read, "quarter": "2020Q1"}]
+    for r in reads:
+        r["B"] = 9000.0                                         # a big B from profit alone must not rescue it
+    verdict = he.program_verdict(reads)
+    assert verdict["verdict"] == "fail" and any("re_levered" in why for why in verdict["reasons"])
+
+
+def test_the_program_verdict_is_the_e2_rule_with_the_same_numbers():
+    ok = [_read("2019Q1", 2500), _read("2019Q2", 2200), _read("2020Q1", 3000)]
+    ok = [{**r, "re_levered": False} for r in ok]
+    assert he.program_verdict(ok)["verdict"] == "pass" == he.e2_verdict(ok)["verdict"]
+    assert he.program_verdict(ok[:2])["verdict"] == "insufficient"
+    low = [{**r, "B": 900} for r in ok]
+    assert he.program_verdict(low)["verdict"] == "fail"
+
+
+def test_a_program_read_registers_before_it_reads_and_a_second_ratio_is_a_new_attempt(tmp_path):
+    path = tmp_path / "attempts.jsonl"
+    assert he.register_attempts(path, "w1") == 14
+    assert he.register_program_attempt(path, "w1", ratio=None) == 14, "the declared program twin is not counted twice"
+    assert he.register_program_attempt(path, "w1", ratio=0.5) == 15, "a second program ratio is one more declared attempt"
+    assert he.register_program_attempt(path, "w1", ratio=0.5) == 15
+
+
+def test_the_program_twin_goes_through_the_same_bar_with_its_own_cell(tmp_path):
+    days = _days(60)
+    series = {"program_twin": {"acc": [(d, 40.0 + (i % 4)) for i, d in enumerate(days)]},
+              "e2_r100": {"acc": [(d, 0.0) for d in days]}}
+    out = he.bar_reads(series, "program_twin", k_declared=14, n_boot=200)
+    assert out["session"]["adopted_row"]["cell"] == "program_twin" and out["session"]["k_declared"] == 14
+
+
+def _timed(week, status, seconds):
+    return {"decision_weeks": [week], "decisions": [
+        {"date": week, "status": status, "certificates": [{"seconds": seconds}] if seconds is not None else []}]}
+
+
+def test_the_timing_check_is_the_median_slowdown_and_no_new_timeout_by_hand():
+    pairs = [{"week": "2019-01-07", "unhedged": _timed("2019-01-07", "selected", 10.0), "hedged": _timed("2019-01-07", "selected", 14.0)},
+             {"week": "2019-01-14", "unhedged": _timed("2019-01-14", "selected", 20.0), "hedged": _timed("2019-01-14", "selected", 29.0)},
+             {"week": "2019-01-21", "unhedged": _timed("2019-01-21", "timeout_skipped", 60.0), "hedged": _timed("2019-01-21", "timeout_skipped", 60.0)}]
+    out = he.timing_check(pairs)
+    assert out["median_unhedged_s"] == 15.0 and out["median_hedged_s"] == 21.5
+    assert out["slowdown"] == pytest.approx(21.5 / 15.0) and out["new_timeouts"] == [] and out["verdict"] == "pass"
+    edge = [{**pairs[0], "hedged": _timed("2019-01-07", "selected", 16.0)}, pairs[1]]
+    assert he.timing_check(edge)["slowdown"] == pytest.approx(22.5 / 15.0) and he.timing_check(edge)["verdict"] == "pass"   # 1.5x is allowed
+    slow = [{**pairs[0], "hedged": _timed("2019-01-07", "selected", 17.0)}, pairs[1]]
+    assert he.timing_check(slow)["verdict"] == "fail"                    # median(17, 29) = 23 > 1.5 x 15
+    new = [*pairs[:2], {"week": "2019-01-28", "unhedged": _timed("2019-01-28", "selected", 5.0),
+                        "hedged": _timed("2019-01-28", "timeout_skipped", 60.0)}]
+    out = he.timing_check(new)
+    assert out["new_timeouts"] == ["2019-01-28"] and out["verdict"] == "fail"
+
+
+def test_the_timing_check_needs_check_week_documents_and_a_solved_pair():
+    plain = _result([0, 1], 1.0)
+    with pytest.raises(ValueError, match="timing_needs_check_documents"):
+        he.timing_check([{"week": "w", "unhedged": plain, "hedged": plain}])
+    only_timeouts = [{"week": "w", "unhedged": _timed("w", "timeout_skipped", 60.0), "hedged": _timed("w", "timeout_skipped", 60.0)}]
+    assert he.timing_check(only_timeouts)["verdict"] == "insufficient"
+
+
+def test_read_program_end_to_end_registers_first_and_carries_every_read(tmp_path):
+    quarters = ["2019Q1", "2019Q2", "2019Q3", "2020Q1"]
+    controls = {q: _twin([0, -5000, -3000, -1000, -2000, 0], -100.0) for q in quarters}
+    programs = {q: _twin([0, -2000, -1500, -500, -800, 100], 100.0, trades=PROGRAM_BOOKS, contracts=12, peak_reserve=1500.0)
+                for q in quarters}
+    path = tmp_path / "attempts.jsonl"
+    pair = {"week": "2019-01-07", "unhedged": _timed("2019-01-07", "selected", 10.0), "hedged": _timed("2019-01-07", "selected", 12.0)}
+    out = he.read_program(controls, programs, "w1", path, timing=[pair], n_boot=200)
+    assert path.exists() and out["k_declared"] == 1, "the program twin was declared before the read (this registry had none)"
+    assert [r["quarter"] for r in out["reads"]] == quarters and all(r["B"] == pytest.approx(3000.0) for r in out["reads"])
+    assert out["program"]["verdict"] == "pass" and out["reads"][0]["contracts_ratio"] == pytest.approx(1.2)
+    assert out["timing"]["verdict"] == "pass" and out["one_program_ratio_only"] is True
+    assert out["bar"]["session"]["adopted_row"]["cell"] == "program_twin" if "adopted_row" in out["bar"]["session"] else True
+    with pytest.raises(ValueError, match="check_document_not_evidence"):
+        he.read_program(controls, {**programs, "2019Q1": {**programs["2019Q1"], "decision_weeks": ["x"]}}, "w1", path)
