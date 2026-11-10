@@ -186,10 +186,13 @@ PARAMS = {
     "methods": [METHOD], "window": {"start": "2021-04-01", "end": "2021-06-30"},
     "sealed_from": "2021-07-01", "rate": 0.0, "iv_source": "vendor", "multiplier": MULT,
     "min_years": 0.001, "vol_floor": 0.01, "parity_strikes": 3, "min_pairs": 2,
-    "max_pair_spread_frac": 0.5, "cell_by": ["symbol", "rank"], "min_total_usd": 1.0,
+    "max_pair_spread_frac": 0.5, "cell_by": ["symbol", "cadence", "rank"], "min_total_usd": 1.0,
     "dte_edges": [0, 7, 14, 28, 60], "top_k": 1, "exposure_days": "both",
     "beta_lookback": 3, "beta_min_pairs": 2, "chain_cache_days": 8,
     "hedge_fee_per_share": 0.005, "hedge_half_spread_bps": 5.0, "hedge_borrow_rate": 0.005,
+    "hedge_cost_source": "placeholder", "min_books": 5, "htb_lookback": 20,
+    "htb_vol_threshold": 2.5, "htb_jump_threshold": 0.75,
+    "quarter": "2021Q2", "dividends": "optional", "seal_crossing": "refuse",
 }
 
 
@@ -240,8 +243,8 @@ def test_blk_book_end_to_end_with_hand_computed_stock_pnl_and_residual(world):
     assert row["status"] == "ok" and row["forward_source"] == "parity"
     assert row["forward"] == pytest.approx(BLK_FORWARD, abs=1e-6)
     assert row["delta_sh"] == pytest.approx(delta_sh, rel=1e-9)
-    assert row["stock_pnl"] == pytest.approx(delta_sh * (448.0 - 452.0), rel=1e-9)
-    assert row["stock_pnl"] + row["residual"] == pytest.approx(pnl, abs=1e-9)
+    assert row["static_delta_pnl"] == pytest.approx(delta_sh * (448.0 - 452.0), rel=1e-9)
+    assert row["static_delta_pnl"] + row["beyond_static_delta"] == pytest.approx(pnl, abs=1e-9)
     assert (row["symbol"], row["rank"], row["cadence"], row["method"]) == (
         "BLK", 2, "weekly", METHOD)
 
@@ -288,8 +291,12 @@ def test_bars_without_dividend_amount_flag_every_row_and_the_summary(world):
     run_dir, out_dir = world()
     out = run_node(run_dir, out_dir)
     assert {r["hedge_status"] for r in out["books"]} == {"dividends_absent"}
-    assert all(r["dividend_adjust"] is None and r["hedged_pnl"] is not None for r in out["books"])
+    assert all(r["dividend_adjust"] is None and r["hedged_pnl"] is None for r in out["books"])
     summary = out["summary"]
+    assert summary["hedged_pnl_usd"] is None and summary["n_stock_hedged"] == 0
+    assert summary["methods"][METHOD]["n_stock_hedged"] == 0
+    assert all(c["hedged_pnl_usd"] is None and c["n_stock_hedged"] == 0
+               and c["n_dividends_absent"] == c["n"] for c in out["cells"])
     assert summary["hedge_dividend_source"] == "absent"
     assert summary["hedge_status"] == {"dividends_absent": 3}
     assert summary["hedge_params"] == {"hedge_fee_per_share": 0.005,
@@ -317,13 +324,15 @@ def test_a_null_dividend_amount_in_the_window_is_dividend_missing_and_nulls_the_
     assert row["hedge_status"] == "dividend_missing"
     assert row["hedged_pnl"] is None and row["dividend_adjust"] is None
     blk = next(c for c in out["cells"] if c["symbol"] == "BLK")
-    assert blk["hedged_pnl_usd"] is None and blk["n_hedged"] == 0
+    assert blk["hedged_pnl_usd"] is None and blk["n_stock_hedged"] == 0
     mmm = next(c for c in out["cells"] if c["symbol"] == "MMM")
-    assert mmm["n_hedged"] == mmm["n"] == 2
+    assert mmm["n_stock_hedged"] == mmm["n"] == 2
     assert mmm["hedged_pnl_usd"] == pytest.approx(
         sum(r["hedged_pnl"] for r in out["books"] if r["symbol"] == "MMM"))
     assert out["summary"]["hedge_status"] == {"dividend_missing": 1, "ok": 2}
-    assert out["summary"]["hedged_pnl_usd"] is None
+    mmm_sum = sum(r["hedged_pnl"] for r in out["books"] if r["symbol"] == "MMM")
+    assert out["summary"]["hedged_pnl_usd"] == pytest.approx(mmm_sum)   # sums the ok rows
+    assert out["summary"]["n_stock_hedged"] == 2 and blk["n_dividend_missing"] == 1
 
 
 def test_a_dividend_outside_the_window_is_ignored_and_nothing_past_the_seal_is_read(world):
@@ -356,7 +365,7 @@ def test_the_four_files_are_written_atomically_with_inputs_and_counts(world):
     assert len(summary["params_hash"]) == 64 and summary["methods"][METHOD]["books"] == 3
     assert summary["refusals"] == {} and summary["rate"] == 0.0
     header = (out_dir / "books.csv").read_text().splitlines()[0].split(",")
-    assert {"method", "id", "symbol", "rank", "stock_pnl", "residual", "status"} <= set(header)
+    assert {"method", "id", "symbol", "rank", "static_delta_pnl", "beyond_static_delta", "status"} <= set(header)
     assert not list(out_dir.glob("*.tmp*"))
 
 
@@ -542,6 +551,13 @@ def test_monthly_rank_end_to_end(world):
     ({"methods": ["a", "a"]}, "methods"),
     ({"surprise": 1}, "unknown param"),
     ({"run_dir": ""}, "run_dir"),
+    ({"quarter": "2021Q5"}, "quarter"),
+    ({"quarter": "2021-Q2"}, "quarter"),
+    ({"quarter": 20212}, "quarter"),
+    ({"dividends": "maybe"}, "dividends"),
+    ({"seal_crossing": "drop"}, "seal_crossing"),
+    ({"cell_by": ["symbol", "rank"]}, "cell_by_incomplete"),
+    ({"cell_by": ["symbol", "cadence"]}, "cell_by_incomplete"),
     ({"out_dir": "/x/run/inside"}, "out_dir_inside_run_dir"),
 ])
 def test_config_problems(change, fragment):
@@ -754,7 +770,7 @@ def test_leg_no_iv(world):
     run_dir, out_dir = world(no_iv=("BLK",))
     out = run_node(run_dir, out_dir)
     assert out["summary"]["refusals"] == {"leg_no_iv": 1}
-    assert rows_by(out)[f"{METHOD}|2021-04-05:BLK:2021-04-16"]["stock_pnl"] is None
+    assert rows_by(out)[f"{METHOD}|2021-04-05:BLK:2021-04-16"]["static_delta_pnl"] is None
 
 
 def test_no_fill_quote(world):
@@ -804,7 +820,7 @@ def test_forward_spot_is_a_flag_and_the_book_is_still_attributed(world):
     run_dir, out_dir = world(calls_only=("BLK",))
     out = run_node(run_dir, out_dir)
     row = rows_by(out)[f"{METHOD}|2021-04-05:BLK:2021-04-16"]
-    assert row["status"] == "forward_spot" and row["stock_pnl"] is not None
+    assert row["status"] == "forward_spot" and row["static_delta_pnl"] is not None
     assert out["summary"]["forward_spot"] == 1 and out["summary"]["refusals"] == {}
 
 
@@ -874,7 +890,7 @@ def test_an_empty_method_still_writes_every_csv_with_its_header(world):
     for name in ("books.csv", "cells.csv", "exposure.csv"):
         lines = (out_dir / name).read_text().splitlines()
         assert len(lines) == 1 and lines[0].startswith(("method,", "symbol,", "date,")), name
-    assert "stock_pnl" in (out_dir / "books.csv").read_text()
+    assert "static_delta_pnl" in (out_dir / "books.csv").read_text()
 
 
 def test_nothing_is_written_when_any_output_cannot_be_serialized(tmp_path):
@@ -1000,6 +1016,19 @@ def test_the_template_validates_and_ends_before_the_seal():
     assert not (set(range(2022, 2026)) & {int(params["window"][k][:4]) for k in ("start", "end")})
 
 
+def test_the_template_carries_every_frozen_core_key_with_the_placeholder_marker():
+    from dskit.pipeline import option_exposure as ox
+    params = json.loads(TEMPLATE.read_text())["pipeline"]["greeks"]["params"]
+    for name in ox.BookGreeksReport.NEW_CORE_PARAMS:
+        assert name in params, name
+    assert params["hedge_cost_source"] == "placeholder"
+    assert params["hedge_cost_source"] in ox.HEDGE_COST_SOURCES
+    rates = tuple(params[k] for k in ox.StaticDeltaHedge._PARAMS)
+    assert rates == ox.PLACEHOLDER_HEDGE_RATES
+    bad = {**params, "hedge_cost_source": "measured"}
+    assert any("hedge_cost_source_mismatch" in m for m in MIOGreeksDiagnostics.validate_params(bad))
+
+
 # ---- review minors: dividends file, all-or-nothing outputs ------------------------------------
 def test_a_symbol_with_no_bar_file_is_a_symbols_missing_refusal_for_the_dividend_read(world):
     world()
@@ -1042,3 +1071,419 @@ def test_the_summary_is_written_last_and_replaces_the_old_one(world, monkeypatch
     run_node(run_dir, out_dir)
     assert order[-1] == "greeks-summary.json" and sorted(order) == sorted(mio_greeks.OUTPUT_FILES)
     assert json.loads((out_dir / "greeks-summary.json").read_text())["methods"]
+
+
+# ---- ADR-0310 A2 stage 1B: quarter, dividends census, seal crossing, cadence -----------------
+CHILD_KEYS = ("quarter", "dividends", "seal_crossing")
+POISON = "POISON"
+
+
+def _poison(trade):
+    """Make every economic field of a saved trade unusable (any arithmetic on it raises)."""
+    for field in ("pnl", "credit", "legs", "factor", "premium", "fees", "contracts"):
+        trade[field] = POISON
+
+
+def _cross(table, only=None, poison=False):
+    """Move the late-April MMM book's expiry past the seal (a settle in July)."""
+    for r in table["results"]:
+        if only is not None and r["id"] != only:
+            continue
+        r["result"]["trades"][2] = trade = copy.deepcopy(r["result"]["trades"][2])  # shared in the fixture
+        trade["expiry"] = trade["close_date"] = "2021-07-16"
+        if poison:
+            _poison(trade)
+
+
+def test_the_child_keys_are_declared_in_child_params_and_required():
+    for key in CHILD_KEYS:
+        assert key in MIOGreeksDiagnostics._CHILD_PARAMS
+        short = {k: v for k, v in PARAMS.items() if k != key}
+        problems = MIOGreeksDiagnostics.validate_params({**short, "run_dir": "/a", "out_dir": "/b"})
+        assert any(key in p for p in problems), key
+
+
+def test_quarter_bounds_are_the_calendar_quarter():
+    assert MIOGreeksDiagnostics._quarter_bounds("2021Q2") == ("2021-04-01", "2021-06-30")
+    assert MIOGreeksDiagnostics._quarter_bounds("2019Q4") == ("2019-10-01", "2019-12-31")
+    assert MIOGreeksDiagnostics._quarter_bounds("2020Q1") == ("2020-01-01", "2020-03-31")
+
+
+def test_the_quarter_is_echoed_in_the_run_summary(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)
+    assert out["summary"]["quarter"] == "2021Q2"
+    assert json.loads((out_dir / "greeks-summary.json").read_text())["quarter"] == "2021Q2"
+
+
+def test_a_decision_outside_the_quarter_refuses_quarter_mismatch_before_any_pnl(world):
+    def late(table):
+        for r in table["results"]:
+            r["result"]["trades"][0]["pnl"] += 1000.0     # would fail the recompute gate if read
+    run_dir, out_dir = world(mutate=late)
+    with pytest.raises(GreeksRefusal) as exc:
+        run_node(run_dir, out_dir, quarter="2021Q1", window={"start": "2021-01-01", "end": "2021-06-30"})
+    assert code_of(exc) == "quarter_mismatch"
+    assert "2021Q1" in str(exc.value) and "2021-04-05" in str(exc.value)
+    assert not out_dir.exists()
+
+
+def test_a_decision_in_the_quarter_that_settles_in_the_next_is_not_a_mismatch(world):
+    run_dir, out_dir = world(mutate=lambda t: _cross(t, poison=True))
+    out = run_node(run_dir, out_dir, seal_crossing="exclude")
+    assert out["summary"]["quarter"] == "2021Q2"
+
+
+def test_dividends_required_refuses_before_any_pnl_and_lists_every_symbol_without_the_column(world):
+    def bad_pnl(table):
+        for r in table["results"]:
+            r["result"]["trades"][0]["pnl"] += 1000.0
+    run_dir, out_dir = world(mutate=bad_pnl)
+    with pytest.raises(GreeksRefusal) as exc:
+        run_node(run_dir, out_dir, dividends="required")
+    assert code_of(exc) == "dividend_column_absent"
+    assert "BLK" in str(exc.value) and "MMM" in str(exc.value)
+    assert not out_dir.exists()
+
+
+def test_dividends_required_lists_only_the_symbols_that_lack_the_column(world):
+    run_dir, out_dir = world(dividends={"BLK": {}})
+    with pytest.raises(GreeksRefusal) as exc:
+        run_node(run_dir, out_dir, dividends="required")
+    assert code_of(exc) == "dividend_column_absent"
+    assert "MMM" in str(exc.value) and "BLK" not in str(exc.value)
+
+
+def test_dividends_required_with_the_column_runs_and_echoes_the_choice(world):
+    run_dir, out_dir = world(dividends={"BLK": {}, "MMM": {}})
+    out = run_node(run_dir, out_dir, dividends="required")
+    assert out["summary"]["dividends"] == "required"
+    assert {r["hedge_status"] for r in out["books"]} == {"ok"}
+
+
+def test_dividends_optional_proceeds_with_flags_without_the_column(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir, dividends="optional")
+    assert out["summary"]["dividends"] == "optional"
+    assert {r["hedge_status"] for r in out["books"]} == {"dividends_absent"}
+
+
+def test_seal_crossing_refuse_is_a_census_of_dates_only(world):
+    run_dir, out_dir = world(mutate=lambda t: _cross(t, poison=True),
+                             extra_methods=[{"id": "alt"}])
+    with pytest.raises(GreeksRefusal) as exc:
+        run_node(run_dir, out_dir, methods=[METHOD, "alt"])
+    assert code_of(exc) == "window_outside_data_rights"
+    text = str(exc.value)
+    assert "n_crossing" in text and "2" in text
+    assert METHOD in text and "alt" in text
+    assert "2021-04-12:MMM:2021-05-21" in text and "expiry" in text and "2021-07-16" in text
+    assert POISON not in text and not out_dir.exists()
+
+
+def test_seal_crossing_exclude_drops_the_books_before_any_economics_is_touched(world):
+    run_dir, out_dir = world(mutate=lambda t: _cross(t, poison=True))
+    out = run_node(run_dir, out_dir, seal_crossing="exclude")
+    summary = out["summary"]
+    assert {r["id"] for r in out["books"]} == {BLK_ID, f"{METHOD}|2021-04-05:MMM:2021-05-21"}
+    assert summary["seal_crossing_excluded"] == [{
+        "method": METHOD, "id": "2021-04-12:MMM:2021-05-21", "decision_date": LATER_DECISION,
+        "fill_date": LATER_FILL, "expiry": "2021-07-16"}]
+    assert summary["seal_crossing"] == "exclude"
+    assert summary["total_excludes_seal_crossing"] is True
+    assert summary["methods"][METHOD]["n_books_total"] == 3
+    assert summary["methods"][METHOD]["n_books_excluded"] == 1
+    assert POISON not in (out_dir / "books.csv").read_text()
+    assert json.loads((out_dir / "greeks-summary.json").read_text())["seal_crossing_excluded"]
+
+
+def test_seal_crossing_exclude_reports_unequal_method_sets_and_counts_shared_books_after(world):
+    run_dir, out_dir = world(mutate=lambda t: _cross(t, only="alt", poison=True),
+                             extra_methods=[{"id": "alt"}])
+    out = run_node(run_dir, out_dir, methods=[METHOD, "alt"], seal_crossing="exclude")
+    summary = out["summary"]
+    assert summary["unequal_method_sets"] is True
+    assert summary["total_excludes_seal_crossing"] is True
+    assert summary["methods"][METHOD]["n_books_excluded"] == 0
+    assert summary["methods"]["alt"]["n_books_excluded"] == 1
+    assert summary["methods_compared"] == [METHOD, "alt"]
+    assert summary["formulations_share_books"] is True
+    assert summary["shared_book_count"] == 2          # the excluded book is shared by no one now
+
+
+def test_shared_book_count_without_exclusion_counts_every_book_under_both_methods(world):
+    run_dir, out_dir = world(extra_methods=[{"id": "alt"}])
+    summary = run_node(run_dir, out_dir, methods=[METHOD, "alt"])["summary"]
+    assert summary["shared_book_count"] == 3
+    assert summary["unequal_method_sets"] is False
+    assert summary["total_excludes_seal_crossing"] is False
+    assert summary["seal_crossing_excluded"] == []
+
+
+def test_a_single_method_shares_no_book(world):
+    run_dir, out_dir = world()
+    assert run_node(run_dir, out_dir)["summary"]["shared_book_count"] == 0
+
+
+@pytest.mark.parametrize("field,value", [
+    ("expiry", "2024-03-15"), ("fill_date", "2024-01-02"), ("decision_date", "2021-03-30"),
+    ("fill_date", "2021-3-6")])
+def test_exclude_never_admits_a_protected_or_outside_window_or_bad_date(world, field, value):
+    def move(table):
+        for r in table["results"]:
+            r["result"]["trades"][0][field] = value
+    run_dir, out_dir = world(mutate=move)
+    with pytest.raises(GreeksRefusal) as exc:
+        run_node(run_dir, out_dir, seal_crossing="exclude")
+    assert code_of(exc) in ("window_outside_data_rights", "bad_date")
+    assert not out_dir.exists()
+
+
+def test_a_book_decided_after_the_seal_is_not_a_crossing_and_still_refuses(world):
+    def move(table):
+        for r in table["results"]:
+            r["result"]["trades"][0]["decision_date"] = "2021-07-02"
+    run_dir, out_dir = world(mutate=move)
+    with pytest.raises(GreeksRefusal) as exc:
+        run_node(run_dir, out_dir, seal_crossing="exclude")
+    assert code_of(exc) == "window_outside_data_rights"
+
+
+def test_cells_carry_the_cadence_of_their_names(world):
+    run_dir, out_dir = world()
+    cells = run_node(run_dir, out_dir)["cells"]
+    assert {c["symbol"]: c["cadence"] for c in cells} == {"BLK": "weekly", "MMM": "monthly"}
+    header = (out_dir / "cells.csv").read_text().splitlines()[0].split(",")
+    assert {"symbol", "cadence", "rank"} <= set(header)
+
+
+def test_the_template_carries_the_a2_child_keys_and_every_declared_param():
+    params = json.loads(TEMPLATE.read_text())["pipeline"]["greeks"]["params"]
+    assert set(MIOGreeksDiagnostics._CHILD_PARAMS) <= set(params) <= set(MIOGreeksDiagnostics._PARAMS)
+    assert params["cell_by"] == ["symbol", "cadence", "rank"]
+    assert params["dividends"] == "optional" and params["seal_crossing"] == "refuse"
+    assert params["window"]["end"] < params["sealed_from"] <= mio_greeks.DEVELOPMENT_SEAL
+    quarter = params["quarter"]
+    start, end = MIOGreeksDiagnostics._quarter_bounds(quarter)
+    assert params["window"]["start"] <= start and end <= params["window"]["end"]
+    assert MIOGreeksDiagnostics.validate_params(params) == []
+    notes = json.loads(TEMPLATE.read_text())["pipeline"]["greeks"]["notes"]
+    for word in ("quarter", "dividends", "seal_crossing", "cadence", "A1"):
+        assert word in notes, word
+
+
+# ---- ADR-0310 A2 stage 2a: child wiring of the core outputs --------------------------------------
+BOOK_PNLS = {BLK_ID: -938.90, f"{METHOD}|2021-04-05:MMM:2021-05-21": 398.7,
+             f"{METHOD}|2021-04-12:MMM:2021-05-21": 398.7}
+
+
+def test_the_quarter_is_stamped_on_every_row_of_every_output(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)
+    for name in ("books", "cells", "exposure"):
+        assert out[name] and {r["quarter"] for r in out[name]} == {"2021Q2"}, name
+        header = (out_dir / f"{name}.csv").read_text().splitlines()[0].split(",")
+        assert "quarter" in header, name
+
+
+def test_an_empty_method_still_declares_the_quarter_column(world):
+    def empty(table):
+        for r in table["results"]:
+            r["result"]["trades"] = []
+    run_dir, out_dir = world(mutate=empty)
+    run_node(run_dir, out_dir)
+    for name in ("books", "cells", "exposure"):
+        assert "quarter" in (out_dir / f"{name}.csv").read_text().splitlines()[0].split(","), name
+
+
+def test_direction_read_is_the_method_by_quarter_block_with_the_tests_own_sums(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)
+    read = out["summary"]["methods"][METHOD]["direction_read"]
+    assert (read["quarter"], read["method"]) == ("2021Q2", METHOD)
+    assert (read["n_books"], read["n_books_total"], read["n_books_excluded"]) == (3, 3, 0)
+    assert read["pnl_usd"] == pytest.approx(sum(BOOK_PNLS.values()))
+    assert read["gross_pnl_usd"] == pytest.approx(sum(abs(v) for v in BOOK_PNLS.values()))
+    rows = out["books"]
+    assert read["static"]["delta_part_usd"] == pytest.approx(sum(r["static_delta_pnl"] for r in rows))
+    assert read["static"]["beyond_usd"] == pytest.approx(sum(r["beyond_static_delta"] for r in rows))
+    assert read["payoff"]["delta_part_usd"] == pytest.approx(sum(r["payoff_delta_pnl"] for r in rows))
+    for part in ("static", "payoff"):
+        table = read[part]["sign_table"]
+        assert sum(q["n"] for q in table.values()) == 3
+        assert sum(q["pnl_usd"] for q in table.values()) == pytest.approx(read["pnl_usd"])
+    assert read["descriptive_only"].startswith("descriptive only")
+    json.dumps(read, allow_nan=False)
+
+
+def test_direction_read_basis_usd_is_the_distribution_of_the_books_basis(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)
+    basis = [r["delta_sh"] * (r["s_fill"] - r["forward"]) for r in out["books"]]
+    got = out["summary"]["methods"][METHOD]["direction_read"]["basis_usd"]
+    assert got["n"] == 3 and got["sum"] == pytest.approx(sum(basis))
+    assert (got["min"], got["max"]) == (pytest.approx(min(basis)), pytest.approx(max(basis)))
+    assert got["median"] == pytest.approx(sorted(basis)[1])
+    gross = sum(abs(v) for v in BOOK_PNLS.values())
+    assert got["abs_sum_over_gross"] == pytest.approx(sum(abs(b) for b in basis) / gross)
+
+
+def test_direction_read_forward_hedge_block_echoes_min_books_and_the_cost_source(world):
+    run_dir, out_dir = world()
+    read = run_node(run_dir, out_dir)["summary"]["methods"][METHOD]["direction_read"]
+    block = read["forward_hedge"]
+    assert block["min_books"] == 5 and block["hedge_cost_source"] == "placeholder"
+    assert block["n_decision_unmarked"] == 0 and block["n_not_attributed"] == 0
+    # every attributed book is a candidate: nothing is hard-to-borrow in the fixture's calm closes
+    assert block["n_hard_to_borrow"] == 0
+    assert "n_classifier_pending" not in block
+    assert block["n_hedged"] + block["n_unbounded_above"] == 3
+    conc = read["concentration"]
+    assert conc["min_books"] == 5 and conc["small_cell"] is True
+    assert conc["n_books"] == block["n_hedged"]
+    assert read["concentration_pnl"]["n_books"] == 3 and read["concentration_pnl"]["min_books"] == 5
+
+
+def test_the_decision_session_sizes_the_forward_hedge_not_the_fill_session(world):
+    run_dir, out_dir = world()
+    row = rows_by(run_node(run_dir, out_dir))[BLK_ID]
+    scale = 100 * (5 + 1) / 6
+    d450 = black76_delta("call", BLK_FORWARD, 450.0, BLK_VOL, 11 / 365)       # decision: 11 days
+    d455 = black76_delta("call", BLK_FORWARD, 455.0, BLK_VOL, 11 / 365)
+    decision = 100 * (5 * d450 + d455)
+    assert scale > 0 and row["delta_f_sh_decision"] == pytest.approx(decision, rel=1e-9)
+    fill = 100 * (5 * black76_delta("call", BLK_FORWARD, 450.0, BLK_VOL, 10 / 365)
+                  + black76_delta("call", BLK_FORWARD, 455.0, BLK_VOL, 10 / 365))
+    assert row["delta_f_sh"] == pytest.approx(fill, rel=1e-9)
+    assert row["delta_f_sh_decision"] != pytest.approx(row["delta_f_sh"], rel=1e-6)
+    assert row["forward_hedge_units"] == math.trunc(-decision)
+    assert row["hedge_rounding_sh"] == pytest.approx(row["forward_hedge_units"] + decision)
+    assert row["trade_costs_usd"] == pytest.approx(
+        abs(row["forward_hedge_units"]) * (2 * 0.005 + (BLK_FORWARD + BLK_SETTLE) * 5.0 / 1e4))
+    assert row["borrow_usd"] == pytest.approx(
+        abs(row["forward_hedge_units"]) * BLK_FORWARD * 0.005 * 10 / 365)
+
+
+def test_a_book_the_decision_chain_cannot_mark_is_decision_unmarked_and_stays_attributed(world):
+    run_dir, out_dir = world(drop_chain=(("BLK", DECISION),))
+    out = run_node(run_dir, out_dir)
+    row = rows_by(out)[BLK_ID]
+    assert row["forward_hedge_status"] == "decision_unmarked"
+    assert row["status"] == "ok" and row["static_delta_pnl"] is not None
+    assert all(row[c] is None for c in ("forward_hedged_pnl", "hedge_pnl", "forward_hedge_costs"))
+    summary = out["summary"]
+    assert summary["decision_greeks_refusals"] == {"no_fill_quote": 1}
+    assert summary["methods"][METHOD]["direction_read"]["forward_hedge"]["n_decision_unmarked"] == 1
+    assert summary["methods"][METHOD]["direction_read"]["n_books"] == 3      # rank-null books count
+
+
+def test_the_run_summary_totals_the_forward_hedge_statuses_and_decision_refusals(world):
+    run_dir, out_dir = world(extra_methods=[{"id": "alt"}], drop_chain=(("BLK", DECISION),))
+    summary = run_node(run_dir, out_dir, methods=[METHOD, "alt"])["summary"]
+    assert summary["decision_greeks_refusals"] == {"no_fill_quote": 2}
+    per = [s["forward_hedge_status"] for s in summary["methods"].values()]
+    total = summary["forward_hedge_status"]
+    assert sum(total.values()) == 6 and total["decision_unmarked"] == 2
+    assert all(total[k] == sum(p.get(k, 0) for p in per) for k in total)
+
+
+def test_direction_read_carries_the_exclusion_counts_of_a_seal_crossing_run(world):
+    run_dir, out_dir = world(mutate=lambda t: _cross(t, poison=True))
+    out = run_node(run_dir, out_dir, seal_crossing="exclude")
+    read = out["summary"]["methods"][METHOD]["direction_read"]
+    assert (read["n_books"], read["n_books_total"], read["n_books_excluded"]) == (2, 3, 1)
+    assert read["pnl_usd"] == pytest.approx(-938.90 + 398.7)
+
+
+def test_cells_carry_the_forward_hedge_columns_and_null_sums_do_not_propagate(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)
+    header = (out_dir / "cells.csv").read_text().splitlines()[0].split(",")
+    for name in ("n_hedged", "n_unbounded_above", "hedgeable_share_gross", "forward_hedged_pnl_usd",
+                 "hedge_pnl_usd", "hedge_loss_reduction_usd", "hedge_costs_usd",
+                 "loo_sign_stable_hedge_pnl", "small_cell", "top1_share_gross", "descriptive_only"):
+        assert name in header, name
+    summary = out["summary"]
+    assert summary["hedged_pnl_usd"] is None and summary["n_stock_hedged"] == 0   # no dividend column
+    assert all(c["loo_sign_stable_hedge_pnl"] is None for c in out["cells"])
+
+
+def test_the_template_and_readme_describe_the_direction_read(world):
+    notes = json.loads(TEMPLATE.read_text())["pipeline"]["greeks"]["notes"]
+    for word in ("direction_read", "decision", "forward_hedge_status", "quarter"):
+        assert word in notes, word
+    readme = (CHILD / "README.md").read_text()
+    assert "direction_read" in readme
+
+
+def test_unequal_method_sets_is_set_only_when_the_exclusion_makes_the_sets_differ(world):
+    def short(table):
+        table["results"][1]["result"]["trades"] = table["results"][1]["result"]["trades"][:2]
+    run_dir, out_dir = world(mutate=short, extra_methods=[{"id": "alt"}])
+    summary = run_node(run_dir, out_dir, methods=[METHOD, "alt"])["summary"]
+    assert summary["unequal_method_sets"] is False          # the picks differ; nothing was excluded
+    run_dir, out_dir = world(mutate=lambda t: _cross(t, poison=True), extra_methods=[{"id": "alt"}])
+    both = run_node(run_dir, out_dir, methods=[METHOD, "alt"], seal_crossing="exclude")["summary"]
+    assert both["unequal_method_sets"] is False             # both lost the same book
+    assert both["total_excludes_seal_crossing"] is True
+
+
+def test_the_run_summary_totals_htb_unreadable(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)          # htb_lookback 20 > the fixture's closes before decision
+    assert out["summary"]["htb_unreadable"] == out["summary"]["methods"][METHOD]["htb_unreadable"] == 3
+    assert out["summary"]["methods"][METHOD]["direction_read"]["forward_hedge"]["n_htb_unreadable"] == 3
+
+
+# ---- ADR-0310 A2 stage 2b: the hedgeable classifier through structure_max_loss(hedge=) ---------
+MMM_IDS = (f"{METHOD}|2021-04-05:MMM:2021-05-21", f"{METHOD}|2021-04-12:MMM:2021-05-21")
+
+
+def test_a_long_call_book_is_hedged_and_a_short_put_book_is_unbounded_above(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)
+    rows = rows_by(out)
+    blk = rows[BLK_ID]
+    assert blk["forward_hedge_status"] == "ok"
+    units, f_fill = blk["forward_hedge_units"], blk["forward"]
+    assert units < 0
+    # the glossary 5:1 book keeps a finite reserve (650.90 at -288 shares, F 451): held-shares signature
+    expected = (-938.90 + units * (BLK_SETTLE - f_fill) - blk["forward_hedge_costs"])
+    assert blk["forward_hedged_pnl"] == pytest.approx(expected)
+    assert blk["hedge_pnl"] == pytest.approx(expected - blk["pnl"])
+    for ident in MMM_IDS:                       # a short put sold against a positive delta: slope < 0
+        put = rows[ident]
+        assert put["forward_hedge_status"] == "hedge_unbounded_above"
+        assert put["forward_hedge_units"] < 0 and put["trade_costs_usd"] is not None
+        assert all(put[c] is None for c in ("forward_hedge_costs", "forward_hedged_pnl", "hedge_pnl"))
+
+
+def test_the_direction_read_hedged_set_is_the_ok_books_and_nulls_do_not_propagate(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)
+    blk = rows_by(out)[BLK_ID]
+    read = out["summary"]["methods"][METHOD]["direction_read"]
+    fh = read["forward_hedge"]
+    assert (fh["n_hedged"], fh["n_unbounded_above"]) == (1, 2)
+    assert fh["forward_hedged_pnl_usd"] == pytest.approx(blk["forward_hedged_pnl"])
+    assert fh["hedge_pnl_usd"] == pytest.approx(blk["hedge_pnl"])
+    assert fh["hedge_costs_usd"] == pytest.approx(blk["forward_hedge_costs"])
+    assert fh["hedge_loss_reduction_usd"] == pytest.approx(
+        938.90 - max(-blk["forward_hedged_pnl"], 0.0))
+    gross = 938.90 + 2 * 398.7
+    assert fh["hedgeable_share_gross"] == pytest.approx(938.90 / gross)
+    assert read["concentration"]["n_books"] == 1 and read["concentration"]["small_cell"] is True
+    assert read["concentration_pnl"]["n_books"] == 3
+    assert read["pnl_usd"] == pytest.approx(-938.90 + 2 * 398.7)      # book P&L still counts all three
+    cells = {c["symbol"]: c for c in out["cells"]}
+    assert cells["BLK"]["n_hedged"] == 1 and cells["BLK"]["hedge_pnl_usd"] == pytest.approx(blk["hedge_pnl"])
+    assert cells["MMM"]["n_hedged"] == 0 and cells["MMM"]["n_unbounded_above"] == 2
+    assert cells["MMM"]["forward_hedged_pnl_usd"] is None and cells["MMM"]["hedge_pnl_usd"] is None
+    assert out["summary"]["forward_hedge_status"] == {"hedge_unbounded_above": 2, "ok": 1}
+
+
+def test_classifier_pending_is_gone_from_the_child_outputs(world):
+    run_dir, out_dir = world()
+    run_node(run_dir, out_dir)
+    for name in ("books.csv", "cells.csv", "greeks-summary.json"):
+        assert "classifier_pending" not in (out_dir / name).read_text(), name

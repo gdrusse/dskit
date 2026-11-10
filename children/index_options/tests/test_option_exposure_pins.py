@@ -63,11 +63,32 @@ def test_stock_equivalent_equals_the_condor_delta_benchmark():
     years = dte / 365
     delta_sh = multiplier * sum(sign * black76_delta(right, entry, k, iv, years)
                                 for (right, sign), k, iv in zip(legs, strikes, ivs))
-    stock, residual = StockEquivalent().split(12.5, delta_sh, entry, settle,
+    static_delta_pnl, beyond_static_delta = StockEquivalent().split(12.5, delta_sh, entry, settle,
                                               dividends_per_share=0.4)
     assert delta_sh == pytest.approx(old_delta * multiplier, rel=1e-12)
-    assert stock == pytest.approx(old_equity, rel=1e-12)
-    assert residual == pytest.approx(12.5 - old_equity, rel=1e-12)
+    assert static_delta_pnl == pytest.approx(old_equity, rel=1e-12)
+    assert beyond_static_delta == pytest.approx(12.5 - old_equity, rel=1e-12)
+
+
+def test_forward_delta_equals_the_condor_benchmark_delta_when_the_forward_is_the_spot():
+    """ADR-0310 A2.3: ``delta_f_sh`` is the benchmark's delta in shares; ``F = S`` makes the spot delta equal it."""
+    from dskit.pipeline.option_exposure import LegGreeks
+
+    legs = [("put", 1), ("put", -1), ("call", -1), ("call", 1)]
+    strikes, ivs = [90.0, 95.0, 105.0, 110.0], [0.30, 0.27, 0.24, 0.25]
+    entry, settle, multiplier, dte = 100.0, 94.0, 100, 30
+    rows = [{"iv": iv} for iv in ivs]
+    facts = _EntryFacts("XYZ", "2024-03-01", "2024-03-31", dte, entry, settle, {}, None)
+    dividends = [{"date": "2024-03-01", "close": 100.0, "dividend_amount": 0.0},
+                 {"date": "2024-03-31", "close": 94.0, "dividend_amount": 0.0}]
+    stub = SimpleNamespace(params={"multiplier": multiplier}, _charge_window=lambda *args: dividends)
+    old_delta, _ = CondorQuoteBacktest._benchmark(stub, rows, legs, strikes, facts)
+    lg = LegGreeks({"rate": 0.0, "multiplier": multiplier, "min_years": 0.001, "vol_floor": 0.01})
+    found = [lg.of({"right": right, "strike": k, "sign": sign, "quantity": 1, "expiry": "2024-03-31"},
+                   {"bid": 1.0, "ask": 1.1, "iv": iv}, entry, entry, "2024-03-01")[0]
+             for (right, sign), k, iv in zip(legs, strikes, ivs)]
+    assert sum(r["delta_f_sh"] for r in found) == pytest.approx(old_delta * multiplier, rel=1e-12)
+    assert sum(r["delta_sh"] for r in found) == pytest.approx(old_delta * multiplier, rel=1e-12)
 
 
 def _node():
@@ -88,7 +109,8 @@ def _node():
         "min_pairs": 2, "max_pair_spread_frac": 0.5, "cell_by": ["symbol"], "min_total_usd": 1.0,
         "dte_edges": [0, 7], "top_k": 1, "exposure_days": "fill", "beta_lookback": 20,
         "beta_min_pairs": 5, "hedge_fee_per_share": 0.0, "hedge_half_spread_bps": 0.0,
-        "hedge_borrow_rate": 0.0})
+        "hedge_borrow_rate": 0.0, "hedge_cost_source": "measured", "min_books": 5,
+        "htb_lookback": 20, "htb_vol_threshold": 2.5, "htb_jump_threshold": 0.75})
 
 
 def test_betas_with_a_late_start_name_equal_the_shock_gates_kelly_estimate():
