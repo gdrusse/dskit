@@ -103,7 +103,9 @@ class HedgeOverlay(ABC):
         ``{"vol_regime": "high"}``), ``hedge_cost_source`` (``"placeholder"`` or ``"measured"``), the
         three ``HardToBorrowProxy`` params and the three ``StaticDeltaHedge`` rates (the fee and
         half-spread may not sit below the recorded placeholders unless the source is ``"measured"``;
-        the forward is costed with a borrow rate of 0, its carry sits inside the parity forward), plus
+        the forward is costed with a borrow rate of 0, its carry sits inside the parity forward;
+        ``hedge_borrow_rate`` is kept for the shared cost tuple and is not charged on the forward,
+        owner Q9a), plus
         the subclass's ``_EXTRA_PARAMS``.
 
     Examples
@@ -332,7 +334,7 @@ class HedgeOverlay(ABC):
 
     def record(self):
         """Return what a decision or book carries: the params and the counts so far."""
-        return {**self.params, "counts": dict(self.counts)}
+        return {**self.params, "forward_borrow_rate": 0.0, "counts": dict(self.counts)}
 
 
 class NullHedgeOverlay(HedgeOverlay):

@@ -198,7 +198,11 @@ def test_small_delta_zeroes_a_small_item_in_program_mode_only():
     program = FixedDeltaForwardHedge(block(small_delta=0.05))
     far_e, near_e = program.units([far, item()], CONTEXT)
     assert far_e["units"] == 0.0 and far_e["status"] == "ok" and near_e["units"] < 0
-    assert program.record()["counts"]["hedge_small_delta"] == 1
+    # |Delta_F| = 0.0158 per unit (1.58 shares per contract): cut only because delta is divided by the multiplier
+    mid_e = program.units([item(strikes=(115.0,))], CONTEXT)[0]
+    assert 0.0005 < forward_delta("call", 115.0) / MULT < 0.05 and forward_delta("call", 115.0) > 0.05
+    assert mid_e["units"] == 0.0 and mid_e["status"] == "ok" and mid_e["target"] == 0.0
+    assert program.record()["counts"]["hedge_small_delta"] == 2
     replay = FixedDeltaForwardHedge(block(mode="replay", small_delta=0.05))
     assert replay.units([far], CONTEXT)[0]["units"] == pytest.approx(-forward_delta("call", 140.0))
     assert "hedge_small_delta" not in replay.record()["counts"]
@@ -365,6 +369,7 @@ def test_record_names_the_block_and_the_counts():
     rec = FixedDeltaForwardHedge(block(ratio=0.5)).record()
     assert rec["kind"] == "fixed_delta_forward" and rec["ratio"] == 0.5 and rec["mode"] == "program"
     assert rec["counts"] == {}
+    assert rec["forward_borrow_rate"] == 0.0 and rec["hedge_borrow_rate"] == 0.005   # recorded, not charged
 
 
 # ---- condition (decision-day inputs only) -----------------------------------------------
@@ -476,3 +481,41 @@ def test_direct_construction_validates_the_same_way():
         FixedDeltaForwardHedge(block(ratio=2.0))
     assert FixedDeltaForwardHedge.validate_params(BLOCK) == []
     assert FixedDeltaForwardHedge.validate_params("x")
+
+
+# ---- classify_book and its counters; floor rows on blocked items ------------------------
+SHORT_PUT = ((("put", -1),), (95.0,), 200.0)
+BULL_CALL = ((("call", 1), ("call", -1)), (105.0, 110.0), -150.0)
+LONG_CALL = ((("call", 1),), (105.0,), -200.0)
+
+
+@pytest.mark.parametrize("spec, u", [(SHORT_PUT, -30), (BULL_CALL, -15)])
+def test_classify_book_flags_unbounded_books_and_counts_them(spec, u):
+    overlay = FixedDeltaForwardHedge(block())
+    book = overlay.book_units([entry(float(u))], [1])
+    assert overlay.classify_book(book, *spec[:2], spec[2], MULT, 100.0) == "hedge_unbounded_above"
+    assert overlay.record()["counts"]["books_hedge_unbounded_above"] == 1
+
+
+def test_classify_book_ok_is_not_counted_and_a_blocked_book_keeps_its_own_status():
+    overlay = FixedDeltaForwardHedge(block())
+    ok = overlay.book_units([entry(-35.0)], [1])
+    assert overlay.classify_book(ok, *LONG_CALL[:2], LONG_CALL[2], MULT, 100.0) == "ok"
+    assert overlay.record()["counts"] == {"rounding_residual": 0.0} or "books_ok" not in overlay.record()["counts"]
+    blocked = overlay.book_units([entry(-5.0, htb=True)], [1])
+    assert overlay.classify_book(blocked, *SHORT_PUT[:2], SHORT_PUT[2], MULT, 100.0) == "hedge_hard_to_borrow"
+    assert overlay.record()["counts"]["books_hedge_hard_to_borrow"] == 1
+    assert "books_hedge_unbounded_above" not in overlay.record()["counts"]
+
+
+def test_null_classify_book_is_ok_and_counts_nothing():
+    null = NullHedgeOverlay()
+    assert null.classify_book(None, *SHORT_PUT[:2], SHORT_PUT[2], MULT, None) == "ok"
+    assert null.counts == {}
+
+
+def test_floor_rows_read_the_hedged_units_so_a_blocked_item_floors_nothing():
+    overlay = FixedDeltaForwardHedge(block())
+    blocked = overlay.units([item()], {**CONTEXT, "closes": WILD})[0]
+    assert blocked["target"] < 0 and blocked["units"] == 0.0
+    assert overlay.floor_rows([item()], [blocked], 100.0) == ([0.0], [-0.0])
