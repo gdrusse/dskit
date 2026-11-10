@@ -69,7 +69,7 @@ from dskit.pipeline.node import Node, atomic_write, reject_unknown_params
 from dskit.pipeline.records import number_ok
 from dskit.pipeline.stats import benjamini_hochberg, student_t_critical, student_t_sf
 
-__all__ = ["NODE_KINDS", "EdgeReliabilityWalk"]
+__all__ = ["NODE_KINDS", "EdgeReliabilityWalk", "books_fill", "prefers"]
 
 #: No node kind is registered: a document names ``dskit.pipeline.libs.edge_walk:EdgeReliabilityWalk``.
 NODE_KINDS = ()
@@ -120,6 +120,19 @@ _DEFAULTS = {
 }
 _EDGE_SCALES = ("notional", "scale", "none")
 _ROW_WEIGHTS = ("group_equal", "none")
+
+
+def prefers(row, old):
+    """Say whether ``row`` replaces ``old`` as the kept side of one option: the larger ``e``, then the larger ``sign``.
+
+    The walk's side rule, and the one owner the study calls to find which side of an option the map was fitted on.
+    """
+    return (row["e"], row["sign"]) > (old["e"], old["sign"])
+
+
+def books_fill(row):
+    """Say whether a decision row has a fill session before its settlement (otherwise the walk books no row for it)."""
+    return row["fill_date"] < row["settle_date"]
 
 
 def _canon(obj):
@@ -1117,7 +1130,7 @@ class EdgeReliabilityWalk(Node):
                 best[key] = row
                 continue
             self._count("side_duplicate")
-            if (row["e"], row["sign"]) > (old["e"], old["sign"]):
+            if prefers(row, old):
                 best[key] = row
         del raw
         vols = {}
@@ -1138,7 +1151,7 @@ class EdgeReliabilityWalk(Node):
                 self._count("beyond_seal")
                 continue
             ranked.append(key)
-            if row["fill_date"] >= row["settle_date"]:
+            if not books_fill(row):
                 self._count("no_fill_quote")
                 self._count("no_fill_quote.session")
                 continue

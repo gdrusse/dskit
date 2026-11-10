@@ -2727,6 +2727,20 @@ class CalibratedObjective:
             return None
         return bucket if bucket < len(blocks) else None
 
+    def map_warm(self, edge_map):
+        """Return whether the map's line (and, with two regressors, its no-intercept origin) is warm; ``None`` is not.
+
+        The week-level answer: a week whose map is not warm solves nothing (ADR-0313 A8). Raises
+        ``calibration_map_malformed`` when a present map lacks the block this objective reads.
+        """
+        if edge_map is None:
+            return False
+        line, origin = self._blocks(edge_map)
+        for blk in (line, origin):
+            if blk is not None and "warm" not in blk:
+                raise _Refusal("calibration_map_malformed", "a map block has no warm flag")
+        return bool(line["warm"]) and (origin is None or bool(origin["warm"]))
+
     def warm(self, edge_map, bucket):
         """Return whether the item's bucket has a usable warm map (``False`` is a no-trade week for it).
 
@@ -2746,14 +2760,9 @@ class CalibratedObjective:
         _Refusal
             ``calibration_map_malformed`` when a present map lacks the block this objective reads.
         """
-        if edge_map is None:
+        if not self.map_warm(edge_map):
             return False
-        line, origin = self._blocks(edge_map)
-        for blk in (line, origin):
-            if blk is not None and "warm" not in blk:
-                raise _Refusal("calibration_map_malformed", "a map block has no warm flag")
-        if not line["warm"] or (origin is not None and not origin["warm"]):
-            return False
+        line, _ = self._blocks(edge_map)
         return self._index(line.get("buckets", ()), bucket) is not None
 
     @staticmethod

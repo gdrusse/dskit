@@ -1669,6 +1669,272 @@ class ReplayHedge:
 
 
 
+class CalibratedEdge:
+    """ADR-0313 section A, child side: one method's calibrated-edge objective term from the walk's maps.
+
+    Built once per calibrated method by the study (never by ``_prepare``, which stays feature-free and cached across
+    methods). It owns, in order: the summary refusals (:meth:`_check_walk`, the walk's pins, reads and calendar),
+    the exact-key map lookup (:meth:`map_for`: the decision at ``t`` reads ``maps[t]`` and nothing else), the item
+    features (the SAME ``EdgeItemFeatures`` rows the walk decided on, the same side rule and the same bucket), and
+    the per-item ``value_adjust`` (:meth:`candidates`): the map on the side of an option with the larger edge, its
+    mirror side ``-adj``, an item with no walk row EXCLUDED and counted (``calibration_no_row_excluded``), never
+    left at its raw edge. ``credit``, ``losses``, reserves and caps are never touched.
+
+    Parameters
+    ----------
+    study : WeeklyOptionPortfolioStudy
+        Supplies ``method_inputs`` (``edge_maps`` and ``edge_walk_summary``), ``weeks``, ``params`` and ``clocks``.
+    method : dict
+        The method document carrying the ``calibration`` block.
+
+    Raises
+    ------
+    ValueError
+        Starting with the refusal code: ``calibration_summary_incomplete``, ``calibration_walk_unsealed``,
+        ``calibration_weight_cap``, ``calibration_state_unread``, ``calibration_unread``,
+        ``calibration_seed_quarter``, ``calibration_walk_mismatch``, ``calibration_map_date``,
+        ``calibration_affine_unread``, ``calibration_double_discount``, ``calibration_split_unsupported``.
+
+    Examples
+    --------
+    Per decision week (the study does this)::
+
+        cal = CalibratedEdge(study, method)
+        if cal.week_warm(day):
+            groups, metadata, excluded, week, adjusts = cal.candidates(day, groups, metadata)
+    """
+
+    #: Summary keys every calibrated method reads (``direction_params`` too with two regressors).
+    SUMMARY_KEYS = ("sealed_from", "report_from", "edge_scale", "pooling", "buckets", "forecast_pins",
+                    "mio_quote_values", "symbol_list_sha256", "walk_decision_dates", "reads", "integration_reads")
+    #: The walk's fixed scored state: every gated forward read scores the expanding fill state.
+    SCORED_STATE = "expanding_fill"
+    #: Per (form, regressors): the integration read the form needs, its walk state, line and form words.
+    READS = {("slope", 1): ("read2w", "forward_w", "cw_bucket", "slope"),
+             ("slope", 2): ("read2b", "forward_b2", "c2w_bucket", "no_intercept")}
+    NO_ROW = "calibration_no_row_excluded"
+
+    def __init__(self, study, method):
+        import hashlib
+        from dskit.pipeline.edge_reliability import CalibratedObjective, ReliabilityBuckets, _Refusal
+
+        self.study, self.method, self.block = study, method, dict(method["calibration"])
+        inputs = study.method_inputs
+        self.maps, self.summary = inputs["edge_maps"], inputs["edge_walk_summary"]
+        self._refuse = _Refusal
+        try:
+            self._check_walk(hashlib, CalibratedObjective, ReliabilityBuckets)
+        except _Refusal as exc:
+            raise ValueError(str(exc)) from exc
+        self._rows_cache = (None, None)
+        #: ``(group, right, strike)`` -> the walk-row equivalent of the LAST :meth:`candidates` call (bucket, e, side, c).
+        self.last = {}
+
+    # -- the refusals -------------------------------------------------------------------------------------------
+
+    def _need(self, code, detail):
+        raise self._refuse(code, detail)
+
+    def _check_walk(self, hashlib, CalibratedObjective, ReliabilityBuckets):
+        """Run every walk refusal (ADR-0313 A9) and build the objective, the bucket rule and the item-feature seam."""
+        from .edge_calibration import EdgeItemFeatures
+
+        study, block, summary = self.study, self.block, self.summary
+        regressors = block["regressors"]
+        keys = (*self.SUMMARY_KEYS, *(("direction_params",) if regressors == 2 else ()))
+        missing = [k for k in keys if k not in summary]
+        if missing:
+            self._need("calibration_summary_incomplete", f"the walk's summary lacks {missing}")
+        if study.adjustments:
+            self._need("calibration_split_unsupported", "a calibrated run takes no split adjustment (the walk books none)")
+        sealed = summary["sealed_from"]
+        if not isinstance(sealed, str) or sealed > DEVELOPMENT_SEAL:
+            self._need("calibration_walk_unsealed", f"the walk's sealed_from {sealed!r} is above {DEVELOPMENT_SEAL}")
+        pooling = summary["pooling"]
+        if not isinstance(pooling, dict) or "weight_cap" not in pooling:
+            self._need("calibration_summary_incomplete", "the walk's summary has no pooling.weight_cap")
+        CalibratedObjective.check_weight_cap(pooling["weight_cap"])
+        control = block.get("control", False)
+        side = summary["integration_reads"].get("affine_side", {}) if isinstance(summary["integration_reads"], dict) else {}
+        self.objective = CalibratedObjective(block, affine_read=side.get("verdict") == "PASS")
+        self.objective.check_discount(self.method["rho"], "risk_charge" in self.method)
+        if not control:
+            self._check_reads(summary)
+        if block["edge_scale"] != summary["edge_scale"]:
+            self._need("calibration_state_unread", f"the block's edge_scale {block['edge_scale']!r} is not the walk's "
+                       f"{summary['edge_scale']!r}")
+        weeks = [d for d in study.weeks if study._week_selected(d)]
+        early = [d for d in weeks if d < summary["report_from"]]
+        if early:
+            self._need("calibration_seed_quarter", f"decision weeks {early[:3]} lie before the walk's report_from "
+                       f"{summary['report_from']} (its seed): a calibrated arm would be cash there")
+        self._check_calendar(hashlib, weeks, sealed)
+        for t, body in self.maps.items():
+            if t not in study.weeks or not isinstance(body, dict) or body.get("t") != t:
+                self._need("calibration_map_date", f"map {t!r} is not a decision week of the study or not its own date")
+        self.buckets = ReliabilityBuckets(summary["buckets"])
+        direction = summary.get("direction_params") if regressors == 2 else None
+        self.features = EdgeItemFeatures(direction, summary["edge_scale"])
+
+    def _check_reads(self, summary):
+        """Refuse an arm whose pinned walk did not score THIS line forward and pass (G2): state and read words."""
+        block = self.block
+        form, regressors = block["form"], block["regressors"]
+        if block["state"] != self.SCORED_STATE:
+            self._need("calibration_state_unread", f"state {block['state']!r}: the walk scores only {self.SCORED_STATE!r}")
+        reads, integration = summary["reads"], summary["integration_reads"]
+        if not isinstance(reads, dict) or not isinstance(integration, dict):
+            self._need("calibration_summary_incomplete", "the walk's reads are not objects")
+        scored = []
+        if form == "affine":
+            if regressors != 1 or block["line"] != "bucket":
+                self._need("calibration_state_unread", "the affine form is scored for the one-regressor bucket line only")
+            scored = [reads.get("read2", {})]
+        else:
+            if (form, regressors) not in self.READS:
+                self._need("calibration_state_unread", f"form {form!r} with {regressors} regressor(s) is not scored")
+            name, state, line, word = self.READS[form, regressors]
+            read = integration.get(name, {})
+            if (read.get("state"), read.get("line"), read.get("form")) != (state, line, word):
+                self._need("calibration_state_unread", f"the walk's {name} scored {read.get('state')!r}/"
+                           f"{read.get('line')!r}/{read.get('form')!r}, not {state!r}/{line!r}/{word!r}")
+            scored = [read]
+        verdicts = [reads.get("read1", {}).get("verdict"), reads.get("read2", {}).get("verdict"),
+                    *(r.get("verdict") for r in scored)]
+        if any(v != "PASS" for v in verdicts):
+            self._need("calibration_unread", f"the pinned walk's gated reads are {verdicts} (read 1, read 2, and the "
+                       f"form's own read): all must be PASS before an arm trades")
+
+    def _check_calendar(self, hashlib, weeks, sealed):
+        """The study's document must be the one the walk was run on (per quarter), else ``calibration_walk_mismatch``."""
+        import json as json_
+
+        study, summary = self.study, self.summary
+        bridge = study.params["bridge"]
+        quote = {**{k: bridge[k] for k in ("max_relative_spread", "min_quote_size", "max_abs_z")},
+                 "fee_per_contract_usd": bridge["solver"]["fee_per_contract_usd"],
+                 "multiplier": bridge["solver"]["multiplier"]}
+        if summary["mio_quote_values"] != quote:
+            self._need("calibration_walk_mismatch", f"the walk read quote values {summary['mio_quote_values']}, "
+                       f"the study's are {quote}")
+        symbols = hashlib.sha256(json_.dumps(study.params["symbols"]).encode()).hexdigest()
+        if summary["symbol_list_sha256"] != symbols:
+            self._need("calibration_walk_mismatch", "the walk's symbol list is not the study's")
+        outside = [d for d in weeks if d not in set(summary["walk_decision_dates"])]
+        if outside:
+            self._need("calibration_walk_mismatch", f"decision weeks {outside[:3]} are not in the walk's calendar")
+        tail = study.clocks["tail_end_before"] if study.clocks else None
+        if tail is None or tail > sealed:
+            self._need("calibration_walk_mismatch", f"the study's tail {tail!r} reaches past the walk's seal {sealed!r}")
+
+    @classmethod
+    def check_pins(cls, summary, domain, packet):
+        """Refuse a walk whose forecast pins for the packet's quarter are not the document's own (``calibration_walk_mismatch``).
+
+        ``domain`` is the study document's domain (its ``forecasts`` and ``contexts`` source bindings carry the pins);
+        ``packet`` its selected packet. Called where the document is visible, at the packet's intake.
+        """
+        start = packet["start"]
+        quarter = f"{start[:4]}Q{(int(start[5:7]) - 1) // 3 + 1}"
+        pins = summary.get("forecast_pins")
+        if not isinstance(pins, dict) or quarter not in pins:
+            raise ValueError(f"calibration_summary_incomplete: the walk's summary has no forecast_pins for {quarter}")
+        found = {}
+        for role in ("forecasts", "contexts"):
+            binding = domain["sources"][role]
+            found[role] = binding["pin"]["files"][binding["files"]["shared"]]
+        if pins[quarter] != found:
+            raise ValueError(f"calibration_walk_mismatch: the walk's forecast pins for {quarter} are not the document's")
+
+    # -- the week -----------------------------------------------------------------------------------------------
+
+    def map_for(self, day):
+        """Return the map of decision session ``day`` BY EXACT KEY, or ``None``: no other map is ever consulted."""
+        return self.maps.get(day)
+
+    def week_warm(self, day):
+        """Say whether ``day`` has a warm map; a missing or cold one is a ``calibration_warmup`` week (cash)."""
+        try:
+            return self.objective.map_warm(self.map_for(day))
+        except self._refuse as exc:
+            raise ValueError(str(exc)) from exc
+
+    def _rows(self, day):
+        """Return the day's decision rows keyed ``(group, right, strike, sign)``, from the walk's own row builder."""
+        if self._rows_cache[0] != day:
+            rows = {(r["group"], r["right"], r["strike"], r["sign"]): r for r in self.features.rows(self.study, day)}
+            self._rows_cache = (day, rows)
+        return self._rows_cache[1]
+
+    def _adjust(self, row, emap):
+        """Return ``adj`` for the walk's row of one option, or ``(None, reason)``: no row, no regime, warm-up."""
+        from dskit.pipeline.libs.edge_walk import books_fill
+
+        if not books_fill(row):
+            return None, "no_fill_session"
+        regime = emap.get("regimes", {}).get(row["name"])
+        if regime is None:
+            return None, "no_regime"
+        bucket = self.buckets.of(row["dte"], row["abs_z"], row["spread"], regime[0])
+        two = self.block["regressors"] == 2
+        try:
+            adj = self.objective.adjust(emap, bucket, row["name"], row["e"], row.get("e_dir") if two else None,
+                                        row.get("scale"))
+        except self._refuse as exc:
+            raise ValueError(str(exc)) from exc
+        self.last[row["group"], row["right"], row["strike"]] = {
+            "bucket": bucket, "e": row["e"], "sign": row["sign"], "c": None if adj is None else row["e"] + adj}
+        return (adj, None) if adj is not None else (None, "not_warm_bucket" if row.get("e_dir", 0.0) is not None
+                                                    else "no_direction_edge")
+
+    def candidates(self, day, groups, metadata):
+        """Return ``(groups, metadata, refusals, week, adjusts)`` for a warm week.
+
+        Each option's side with the larger ``(e, sign)`` takes the map (``adj``); the other side takes ``-adj`` (the
+        round trip stays costly). An option with no walk row (no fill session, no regime, no bucket, no direction
+        edge) has BOTH items removed from their group and counted; a group left empty is refused
+        (``insufficient_eligible_legs``). ``adjusts`` maps a group id to its per-item list, in the kept order.
+        """
+        from dskit.pipeline.libs.edge_walk import prefers
+
+        emap, rows = self.map_for(day), self._rows(day)
+        self.last = {}
+        week, refusals, kept_groups, kept_meta, adjusts = Counter(), [], [], [], {}
+        for group, meta in zip(groups, metadata, strict=True):
+            options = {}
+            for index, item in enumerate(meta["items"]):
+                options.setdefault((item["right"], item["strike"]), []).append(index)
+            adj = [None] * len(meta["items"])
+            for (right, strike), indexes in options.items():
+                best = None
+                for index in indexes:
+                    row = rows[meta["id"], right, strike, meta["items"][index]["sign"]]
+                    if best is None or prefers(row, rows[meta["id"], right, strike, meta["items"][best]["sign"]]):
+                        best = index
+                value, reason = self._adjust(rows[meta["id"], right, strike, meta["items"][best]["sign"]], emap)
+                for index in indexes:
+                    adj[index] = None if value is None else (value if index == best else self.objective.mirror(value))
+                if value is None:
+                    week[reason] += 1
+            keep = [i for i, a in enumerate(adj) if a is not None]
+            week[self.NO_ROW] += len(adj) - len(keep)
+            if not keep:
+                refusals.append({"symbol": meta["symbol"], "expiry": meta["expiry"],
+                                 "reason": "insufficient_eligible_legs"})
+                continue
+            new_group, new_meta, _ = ReplayHedge.restrict(group, meta, [None] * len(adj), keep)
+            kept_groups.append(new_group)
+            kept_meta.append(new_meta)
+            adjusts[meta["id"]] = [adj[i] for i in keep]
+        return kept_groups, kept_meta, refusals, Counter({k: v for k, v in week.items() if v}), adjusts
+
+    def record(self, weeks):
+        """Return the result's calibration field: the resolved block, its control flag and the week counts."""
+        return {"block": self.objective.params, "control": bool(self.block.get("control", False)),
+                "weeks": dict(weeks), "min_warm_weeks": self.block["min_warm_weeks"],
+                "counts_as_evidence": weeks.get("warm", 0) >= self.block["min_warm_weeks"]}
+
+
 class WeeklyOptionPortfolioStudy:
     """Replay fixed portfolio methods on a bounded archive and weekly clock.
 
@@ -2858,6 +3124,25 @@ class WeeklyOptionPortfolioStudy:
                 books[-1]["risk_charge"] = selection["risk_charges"][i]
         return books
 
+    def _calibration_fields(self, books, program, selection, metadata, adjusts):
+        """Add ``calibration_adjust``, ``expected_raw`` and ``radius_premium`` to each selected book (ADR-0313 A5).
+
+        ``expected`` is the solver's value, the adjust included; ``expected_raw`` is the same book at its raw edge
+        (``expected - calibration_adjust``) and ``radius_premium`` the W1 deduction ``worst - nominal`` of the same
+        quantities, so the two discounts stay visible separately.
+        """
+        from dskit.pipeline.libs.pyomo import TransportActionScore
+
+        quantities = selection["quantities"]
+        components = TransportActionScore(program, {"parity_tolerance": self.params["solver"]["parity_tolerance"]}
+                                          ).value(quantities)
+        index = {m["id"]: i for i, m in enumerate(metadata)}
+        for book in books:
+            i = index[book["id"]]
+            adjust = math.fsum(a*q for a, q in zip(adjusts[book["id"]], quantities[i], strict=True))
+            book.update(calibration_adjust=adjust, expected_raw=book["expected"]-adjust,
+                        radius_premium=components["uncertainty_deductions"][i])
+
     def _sizer_inputs(self, day, method, account):
         """Return the sizer's week record with its risk-input status, before any solve (ADR-0300).
 
@@ -3429,18 +3714,22 @@ class WeeklyOptionPortfolioStudy:
         defects = TransportPortfolioSolve.validate_params(p["solver"])
         if defects:
             raise ValueError("; ".join(defects))
-        hedge = None
+        hedge = calibrated = None
+        warm_weeks = Counter()
         present = self._BLOCKS.present(method)
         if present:
             if derived is not None or policy:
                 raise ValueError("block_not_derived: a method with a block is solved locally, never derived or policy-scored")
-            # ADR-0313 I2 registers and validates the blocks only; each feature lands in its own stage (I5, I6, I7,
-            # ADR-0312 S3 for the replay-mode hedge). Until then a block must not be silently ignored by a run.
-            if set(present) != {"hedge"}:
+            # ADR-0313: each feature attaches in its own stage (I5 calibration, I6 limits, I7 the hedge with calibration,
+            # ADR-0312 S3 for the hedge). A block combination no stage attaches yet must not be silently ignored.
+            if "exposure_limits" in present or ("hedge" in present and "calibration" in present):
                 raise ValueError("block_unattached: a method with a block cannot run until its feature is attached")
-            if self.adjustments:
-                raise ValueError("hedge_split_unsupported: a hedged run takes no split adjustment")
-            hedge = ReplayHedge(self, method["hedge"], p["hedge_parity"])
+            if "hedge" in present:
+                if self.adjustments:
+                    raise ValueError("hedge_split_unsupported: a hedged run takes no split adjustment")
+                hedge = ReplayHedge(self, method["hedge"], p["hedge_parity"])
+            if "calibration" in present:
+                calibrated = CalibratedEdge(self, method)
         if recorded is not None and derived is not None:
             raise ValueError("recorded replay and derived actions are exclusive")
         if (derived is not None or policy) and self._sizer(method) is not None:
@@ -3509,6 +3798,14 @@ class WeeklyOptionPortfolioStudy:
                               "status": self._WEEK_NOT_SELECTED}
                 else:
                     groups, metadata, refusals = self._prepare(day)
+                    week_cal = adjusts = None
+                    if calibrated is not None:
+                        warm = calibrated.week_warm(day)
+                        warm_weeks["warm" if warm else "warmup"] += 1
+                        if warm:
+                            # ADR-0313 B2 steps 1-2 and 5: the item features, the walk-row exclusions, then the adjust.
+                            groups, metadata, excluded, week_cal, adjusts = calibrated.candidates(day, groups, metadata)
+                            refusals = [*refusals, *excluded]
                     week_hedge = None
                     if hedge is not None and hedge.is_program:
                         # ADR-0313 B2 steps 2-3: the hedged candidate set, then the hedge rewrite (per method, never in _prepare).
@@ -3524,6 +3821,9 @@ class WeeklyOptionPortfolioStudy:
                               "open_reserve": sum(b["reserve"] for b in account.open.values())}
                     if week_hedge is not None:
                         record["hedge"] = {"mode": "program", "excluded": dict(week_hedge)}
+                    if calibrated is not None:
+                        record["calibration"] = {"warm": week_cal is not None, "map": calibrated.map_for(day) is not None,
+                                                 "excluded": dict(week_cal or {})}
                     repaired = {m["id"]: m["cdf_noise_raised"] for m in metadata if "cdf_noise_raised" in m}
                     if repaired:
                         # Only a repaired week carries the key, so a monotone forecast's record is unchanged.
@@ -3585,6 +3885,9 @@ class WeeklyOptionPortfolioStudy:
                     elif (self.clocks and (day == self.calendar[-1]
                           or self.calendar[self.calendar.index(day)+1] >= self.clocks["entry_end_before"])):
                         record["status"] = "no_entry_fill_session"
+                    elif calibrated is not None and week_cal is None:
+                        # ADR-0313 A8: no map, a cold map: nothing is solved and the raw edge is never traded instead.
+                        record["status"] = "calibration_warmup"
                     elif "shock" in record and record["shock"]["status"] != "within":
                         record["status"] = ("shock_risk_input" if held is None else "shock_held_breach")
                     elif "kelly" in record and record["kelly"]["status"] != "estimated":
@@ -3599,7 +3902,8 @@ class WeeklyOptionPortfolioStudy:
                         configured = [{**g, "radius": method["rho"], "scale": self._group_scale(method, g, meta),
                                        "reserve_rows": g["reserve_rows"]
                                        + self._charge_coefficients(charge, meta["items"], mult),
-                                       **({} if risk is None else {"risk_charge": dict(risk)})}
+                                       **({} if risk is None else {"risk_charge": dict(risk)}),
+                                       **({} if adjusts is None else {"value_adjust": adjusts[g["id"]]})}
                                       for g, meta in zip(groups, metadata)]
                         solver_params = p["solver"]
                         if kelly is not None and "max_groups" in kelly:
@@ -3683,6 +3987,8 @@ class WeeklyOptionPortfolioStudy:
                         else:
                             candidate = selection
                         books = [] if timed_out else self._books(candidate, metadata, charge)
+                        if calibrated is not None and books:
+                            self._calibration_fields(books, program, candidate, metadata, adjusts)
                         status = "timeout_skipped" if timed_out else "selected" if books else "cash"
                         certificates = [{k: v for k, v in c.items() if k != "binding"}
                                         for c in selection.get("certificates", [])]
@@ -3780,6 +4086,8 @@ class WeeklyOptionPortfolioStudy:
         if derived_decisions is not None and set(derived_decisions) != consumed:
             raise ValueError("derived actions for an ineligible week")
         result = self._finish(method, account, decisions, rejected, snapshots, hedge)
+        if calibrated is not None:
+            result["calibration"] = calibrated.record(warm_weeks)
         if hedge is not None:
             result["hedge"] = hedge.record()
             if hedge.is_program:
@@ -3988,6 +4296,9 @@ class MIOPacketStudy(StudyNode):
         if "edge_maps" not in domain["sources"] and (
                 "method_inputs" in bounded_inputs or "method_inputs_sha256" in provenance):
             raise ValueError("unbound calibration map intake")
+        if "edge_maps" in domain["sources"]:
+            CalibratedEdge.check_pins(bounded_inputs["method_inputs"]["edge_walk_summary"], domain,
+                                      MIOStudyContract.packet(study))
         MIOPacketStudy.validate_indexed_inputs(
             study, bounded_inputs, plan, artifact_root)
         params = {**domain["params"], "selected_pairs": domain["pairs"],

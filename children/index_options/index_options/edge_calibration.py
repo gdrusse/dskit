@@ -853,5 +853,7 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
         out["symbols_dropped"] = dict(self._dropped)
         out["symbols_absent"] = {s: list(q) for s, q in self._absent.items()}       # outside the quarter's universe
         out["symbols_no_forecast"] = {s: list(q) for s, q in self._idle.items()}    # in it, but no forecast row
+        if self.params.get("direction") is not None:
+            out["direction_params"] = dict(self.params["direction"])        # the study rebuilds e_dir with the SAME params
         out["symbol_list_sha256"] = hashlib.sha256(json.dumps(self._symbols).encode()).hexdigest()
         return out
