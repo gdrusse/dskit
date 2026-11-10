@@ -48,6 +48,7 @@ from dskit.pipeline.option_pricing import (
     black76_theta,
     black76_vega,
 )
+from dskit.pipeline.option_structures import structure_max_loss
 from dskit.pipeline.records import number_ok, price_ok
 from dskit.pipeline.stats import sample_quantile
 
@@ -66,12 +67,11 @@ FORWARD_SOURCES = ("parity", "spot")
 _INF = float("inf")
 #: Trading days per year: annualizes the hard-to-borrow proxy's daily volatility.
 TRADING_DAYS_PER_YEAR = 252
-#: Per-book forward-hedge outcomes (ADR-0310 A2.3); ``classifier_pending`` is the build interim.
-HEDGE_OK_FORWARD, HEDGE_UNBOUNDED, HEDGE_HTB, DECISION_UNMARKED, CLASSIFIER_PENDING = (
-    "ok", "hedge_unbounded_above", "hedge_hard_to_borrow", "decision_unmarked",
-    "classifier_pending")
+#: Per-book forward-hedge outcomes (ADR-0310 A2.3).
+HEDGE_OK_FORWARD, HEDGE_UNBOUNDED, HEDGE_HTB, DECISION_UNMARKED = (
+    "ok", "hedge_unbounded_above", "hedge_hard_to_borrow", "decision_unmarked")
 FORWARD_HEDGE_STATUSES = (HEDGE_OK_FORWARD, HEDGE_UNBOUNDED, HEDGE_HTB, DECISION_UNMARKED,
-                          "not_attributed", CLASSIFIER_PENDING)
+                          "not_attributed")
 #: Where the hedge cost rates come from (ADR-0310 A2.3): a recorded placeholder or measured.
 HEDGE_COST_SOURCES = ("placeholder", "measured")
 #: The recorded placeholder triple, in ``StaticDeltaHedge._PARAMS`` order (fee, bps, borrow).
@@ -1014,7 +1014,7 @@ class CellAttribution(_Configured):
         return {
             "n_hedged": len(ok), "n_unbounded_above": status[HEDGE_UNBOUNDED],
             "n_hard_to_borrow": status[HEDGE_HTB], "n_decision_unmarked": status[DECISION_UNMARKED],
-            "n_not_attributed": status[NOT_ATTRIBUTED], "n_classifier_pending": status[CLASSIFIER_PENDING],
+            "n_not_attributed": status[NOT_ATTRIBUTED],
             "n_htb_unreadable": sum(bool(r.get("htb_unreadable")) for r in rows),
             "hedgeable_share_gross": (math.fsum(abs(r["pnl"]) for r in ok) / gross
                                       if gross > 0 else None),
@@ -1049,7 +1049,7 @@ class CellAttribution(_Configured):
             "beyond_payoff_usd": self._sum_of(group, "beyond_payoff_delta"),
             **{k: effect[k] for k in (
                 "n_hedged", "n_unbounded_above", "n_hard_to_borrow", "n_not_attributed",
-                "n_decision_unmarked", "n_classifier_pending", "n_htb_unreadable",
+                "n_decision_unmarked", "n_htb_unreadable",
                 "hedgeable_share_gross", "forward_hedged_pnl_usd", "hedge_pnl_usd",
                 "hedge_loss_reduction_usd", "hedge_costs_usd")},
         }
@@ -1347,7 +1347,7 @@ class BookGreeksReport(Node):
                     "static_share_gross", "beyond_static_share_gross",
                     "payoff_delta_usd", "beyond_payoff_usd", "n_hedged", "n_unbounded_above",
                     "n_hard_to_borrow", "n_not_attributed", "n_decision_unmarked",
-                    "n_classifier_pending", "n_htb_unreadable", "hedgeable_share_gross",
+                    "n_htb_unreadable", "hedgeable_share_gross",
                     "forward_hedged_pnl_usd", "hedge_pnl_usd", "hedge_loss_reduction_usd",
                     "hedge_costs_usd", "top1_share_gross", "top3_share_gross",
                     "loo_sign_stable_pnl", "loo_sign_stable_hedge_pnl", "small_cell",
@@ -1436,12 +1436,16 @@ class BookGreeksReport(Node):
     def _unbounded_above(self, book, units, f_fill):
         """Say whether a linear hedge of ``units`` held shares struck at ``f_fill`` is unbounded above.
 
-        ``None`` (the default) means the classifier is not built yet: the book's
-        ``forward_hedge_status`` is ``classifier_pending``. The owner's rule is
-        ``structure_max_loss(..., hedge=(units, f_fill))`` returning ``inf`` (ADR-0312
-        Amendment 1; ADR-0310 Stage 2b), which a subclass returns here as ``True``/``False``.
+        The one owner of the rule is :func:`~dskit.pipeline.option_structures.structure_max_loss`
+        with ``hedge=(units, f_fill)`` (truncated held shares, ADR-0312 Amendment 1): ``inf`` is
+        unbounded. The credit does not enter that test, so ``0.0`` is passed; neither the slope rule
+        nor the shares-per-unit conversion is restated here.
         """
-        return None
+        legs = [(leg["right"], leg["sign"] * leg["quantity"]) for leg in book["legs"]]
+        strikes = [leg["strike"] for leg in book["legs"]]
+        loss = structure_max_loss(legs, strikes, 0.0, self.params["multiplier"],
+                                  hedge=(units, f_fill))
+        return loss == _INF
 
     def _hedge_dividend(self, book):
         """Return ``(per_share, hedge_status)``: dividends a stock holder gets in ``(fill, expiry]``.
@@ -1614,10 +1618,7 @@ class BookGreeksReport(Node):
         if units < 0 and out["hard_to_borrow"]:
             out["forward_hedge_status"] = HEDGE_HTB
             return out
-        unbounded = self._unbounded_above(book, units, forward_fill)
-        if unbounded is None:
-            out["forward_hedge_status"] = CLASSIFIER_PENDING
-        elif unbounded:
+        if self._unbounded_above(book, units, forward_fill):
             out["forward_hedge_status"] = HEDGE_UNBOUNDED
         else:
             out.update(forward_hedge_status=HEDGE_OK_FORWARD,

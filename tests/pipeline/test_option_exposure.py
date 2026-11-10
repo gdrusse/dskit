@@ -1452,12 +1452,59 @@ def test_forward_spot_book_hedges_at_f_equals_s():
     assert row["forward_hedged_pnl"] == pytest.approx(expected, rel=1e-9)
 
 
-def test_the_default_classifier_is_pending_and_nulls_the_hedge_columns_but_keeps_the_units():
-    row = run_with(Mem, [make_book()])["books"][0]
-    assert row["forward_hedge_status"] == "classifier_pending"
-    assert row["forward_hedge_units"] is not None and row["trade_costs_usd"] is not None
-    assert row["forward_hedge_costs"] is None and row["forward_hedged_pnl"] is None
-    assert row["hedge_pnl"] is None
+def _book_of(*legs, key="k"):
+    return make_book(key=key, legs=[{"right": r, "strike": k, "sign": 1 if q > 0 else -1,
+                                     "quantity": abs(q)} for r, k, q in legs])
+
+
+# ADR-0312 Amendment 1's table, called as structure_max_loss(..., hedge=(U_sh, F_ref)), U_sh in held shares.
+@pytest.mark.parametrize("legs, units, f_ref, unbounded", [
+    ((("call", 105.0, 1),), -35, 100.0, False),                              # long call: reserve 375
+    ((("call", 105.0, 1), ("call", 110.0, -1)), -15, 100.0, True),           # bull call spread
+    ((("put", 95.0, -1),), -30, 100.0, True),                                # short put
+    ((("put", 95.0, -1), ("put", 90.0, 1)), -12, 100.0, True),               # bull put spread
+    ((("call", 450.0, 5), ("call", 455.0, 1)), -288, 451.0, False),          # the 5:1 glossary book, 650.90
+    ((("call", 100.0, 1),), -100, 100.0, False),                             # zero slope is bounded
+    ((("call", 100.0, 1),), -101, 100.0, True),                              # negative slope is not
+    ((("put", 95.0, 1),), 30, 100.0, False),                                 # long put, long hedge
+])
+def test_the_default_classifier_is_the_held_shares_structure_max_loss_rule(legs, units, f_ref, unbounded):
+    node = Mem("report", REPORT)
+    assert node._unbounded_above(_book_of(*legs), units, f_ref) is unbounded
+
+
+def test_the_default_classifier_calls_structure_max_loss_with_held_shares_and_the_fill_forward(monkeypatch):
+    seen = []
+
+    def spy(legs, strikes, credit, multiplier, hedge=None):
+        seen.append((list(legs), list(strikes), multiplier, hedge))
+        return 650.90
+    monkeypatch.setattr(ox, "structure_max_loss", spy)
+    book = _book_of(("call", 450.0, 5), ("call", 455.0, 1))
+    assert Mem("report", REPORT)._unbounded_above(book, -288, 451.0) is False
+    assert seen == [([("call", 5), ("call", 1)], [450.0, 455.0], 100, (-288, 451.0))]
+
+
+def test_the_default_classifier_marks_a_bounded_book_ok_and_an_unbounded_one_unhedged():
+    ok = run_with(Mem, [make_book()])["books"][0]                    # long calls, short-share hedge
+    assert ok["forward_hedge_status"] == "ok" and ok["forward_hedged_pnl"] is not None
+    put = [{"right": "put", "strike": 100.0, "sign": -1, "quantity": 2}]    # short put: delta positive
+    bad = run_with(Mem, [make_book(legs=put)])["books"][0]
+    assert bad["forward_hedge_status"] == "hedge_unbounded_above"
+    assert bad["forward_hedge_units"] < 0 and bad["hedge_pnl"] is None and bad["forward_hedged_pnl"] is None
+
+
+def test_hard_to_borrow_takes_precedence_over_the_unbounded_check():
+    put = [{"right": "put", "strike": 100.0, "sign": -1, "quantity": 2}]
+    row = run_with(Mem, [make_book(legs=put)], bars=htb_bars(), **HTB_PARAMS)["books"][0]
+    assert row["forward_hedge_units"] < 0 and row["hard_to_borrow"] is True
+    assert row["forward_hedge_status"] == "hedge_hard_to_borrow"
+
+
+def test_classifier_pending_is_gone_from_the_codes_and_the_counts():
+    assert not hasattr(ox, "CLASSIFIER_PENDING")
+    assert "classifier_pending" not in ox.FORWARD_HEDGE_STATUSES
+    assert "n_classifier_pending" not in BookGreeksReport.CELL_COLUMNS
 
 
 def test_an_unbounded_hedge_keeps_the_units_and_nulls_the_three_hedge_columns():
@@ -1588,7 +1635,7 @@ def test_cell_hedge_effect_and_concentration_by_hand_on_three_books():
 
 def test_cell_without_a_concentration_or_hedge_rows_has_nulls_not_errors():
     ca = CellAttribution({"cell_by": ["sym"], "min_total_usd": 1.0})
-    cell = ca.summarize([frow(5.0, status="classifier_pending", sym="A")])[0]
+    cell = ca.summarize([frow(5.0, status="hedge_unbounded_above", sym="A")])[0]
     assert cell["n_hedged"] == 0 and cell["forward_hedged_pnl_usd"] is None
     assert cell["hedge_pnl_usd"] is None and cell["hedge_loss_reduction_usd"] is None
     assert cell["hedgeable_share_gross"] == 0.0
@@ -1602,7 +1649,7 @@ def test_the_cell_columns_tail_matches_the_cells_the_report_writes():
     cols = BookGreeksReport.CELL_COLUMNS
     assert cols[13:] == (
         "payoff_delta_usd", "beyond_payoff_usd", "n_hedged", "n_unbounded_above",
-        "n_hard_to_borrow", "n_not_attributed", "n_decision_unmarked", "n_classifier_pending",
+        "n_hard_to_borrow", "n_not_attributed", "n_decision_unmarked",
         "n_htb_unreadable", "hedgeable_share_gross", "forward_hedged_pnl_usd", "hedge_pnl_usd", "hedge_loss_reduction_usd", "hedge_costs_usd", "top1_share_gross",
         "top3_share_gross", "loo_sign_stable_pnl", "loo_sign_stable_hedge_pnl", "small_cell",
         "descriptive_only", "hedge_cost_source")
@@ -1646,8 +1693,8 @@ def eight_rows():
         rows[i]["forward_hedge_status"] = "hedge_unbounded_above"
     rows[4]["forward_hedge_status"] = "hedge_hard_to_borrow"
     rows[5]["forward_hedge_status"] = "decision_unmarked"
-    rows[6]["forward_hedge_status"] = "classifier_pending"
-    rows[7]["forward_hedge_status"] = "classifier_pending"
+    rows[6]["forward_hedge_status"] = "not_attributed"
+    rows[7]["forward_hedge_status"] = "hedge_unbounded_above"
     return rows
 
 
@@ -1673,13 +1720,14 @@ def test_direction_read_forward_hedge_block_and_basis_distribution():
     dr = Pass("report", REPORT).direction_read(rows)
     fh = dr["forward_hedge"]
     assert (fh["n_hedged"], fh["n_unbounded_above"], fh["n_hard_to_borrow"],
-            fh["n_decision_unmarked"], fh["n_not_attributed"], fh["n_classifier_pending"]) == (2, 2, 1, 1, 0, 2)
+            fh["n_decision_unmarked"], fh["n_not_attributed"]) == (2, 3, 1, 1, 1)
+    assert "n_classifier_pending" not in fh
     assert fh["min_books"] == 5 and fh["hedge_cost_source"] == "placeholder"
     assert fh["forward_hedged_pnl_usd"] == pytest.approx(40.0 - 120.0)
     assert fh["hedge_pnl_usd"] == pytest.approx(-80.0 - (100.0 - 200.0)) == pytest.approx(20.0)
     assert fh["hedge_loss_reduction_usd"] == pytest.approx(200.0 - 120.0)
     assert fh["hedge_costs_usd"] == pytest.approx(22.0)
-    assert fh["hedgeable_share_gross"] == pytest.approx(300.0 / 475.0)
+    assert fh["hedgeable_share_gross"] == pytest.approx(300.0 / 470.0)   # the not_attributed -5 is out
     basis = [1.0, -2.0, 3.0, 0.5, -0.5, 4.0, -1.0, 2.0]
     b = dr["basis_usd"]
     assert b["n"] == 8 and b["sum"] == pytest.approx(sum(basis))
@@ -1719,14 +1767,14 @@ def test_a_cells_status_counts_sum_to_its_n():
     rows.append(frow(1.0, status="not_attributed", sym="A"))
     cell = CellAttribution({"cell_by": ["sym"], "min_total_usd": 1.0}).summarize(rows)[0]
     counts = ("n_hedged", "n_unbounded_above", "n_hard_to_borrow", "n_decision_unmarked",
-              "n_not_attributed", "n_classifier_pending")
+              "n_not_attributed")
     assert sum(cell[k] for k in counts) == cell["n"] == 9
-    assert (cell["n_decision_unmarked"], cell["n_classifier_pending"]) == (1, 2)
+    assert (cell["n_decision_unmarked"], cell["n_not_attributed"]) == (1, 2)
 
 
 def test_the_new_count_columns_are_declared_and_written_by_the_report():
     out = run_with(Pass, [make_book()])
-    for name in ("n_decision_unmarked", "n_classifier_pending", "n_htb_unreadable"):
+    for name in ("n_decision_unmarked", "n_htb_unreadable"):
         assert name in BookGreeksReport.CELL_COLUMNS and name in out["cells"][0]
     assert "htb_unreadable" in BookGreeksReport.BOOK_COLUMNS
     assert list(out["cells"][0])[-len(BookGreeksReport.CELL_COLUMNS):] == list(

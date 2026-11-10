@@ -1336,7 +1336,8 @@ def test_direction_read_forward_hedge_block_echoes_min_books_and_the_cost_source
     assert block["n_decision_unmarked"] == 0 and block["n_not_attributed"] == 0
     # every attributed book is a candidate: nothing is hard-to-borrow in the fixture's calm closes
     assert block["n_hard_to_borrow"] == 0
-    assert block["n_hedged"] + block["n_unbounded_above"] + block["n_classifier_pending"] == 3
+    assert "n_classifier_pending" not in block
+    assert block["n_hedged"] + block["n_unbounded_above"] == 3
     conc = read["concentration"]
     assert conc["min_books"] == 5 and conc["small_cell"] is True
     assert conc["n_books"] == block["n_hedged"]
@@ -1432,3 +1433,57 @@ def test_the_run_summary_totals_htb_unreadable(world):
     out = run_node(run_dir, out_dir)          # htb_lookback 20 > the fixture's closes before decision
     assert out["summary"]["htb_unreadable"] == out["summary"]["methods"][METHOD]["htb_unreadable"] == 3
     assert out["summary"]["methods"][METHOD]["direction_read"]["forward_hedge"]["n_htb_unreadable"] == 3
+
+
+# ---- ADR-0310 A2 stage 2b: the hedgeable classifier through structure_max_loss(hedge=) ---------
+MMM_IDS = (f"{METHOD}|2021-04-05:MMM:2021-05-21", f"{METHOD}|2021-04-12:MMM:2021-05-21")
+
+
+def test_a_long_call_book_is_hedged_and_a_short_put_book_is_unbounded_above(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)
+    rows = rows_by(out)
+    blk = rows[BLK_ID]
+    assert blk["forward_hedge_status"] == "ok"
+    units, f_fill = blk["forward_hedge_units"], blk["forward"]
+    assert units < 0
+    # the glossary 5:1 book keeps a finite reserve (650.90 at -288 shares, F 451): held-shares signature
+    expected = (-938.90 + units * (BLK_SETTLE - f_fill) - blk["forward_hedge_costs"])
+    assert blk["forward_hedged_pnl"] == pytest.approx(expected)
+    assert blk["hedge_pnl"] == pytest.approx(expected - blk["pnl"])
+    for ident in MMM_IDS:                       # a short put sold against a positive delta: slope < 0
+        put = rows[ident]
+        assert put["forward_hedge_status"] == "hedge_unbounded_above"
+        assert put["forward_hedge_units"] < 0 and put["trade_costs_usd"] is not None
+        assert all(put[c] is None for c in ("forward_hedge_costs", "forward_hedged_pnl", "hedge_pnl"))
+
+
+def test_the_direction_read_hedged_set_is_the_ok_books_and_nulls_do_not_propagate(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)
+    blk = rows_by(out)[BLK_ID]
+    read = out["summary"]["methods"][METHOD]["direction_read"]
+    fh = read["forward_hedge"]
+    assert (fh["n_hedged"], fh["n_unbounded_above"]) == (1, 2)
+    assert fh["forward_hedged_pnl_usd"] == pytest.approx(blk["forward_hedged_pnl"])
+    assert fh["hedge_pnl_usd"] == pytest.approx(blk["hedge_pnl"])
+    assert fh["hedge_costs_usd"] == pytest.approx(blk["forward_hedge_costs"])
+    assert fh["hedge_loss_reduction_usd"] == pytest.approx(
+        938.90 - max(-blk["forward_hedged_pnl"], 0.0))
+    gross = 938.90 + 2 * 398.7
+    assert fh["hedgeable_share_gross"] == pytest.approx(938.90 / gross)
+    assert read["concentration"]["n_books"] == 1 and read["concentration"]["small_cell"] is True
+    assert read["concentration_pnl"]["n_books"] == 3
+    assert read["pnl_usd"] == pytest.approx(-938.90 + 2 * 398.7)      # book P&L still counts all three
+    cells = {c["symbol"]: c for c in out["cells"]}
+    assert cells["BLK"]["n_hedged"] == 1 and cells["BLK"]["hedge_pnl_usd"] == pytest.approx(blk["hedge_pnl"])
+    assert cells["MMM"]["n_hedged"] == 0 and cells["MMM"]["n_unbounded_above"] == 2
+    assert cells["MMM"]["forward_hedged_pnl_usd"] is None and cells["MMM"]["hedge_pnl_usd"] is None
+    assert out["summary"]["forward_hedge_status"] == {"hedge_unbounded_above": 2, "ok": 1}
+
+
+def test_classifier_pending_is_gone_from_the_child_outputs(world):
+    run_dir, out_dir = world()
+    run_node(run_dir, out_dir)
+    for name in ("books.csv", "cells.csv", "greeks-summary.json"):
+        assert "classifier_pending" not in (out_dir / name).read_text(), name
