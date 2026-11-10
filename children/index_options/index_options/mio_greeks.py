@@ -90,9 +90,11 @@ DIVIDEND_MODES = ("required", "optional")
 _QUARTER = re.compile(r"^(\d{4})Q([1-4])$")
 _DATE_FIELDS = ("decision_date", "fill_date", "expiry")
 _PLACEMENT = ("run_dir", "out_dir")
-#: Params that do not change the arithmetic, so stay out of the identity hash.
-_QUOTE_PARAMS = ("min_quote_size", "max_relative_spread")   # read from result.json's bridge
+#: The run's own quote params, read from ``result.json``'s bridge (never a config key).
+_QUOTE_PARAMS = ("min_quote_size", "max_relative_spread")
+#: The per-method counts of the parity filter, written to the summary.
 _PARITY_COUNTS = ("forwards", "rows_dropped", "fell_to_spot", "fell_to_spot_by_filter")
+#: Params that do not change the arithmetic, so stay out of the identity hash.
 _NON_IDENTITY = (*_PLACEMENT, "chain_cache_days")
 
 
@@ -323,6 +325,11 @@ class MIOGreeksDiagnostics(BookGreeksReport):
     DIVIDEND_COLUMN_ABSENT = "dividend_column_absent"
     CELL_BY_INCOMPLETE = "cell_by_incomplete"
     FLAG_MATCHES, FLAG_CONFIG = "matches_shock", "config_value_no_shock"
+
+    def __init__(self, key, params):
+        super().__init__(key, params)
+        self._quote_params = None            # set by _domain from the run's bridge
+        self._parity_counts = Counter()      # reset per method by run
 
     # -- config ------------------------------------------------------------
 
@@ -644,7 +651,10 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         the forwards taken, the rows dropped and the forwards that fall to spot because of
         the filter (they would have been parity on the unfiltered rows).
         """
-        kept = usable_parity_rows(rows, book["factor"], *self._quote_params)
+        if self._quote_params is None:
+            raise GreeksRefusal(self.QUOTE_PARAMS_MISSING, "the run's quote params are not read yet")
+        # Spot is close / factor and strikes are raw, so prices go over the factor (rescale).
+        kept = usable_parity_rows(rows, book["factor"], *self._quote_params, rescale=True)
         need = self.params["min_pairs"]
         pairs = self._tools[ParityForward].pairs
         n_kept, n_all = len(pairs(kept, 1.0)), len(pairs(rows, 1.0))   # the count ignores the centre

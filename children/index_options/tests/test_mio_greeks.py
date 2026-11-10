@@ -1670,3 +1670,64 @@ def test_a_chain_without_the_size_columns_refuses_by_name(world):
     with pytest.raises(GreeksRefusal) as info:
         run_node(run_dir, out_dir)
     assert code_of(info) == "chain_columns_absent"
+
+
+def _frozen_old_rule(row, factor, size, cap, strict):
+    """The pre-refactor ``_usable_quote`` rule, copied literally (a frozen oracle, not a call)."""
+    from dskit.pipeline.records import number_ok
+    if row is None or not math.isclose(float(row.get("basis_factor", math.nan)), factor,
+                                       rel_tol=1e-9):
+        return None
+    bid, ask = row.get("bid"), row.get("ask")
+    if (not number_ok(bid) or not number_ok(ask) or bid <= 0 or ask < bid
+            or any(type(row.get(k)) is not int or row[k] < size for k in ("bid_size", "ask_size"))):
+        return None
+    bid, ask = float(bid)/factor, float(ask)/factor
+    if (ask-bid)/((ask+bid)/2) > cap:
+        return None
+    market = (bid, ask)
+    return market if not strict or market[0] < market[1] else None
+
+
+def _edge_rows():
+    base = {"basis_factor": 1.0, "bid_size": 2, "ask_size": 2}
+    return [{**base, "bid": 3.0, "ask": 5.0},                    # spread exactly at the 0.5 cap
+            {**base, "bid": 3.0, "ask": 5.0000001},              # just over
+            {**base, "bid": 4.0, "ask": 4.0},                    # bid = ask
+            {**base, "bid": 0.0, "ask": 1.0},                    # zero bid
+            {**base, "bid": 3.0, "ask": 4.0, "bid_size": 1},     # small size
+            {**base, "bid": 3.0, "ask": 4.0, "ask_size": 2.0},   # non-int size
+            {**base, "bid": 3.0, "ask": 4.0}]
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("factor", [1.0, 0.5])
+def test_the_shared_rule_equals_a_frozen_copy_of_the_old_rule(strict, factor):
+    rows = [*_quote_grid(), *({**r, "basis_factor": factor} for r in _edge_rows())]
+    for row in rows:
+        assert contracts.usable_quote(row, factor, 2, 0.5, strict=strict) == _frozen_old_rule(
+            row, factor, 2, 0.5, strict)
+    assert contracts.usable_quote(_edge_rows()[0], 1.0, 2, 0.5, strict=True) == (3.0, 5.0)
+
+
+def test_a_split_factor_book_takes_its_forward_from_prices_over_the_factor(world):
+    node = MIOGreeksDiagnostics("greeks", {**PARAMS, "run_dir": "r", "out_dir": "o"})
+    node._quote_params = (1, 0.5)
+    rows = []
+    for k in (445.0, 450.0, 455.0):                  # raw prices are twice the adjusted ones
+        for right, mid in (("call", 10.0 + (452.0 - k)), ("put", 10.0)):
+            rows.append({"right": right, "strike": k, "bid": 2 * (mid - 0.05),
+                         "ask": 2 * (mid + 0.05), "bid_size": 5, "ask_size": 5,
+                         "basis_factor": 2.0})
+    book = {"factor": 2.0, "symbol": "BLK"}
+    tool = node._owned()[ParityForward]
+    forward, source = tool.from_chain(node._parity_rows(book, "2021-04-06", rows), 452.0)
+    assert source == "parity" and forward == pytest.approx(452.0, abs=1e-9)
+
+
+def test_a_standalone_greeks_hook_neither_raises_attribute_error_nor_guesses_params():
+    node = MIOGreeksDiagnostics("greeks", {**PARAMS, "run_dir": "r", "out_dir": "o"})
+    node._owned()
+    with pytest.raises(GreeksRefusal) as info:
+        node._parity_rows({"factor": 1.0}, "2021-04-06", [])
+    assert code_of(info) == "quote_params_missing"
