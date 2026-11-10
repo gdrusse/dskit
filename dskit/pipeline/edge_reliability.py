@@ -50,6 +50,7 @@ __all__ = [
     "LinearEdgeState",
     "ReliabilityBuckets",
     "SettledBefore",
+    "kish_effective",
     "PartialPooling",
     "NameAdjustment",
     "EdgeCalibrationMap",
@@ -259,6 +260,7 @@ class ReliabilityBuckets:
 
 
 _FIT_RTOL = NO_VARIANCE_RTOL
+_STRATA = ("buy", "sell", "top")
 
 
 def _solve(m, rhs):
@@ -293,6 +295,30 @@ def _solve(m, rhs):
                 s -= a[i][j] * x[j][col]
             x[i][col] = s / a[i][i]
     return [row[0] for row in x] if not matrix else x
+
+
+def kish_effective(weight_sum, weight_sq_sum):
+    """Return the Kish effective count ``weight_sum ** 2 / weight_sq_sum`` (``0.0`` when the squares sum to 0).
+
+    The one owner of every effective count in this module: row counts, cluster counts, the CR1 factor,
+    degrees of freedom and the ``min_clusters`` / ``min_blocks`` / ``name_min_clusters`` gates. The ratio is
+    unchanged by a common factor on all weights, so it is the same in reference units under lazy decay.
+
+    Parameters
+    ----------
+    weight_sum : float
+        The sum of the weights (rows) or of the units' total weights (clusters).
+    weight_sq_sum : float
+        The sum of the squared weights.
+
+    Returns
+    -------
+    float
+        The effective count; equal to the raw count when all weights are equal.
+    """
+    if not weight_sq_sum > 0.0:
+        return 0.0
+    return weight_sum * weight_sum / weight_sq_sum
 
 
 def _mat_mul(a, b):
@@ -414,9 +440,14 @@ def _outer_from_vectors(lay, vectors, theta):
     return out
 
 
-def _sandwich_matrix(bread, meat, groups, rows, k=1):
-    """CR1 ``G/(G-1) * (n-1)/(n-k-1) * bread meat bread``."""
-    factor = groups / (groups - 1) * (rows - 1) / (rows - k - 1)
+def _cr1(g_eff, n_eff, k):
+    """Return the CR1 factor ``G_eff/(G_eff-1) * (n_eff-1)/(n_eff-k-1)``."""
+    return g_eff / (g_eff - 1) * (n_eff - 1) / (n_eff - k - 1)
+
+
+def _sandwich_matrix(bread, meat, g_eff, n_eff, k=1):
+    """Return the CR1 sandwich ``cr1 * bread meat bread`` with Kish effective counts."""
+    factor = _cr1(g_eff, n_eff, k)
     bm = _mat_mul(bread, meat)
     full = _mat_mul(bm, bread)
     return [[factor * v for v in row] for row in full]
@@ -428,6 +459,7 @@ class _Table:
     def __init__(self, p):
         self.p = p
         self.cells = {}
+        self.w2 = 0.0  # running sum over cells of (total weight N)^2, for the Kish count
 
     @property
     def count(self):
@@ -435,12 +467,15 @@ class _Table:
 
     def add(self, key, vec):
         cell = self.cells.setdefault(key, [0.0] * self.p)
+        old = cell[0]
         for q in range(self.p):
             cell[q] += vec[q]
+        self.w2 += cell[0] * cell[0] - old * old
 
     def scale(self, f):
         for key, cell in self.cells.items():
             self.cells[key] = [v * f for v in cell]
+        self.w2 *= f * f
 
     def sorted_vectors(self):
         return [self.cells[k] for k in sorted(self.cells)]
@@ -449,9 +484,10 @@ class _Table:
         return {str(k): list(self.cells[k]) for k in sorted(self.cells)}
 
     @classmethod
-    def from_dict(cls, p, blob):
+    def from_dict(cls, p, blob, w2):
         t = cls(p)
         t.cells = {k: [float(v) for v in vec] for k, vec in blob.items()}
+        t.w2 = float(w2)
         return t
 
 
@@ -462,18 +498,24 @@ class _Unit:
         self.lay = lay
         self.tot = [0.0] * (lay.size + 1)  # the moment vector, then r*r (weighted)
         self.serr = 0.0  # sum w sigma^2 of the direction regressor
+        self.rw2 = 0.0  # sum w^2 over rows (the row Kish count)
+        self.cw2 = 0.0  # sum over (name, date) clusters of (total weight)^2 (the cluster Kish count)
+        self.groups = 0.0  # undecayed sum of base weights: the raw group count under group_equal
         self.cross = [0.0] * len(lay.tri)  # sum over (name, date) clusters of x x'
         self.names = _Table(lay.size)
         self.dates = _Table(lay.size)
         self.rows = 0  # unweighted counts
         self.clusters = 0
 
-    def add(self, name, day, vec, rr, serr, rows):
+    def add(self, name, day, vec, rr, serr, rows, rw2, groups):
         """Fold one whole (name, date) cluster, given as its moment vector, into the sums."""
         for q in range(self.lay.size):
             self.tot[q] += vec[q]
         self.tot[self.lay.size] += rr
         self.serr += serr
+        self.rw2 += rw2
+        self.cw2 += vec[0] * vec[0]
+        self.groups += groups
         for idx, (i, j) in enumerate(self.lay.tri):
             self.cross[idx] += vec[i] * vec[j]
         self.names.add(name, vec)
@@ -485,25 +527,30 @@ class _Unit:
         """Age every sum by one decision week."""
         self.tot = [v * lam for v in self.tot]
         self.serr *= lam
+        self.rw2 *= lam * lam
+        self.cw2 *= lam * lam
         self.cross = [v * lam * lam for v in self.cross]
         self.names.scale(lam)
         self.dates.scale(lam)
 
     def to_dict(self):
         return {
-            "tot": list(self.tot), "serr": self.serr, "cross": list(self.cross), "rows": self.rows,
+            "tot": list(self.tot), "serr": self.serr, "rw2": self.rw2, "cw2": self.cw2, "groups": self.groups,
+            "cross": list(self.cross), "rows": self.rows,
             "clusters": self.clusters, "names": self.names.to_dict(), "dates": self.dates.to_dict(),
+            "names_w2": self.names.w2, "dates_w2": self.dates.w2,
         }
 
     @classmethod
     def from_dict(cls, lay, blob):
         unit = cls(lay)
         unit.tot = [float(v) for v in blob["tot"]]
-        unit.serr = float(blob["serr"])
+        unit.serr, unit.rw2 = float(blob["serr"]), float(blob["rw2"])
+        unit.cw2, unit.groups = float(blob["cw2"]), float(blob["groups"])
         unit.cross = [float(v) for v in blob["cross"]]
         unit.rows, unit.clusters = int(blob["rows"]), int(blob["clusters"])
-        unit.names = _Table.from_dict(lay.size, blob["names"])
-        unit.dates = _Table.from_dict(lay.size, blob["dates"])
+        unit.names = _Table.from_dict(lay.size, blob["names"], blob["names_w2"])
+        unit.dates = _Table.from_dict(lay.size, blob["dates"], blob["dates_w2"])
         if len(unit.tot) != lay.size + 1 or len(unit.cross) != len(lay.tri):
             raise ValueError("unit sums have the wrong size")
         return unit
@@ -624,6 +671,15 @@ class LinearEdgeState:
         return ([float(v) for v in e], [float(v) for v in r], [float(v) for v in e_dir],
                 None if sigma2 is None else [None if v is None else float(v) for v in sigma2])
 
+    @staticmethod
+    def _per_row(values, m, what, ok):
+        """Return ``values`` (a list of ``m`` entries each passing ``ok``), or ``None`` when absent."""
+        if values is None:
+            return None
+        if not isinstance(values, (list, tuple)) or len(values) != m or not all(ok(v) for v in values):
+            raise ValueError(f"{what} must be a list of {m} valid entries, got {values!r}")
+        return list(values)
+
     def add_cluster(self, t, name, settle_date, fill_date, buckets, e, r, blocks=None, e_dir=None,
                     weights=None, sides=None, top=None, sigma2=None):
         """Fold one whole ``(name, settle_date)`` cluster into the state at ``t``.
@@ -648,8 +704,13 @@ class LinearEdgeState:
             One non-negative block index per configured block length.
         e_dir : list of float, optional
             Direction edge per row (required with ``regressors = 2``, refused with 1).
-        weights, sides, top : list, optional
-            Per-row base weight, side (+1 buy, -1 sell) and top-decile flag.
+        weights : list of float, optional
+            Per-row base weight, positive and finite (default 1); fixed at arrival, only the common decay
+            factor ages. With ``group_equal`` a row carries ``1 / m_g`` of its group of ``m_g`` rows.
+        sides : list of int, optional
+            Per-row side, +1 (buy) or -1 (sell); feeds the ``"buy"`` and ``"sell"`` units (default none).
+        top : list of bool, optional
+            Per-row top-decile flag; feeds the ``"top"`` unit (default none).
         sigma2 : list of float or None, optional
             Per-row error variance of the direction regressor (two-regressor states).
 
@@ -668,6 +729,10 @@ class LinearEdgeState:
         if not cluster_ok(name):
             raise ValueError(f"name must be a non-empty string, got {name!r}")
         ev, rv, dv, sv = self._rows(buckets, e, r, e_dir, sigma2)
+        m = len(ev)
+        wv = self._per_row(weights, m, "weights", lambda v: not isinstance(v, bool) and number_ok(v) and v > 0)
+        sd = self._per_row(sides, m, "sides", lambda v: isinstance(v, int) and not isinstance(v, bool) and v in (1, -1))
+        tp = self._per_row(top, m, "top", lambda v: isinstance(v, bool))
         if (name, s) in self._seen:
             raise ValueError(f"cluster ({name}, {s}) was already added: a cluster arrives whole, once")
         self.advance(day)
@@ -675,32 +740,49 @@ class LinearEdgeState:
         lay = self._lay
         acc = {}
         for i, b in enumerate(buckets):
+            w = 1.0 if wv is None else float(wv[i])
             z = [ev[i]] if dv is None else [dv[i], ev[i] - dv[i]]
-            row = lay.row_vector(1.0, z, rv[i])
+            row = lay.row_vector(w, z, rv[i])
             serr = 0.0
             if sv is not None:
                 if sv[i] is None:
                     self.counts["sigma2_missing"] += 1
                 else:
-                    serr = sv[i]
-            for key in (None, b):
-                a = acc.setdefault(key, [[0.0] * lay.size, 0.0, 0.0, 0])
+                    serr = w * sv[i]
+            keys = [None, b]
+            if sd is not None:
+                keys.append("buy" if sd[i] == 1 else "sell")
+            if tp is not None and tp[i]:
+                keys.append("top")
+            for key in keys:
+                a = acc.setdefault(key, [[0.0] * lay.size, 0.0, 0.0, 0, 0.0, 0.0])
                 for q in range(lay.size):
                     a[0][q] += row[q]
-                a[1] += rv[i] * rv[i]
+                a[1] += w * rv[i] * rv[i]
                 a[2] += serr
                 a[3] += 1
-        for key, (vec, rr, serr, rows) in acc.items():
+                a[4] += w * w
+                a[5] += w
+        for key, (vec, rr, serr, rows, rw2, groups) in acc.items():
             unit = self._pooled if key is None else self._buckets.setdefault(key, _Unit(lay))
-            unit.add(name, s, vec, rr, serr, rows)
+            unit.add(name, s, vec, rr, serr, rows, rw2, groups)
 
     def _unit(self, b):
-        """Return the sums of bucket ``b`` (``None`` is pooled); an unused bucket is empty."""
+        """Return the sums of bucket ``b`` (``None`` pooled; ``"buy"``, ``"sell"``, ``"top"``); an unused unit is empty."""
         if b is None:
             return self._pooled
+        if b in _STRATA:
+            return self._buckets.get(b) or _Unit(self._lay)
         if isinstance(b, bool) or not isinstance(b, int) or not 0 <= b < self.n_buckets:
-            raise ValueError(f"bucket must be None or an integer in 0..{self.n_buckets - 1}, got {b!r}")
+            raise ValueError(f"bucket must be None, one of {list(_STRATA)} or an integer in 0..{self.n_buckets - 1}, got {b!r}")
         return self._buckets.get(b) or _Unit(self._lay)
+
+    @staticmethod
+    def _effective(u):
+        """Return the Kish counts of a unit: rows, groups and the cluster dimensions (part C)."""
+        n = u.tot[0]
+        return {"n_eff": kish_effective(n, u.rw2), "n_groups": u.groups, "g_eff": kish_effective(n, u.cw2),
+                "g_eff_names": kish_effective(n, u.names.w2), "g_eff_dates": kish_effective(n, u.dates.w2)}
 
     def _centred(self, u):
         """``(theta, centred Gram, centred cross, z sums)`` of a unit, or ``None`` when it cannot be fitted."""
@@ -731,7 +813,8 @@ class LinearEdgeState:
         -------
         dict
             ``n`` (weighted rows), ``rows`` and ``clusters`` (raw counts),
-            ``dates`` and ``names`` (distinct, raw), ``theta`` (``None`` when a
+            ``dates`` and ``names`` (distinct, raw), the Kish counts ``n_eff``, ``g_eff``,
+            ``g_eff_names``, ``g_eff_dates``, the raw group count ``n_groups``, ``theta`` (``None`` when a
             regressor has no variance, the two are exactly collinear or there
             are no rows), ``a`` and ``b`` (one regressor) or ``a``, ``b_dir``,
             ``b_shape``, ``reliability_dir``, ``b_dir_corrected`` and
@@ -745,7 +828,7 @@ class LinearEdgeState:
         u = self._unit(b)
         lay, v = u.lay, u.tot
         out = {"n": v[0], "rows": u.rows, "clusters": u.clusters, "dates": u.dates.count,
-               "names": u.names.count, "theta": None, "a": None, "sse": None}
+               "names": u.names.count, "theta": None, "a": None, "sse": None, **self._effective(u)}
         if lay.k == 1:
             out["b"] = None
         else:
@@ -783,10 +866,12 @@ class LinearEdgeState:
         -------
         dict or None
             ``cov``, ``rule`` (``"one_way"``, ``"two_way"`` or ``"max_one_way"``
-            when the two-way matrix is not positive definite), ``df`` (clusters
-            - 1; two-way: fewest of names and dates - 1) and ``n_clusters``.
-            ``None`` when there are too few rows or clusters, or a regressor
-            has no variance.
+            when the two-way matrix is not positive definite), ``df`` (effective
+            clusters - 1; two-way: fewest effective names and dates - 1),
+            ``n_clusters`` (raw) and ``g_eff``. The CR1 factor is
+            ``G_eff/(G_eff-1) (n_eff-1)/(n_eff-k-1)`` with the Kish counts of part C.
+            ``None`` when there are too few rows or clusters (raw, or effective
+            below ``k + 2`` rows and 2 clusters), or a regressor has no variance.
 
         Raises
         ------
@@ -803,22 +888,30 @@ class LinearEdgeState:
         lay = u.lay
         if u.rows < k + 2 or u.clusters < 2 or self._centred(u) is None:
             return None
+        eff = self._effective(u)
+        if eff["n_eff"] < k + 2 or eff["g_eff"] < 2.0:
+            return None
         bread = _solve(lay.gram(u.tot), [[1.0 if i == j else 0.0 for j in range(k + 1)] for i in range(k + 1)])
         theta = [float(x) for x in theta]
-        pair = _sandwich_matrix(bread, _outer_from_cross(lay, u.cross, theta), u.clusters, u.rows, k)
+        n_eff = eff["n_eff"]
+        pair = _sandwich_matrix(bread, _outer_from_cross(lay, u.cross, theta), eff["g_eff"], n_eff, k)
         if way == "one":
-            return {"cov": pair, "rule": "one_way", "df": u.clusters - 1, "n_clusters": [u.clusters]}
+            return {"cov": pair, "rule": "one_way", "df": eff["g_eff"] - 1, "n_clusters": [u.clusters],
+                    "g_eff": [eff["g_eff"]]}
         gn, gd = u.names.count, u.dates.count
-        if gn < 2 or gd < 2:
+        if gn < 2 or gd < 2 or eff["g_eff_names"] <= 1.0 or eff["g_eff_dates"] <= 1.0:
             return None
-        by_name = _sandwich_matrix(bread, _outer_from_vectors(lay, u.names.sorted_vectors(), theta), gn, u.rows, k)
-        by_date = _sandwich_matrix(bread, _outer_from_vectors(lay, u.dates.sorted_vectors(), theta), gd, u.rows, k)
+        by_name = _sandwich_matrix(bread, _outer_from_vectors(lay, u.names.sorted_vectors(), theta),
+                                   eff["g_eff_names"], n_eff, k)
+        by_date = _sandwich_matrix(bread, _outer_from_vectors(lay, u.dates.sorted_vectors(), theta),
+                                   eff["g_eff_dates"], n_eff, k)
         cov = [[by_name[p][q] + by_date[p][q] - pair[p][q] for q in range(k + 1)] for p in range(k + 1)]
         rule = "two_way"
         if not _positive_definite(cov):
             cov = max(by_name, by_date, key=lambda m: m[1][1])
             rule = "max_one_way"
-        return {"cov": cov, "rule": rule, "df": min(gn, gd) - 1, "n_clusters": [gn, gd, u.clusters]}
+        return {"cov": cov, "rule": rule, "df": min(eff["g_eff_names"], eff["g_eff_dates"]) - 1,
+                "n_clusters": [gn, gd, u.clusters], "g_eff": [eff["g_eff_names"], eff["g_eff_dates"], eff["g_eff"]]}
 
     def to_dict(self):
         """Return the whole state as JSON-safe sums (no row history).
@@ -833,7 +926,7 @@ class LinearEdgeState:
             "regressors": self.regressors, "block_lengths": self.block_lengths, "counts": dict(self.counts),
             "seen": sorted([name, day] for name, day in self._seen),
             "pooled": self._pooled.to_dict(),
-            "buckets": {str(k): self._buckets[k].to_dict() for k in sorted(self._buckets)},
+            "buckets": {str(k): self._buckets[k].to_dict() for k in sorted(self._buckets, key=str)},
         }
 
     @classmethod
@@ -862,25 +955,14 @@ class LinearEdgeState:
             state.counts = {k: int(v) for k, v in blob["counts"].items()}
             state._seen = {(name, day) for name, day in blob["seen"]}
             state._pooled = _Unit.from_dict(state._lay, blob["pooled"])
-            state._buckets = {int(k): _Unit.from_dict(state._lay, v) for k, v in blob["buckets"].items()}
+            state._buckets = {(k if k in _STRATA else int(k)): _Unit.from_dict(state._lay, v)
+                              for k, v in blob["buckets"].items()}
         except (KeyError, TypeError) as exc:
             raise ValueError(f"malformed LinearEdgeState dump: {exc!r}") from exc
         return state
 
 
 # ---------------------------------------------------------------- stage 2a: pooling, names, the map
-
-
-def _count_for_gates(raw_clusters, weight_sum=None, weight_sq_sum=None):
-    """Return the cluster count the ``min_clusters`` gates use: RAW (open convention).
-
-    ADR-0311 stage 1 uses raw counts for the CR1 factor and degrees of freedom
-    of a decayed state. The gates of :class:`PartialPooling` and
-    :class:`NameAdjustment` follow it through this one helper; switching to
-    Kish effective counts (``weight_sum ** 2 / weight_sq_sum``) later is a
-    change here and in :class:`LinearEdgeState` only.
-    """
-    return raw_clusters
 
 
 def _count_param(params, key, low, integer):
@@ -969,14 +1051,14 @@ class PartialPooling:
             raise ValueError(f"lcb_k must be a finite number >= 0, got {v!r}")
         return float(v)
 
-    def _enough(self, clusters):
-        """Say whether a unit has enough clusters to stand alone."""
-        return _count_for_gates(clusters) >= self.min_clusters
+    def _enough(self, effective_clusters):
+        """Say whether a unit has enough effective (Kish) clusters to stand alone."""
+        return effective_clusters >= self.min_clusters
 
     def _line(self, state, b):
         """``(theta, V, df)`` of bucket ``b`` (two-way band), or ``None`` when it cannot stand alone."""
         f = state.fit(b)
-        if f["a"] is None or not self._enough(f["clusters"]):
+        if f["a"] is None or not self._enough(f["g_eff"]):
             return None
         sw = state.sandwich(b, (f["a"], f["b"]), "two")
         if sw is None:
@@ -987,8 +1069,8 @@ class PartialPooling:
     def _origin(unit):
         """``(w, variance, df)`` of the slope through the origin (two-way band), or ``None``.
 
-        The variance carries the same CR1 factor as :func:`_sandwich_matrix`; every sum over the
-        name or date table runs in sorted key order, so a resumed state equals a fresh one.
+        The variance carries the same Kish CR1 factor as :func:`_sandwich_matrix` (``k = 1``); every sum
+        over the name or date table runs in sorted key order, so a resumed state equals a fresh one.
         """
         n, see, ser = unit.tot[0], unit.tot[3], unit.tot[4]
         if unit.rows < 3 or unit.clusters < 2 or see <= 0.0 or n <= 0:
@@ -996,21 +1078,24 @@ class PartialPooling:
         w = ser / see
         tri = unit.lay.tri
         i, j, k = tri.index((3, 3)), tri.index((3, 4)), tri.index((4, 4))
-        small = (unit.rows - 1) / (unit.rows - 2)
+        n_eff = kish_effective(n, unit.rw2)
+        g_pair, g_name, g_date = (kish_effective(n, x) for x in (unit.cw2, unit.names.w2, unit.dates.w2))
+        if n_eff < 3.0 or g_pair < 2.0 or g_name <= 1.0 or g_date <= 1.0:
+            return None
 
         def one(meat, g):
-            return g / (g - 1) * small * meat / (see * see)
+            return _cr1(g, n_eff, 1) * meat / (see * see)
 
-        pair = one(unit.cross[k] - 2 * w * unit.cross[j] + w * w * unit.cross[i], unit.clusters)
+        pair = one(unit.cross[k] - 2 * w * unit.cross[j] + w * w * unit.cross[i], g_pair)
         gn, gd = unit.names.count, unit.dates.count
         if gn < 2 or gd < 2:
             return None
-        by = [one(sum((cell[4] - w * cell[3]) ** 2 for cell in table.sorted_vectors()), table.count)
-              for table in (unit.names, unit.dates)]
+        by = [one(sum((cell[4] - w * cell[3]) ** 2 for cell in table.sorted_vectors()), g)
+              for table, g in ((unit.names, g_name), (unit.dates, g_date))]
         var = by[0] + by[1] - pair
         if not var > 0.0:
             var = max(by)
-        return w, var, min(gn, gd) - 1
+        return w, var, min(g_name, g_date) - 1
 
     def _tau(self, items):
         """Method-of-moments between-bucket variances of one or two parameters, floored."""
@@ -1077,8 +1162,7 @@ class PartialPooling:
             raise ValueError(f"state must be a LinearEdgeState, got {type(state).__name__}")
         zero = (0.0, 0.0, None, None, 0.0, None)
         pf = state.fit(None)
-        warm = (pf["a"] is not None and _count_for_gates(pf["clusters"]) >= self.min_clusters
-                and pf["dates"] >= self.min_dates)
+        warm = pf["a"] is not None and self._enough(pf["g_eff"]) and pf["dates"] >= self.min_dates
         if not warm:
             return {"warm": False, "pooled": self._record(state, None, zero, None, True),
                     "buckets": [self._record(state, b, zero, None, True) for b in range(state.n_buckets)]}
@@ -1091,7 +1175,7 @@ class PartialPooling:
         pooled_row = (th0[0], th0[1], se0 and se0[0], se0 and se0[1], w0, se_w0)
         lines = {b: self._line(state, b) for b in range(state.n_buckets)}
         tau = self._tau([(x[0], x[1]) for x in lines.values() if x is not None])
-        origins = {b: self._origin(state._unit(b)) if self._enough(state.fit(b)["clusters"]) else None
+        origins = {b: self._origin(state._unit(b)) if self._enough(state.fit(b)["g_eff"]) else None
                    for b in range(state.n_buckets)}
         tau_w = self._tau([([o[0]], [[o[1]]]) for o in origins.values() if o is not None])
         rows = []
@@ -1120,10 +1204,10 @@ class NameAdjustment:
     recomputed): the residual ``u = r - c`` is fixed once, so a later bucket map
     cannot move it and the adjustment cannot feed back into it. Per name the
     class keeps weighted sums of ``(1, e, u, e*e, e*u)`` and the cluster
-    weights ``Sw`` and ``Sw2``. The OLS of ``u`` on ``(1, e)`` is multiplied by
-    ``G_eff / (G_eff + name_prior_clusters)`` with the Kish count ``G_eff =
-    Sw ** 2 / Sw2`` (``G`` when expanding), and is zero below
-    ``name_min_clusters`` clusters or when the name's ``e`` is constant.
+    weights ``Sw`` and ``Sw2`` (a cluster's weight is its TOTAL row weight). The OLS of ``u`` on ``(1, e)``
+    is multiplied by ``G_eff / (G_eff + name_prior_clusters)`` with the Kish count :func:`kish_effective`
+    ``(Sw, Sw2)``, and is zero below ``name_min_clusters`` effective clusters or when the name's ``e``
+    is constant.
 
     Parameters
     ----------
@@ -1192,7 +1276,7 @@ class NameAdjustment:
                     rec["w"] = [rec["w"][0] * lam, rec["w"][1] * lam * lam]
             self._t = day
 
-    def add_cluster(self, t, name, settle_date, e, r, c):
+    def add_cluster(self, t, name, settle_date, e, r, c, weights=None):
         """Fold one settled ``(name, settle_date)`` cluster in, with its frozen residual.
 
         Parameters
@@ -1210,6 +1294,10 @@ class NameAdjustment:
         c : list of float
             The bucket-only calibrated edge of each row at its OWN decision
             session ``t_i`` (``EdgeCalibrationMap.bucket_only`` then).
+        weights : list of float, optional
+            Positive finite base weight per row (the ``group_equal`` weights of ADR-0311 D4; default 1).
+            The five running sums are weighted by them, and the cluster's weight in the Kish count is its
+            total row weight.
 
         Raises
         ------
@@ -1228,6 +1316,9 @@ class NameAdjustment:
         for v in (*e, *r, *c):
             if isinstance(v, bool) or not number_ok(v):
                 raise ValueError(f"e, r and c must be finite numbers, got {v!r}")
+        if weights is not None and (not isinstance(weights, (list, tuple)) or len(weights) != m or not all(
+                not isinstance(v, bool) and number_ok(v) and v > 0 for v in weights)):
+            raise ValueError(f"weights must be {m} finite numbers > 0, got {weights!r}")
         if (name, s) in self._seen:
             raise ValueError(f"cluster ({name}, {s}) was already added: a cluster arrives whole, once")
         self.advance(day)
@@ -1235,15 +1326,18 @@ class NameAdjustment:
         u = [float(a) - float(b) for a, b in zip(r, c)]
         ev = [float(v) for v in e]
         rec = self._names.setdefault(name, {"s": [0.0] * 5, "w": [0.0, 0.0], "g": 0})
-        add = [float(m), sum(ev), sum(u), sum(v * v for v in ev), sum(a * b for a, b in zip(ev, u))]
+        wv = [1.0] * m if weights is None else [float(v) for v in weights]
+        add = [sum(wv), sum(w * v for w, v in zip(wv, ev)), sum(w * v for w, v in zip(wv, u)),
+               sum(w * v * v for w, v in zip(wv, ev)), sum(w * a * b for w, a, b in zip(wv, ev, u))]
         rec["s"] = [x + y for x, y in zip(rec["s"], add)]
-        rec["w"] = [rec["w"][0] + 1.0, rec["w"][1] + 1.0]
+        total = sum(wv)
+        rec["w"] = [rec["w"][0] + total, rec["w"][1] + total * total]
         rec["g"] += 1
 
     def effective_clusters(self, name):
-        """Return the Kish effective cluster count ``Sw ** 2 / Sw2`` of a name (0 if unknown)."""
+        """Return the Kish effective cluster count of a name (0 if unknown), on cluster total row weights."""
         rec = self._names.get(name)
-        return 0.0 if rec is None or rec["w"][1] <= 0.0 else rec["w"][0] ** 2 / rec["w"][1]
+        return 0.0 if rec is None else kish_effective(*rec["w"])
 
     def adjust(self, name):
         """Return the shrunk ``(da, db)`` of a name.
@@ -1260,7 +1354,7 @@ class NameAdjustment:
             when the name's ``e`` has no variance.
         """
         rec = self._names.get(name)
-        if rec is None or _count_for_gates(rec["g"], *rec["w"]) < self.name_min_clusters:
+        if rec is None or kish_effective(*rec["w"]) < self.name_min_clusters:
             return (0.0, 0.0)
         n, se, su, see, seu = rec["s"]
         varx = see - se * se / n

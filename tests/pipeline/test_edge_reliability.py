@@ -102,13 +102,13 @@ def _cov(rows, labels, beta):
     """CR1 sandwich of the weighted fit for one clustering (row-by-row)."""
     x, y, w, xtwx, _ = _wls(rows)
     resid = y - x @ beta
-    n = len(rows)
-    sums = {}
+    sums, tot_w = {}, {}
     for xi, ri, wi, lab in zip(x, resid, w, labels):
         sums.setdefault(lab, np.zeros(2))
         sums[lab] = sums[lab] + wi * xi * ri
+        tot_w[lab] = tot_w.get(lab, 0.0) + wi
     meat = sum((np.outer(s, s) for s in sums.values()), np.zeros((2, 2)))
-    g = len(sums)
+    g, n = _kish(list(tot_w.values())), _kish(w)  # Kish counts on cluster total / row weights (part C)
     bread = np.linalg.inv(xtwx)
     return g / (g - 1) * (n - 1) / (n - 2) * bread @ meat @ bread
 
@@ -122,6 +122,11 @@ def _expected(rows, way):
         return beta, _cov(rows, pairs, beta)
     two = _cov(rows, names, beta) + _cov(rows, dates, beta) - _cov(rows, pairs, beta)
     return beta, two
+
+
+def _kish(v):
+    v = np.asarray(v, float)
+    return v.sum() ** 2 / (v ** 2).sum()
 
 
 def _arr(m):
@@ -166,19 +171,21 @@ class TestExpandingParity:
         assert out["rule"] == ("one_way" if way == "one" else "two_way")
         assert np.max(np.abs(_arr(out["cov"]) - cov)) < 1e-9 * max(1.0, np.max(np.abs(cov)))
 
-    def test_slope_se_equals_clustered_calibration_slope(self, built):
-        state, rows = built
+    def test_slope_se_equals_clustered_calibration_slope(self):
+        # the public oracle uses raw counts, so the clusters must be of equal size (Kish G_eff == G exactly)
+        st = LinearEdgeState(N_BUCKETS, None)
+        rows = _drive_k2(st, _k2_clusters(equal=True), _weeks())
         e = [q["e"] for q in rows]
         r = [q["r"] for q in rows]
         pairs = [f"{q['name']}|{q['date']}" for q in rows]
         names = [q["name"] for q in rows]
         dates = [q["date"] for q in rows]
-        fit = state.fit(None)
+        fit = st.fit(None)
         theta = (fit["a"], fit["b"])
         one = clustered_calibration_slope(r, e, [pairs])
         two = clustered_calibration_slope(r, e, [names, dates])
-        s1 = state.sandwich(None, theta, "one")
-        s2 = state.sandwich(None, theta, "two")
+        s1 = st.sandwich(None, theta, "one")
+        s2 = st.sandwich(None, theta, "two")
         assert math.isclose(fit["b"], one["slope"], rel_tol=1e-9)
         assert math.isclose(math.sqrt(s1["cov"][1][1]), one["slope_se"], rel_tol=1e-9)
         assert math.isclose(math.sqrt(s2["cov"][1][1]), two["slope_se"], rel_tol=1e-9)
@@ -191,11 +198,12 @@ class TestExpandingParity:
         x, y, w, xtwx, _ = _wls(rows)
         resid = y - x @ np.array(theta)
         pairs = [(q["name"], q["date"]) for q in rows]
-        sums = {}
+        sums, tw = {}, {}
         for xi, ri, lab in zip(x, resid, pairs):
             sums[lab] = sums.get(lab, np.zeros(2)) + xi * ri
+            tw[lab] = tw.get(lab, 0.0) + 1.0
         meat = sum((np.outer(s, s) for s in sums.values()), np.zeros((2, 2)))
-        g, n = len(sums), len(rows)
+        g, n = _kish(list(tw.values())), len(rows)
         bread = np.linalg.inv(xtwx)
         want = g / (g - 1) * (n - 1) / (n - 2) * bread @ meat @ bread
         got = _arr(state.sandwich(None, theta, "one")["cov"])
@@ -797,11 +805,12 @@ def _origin_oracle(rows):
     w = np.sum(wt * e * r) / see
 
     def one(labels):
-        s = {}
+        s, tw = {}, {}
         for lab, ei, ri, wi in zip(labels, e, r, wt):
             s[lab] = s.get(lab, 0.0) + wi * ei * (ri - w * ei)
-        g = len(s)
-        return g / (g - 1) * (len(rows) - 1) / (len(rows) - 2) * sum(v * v for v in s.values()) / see ** 2
+            tw[lab] = tw.get(lab, 0.0) + wi
+        g, n = _kish(list(tw.values())), _kish(wt)
+        return g / (g - 1) * (n - 1) / (n - 2) * sum(v * v for v in s.values()) / see ** 2
 
     names = [q["name"] for q in rows]
     dates = [q["date"] for q in rows]
@@ -1455,6 +1464,8 @@ def _drive_k2(state, clusters, weeks, lam=None, **extra):
         for i, c in enumerate(clusters):
             if i not in arrival and gate.admits(c["settle"], t):
                 kw = {key: c[key] for key in ("e_dir", "sigma2", "weights") if key in c}
+                if state.regressors == 1:
+                    kw.pop("e_dir", None), kw.pop("sigma2", None)
                 state.add_cluster(t, c["name"], c["settle"], c["fill"], c["bucket"], c["e"], c["r"], **kw)
                 arrival[i] = k
     last = len(weeks) - 1
@@ -1479,11 +1490,6 @@ def _wls2(rows):
     return x, y, w, xtwx, np.linalg.solve(xtwx, x.T @ (w * y))
 
 
-def _kish(v):
-    v = np.asarray(v, float)
-    return v.sum() ** 2 / (v ** 2).sum()
-
-
 def _cov_k2(rows, labels, beta):
     """CR1 ``G_eff/(G_eff-1) (n_eff-1)/(n_eff-3)`` sandwich, Kish counts on row / cluster total weights."""
     x, y, w, xtwx, _ = _wls2(rows)
@@ -1504,7 +1510,11 @@ def _expected_k2(rows, way):
     pairs = list(zip(names, dates))
     if way == "one":
         return beta, _cov_k2(rows, pairs, beta)
-    return beta, _cov_k2(rows, names, beta) + _cov_k2(rows, dates, beta) - _cov_k2(rows, pairs, beta)
+    by_name, by_date = _cov_k2(rows, names, beta), _cov_k2(rows, dates, beta)
+    two = by_name + by_date - _cov_k2(rows, pairs, beta)
+    if min(np.linalg.det(two[:i, :i]) for i in (1, 2, 3)) <= 0.0:  # not positive definite: the wider one-way
+        two = by_name if by_name[1, 1] >= by_date[1, 1] else by_date
+    return beta, two
 
 
 class TestTwoRegressorParity:
@@ -1512,7 +1522,7 @@ class TestTwoRegressorParity:
 
     LAM = 2 ** (-1 / 3)
 
-    @pytest.fixture(scope="class", params=["expanding"])
+    @pytest.fixture(scope="class", params=["expanding", "decayed"])
     def built(self, request):
         lam = None if request.param == "expanding" else self.LAM
         state = LinearEdgeState(N_BUCKETS, lam, regressors=2)
@@ -1530,7 +1540,7 @@ class TestTwoRegressorParity:
         assert np.allclose(fit["theta"], beta, atol=1e-9, rtol=0)
 
     @pytest.mark.parametrize("way", ["one", "two"])
-    @pytest.mark.parametrize("unit", [None])  # per-bucket units have unequal clusters: Kish arrives in F1.2
+    @pytest.mark.parametrize("unit", UNITS)
     def test_sandwich_equals_row_by_row_cr1(self, built, unit, way):
         state, rows = built
         sel = _unit_rows(rows, unit)
@@ -1714,3 +1724,312 @@ def test_solve_is_one_gaussian_elimination_for_any_dimension():
     with pytest.raises(ValueError):
         er._solve([[1.0, 2.0], [2.0, 4.0]], [1.0, 1.0])
     assert not hasattr(er, "_mat2_solve") and not hasattr(er, "_mat2_mul")
+
+
+# ================================================================ F1.2: weights, Kish counts, side and top strata
+
+
+def _clusters_k2(equal=False, seed=5):
+    return _k2_clusters(equal=equal, seed=seed)
+
+
+def _with_group_weights(clusters):
+    """group_equal base weights: rows of one (cluster, strike-group) carry 1/m; here groups of 2-3 rows."""
+    rng = np.random.default_rng(31)
+    out = []
+    for c in clusters:
+        m = len(c["e"])
+        sizes, left = [], m
+        while left > 0:
+            g = min(left, int(rng.integers(1, 4)))
+            sizes.append(g)
+            left -= g
+        w = [1.0 / g for g in sizes for _ in range(g)]
+        out.append({**c, "weights": w})
+    return out
+
+
+class TestKishCounts:
+    """A-T6, A-T7: Kish effective counts by hand; the CR1 factor and df use them."""
+
+    def test_cluster_total_weights_by_hand(self):
+        st = LinearEdgeState(1, None)
+        st.advance("2021-01-01")
+        st.add_cluster("2021-01-01", "AA", "2020-01-10", "2020-01-07", [0] * 3, [1.0, 2.0, 4.0], [1.0, 3.0, 2.0])
+        st.add_cluster("2021-01-01", "BB", "2020-01-11", "2020-01-08", [0] * 5, [0.5, 3.0, 5.0, 1.0, 2.0],
+                       [2.0, 1.0, 6.0, 0.0, 1.0])
+        st.add_cluster("2021-01-01", "CC", "2020-01-12", "2020-01-09", [0] * 4, [0.2, 1.5, 2.5, 1.0],
+                       [1.0, 0.0, 3.0, 1.0])
+        f = st.fit(None)
+        assert math.isclose(f["g_eff"], (3 + 5 + 4) ** 2 / (9 + 25 + 16), rel_tol=1e-14)
+        assert f["n_eff"] == 12.0 and f["n_groups"] == 12.0 and f["clusters"] == 3
+        sw = st.sandwich(None, (0.1, 0.2), "one")
+        assert math.isclose(sw["df"], f["g_eff"] - 1, rel_tol=1e-14)
+
+    def test_equal_clusters_give_exactly_g(self):
+        st = LinearEdgeState(1, None)
+        st.advance("2021-01-01")
+        for k, name in enumerate("ABCD"):
+            st.add_cluster("2021-01-01", name, _iso(FIRST_SETTLE + datetime.timedelta(days=k)),
+                           "2020-01-01", [0] * 4, [1.0, 2.0, 4.0, 3.0 + k], [1.0, 3.0, 2.0, 5.0])
+        f = st.fit(None)
+        assert f["g_eff"] == 4.0 and f["g_eff_names"] == 4.0 and f["g_eff_dates"] == 4.0 and f["n_eff"] == 16.0
+
+    def test_row_weights_give_n_eff_by_hand(self):
+        st = LinearEdgeState(1, None)
+        st.advance("2021-01-01")
+        w = [1.0, 2.0, 3.0]
+        st.add_cluster("2021-01-01", "AA", "2020-01-10", "2020-01-07", [0] * 3, [1.0, 2.0, 4.0], [1.0, 3.0, 2.0],
+                       weights=w)
+        st.add_cluster("2021-01-01", "BB", "2020-01-11", "2020-01-08", [0] * 2, [0.5, 3.0], [2.0, 1.0], weights=[2.0, 2.0])
+        f = st.fit(None)
+        ws = np.array(w + [2.0, 2.0])
+        assert math.isclose(f["n_eff"], ws.sum() ** 2 / (ws ** 2).sum(), rel_tol=1e-14)
+        assert math.isclose(f["g_eff"], (6 + 4) ** 2 / (36 + 16), rel_tol=1e-14)
+        assert math.isclose(f["n"], 10.0, rel_tol=1e-14) and math.isclose(f["n_groups"], 10.0)
+
+    def test_kish_is_scale_invariant_worked_example(self):
+        # five equal groups of 142 rows (weight 1/142) give n_eff = 710; a 142-row and a 4-row group give 15.6
+        assert math.isclose(er.kish_effective(5.0, 710 / 142 ** 2), 710.0, rel_tol=1e-12)
+        st = LinearEdgeState(1, None)
+        st.advance("2021-01-01")
+        rng = np.random.default_rng(4)
+        for name, m in (("AA", 142), ("BB", 4)):
+            st.add_cluster("2021-01-01", name, _iso(FIRST_SETTLE + datetime.timedelta(days=m)), "2020-01-01", [0] * m,
+                           [float(x) for x in rng.normal(size=m)], [float(x) for x in rng.normal(size=m)],
+                           weights=[1.0 / m] * m)
+        f = st.fit(None)
+        assert math.isclose(f["n_eff"], 4.0 / (1 / 142 + 0.25), rel_tol=1e-12) and round(f["n_eff"], 1) == 15.6
+        assert math.isclose(f["g_eff"], 2.0, rel_tol=1e-12) and math.isclose(f["n_groups"], 2.0, rel_tol=1e-12)
+
+    def test_kish_helper_edges(self):
+        assert er.kish_effective(0.0, 0.0) == 0.0 and er.kish_effective(3.0, 0.0) == 0.0
+        assert er.kish_effective(4.0, 8.0) == 2.0
+
+    def test_pure_aging_changes_no_count_and_no_sandwich(self):
+        clusters = _clusters_k2()
+        st = LinearEdgeState(N_BUCKETS, 0.8, regressors=2)
+        _drive_k2(st, clusters, _weeks(), lam=0.8)
+        keys = ("n_eff", "g_eff", "g_eff_names", "g_eff_dates")
+        before = {k: st.fit(None)[k] for k in keys}
+        theta = [0.2, 0.1, 0.5]
+        cov0 = _arr(st.sandwich(None, theta, "two")["cov"])
+        for k in range(1, 6):
+            st.advance(_iso(datetime.date(2021, 1, 1) + datetime.timedelta(days=7 * k)))
+        after = {k: st.fit(None)[k] for k in keys}
+        for k in keys:
+            assert math.isclose(before[k], after[k], rel_tol=1e-12)
+        assert np.max(np.abs(_arr(st.sandwich(None, theta, "two")["cov"]) - cov0)) < 1e-12 * np.max(np.abs(cov0))
+
+    def test_one_fresh_cluster_beside_an_aged_one_has_no_sandwich(self):
+        st = LinearEdgeState(1, 0.5, regressors=1)
+        st.advance("2020-02-07")
+        st.add_cluster("2020-02-07", "AA", "2020-02-01", "2020-01-30", [0] * 3, [1.0, 2.0, 4.0], [1.0, 3.0, 2.0])
+        t = datetime.date(2020, 2, 7)
+        for k in range(1, 51):
+            st.advance(_iso(t + datetime.timedelta(days=7 * k)))
+        st.add_cluster(_iso(t + datetime.timedelta(days=7 * 50)), "BB", "2020-02-05", "2020-02-01" if False else "2020-01-30",
+                       [0] * 3, [0.5, 3.0, 5.0], [2.0, 1.0, 6.0])
+        f = st.fit(None)
+        assert f["clusters"] == 2 and f["rows"] == 6 and f["g_eff"] < 2.0
+        assert st.sandwich(None, (0.1, 0.2), "one") is None
+        assert st.sandwich(None, (0.1, 0.2), "two") is None
+
+
+class TestWeightedParity:
+    """A-T1/A-T3/A-T18: Kish-factor sandwiches equal the explicitly weighted batch, incl. group weights."""
+
+    LAM = 2 ** (-1 / 3)
+
+    @pytest.mark.parametrize("lam", [None, LAM])
+    @pytest.mark.parametrize("weighted", [False, True])
+    @pytest.mark.parametrize("unit", UNITS)
+    @pytest.mark.parametrize("way", ["one", "two"])
+    def test_sandwich_equals_weighted_row_by_row(self, lam, weighted, unit, way):
+        clusters = _clusters_k2(equal=False)
+        if weighted:
+            clusters = _with_group_weights(clusters)
+        st = LinearEdgeState(N_BUCKETS, lam, regressors=2)
+        rows = _drive_k2(st, clusters, _weeks(), lam=lam)
+        sel = _unit_rows(rows, unit)
+        beta, cov = _expected_k2(sel, way)
+        fit = st.fit(unit)
+        assert np.allclose(fit["theta"], beta, atol=1e-9, rtol=0)
+        out = st.sandwich(unit, list(beta), way)
+        assert np.max(np.abs(_arr(out["cov"]) - cov)) < 1e-9 * max(1.0, np.max(np.abs(cov)))
+        w = np.array([q["w"] for q in sel])
+        assert math.isclose(fit["n_eff"], _kish(w), rel_tol=1e-12)
+        tw = {}
+        for q in sel:
+            tw[(q["name"], q["date"])] = tw.get((q["name"], q["date"]), 0.0) + q["w"]
+        assert math.isclose(fit["g_eff"], _kish(list(tw.values())), rel_tol=1e-12)
+        for key, dim in (("g_eff_names", "name"), ("g_eff_dates", "date")):
+            tt = {}
+            for q in sel:
+                tt[q[dim]] = tt.get(q[dim], 0.0) + q["w"]
+            assert math.isclose(fit[key], _kish(list(tt.values())), rel_tol=1e-12)
+        if way == "two":
+            assert out["df"] == pytest.approx(min(fit["g_eff_names"], fit["g_eff_dates"]) - 1, rel=1e-12)
+
+    def test_group_equal_weights_give_each_group_total_weight_one(self):
+        st = LinearEdgeState(1, None)
+        st.advance("2021-01-01")
+        # two groups in one cluster: 4 rows at 1/4 and 2 rows at 1/2
+        st.add_cluster("2021-01-01", "AA", "2020-01-10", "2020-01-07", [0] * 6, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                       [1.0, 0.0, 2.0, 1.0, 5.0, 5.0], weights=[0.25] * 4 + [0.5] * 2)
+        f = st.fit(None)
+        assert math.isclose(f["n"], 2.0, rel_tol=1e-14) and math.isclose(f["n_groups"], 2.0)
+
+    def test_a_big_and_a_small_group_move_the_fit_equally(self):
+        # group means of e at -1 (142 rows) and +1 (4 rows), equal total weight 1: a unit shift of r in either group
+        # moves the weighted intercept by the same amount (1/2); unweighted, the big group dominates
+        def intercept(d_big, d_small, weighted=True):
+            st = LinearEdgeState(1, None)
+            st.advance("2021-01-01")
+            for name, m, centre, d in (("AA", 142, -1.0, d_big), ("BB", 4, 1.0, d_small)):
+                e = [centre + 0.3 * math.sin(2.0 * i) for i in range(m)]
+                st.add_cluster("2021-01-01", name, _iso(FIRST_SETTLE + datetime.timedelta(days=m)), "2020-01-01",
+                               [0] * m, e, [0.5 * x + d for x in e], weights=[1.0 / m] * m if weighted else None)
+            return st.fit(None)["a"]
+
+        base = intercept(0.0, 0.0)
+        assert intercept(1.0, 0.0) - base == pytest.approx(0.5, abs=1e-2)
+        assert intercept(0.0, 1.0) - base == pytest.approx(0.5, abs=1e-2)
+        base_u = intercept(0.0, 0.0, False)
+        assert abs((intercept(1.0, 0.0, False) - base_u) - (intercept(0.0, 1.0, False) - base_u)) > 0.1
+
+
+class TestSideAndTopUnits:
+    """A-T18: side units equal batch fits on the buy and sell rows; the top unit on the flagged rows."""
+
+    def test_units_equal_batch_fits(self):
+        rng = np.random.default_rng(8)
+        st = LinearEdgeState(2, None, regressors=1)
+        st.advance("2021-01-01")
+        rows = []
+        for g in range(10):
+            m = 6
+            e = rng.normal(0, 2, m)
+            r = 0.3 * e + rng.normal(0, 1, m)
+            sides = [1 if i % 2 == 0 else -1 for i in range(m)]
+            top = [bool(x > 1.0) for x in e]
+            name, day = f"N{g % 3}", _iso(FIRST_SETTLE + datetime.timedelta(days=g))
+            st.add_cluster("2021-01-01", name, day, "2020-01-01", [i % 2 for i in range(m)], [float(x) for x in e],
+                           [float(x) for x in r], sides=sides, top=top)
+            rows += [{"name": name, "date": day, "e": float(a), "e_dir": 0.0, "e_shape": 0.0, "r": float(c), "w": 1.0,
+                      "side": s, "top": t} for a, c, s, t in zip(e, r, sides, top)]
+
+        def ols(sel):
+            x = np.array([[1.0, q["e"]] for q in sel])
+            return np.linalg.solve(x.T @ x, x.T @ np.array([q["r"] for q in sel]))
+
+        for key, sel in (("buy", [q for q in rows if q["side"] == 1]), ("sell", [q for q in rows if q["side"] == -1]),
+                         ("top", [q for q in rows if q["top"]])):
+            f = st.fit(key)
+            assert f["rows"] == len(sel)
+            assert np.allclose([f["a"], f["b"]], ols(sel), atol=1e-9)
+
+    def test_no_sides_or_top_leaves_the_units_empty(self):
+        st = LinearEdgeState(1, None)
+        st.advance("2021-01-01")
+        st.add_cluster("2021-01-01", "AA", "2020-01-10", "2020-01-07", [0] * 3, [1.0, 2.0, 4.0], [1.0, 3.0, 2.0])
+        for key in ("buy", "sell", "top"):
+            assert st.fit(key)["rows"] == 0
+
+    @pytest.mark.parametrize("kw", [
+        {"weights": [1.0, 0.0, 1.0]}, {"weights": [1.0, -1.0, 1.0]}, {"weights": [1.0, float("nan"), 1.0]},
+        {"weights": [1.0, 1.0]}, {"sides": [1, 0, -1]}, {"sides": [1, 1]}, {"sides": [1, True, -1]},
+        {"top": [True, False]}, {"top": [1, 0, 1]},
+    ])
+    def test_bad_weights_sides_top_are_value_errors(self, kw):
+        st = LinearEdgeState(1, None)
+        st.advance("2021-01-01")
+        with pytest.raises(ValueError):
+            st.add_cluster("2021-01-01", "AA", "2020-01-10", "2020-01-07", [0] * 3, [1.0, 2.0, 4.0], [1.0, 3.0, 2.0],
+                           **kw)
+        assert st.fit(None)["rows"] == 0
+
+
+class TestWeightedNameAdjustment:
+    def test_weighted_adjustment_equals_weighted_batch_and_kish_on_cluster_weights(self):
+        cl = _name_clusters("AA", 6)
+        adj = NameAdjustment(NAME)
+        ws = []
+        for k, c in enumerate(cl):
+            w = [float(1 + (i + k) % 3) for i in range(len(c["e"]))]
+            ws.append(w)
+            adj.add_cluster("2021-01-01", "AA", c["settle"], c["e"], c["r"], c["c"], weights=w)
+        wt = [v for w in ws for v in w]
+        raw = _ols([v for c in cl for v in c["e"]], [v for c in cl for v in c["u"]], wt)
+        cw = np.array([sum(w) for w in ws])
+        g_eff = cw.sum() ** 2 / (cw ** 2).sum()
+        assert adj.effective_clusters("AA") == pytest.approx(g_eff, rel=1e-12)
+        assert np.allclose(adj.adjust("AA"), raw * g_eff / (g_eff + 26), rtol=1e-9)
+
+    @pytest.mark.parametrize("w", [[1.0, 0.0, 1.0, 1.0, 1.0], [1.0, -1.0, 1.0, 1.0, 1.0], [1.0, 1.0]])
+    def test_bad_weights_refuse(self, w):
+        adj = NameAdjustment(NAME)
+        c = _name_clusters("AA", 1)[0]
+        with pytest.raises(ValueError):
+            adj.add_cluster("2021-01-01", "AA", c["settle"], c["e"], c["r"], c["c"], weights=w)
+
+    def test_gate_reads_kish_helper(self):
+        # three clusters of weights 10, 1, 1: G_eff = 144 / 102 = 1.41 < name_min_clusters 2 -> no adjustment
+        adj = NameAdjustment({**NAME, "name_min_clusters": 2})
+        for k, m in enumerate((10, 1, 1)):
+            e = [float(i) for i in range(m + 1)]
+            adj.add_cluster("2021-01-01", "AA", _iso(FIRST_SETTLE + datetime.timedelta(days=k)), e,
+                            [2.0 * x for x in e], [0.0] * len(e), weights=[m / (m + 1.0)] * (m + 1))
+        assert adj.effective_clusters("AA") == pytest.approx(144 / 102, rel=1e-12)
+        assert adj.adjust("AA") == (0.0, 0.0)
+
+
+class TestRunningKishSums:
+    """A-T8 (names and dates), A-T1 dump keys."""
+
+    def test_running_sum_of_squared_unit_weights_equals_the_recomputed_one_after_every_arrival(self):
+        clusters = _with_group_weights(_clusters_k2(equal=False))
+        st = LinearEdgeState(N_BUCKETS, 0.9, regressors=2)
+        gate = SettledBefore("2021-07-01")
+        arrived, totals, arrived_at = set(), {}, {}
+        for k, t in enumerate(_weeks()):
+            st.advance(t)
+            for i, c in enumerate(clusters):
+                if i not in arrived and gate.admits(c["settle"], t):
+                    st.add_cluster(t, c["name"], c["settle"], c["fill"], c["bucket"], c["e"], c["r"],
+                                   e_dir=c["e_dir"], weights=c["weights"])
+                    arrived.add(i)
+                    arrived_at[i] = k
+                    u = st._pooled
+                    for table in (u.names, u.dates):
+                        want = sum(cell[0] ** 2 for cell in table.cells.values())
+                        assert math.isclose(table.w2, want, rel_tol=1e-12)
+                    totals[i] = sum(c["weights"]) * 0.9 ** 0  # total row weight of the cluster at arrival
+                    # the (name, date) clusters' squared weights, in the arrival units of this eager state
+                    assert u.cw2 > 0.0
+        want_cw2 = sum((totals[i] * 0.9 ** (len(_weeks()) - 1 - arrived_at[i])) ** 2 for i in totals)
+        assert math.isclose(st._pooled.cw2, want_cw2, rel_tol=1e-9)
+
+    def test_k1_dump_differs_from_stage_1_only_by_new_keys(self):
+        st = LinearEdgeState(2, None)
+        st.advance("2021-01-01")
+        st.add_cluster("2021-01-01", "AA", "2020-01-10", "2020-01-07", [0] * 3, [1.0, 2.0, 4.0], [1.0, 3.0, 2.0])
+        d = st.to_dict()
+        stage1_top = {"n_buckets", "decay", "t", "seen", "pooled", "buckets"}
+        assert stage1_top <= set(d) and set(d) - stage1_top == {"regressors", "block_lengths", "counts"}
+        stage1_unit = {"tot", "cross", "rows", "clusters", "names", "dates"}
+        assert stage1_unit <= set(d["pooled"])
+        assert d["pooled"]["tot"] == [3.0, 7.0, 6.0, 21.0, 1.0 + 6.0 + 8.0, 1.0 + 9.0 + 4.0]
+
+    def test_a_dump_without_the_new_keys_is_refused(self):
+        st = LinearEdgeState(2, None)
+        blob = st.to_dict()
+        for key in ("regressors", "block_lengths", "counts"):
+            bad = {k: v for k, v in blob.items() if k != key}
+            with pytest.raises(ValueError):
+                LinearEdgeState.from_dict(bad)
+
+
+def test_kish_in_the_public_surface():
+    assert "kish_effective" in er.__all__ and er.__all__[-4:] == [
+        "PartialPooling", "NameAdjustment", "EdgeCalibrationMap", "TrailingRegime"]
