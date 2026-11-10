@@ -24,7 +24,8 @@ Refusals carry stable codes (:class:`GreeksRefusal`): ``window_outside_data_righ
 ``input_not_closed``, ``pnl_recompute_mismatch``, ``beta_lookback_mismatch``,
 ``beta_min_pairs_mismatch`` (the run's ``correlation_min_pairs``), ``symbols_missing`` and
 ``multiplier_mismatch`` (the config's ``multiplier`` must equal the run's own solver
-multiplier), and (ADR-0310 A2) ``quarter_mismatch``, ``dividend_column_absent`` and
+multiplier), (ADR-0310 A2.11) ``quote_params_missing`` and ``chain_columns_absent`` (every forward passes
+:func:`~index_options.contracts.usable_parity_rows`), and (ADR-0310 A2) ``quarter_mismatch``, ``dividend_column_absent`` and
 ``cell_by_incomplete``; every output row carries the run's ``quarter`` and each method's summary
 carries ``direction_read`` (:meth:`MIOGreeksDiagnostics._direction_read`); ``seal_crossing`` ``exclude`` drops, by dates alone, books that settle past
 the seal. The per-book and per-day codes are the core's, hedge flags included. The static delta-hedge column's dividends come from the pinned bar
@@ -48,10 +49,12 @@ from pathlib import Path
 from dskit.onboarding.artifacts import PinnedPayloadSource
 from dskit.pipeline.node import atomic_write, check_int_param
 from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL
-from dskit.pipeline.option_exposure import STOCK_HEDGE_NOTE, BookGreeksReport, StaticDeltaHedge
+from dskit.pipeline.option_exposure import (
+    STOCK_HEDGE_NOTE, BookGreeksReport, ParityForward, StaticDeltaHedge)
+from dskit.pipeline.records import number_ok
 from dskit.pipeline.option_structures import structure_payoff
 
-from .contracts import dividends_paid
+from .contracts import dividends_paid, usable_parity_rows
 from .mio_run_events import MioBookOutcomes
 
 __all__ = ["ChainQuotes", "CellRank", "GreeksRefusal", "MIOGreeksDiagnostics"]
@@ -76,7 +79,10 @@ OUTPUT_FILES = ("books.csv", "cells.csv", "exposure.csv", "greeks-summary.json")
 #: Default size of the chain day cache (a node sets it by ``chain_cache_days``).
 DEFAULT_CACHE_DAYS = 8
 #: Chain columns read when present (``iv`` may be absent: every leg is then ``leg_no_iv``).
-CHAIN_COLUMNS = ("date", "expiration", "type", "strike_raw", "bid", "ask", "iv")
+CHAIN_COLUMNS = ("date", "expiration", "type", "strike_raw", "bid", "ask", "iv",
+                 "bid_size", "ask_size", "basis_factor")
+#: The columns the shared quote filter reads: a chain file without one refuses ``chain_columns_absent``.
+FILTER_COLUMNS = ("bid_size", "ask_size", "basis_factor")
 #: ``seal_crossing`` values: refuse a book that settles past the seal (default), or exclude it.
 SEAL_CROSSING_MODES = ("refuse", "exclude")
 #: ``dividends`` values: ``required`` refuses a bar file with no ``dividend_amount``.
@@ -85,6 +91,8 @@ _QUARTER = re.compile(r"^(\d{4})Q([1-4])$")
 _DATE_FIELDS = ("decision_date", "fill_date", "expiry")
 _PLACEMENT = ("run_dir", "out_dir")
 #: Params that do not change the arithmetic, so stay out of the identity hash.
+_QUOTE_PARAMS = ("min_quote_size", "max_relative_spread")   # read from result.json's bridge
+_PARITY_COUNTS = ("forwards", "rows_dropped", "fell_to_spot", "fell_to_spot_by_filter")
 _NON_IDENTITY = (*_PLACEMENT, "chain_cache_days")
 
 
@@ -233,13 +241,19 @@ class ChainQuotes:
                 self._paths[symbol] = self._source.file(relative, verify=True)
                 self.files[relative] = self.binding["pin"]["files"][relative]
             path = self._paths[symbol]
-            columns = [c for c in CHAIN_COLUMNS if c in pq.read_schema(path).names]
+            names = pq.read_schema(path).names
+            absent = [c for c in FILTER_COLUMNS if c not in names]
+            if absent:
+                raise GreeksRefusal(MIOGreeksDiagnostics.CHAIN_COLUMNS_ABSENT,
+                                    f"{symbol} chain file lacks {absent}, which the quote filter reads")
+            columns = [c for c in CHAIN_COLUMNS if c in names]
             rows = pq.read_table(path, columns=columns, filters=[("date", "=", day)]).to_pylist()
             by_expiry = {}
             for r in rows:
                 by_expiry.setdefault(r["expiration"], []).append(
                     {"right": r["type"], "strike": r["strike_raw"], "bid": r["bid"],
-                     "ask": r["ask"], "iv": r.get("iv")})
+                     "ask": r["ask"], "iv": r.get("iv"), "bid_size": r["bid_size"],
+                     "ask_size": r["ask_size"], "basis_factor": r["basis_factor"]})
             self._days[symbol, day] = by_expiry
             while len(self._days) > self.cache_days:
                 self._days.popitem(last=False)
@@ -301,6 +315,9 @@ class MIOGreeksDiagnostics(BookGreeksReport):
     PNL_MISMATCH = "pnl_recompute_mismatch"
     BETA_MISMATCH = "beta_lookback_mismatch"
     SYMBOLS_MISSING = "symbols_missing"
+    QUOTE_PARAMS_MISSING = "quote_params_missing"
+    CHAIN_COLUMNS_ABSENT = "chain_columns_absent"
+    PARITY_ROWS = "usable_quote"
     MULTIPLIER_MISMATCH = "multiplier_mismatch"
     QUARTER_MISMATCH = "quarter_mismatch"
     DIVIDEND_COLUMN_ABSENT = "dividend_column_absent"
@@ -611,7 +628,32 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         if multiplier != self.params["multiplier"]:
             raise GreeksRefusal(self.MULTIPLIER_MISMATCH, f"config {self.params['multiplier']!r}, "
                                                           f"run {multiplier!r}")
+        bridge = domain.get("bridge")
+        found = {k: bridge.get(k) for k in _QUOTE_PARAMS} if isinstance(bridge, dict) else {}
+        if not (number_ok(found.get("min_quote_size")) and number_ok(found.get("max_relative_spread"))):
+            raise GreeksRefusal(self.QUOTE_PARAMS_MISSING,
+                                f"result.json's bridge carries no usable {list(_QUOTE_PARAMS)}")
+        self._quote_params = (found["min_quote_size"], found["max_relative_spread"])
         return domain, symbols, multiplier
+
+    def _parity_rows(self, book, day, rows):
+        """Return the rows the forward is taken from: the usable quotes (ADR-0310 A2.11).
+
+        The shared :func:`~index_options.contracts.usable_parity_rows` with the book's basis
+        factor and the run's own quote params read from ``result.json``. Counts, per method,
+        the forwards taken, the rows dropped and the forwards that fall to spot because of
+        the filter (they would have been parity on the unfiltered rows).
+        """
+        kept = usable_parity_rows(rows, book["factor"], *self._quote_params)
+        need = self.params["min_pairs"]
+        pairs = self._tools[ParityForward].pairs
+        n_kept, n_all = len(pairs(kept, 1.0)), len(pairs(rows, 1.0))   # the count ignores the centre
+        count = self._parity_counts
+        count["forwards"] += 1
+        count["rows_dropped"] += len(rows) - len(kept)
+        count["fell_to_spot"] += n_kept < need
+        count["fell_to_spot_by_filter"] += n_kept < need <= n_all
+        return kept
 
     def _method_flags(self, domain, table):
         """Return ``{method: flag}`` after checking each method's shock lookback."""
@@ -721,7 +763,10 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         summaries = {}
         for method in p["methods"]:
             raw = {"method": method, "trades": kept[method], "bars": bars, "multiplier": multiplier}
+            self._parity_counts = Counter()
             out = super().run(ctx, {"books": raw, "quotes": quotes, "bars": bars})
+            out["summary"]["parity_rows"] = self.PARITY_ROWS
+            out["summary"]["parity_filter"] = {k: self._parity_counts[k] for k in _PARITY_COUNTS}
             out["cells"] = [c for c in out["cells"] if c["rank"] is not None]
             ranked = [r for r in out["books"] if "rank_reason" in r]
             out["summary"]["rank_reasons"] = dict(sorted(Counter(r["rank_reason"] for r in ranked).items()))
@@ -802,6 +847,9 @@ class MIOGreeksDiagnostics(BookGreeksReport):
             "refusals": dict(sorted(sum((Counter(s["refusals"]) for s in summaries.values()),
                                         Counter()).items())),
             "forward_spot": sum(s["forward_spot"] for s in summaries.values()),
+            "parity_rows": self.PARITY_ROWS,
+            "parity_filter": {k: sum(s["parity_filter"][k] for s in summaries.values())
+                              for k in _PARITY_COUNTS},
             "hedged_pnl_usd": math.fsum(hedged) if hedged else None,
             "n_stock_hedged": sum(s["n_stock_hedged"] for s in summaries.values()),
             "hedge_cost_source": self.params["hedge_cost_source"],

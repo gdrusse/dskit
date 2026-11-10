@@ -59,6 +59,7 @@ from .contracts import (
     structure_credit,
     structure_max_loss,
     structure_payoff,
+    usable_quote,
 )
 from .datafiles import entry_problems
 from .distribution import CondorGeometry, condor_payoff
@@ -4728,21 +4729,18 @@ class CDFQuoteCondorSelect(Node):
         factors[day] = factor
         return (day, expiry, right, float(strike)), factor
 
+    #: Require ``bid < ask`` (the weekly MIO's ledger rule); the condor keeps ``ask >= bid``.
+    STRICT_BID_ASK = False
+
     def _usable_quote(self, row, factor):
-        """Return raw (bid, ask) only for a one-lot, two-sided quoted contract."""
+        """Return (bid, ask) over ``factor`` only for a one-lot, two-sided quoted contract.
+
+        The rule is :func:`~index_options.contracts.usable_quote`, the one owner the shared
+        ``usable_parity_rows`` filter also calls (ADR-0311 A1 part A).
+        """
         p = self.params
-        if row is None or not math.isclose(float(row.get("basis_factor", math.nan)), factor,
-                                         rel_tol=1e-9):
-            return None
-        bid, ask = row.get("bid"), row.get("ask")
-        if (not number_ok(bid) or not number_ok(ask) or bid <= 0 or ask < bid
-                or any(type(row.get(k)) is not int or row[k] < p["min_quote_size"]
-                       for k in ("bid_size", "ask_size"))):
-            return None
-        bid, ask = float(bid)/factor, float(ask)/factor
-        if (ask-bid)/((ask+bid)/2) > p["max_relative_spread"]:
-            return None
-        return bid, ask
+        return usable_quote(row, factor, p["min_quote_size"], p["max_relative_spread"],
+                            strict=self.STRICT_BID_ASK)
 
     def _eligible_strike(self, right, strike, spot, z):
         """Keep the legacy OTM condor strike region."""
@@ -5006,15 +5004,13 @@ class CDFQuoteOptionSelect(CDFQuoteCondorSelect):
         """Admit both rights on either side of spot within the declared region."""
         return abs(z) <= self.params["max_abs_z"]
 
+    #: The ledger's strict bid-below-ask quote contract.
+    STRICT_BID_ASK = True
+
     def _check_eligible(self, eligible):
         """Allow even one contract; refuse an empty eligible chain."""
         if not eligible:
             raise ValueError("insufficient_eligible_legs")
-
-    def _usable_quote(self, row, factor):
-        """Match the ledger's strict bid-below-ask quote contract."""
-        market = super()._usable_quote(row, factor)
-        return market if market is not None and market[0] < market[1] else None
 
     def _eligible_contract(self, role, index, contract_id, market, row):
         """Bound each eligible side by its displayed decision-time depth."""

@@ -79,7 +79,8 @@ def _chain_rows(symbol, day, expiry, forward, vol, strikes, with_iv=True, rights
             rows.append({"symbol": symbol, "date": day, "expiration": expiry, "type": right,
                          "strike_raw": float(k), "bid": round(mid - 0.05, 4),
                          "ask": round(mid + 0.05, 4), "iv": vol if with_iv else None,
-                         "underlying_price": forward, "basis_factor": 1.0})
+                         "underlying_price": forward, "basis_factor": 1.0,
+                         "bid_size": 10, "ask_size": 10})
     return rows
 
 
@@ -131,7 +132,7 @@ def _block(base, folder, frames):
 
 
 def build_run(root, *, mutate=None, drop_chain=(), calls_only=(), no_iv=(), extra_methods=None,
-              dividends=None):
+              dividends=None, edit_row=None, drop_columns=()):
     """Write a closed run, bars and chains under ``root``; return ``(run_dir, base)``."""
     base = Path(root) / "source"
     base.mkdir(parents=True, exist_ok=True)
@@ -154,7 +155,9 @@ def build_run(root, *, mutate=None, drop_chain=(), calls_only=(), no_iv=(), extr
                 rows += _chain_rows(symbol, day, expiry, forward, vol, strikes,
                                     with_iv=symbol not in no_iv,
                                     rights=("call",) if symbol in calls_only else ("call", "put"))
-        chains[symbol] = pd.DataFrame(rows)
+        for row in rows if edit_row else ():
+            edit_row(row)                       # a test poisons a row in place (before it is saved)
+        chains[symbol] = pd.DataFrame(rows).drop(columns=list(drop_columns))
     blk = _trade("2021-04-05:BLK:2021-04-16", "BLK", DECISION, FILL, EXPIRY, BLK_LEGS, BLK_SETTLE)
     mmm = _trade("2021-04-05:MMM:2021-05-21", "MMM", DECISION, FILL, MONTHLY_EXPIRY, MMM_LEGS, 105.0)
     later = _trade("2021-04-12:MMM:2021-05-21", "MMM", LATER_DECISION, LATER_FILL, MONTHLY_EXPIRY,
@@ -166,7 +169,8 @@ def build_run(root, *, mutate=None, drop_chain=(), calls_only=(), no_iv=(), extr
                                  "chain": _block(base, "chain", chains)},
                  "study": {"domain": {"params": {
                      "symbols": ["BLK", "MMM"], "methods": methods, "correlation_min_pairs": 2,
-                     "bridge": {"solver": {"multiplier": MULT, "fee_per_contract_usd": FEE}}}}}},
+                     "bridge": {"min_quote_size": 1, "max_relative_spread": 0.5,
+                                "solver": {"multiplier": MULT, "fee_per_contract_usd": FEE}}}}}},
         "results": [{"id": m["id"], "result": {"trades": [blk, mmm, later], "rejected": [],
                                                 "curve": []}} for m in methods],
     }
@@ -1487,3 +1491,182 @@ def test_classifier_pending_is_gone_from_the_child_outputs(world):
     run_node(run_dir, out_dir)
     for name in ("books.csv", "cells.csv", "greeks-summary.json"):
         assert "classifier_pending" not in (out_dir / name).read_text(), name
+
+
+# ---- ADR-0310 A2.11 / stage 2c: every forward goes through the shared usable_parity_rows -------
+from itertools import product as _product                                   # noqa: E402
+
+from dskit.pipeline.option_exposure import BookGreeksReport, ParityForward  # noqa: E402
+from index_options import contracts                                         # noqa: E402
+from index_options.nodes import CDFQuoteCondorSelect, CDFQuoteOptionSelect  # noqa: E402
+
+_QUOTE_NODE_PARAMS = {
+    "symbol": "SYN", "start": "2019-01-01", "end_before": "2019-02-01",
+    "protected_end_before": "2020-01-01", "fold": 1, "require_fitted": False,
+    "z_grid": [-1.0, 0.0, 1.0], "grid_labels": ["a", "b", "c"], "target_dte": 30,
+    "dte_tolerance": 2, "max_abs_z": 2.5, "max_relative_spread": 0.5, "min_quote_size": 2,
+    "stress_spread_fraction": 0.25,
+    "projection": {"quadrature_tolerance": 1e-8, "payoff_tolerance": 1e-6, "cdf_tolerance": None,
+                   "w1_tolerance": None, "integration_limit": 100},
+    "solver": {"multiplier": 100, "fee_per_contract_usd": 0.65, "tie_tolerance_usd": 1e-6,
+               "max_absolute_gap_usd": 1e-7, "max_relative_gap": 1e-8, "objective_parity_usd": 1e-5}}
+
+
+def _quote_node(node_class):
+    solver = {**_QUOTE_NODE_PARAMS["solver"],
+              **({"max_total_contracts": 1} if node_class is CDFQuoteOptionSelect else {})}
+    return node_class("n", {**_QUOTE_NODE_PARAMS, "solver": solver})
+
+
+def _quote_grid():
+    rows = []
+    for bf, bid, ask, size, asize in _product((1.0, 0.25, 0.5), (0.0, -1.0, 1.0, 2.0, "x"),
+                                              (0.5, 1.0, 1.4, 2.0, 3.0, 9.0),
+                                              (0, 1, 2, 3, 2.5, None), (2, 1)):
+        rows.append({"basis_factor": bf, "bid": bid, "ask": ask, "bid_size": size,
+                     "ask_size": asize})
+    rows += [{"basis_factor": 1.0, "bid": 1.0, "ask": 1.0, "bid_size": 5, "ask_size": 5},   # locked
+             {"basis_factor": 0.25, "bid": 0.4, "ask": 0.44, "bid_size": 5, "ask_size": 5},  # split
+             {"basis_factor": 1.0}, {}, None]
+    return rows
+
+
+@pytest.mark.parametrize("node_class", [CDFQuoteCondorSelect, CDFQuoteOptionSelect])
+@pytest.mark.parametrize("factor", [1.0, 0.25])
+def test_the_shared_filter_equals_the_node_quote_rule_on_a_quote_grid(node_class, factor):
+    node = _quote_node(node_class)
+    rows = _quote_grid()
+    for row in rows:
+        market = contracts.usable_quote(row, factor, 2, 0.5, strict=node.STRICT_BID_ASK)
+        assert market == node._usable_quote(row, factor)
+    live = [r for r in rows if r is not None]
+    kept = contracts.usable_parity_rows(live, factor, 2, 0.5, strict=node.STRICT_BID_ASK)
+    assert kept == [r for r in live if node._usable_quote(r, factor) is not None]
+    scaled = contracts.usable_parity_rows(live, factor, 2, 0.5, strict=node.STRICT_BID_ASK,
+                                          rescale=True)
+    assert [(r["bid"], r["ask"]) for r in scaled] == [
+        node._usable_quote(r, factor) for r in live if node._usable_quote(r, factor) is not None]
+    assert kept, "the grid must keep some row or the equality is vacuous"
+    assert len(kept) < len(live)
+
+
+def test_only_the_weekly_node_demands_strictly_crossed_free_quotes():
+    locked = {"basis_factor": 1.0, "bid": 1.0, "ask": 1.0, "bid_size": 5, "ask_size": 5}
+    assert _quote_node(CDFQuoteCondorSelect)._usable_quote(locked, 1.0) == (1.0, 1.0)
+    assert _quote_node(CDFQuoteOptionSelect)._usable_quote(locked, 1.0) is None
+
+
+def _poison_calls(*strikes, size=0, shift=4.0, days=None, symbol="BLK"):
+    """Return an ``edit_row`` that leaves a stale, unsized, shifted call quote at ``strikes``."""
+    def edit(row):
+        if (row["symbol"] == symbol and row["type"] == "call" and row["strike_raw"] in strikes
+                and (days is None or row["date"] in days)):
+            row.update(bid=row["bid"] + shift, ask=row["ask"] + shift, bid_size=size,
+                       ask_size=size)
+    return edit
+
+
+def _wrong_basis(*strikes):
+    def edit(row):
+        if row["symbol"] == "BLK" and row["type"] == "call" and row["strike_raw"] in strikes:
+            row.update(bid=row["bid"] + 4.0, ask=row["ask"] + 4.0, basis_factor=2.0)
+    return edit
+
+
+def _strip(out):
+    return {k: out[k] for k in ("books", "cells", "exposure")}
+
+
+def test_a_stale_unusable_pair_moves_the_forward_only_without_the_filter(world, monkeypatch):
+    clean_dir, clean_out = world()
+    clean = run_node(clean_dir, clean_out)
+    poisoned_dir, poisoned_out = world(edit_row=_poison_calls(450.0, 455.0))
+    filtered = run_node(poisoned_dir, poisoned_out)
+    blk = f"{METHOD}|2021-04-05:BLK:2021-04-16"
+    assert rows_by(filtered)[blk]["forward"] == pytest.approx(BLK_FORWARD, abs=1e-6)
+    assert _strip(filtered) == _strip(clean)       # fill, decision AND every exposure mark unmoved
+    monkeypatch.setattr(MIOGreeksDiagnostics, "_parity_rows", BookGreeksReport._parity_rows)
+    raw_dir, raw_out = world(edit_row=_poison_calls(450.0, 455.0))
+    unfiltered = run_node(raw_dir, raw_out)
+    assert rows_by(unfiltered)[blk]["forward"] == pytest.approx(BLK_FORWARD + 4.0, abs=1e-3)
+    assert unfiltered["exposure"] != clean["exposure"]
+
+
+@pytest.mark.parametrize("day", [DECISION, FILL])
+def test_a_poisoned_pair_on_either_session_changes_neither_forward(world, day, monkeypatch):
+    clean_dir, clean_out = world()
+    clean = run_node(clean_dir, clean_out)
+    poison = _poison_calls(440.0, 445.0, 450.0, 455.0, days={day})   # whatever the day's spot is
+    run_dir, out_dir = world(edit_row=poison)
+    assert _strip(run_node(run_dir, out_dir)) == _strip(clean)
+    with monkeypatch.context() as patch:           # the poison is live: the bare core is moved by it
+        patch.setattr(MIOGreeksDiagnostics, "_parity_rows", BookGreeksReport._parity_rows)
+        raw_dir, raw_out = world(edit_row=poison)
+        assert _strip(run_node(raw_dir, raw_out)) != _strip(clean)
+
+
+def test_a_wrong_basis_pair_is_dropped(world):
+    clean_dir, clean_out = world()
+    clean = run_node(clean_dir, clean_out)
+    run_dir, out_dir = world(edit_row=_wrong_basis(450.0, 455.0))
+    assert _strip(run_node(run_dir, out_dir)) == _strip(clean)
+
+
+def test_a_clean_chain_is_byte_identical_to_the_unfiltered_tool(world, monkeypatch):
+    run_dir, out_dir = world()
+    filtered = run_node(run_dir, out_dir)
+    monkeypatch.setattr(MIOGreeksDiagnostics, "_parity_rows", BookGreeksReport._parity_rows)
+    other_dir, other_out = world()
+    unfiltered = run_node(other_dir, other_out)
+    assert _strip(filtered) == _strip(unfiltered)
+    counts = filtered["summary"]["methods"][METHOD]["parity_filter"]
+    assert counts["fell_to_spot_by_filter"] == 0
+    assert filtered["summary"]["parity_rows"] == "usable_quote"
+
+
+def test_a_forward_that_falls_back_to_spot_after_filtering_is_counted(world):
+    every_call = tuple(float(k) for k in range(440, 470, 5))
+    run_dir, out_dir = world(edit_row=_poison_calls(*every_call, days={FILL}))
+    out = run_node(run_dir, out_dir)
+    blk = rows_by(out)[f"{METHOD}|2021-04-05:BLK:2021-04-16"]
+    assert blk["forward_source"] == "spot" and blk["status"] == "forward_spot"
+    counts = out["summary"]["methods"][METHOD]["parity_filter"]
+    assert counts["fell_to_spot_by_filter"] >= 1
+    assert counts["rows_dropped"] >= len(every_call)
+    assert counts["fell_to_spot"] >= counts["fell_to_spot_by_filter"]
+    assert out["summary"]["parity_filter"]["fell_to_spot_by_filter"] >= counts["fell_to_spot_by_filter"]
+
+
+def test_a_mark_excluding_the_books_strikes_composes_with_the_filter():
+    spot = 452.0
+    rows = []
+    for k, shift in ((445.0, 0.0), (450.0, 1.0), (455.0, 2.0), (460.0, 0.0)):
+        mid = {"call": 10.0 + shift, "put": 7.0}
+        rows += [{"right": r, "strike": k, "bid": mid[r] - 0.05, "ask": mid[r] + 0.05,
+                  "bid_size": 5, "ask_size": 5, "basis_factor": 1.0} for r in ("call", "put")]
+    rows.append({"right": "call", "strike": 449.0, "bid": 30.0, "ask": 30.1, "bid_size": 0,
+                 "ask_size": 5, "basis_factor": 1.0})
+    rows.append({"right": "put", "strike": 449.0, "bid": 1.0, "ask": 1.1, "bid_size": 5,
+                 "ask_size": 5, "basis_factor": 1.0})
+    tool = ParityForward({"parity_strikes": 2, "min_pairs": 1, "max_pair_spread_frac": 0.5})
+    usable = contracts.usable_parity_rows(rows, 1.0, 1, 0.5)
+    assert all(r["strike"] != 449.0 or r["right"] == "put" for r in usable)
+    assert tool.pairs(usable, spot) == [450.0 + 11.0 - 7.0, 455.0 + 12.0 - 7.0]
+    assert tool.pairs(usable, spot, exclude_strikes=(450.0,)) == [455.0 + 5.0, 445.0 + 3.0]
+    assert tool.from_chain(usable, spot, exclude_strikes=(450.0, 455.0)) == (455.5, "parity")
+
+
+def test_a_run_whose_result_json_carries_no_quote_params_refuses(world):
+    def drop(table):
+        del table["plan"]["study"]["domain"]["params"]["bridge"]["max_relative_spread"]
+    run_dir, out_dir = world(mutate=drop)
+    with pytest.raises(GreeksRefusal) as info:
+        run_node(run_dir, out_dir)
+    assert code_of(info) == "quote_params_missing"
+
+
+def test_a_chain_without_the_size_columns_refuses_by_name(world):
+    run_dir, out_dir = world(drop_columns=("bid_size", "ask_size"))
+    with pytest.raises(GreeksRefusal) as info:
+        run_node(run_dir, out_dir)
+    assert code_of(info) == "chain_columns_absent"
