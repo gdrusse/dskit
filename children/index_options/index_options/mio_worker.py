@@ -541,6 +541,9 @@ class MIOMethodWorker:
     HEARTBEAT_SECONDS = 60.
     HEARTBEAT_MAX_SECONDS = 3600.
 
+    #: Whether this run is a ``--check`` timing run (the only run that may carry a ``decision_weeks`` result).
+    timing_check = False
+
     def __init__(self, spec):
         if (not isinstance(spec, dict) or not self._REQUIRED <= set(spec)
                 or set(spec) - self._REQUIRED - self._OPTIONAL
@@ -550,6 +553,20 @@ class MIOMethodWorker:
             raise ValueError("worker spec requires absolute bundle_root, work_dir, out, a method and attempt >= 1")
         self.spec = copy.deepcopy(spec)
         self.root = Path(spec["bundle_root"])
+
+    @staticmethod
+    def evidence_guard(result, timing_check):
+        """Refuse to digest a ``decision_weeks`` check-week result as evidence (ADR-0313 I2 review).
+
+        Only a ``--check`` timing run may carry one; its action file says so (``timing_check``).
+        Returns whether the result is a timing check.
+        """
+        from .ledger_studies import WeeklyOptionPortfolioStudy
+
+        if timing_check:
+            return "decision_weeks" in result
+        WeeklyOptionPortfolioStudy.check_document_not_evidence(result)
+        return False
 
     @staticmethod
     def relocate(study, root):
@@ -727,6 +744,7 @@ class MIOMethodWorker:
                 except Exception:
                     pass
         seconds = time.perf_counter() - started
+        timing = self.evidence_guard(result, self.timing_check)
         body = {"format": MIOPacketStudy.RECORDED_FORMAT, "method": method["id"],
                 "attempt": self.spec["attempt"], "host": self.host_identity(self.spec.get("host")),
                 "bundle_manifest_sha256": manifest["sha256"], "plan_sha256": plan["sha256"],
@@ -735,6 +753,8 @@ class MIOMethodWorker:
                 "dependencies": study["dependencies"], "actions": self.actions(result, weekly.weeks),
                 "result_sha256": value_hash(result), "seconds": seconds,
                 "timeouts": sum(1 for x in result["decisions"] if x.get("status") == "timeout_skipped")}
+        if timing:
+            body["timing_check"] = True
         if "unit" in self.spec:
             body["unit"] = self.spec["unit"]
         out = Path(self.spec["out"])
@@ -760,7 +780,9 @@ def main(argv=None):
     with open(args.spec, encoding="utf-8") as handle:
         spec = json.load(handle)
     try:
-        body = MIOMethodWorker(spec).run()
+        worker = MIOMethodWorker(spec)
+        worker.timing_check = args.check
+        body = worker.run()
     except Exception as exc:  # one scrubbed line: a message can carry a gap or a value, a traceback more
         try:
             from .ledger_studies import MIOPacketStudy

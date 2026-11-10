@@ -929,13 +929,18 @@ def test_a_missing_forward_row_refuses_the_hedged_order_and_never_falls_back_to_
                forwards(path, order_index=1))                                   # order 0 has no rows
     assert out["summary"]["refused_at_open"] == {"hedge_forward_missing": 1}
     assert [t["order_index"] for t in out["trades"]] == [1]
-    # a mark day without a row stops the run, named by order and date
-    with pytest.raises(ValueError, match=r"hedge_forward_missing.*order 0.*" + day(7).isoformat()):
-        runf(ctx, chain, [fixed_order()], forwards(path, skip=(7,)))
-    # the exit day needs its row; expiry does not (it settles at the underlying)
-    with pytest.raises(ValueError, match="hedge_forward_missing"):
-        runf(ctx, chain, [fixed_order(exit=day(12).isoformat())], forwards(path, skip=(12,)),
-             close_rule="exit", order_fields={**HEDGE_ORDER_FIELDS, "exit": "exit"})
+    # a mark day without a row carries the last forward, flagged and counted under the stable code
+    out = runf(ctx, chain, [fixed_order()], forwards(path, skip=(7,)))
+    assert out["trades"][0]["hedge_forward_missing"] == 1 and out["trades"][0]["mark_forward_carried"] == 1
+    flagged = [m for m in out["marks"] if m["mark_forward_carried"]]
+    assert [m["date"] for m in flagged] == [day(7).isoformat()]
+    assert flagged[0]["hedge_pnl_usd"] == out["marks"][[m["date"] for m in out["marks"]].index(day(6).isoformat())]["hedge_pnl_usd"]
+    # the exit day needs its row: without it the exit is REFUSED under a stable code (S3 note) and the
+    # trade runs on to its expiration, where the forward settles at the underlying
+    out = runf(ctx, chain, [fixed_order(exit=day(12).isoformat())], forwards(path, skip=(12,)),
+               close_rule="exit", order_fields={**HEDGE_ORDER_FIELDS, "exit": "exit"})
+    assert out["summary"]["exit_refused"] == {"hedge_forward_missing": 1}
+    assert out["trades"][0]["reason_closed"] == "expiry" and out["trades"][0]["exit_refused"] is True
     runf(ctx, chain, [fixed_order()], forwards(path, last=DAYS - 1))             # no expiry-day row: fine
 
 

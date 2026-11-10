@@ -722,6 +722,8 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # disk in sealed directories, never shown); WSL re-derives every value);
                            # (the coordinator is NOT in this package, so a fix never changes a code pin: see tools/ below);
                            # mio_greeks.py (ADR-0310: MIOGreeksDiagnostics, Greeks, stock-equivalent split and exposure over a SAVED closed MIO run; read-only, sealed window; A2 keys quarter, dividends, seal_crossing, cell_by with cadence; per-method direction_read in the summary, quarter on every row, decision-session forward hedge; every parity forward passes contracts.usable_parity_rows, the one filter built on contracts.usable_quote that the quote nodes also call (parity_rows, parity_filter counts in the summary); configs/mio-greeks-template.json);
+                           # ADR-0312 A1 S3, hedge stress: python -m index_options.mio_execution_stress <v6 document> (scenarios static_forward_hedge_rNNN[_carry], no solve);
+                           # evidence: python tools/hedge_evidence.py <stress root> <formulation> COHORT=YYYYQn... --registry R --out NEW.json [--greeks YYYYQn=greeks-summary.json] [--books YYYYQn=books.csv] [--e4-input walk-summary.json] (read-only, one new verdict file)
                            # mio_run_events.py (ADR-0283: MioRunRows, one method of a saved MIO result.json as event rows; the
                            # report document is configs/mio-report-limited36-available-size-20261029.json)
                            # mio_stress_coverage.py (ADR-0278: pinned opt-in 2019 one-day account mark coverage driver; prepare, execute, aggregate);
