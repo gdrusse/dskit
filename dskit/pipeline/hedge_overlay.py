@@ -493,10 +493,14 @@ class FixedDeltaForwardHedge(HedgeOverlay):
             total.append(row["delta_f_sh"])
         return math.fsum(total), None
 
-    def _entry(self, units, status, flagged):
-        """Return one item's entry: ``units`` is what is hedged, ``target`` what the ratio asked for."""
+    def _entry(self, units, status, flagged, delta=None):
+        """Return one item's entry: ``units`` is what is hedged, ``target`` what the ratio asked for.
+
+        ``delta_f_sh`` is the item's one-contract signed forward delta (``None`` when it could not be priced), so a
+        caller can read the item's effective hedge ratio ``-units / delta_f_sh``.
+        """
         return {"units": units if status == STATUS_OK else 0.0, "target": units, "status": status,
-                "hard_to_borrow": flagged}
+                "hard_to_borrow": flagged, "delta_f_sh": delta}
 
     def units(self, items, context):
         """Return one entry per item: ``-ratio x gate x`` the per-contract forward delta, with a status.
@@ -538,14 +542,14 @@ class FixedDeltaForwardHedge(HedgeOverlay):
                 continue
             if self.params["mode"] == "program" and abs(delta) / context["multiplier"] < self.params["small_delta"]:
                 self.counts[SMALL_DELTA] += 1
-                out.append(self._entry(0.0, STATUS_OK, flagged))
+                out.append(self._entry(0.0, STATUS_OK, flagged, delta))
                 continue
             held = 0.0 - self.params["ratio"] * gate * delta
             if flagged and held < 0:
                 self.counts[STATUS_HTB] += 1
-                out.append(self._entry(held, STATUS_HTB, flagged))
+                out.append(self._entry(held, STATUS_HTB, flagged, delta))
             else:
-                out.append(self._entry(held, STATUS_OK, flagged))
+                out.append(self._entry(held, STATUS_OK, flagged, delta))
         return out
 
 

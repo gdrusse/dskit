@@ -1572,7 +1572,12 @@ class ReplayHedge:
                      "losses": [loss_row(items, s, mult, hedge) for s in group["grid"]],
                      "reserve_rows": reserves + [plus, minus],
                      "linear_rows": [{"coefficients": slope, "upper": 0.}]}
+        # The item's EFFECTIVE ratio h_i = -u_i / delta_f_sh,i (0 for an item the small_delta cut left unhedged): the
+        # calibration values the hedged direction part with it (ADR-0313 B1), never with the block's ratio.
+        ratios = [min(1.0, max(0.0, -u / e["delta_f_sh"])) if u and e.get("delta_f_sh") else 0.0
+                  for u, e in zip(units, entries, strict=True)]
         return rewritten, {**meta, "program_hedge": {"units": units, "reference": reference, "costs": costs,
+                                                   "ratios": ratios,
                                                    "margin_fraction": ov.params["margin_fraction"]}}
 
     def attach(self, book, day, charge=None):
@@ -1611,6 +1616,10 @@ class ReplayHedge:
                       rates={k: ov.params[k] for k in ("hedge_fee_per_share", "hedge_half_spread_bps")},
                       closing_cost_allowance=allowance, option_reserve=book["reserve"],
                       unhedged_max_loss=book["max_loss"])
+        if math.isinf(book["max_loss"]):
+            # A book the forward leg alone makes bounded (a sold call it covers): JSON has no infinity, so the
+            # option legs' reserve and loss are recorded as null with the flag (ADR-0313 I7; the replay needs it).
+            record.update(option_reserve=None, unhedged_max_loss=None, unhedged_unbounded=True)
         if self.is_program:
             # What the program charged (every item on its own units at F_0) beside the replay's netted cost, settled later.
             record.update(program_gross_units=hedged["gross"], decision_forward=hedged["decision_forward"],
@@ -1910,6 +1919,7 @@ class CalibratedEdge:
             # ADR-0313 A9: a truncated or gappy stream must not read as warm-up (a cold map is PRESENT, a missing one is not).
             raise ValueError(f"calibration_map_missing: no map for decision week(s) {absent}")
         self._rows_cache = (None, None)
+        self._best = {}
         #: ``(group, right, strike)`` -> the walk-row equivalent of the LAST :meth:`candidates` call (bucket, e, side, c).
         self.last = {}
 
@@ -1957,7 +1967,41 @@ class CalibratedEdge:
                 self._need("calibration_map_date", f"map {t!r} is not a decision week of the study or not its own date")
         self.buckets = ReliabilityBuckets(summary["buckets"])
         direction = summary.get("direction_params") if regressors == 2 else None
+        if direction is not None:
+            self._check_agreement(direction)
         self.features = EdgeItemFeatures(direction, summary["edge_scale"])
+
+    #: The ``LegGreeks`` keys the direction part, the hedge and the exposure rows all price with.
+    _LEG_KEYS = ("rate", "iv_source", "min_years", "vol_floor")
+
+    def _check_agreement(self, direction):
+        """Refuse a method whose hedge or exposure block prices the Greeks differently from the walk's direction part.
+
+        ``block_params_disagree`` (ADR-0313 D): the walk's ``direction_params`` (the ``LegGreeks`` and
+        ``ParityForward`` params its ``e_dir`` was priced with) must equal the hedge block's rate, iv source and the
+        overlay's floors, with the document's ``hedge_parity``, and the document's ``exposure_greeks``.
+        """
+        from dskit.pipeline.hedge_overlay import DEFAULT_IV_DISAGREE_TOL, DEFAULT_MIN_YEARS, DEFAULT_VOL_FLOOR
+
+        params = self.study.params
+        mine = {k: direction.get(k) for k in self._LEG_KEYS}
+        parity = {k: direction.get(k) for k in ParityForward._PARAMS}
+        if direction.get("iv_source") == "mid":
+            mine["iv_disagree_tol"] = direction.get("iv_disagree_tol")
+        hedge, greeks = self.method.get("hedge"), params.get("exposure_greeks")
+        other = []
+        if hedge is not None:
+            theirs = {"rate": hedge["rate"], "iv_source": hedge["iv_source"], "min_years": DEFAULT_MIN_YEARS,
+                      "vol_floor": DEFAULT_VOL_FLOOR}
+            if hedge["iv_source"] == "mid":
+                theirs["iv_disagree_tol"] = DEFAULT_IV_DISAGREE_TOL
+            other.append(("hedge", theirs, params.get("hedge_parity")))
+        if greeks is not None and "exposure_limits" in self.method:
+            other.append(("exposure_greeks", {k: v for k, v in greeks["leg"].items()}, greeks["parity"]))
+        for name, leg, par in other:
+            if leg != mine or par != parity:
+                self._need("block_params_disagree", f"the walk priced its direction part with {mine} / {parity}, the "
+                           f"method's {name} with {leg} / {par}")
 
     def _check_reads(self, summary):
         """Refuse an arm whose pinned walk did not score THIS line forward and pass (G2): state and read words."""
@@ -2049,8 +2093,12 @@ class CalibratedEdge:
             self._rows_cache = (day, rows)
         return self._rows_cache[1]
 
-    def _adjust(self, row, emap):
-        """Return ``adj`` for the walk's row of one option, or ``(None, reason)``: no row, no regime, warm-up."""
+    def _adjust(self, row, emap, h_i=0.0):
+        """Return ``adj`` for the walk's row of one option, or ``(None, reason)``: no row, no regime, warm-up.
+
+        ``h_i`` is the item's effective hedge ratio (two regressors only; the hedged direction part is valued at
+        ``(1 - h_i) w_dir e_dir``).
+        """
         from dskit.pipeline.libs.edge_walk import books_fill
 
         if not books_fill(row):
@@ -2062,54 +2110,96 @@ class CalibratedEdge:
         two = self.block["regressors"] == 2
         try:
             adj = self.objective.adjust(emap, bucket, row["name"], row["e"], row.get("e_dir") if two else None,
-                                        row.get("scale"))
+                                        row.get("scale"), h_i)
         except self._refuse as exc:
             raise ValueError(str(exc)) from exc
         self.last[row["group"], row["right"], row["strike"]] = {
-            "bucket": bucket, "e": row["e"], "sign": row["sign"], "c": None if adj is None else row["e"] + adj}
+            "bucket": bucket, "e": row["e"], "sign": row["sign"], "c": None if adj is None else row["e"] + adj,
+            "h": h_i}
         return (adj, None) if adj is not None else (None, "not_warm_bucket" if row.get("e_dir", 0.0) is not None
                                                     else "no_direction_edge")
 
-    def candidates(self, day, groups, metadata):
-        """Return ``(groups, metadata, refusals, week, adjusts)`` for a warm week.
-
-        Each option's side with the larger ``(e, sign)`` takes the map (``adj``); the other side takes ``-adj`` (the
-        round trip stays costly). An option with no walk row (no fill session, no regime, no bucket, no direction
-        edge) has BOTH items removed from their group and counted; a group left empty is refused
-        (``insufficient_eligible_legs``). ``adjusts`` maps a group id to its per-item list, in the kept order.
-        """
+    def _best_sides(self, meta, rows):
+        """Return ``{(right, strike): sign}``: the side of each option the map is applied to (the walk's side rule)."""
         from dskit.pipeline.libs.edge_walk import prefers
 
+        options = {}
+        for item in meta["items"]:
+            options.setdefault((item["right"], item["strike"]), []).append(item["sign"])
+        best = {}
+        for key, signs in options.items():
+            top = signs[0]
+            for sign in signs[1:]:
+                if prefers(rows[meta["id"], *key, sign], rows[meta["id"], *key, top]):
+                    top = sign
+            best[key] = top
+        return best
+
+    def exclude(self, day, groups, metadata):
+        """Return ``(groups, metadata, refusals, week)`` without the options the walk gave no row (B2 step 2).
+
+        An option with no walk row (no fill session, no regime, no bucket, no direction edge) has BOTH items removed
+        from their group and counted; a group left empty is refused (``insufficient_eligible_legs``). The side of each
+        kept option the map will be applied to is fixed here, on the pair as the walk saw it, and remembered for
+        :meth:`adjust`, so a later exclusion of one side (the hedge's, the limits') cannot move the pairing.
+        """
         emap, rows = self.map_for(day), self._rows(day)
         self.last = {}
-        week, refusals, kept_groups, kept_meta, adjusts = Counter(), [], [], [], {}
+        week, refusals, kept_groups, kept_meta = Counter(), [], [], []
+        self._best = {}
         for group, meta in zip(groups, metadata, strict=True):
-            options = {}
-            for index, item in enumerate(meta["items"]):
-                options.setdefault((item["right"], item["strike"]), []).append(index)
-            adj = [None] * len(meta["items"])
-            for (right, strike), indexes in options.items():
-                best = None
-                for index in indexes:
-                    row = rows[meta["id"], right, strike, meta["items"][index]["sign"]]
-                    if best is None or prefers(row, rows[meta["id"], right, strike, meta["items"][best]["sign"]]):
-                        best = index
-                value, reason = self._adjust(rows[meta["id"], right, strike, meta["items"][best]["sign"]], emap)
-                for index in indexes:
-                    adj[index] = None if value is None else (value if index == best else self.objective.mirror(value))
+            best = self._best_sides(meta, rows)
+            missing = {}
+            for key, sign in best.items():
+                value, reason = self._adjust(rows[meta["id"], *key, sign], emap)
+                missing[key] = reason if value is None else None
                 if value is None:
                     week[reason] += 1
-            keep = [i for i, a in enumerate(adj) if a is not None]
-            week[self.NO_ROW] += len(adj) - len(keep)
+            keep = [i for i, it in enumerate(meta["items"]) if missing[it["right"], it["strike"]] is None]
+            week[self.NO_ROW] += len(meta["items"]) - len(keep)
             if not keep:
                 refusals.append({"symbol": meta["symbol"], "expiry": meta["expiry"],
                                  "reason": "insufficient_eligible_legs"})
                 continue
-            new_group, new_meta, _ = ReplayHedge.restrict(group, meta, [None] * len(adj), keep)
+            new_group, new_meta, _ = ReplayHedge.restrict(group, meta, [None] * len(meta["items"]), keep)
             kept_groups.append(new_group)
             kept_meta.append(new_meta)
-            adjusts[meta["id"]] = [adj[i] for i in keep]
-        return kept_groups, kept_meta, refusals, Counter({k: v for k, v in week.items() if v}), adjusts
+            self._best[meta["id"]] = best
+        return kept_groups, kept_meta, refusals, Counter({k: v for k, v in week.items() if v})
+
+    @staticmethod
+    def ratios(meta):
+        """Return the items' effective hedge ratios of a program-hedged ``meta``, else zeros."""
+        return (meta.get("program_hedge") or {}).get("ratios") or [0.0] * len(meta["items"])
+
+    def adjust(self, day, groups, metadata):
+        """Return ``{group id: [adj per kept item]}`` against each group AS CONFIGURED (B2 step 5).
+
+        Each item's option takes the map on the side fixed by :meth:`exclude`, at the item's own effective hedge
+        ratio ``h_i`` (the group's ``program_hedge`` ratios; 0 when unhedged), its other side ``-adj``. ``adj`` is
+        against the hedged nominal because the walk's ``e`` and ``e_dir`` are the unhedged ones the map was fitted on.
+        """
+        emap, rows = self.map_for(day), self._rows(day)
+        adjusts = {}
+        for group, meta in zip(groups, metadata, strict=True):
+            best, ratios, out = self._best[meta["id"]], self.ratios(meta), []
+            for item, h in zip(meta["items"], ratios, strict=True):
+                key = (item["right"], item["strike"])
+                value, reason = self._adjust(rows[meta["id"], *key, best[key]], emap, h)
+                if value is None:
+                    raise ValueError(f"calibration_no_row: an option kept by exclude has no row ({reason})")
+                out.append(value if item["sign"] == best[key] else self.objective.mirror(value))
+            adjusts[meta["id"]] = out
+        return adjusts
+
+    def candidates(self, day, groups, metadata):
+        """Return ``(groups, metadata, refusals, week, adjusts)`` for a warm week: :meth:`exclude` then :meth:`adjust`.
+
+        The calibration-only path (no hedge rewrite between the two steps). ``adjusts`` maps a group id to its
+        per-item list, in the kept order.
+        """
+        groups, metadata, refusals, week = self.exclude(day, groups, metadata)
+        return groups, metadata, refusals, week, self.adjust(day, groups, metadata)
 
     def record(self, weeks):
         """Return the result's calibration field: the resolved block, its control flag and the week counts."""
@@ -3820,6 +3910,12 @@ class WeeklyOptionPortfolioStudy:
         for book, row in zip(trades, ledger["trades"]):
             if row["status"] != "closed" or abs(row["pnl_usd"]-book["pnl"]) > 1e-6:
                 raise ValueError("shared ledger/chronological account PnL mismatch")
+            if hedge and row["max_loss_unbounded"]:
+                # ADR-0313 I7: a hedged book may be unbounded WITHOUT its forward leg (a sold call the hedge covers);
+                # the ledger prices the option legs alone, so the reserve check is on the book recording that.
+                if not book["hedge"].get("unhedged_unbounded") or not math.isfinite(book["max_loss"]):
+                    raise ValueError("shared ledger/chronological reserve mismatch")
+                continue
             expected = self._floor(max(0., row["max_loss_usd"], -row["credit_usd"]),
                                    charge or self._charge({}), book["legs"],
                                    self.params["bridge"]["solver"]["multiplier"])
@@ -3955,8 +4051,6 @@ class WeeklyOptionPortfolioStudy:
                 raise ValueError("block_not_derived: a method with a block is solved locally, never derived or policy-scored")
             # ADR-0313: each feature attaches in its own stage (I5 calibration, I6 limits, I7 the hedge with calibration,
             # ADR-0312 S3 for the hedge). A block combination no stage attaches yet must not be silently ignored.
-            if "hedge" in present and "calibration" in present:
-                raise ValueError("block_unattached: a method with a block cannot run until its feature is attached")
             if "hedge" in present:
                 if self.adjustments:
                     raise ValueError("hedge_split_unsupported: a hedged run takes no split adjustment")
@@ -4038,8 +4132,8 @@ class WeeklyOptionPortfolioStudy:
                         warm = calibrated.week_warm(day)
                         warm_weeks["warm" if warm else "warmup"] += 1
                         if warm:
-                            # ADR-0313 B2 steps 1-2 and 5: the item features, the walk-row exclusions, then the adjust.
-                            groups, metadata, excluded, week_cal, adjusts = calibrated.candidates(day, groups, metadata)
+                            # ADR-0313 B2 steps 1-2: the item features and the walk-row exclusions (the adjust is step 5).
+                            groups, metadata, excluded, week_cal = calibrated.exclude(day, groups, metadata)
                             refusals = [*refusals, *excluded]
                     week_hedge = None
                     if hedge is not None and hedge.is_program:
@@ -4050,8 +4144,11 @@ class WeeklyOptionPortfolioStudy:
                     week_limits = None
                     if limited is not None:
                         # ADR-0313 I6: the candidates whose Greeks can be priced, after the hedge rewrite (its units enter k).
-                        groups, metadata, excluded, week_limits, adjusts = limited.candidates(day, groups, metadata, adjusts)
+                        groups, metadata, excluded, week_limits, _ = limited.candidates(day, groups, metadata)
                         refusals = [*refusals, *excluded]
+                    if week_cal is not None:
+                        # B2 step 5: the adjust against the group AS CONFIGURED (hedged nominal), after every exclusion.
+                        adjusts = calibrated.adjust(day, groups, metadata)
                     components = self._components(day) if method["component_fraction"] is not None else {"groups": []}
                     limits = self._limits(account, method, components)
                     record = {"date": day, "candidate_books": len(groups),

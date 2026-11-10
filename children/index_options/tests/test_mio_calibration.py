@@ -185,10 +185,13 @@ START = "2019-10-07"                       # the walk's report_from: the seed we
 class Harness:
     """The walk's output on a synthetic world and a factory for studies that read it."""
 
-    def __init__(self, root):
+    def __init__(self, root, direction=None):
         pool = {"band": "two_block", "min_blocks": 2, "min_dates": 2, "min_clusters": 2}
-        saved = dict(walk_tests.POOL)
+        saved, saved_direction = dict(walk_tests.POOL), dict(walk_tests.DIRECTION)
         walk_tests.POOL.update(pool)
+        if direction is not None:
+            walk_tests.DIRECTION.clear()
+            walk_tests.DIRECTION.update(direction)
         try:
             self.world = World(window={"start": "2019-10-01", "end": "2019-12-31"}, last="2020-01-31")
             self.node = walk_tests.FxWalk("edge", walk_tests.params(self.world, root, direction=True,
@@ -197,6 +200,8 @@ class Harness:
         finally:
             walk_tests.POOL.clear()
             walk_tests.POOL.update(saved)
+            walk_tests.DIRECTION.clear()
+            walk_tests.DIRECTION.update(saved_direction)
         self.out = Path(self.node.params["out_dir"])
         self.maps = EdgeMapStream.parse(EdgeMapStream.assemble(self.out))
         self.summary = json.loads((self.out / "summary.json").read_text())
@@ -452,9 +457,9 @@ def test_a_mirror_item_whose_best_side_was_excluded_is_excluded_with_it(harness)
     option = (target["right"], target["strike"])
     real = cal._adjust
 
-    def cold_for_one_option(row, emap):
+    def cold_for_one_option(row, emap, h_i=0.0):
         return (None, "not_warm_bucket") if (row["right"], row["strike"]) == option and row["group"] == metadata[0]["id"] \
-            else real(row, emap)
+            else real(row, emap, h_i)
 
     cal._adjust = cold_for_one_option
     kept, meta, _, week, adjusts = cal.candidates(day, groups, metadata)
@@ -512,15 +517,6 @@ def test_a_study_without_maps_or_with_unused_maps_refuses(harness):
     params["methods"] = [harness.base]
     with pytest.raises(ValueError, match="edge_maps_unused"):
         ledger_studies.WeeklyOptionPortfolioStudy(params, copy.deepcopy(harness.inputs), method_inputs={"edge_maps": harness.maps})
-
-
-def test_a_block_that_is_both_hedged_and_calibrated_stays_unattached(harness):
-    from test_ledger_studies import _PARITY, _REPLAY_BLOCK
-
-    method = {**harness.method(), "hedge": dict(_REPLAY_BLOCK)}
-    study = harness.study([method], hedge_parity=dict(_PARITY))
-    with pytest.raises(ValueError, match="block_unattached"):
-        study._method(method, None)
 
 
 def test_the_authenticated_intake_matches_the_walks_forecast_pins_to_the_documents_own(study, tmp_path):
