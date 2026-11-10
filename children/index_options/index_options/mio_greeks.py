@@ -738,7 +738,7 @@ class MIOGreeksDiagnostics(BookGreeksReport):
             summaries[method] = out["summary"]
         summary = self._run_summary(summaries, flags, {**shas, **bar_shas, **{
             f"chain/{Path(f).stem}": d for f, d in quotes.files.items()}})
-        summary.update(self._a2_summary(kept, excluded))
+        summary.update(self._a2_summary(kept, excluded, trades))
         result = {**merged, "summary": summary}
         self._write(out_dir, result)
         return result
@@ -754,12 +754,23 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         read.update(n_books_total=summary["n_books_total"], n_books_excluded=summary["n_books_excluded"])
         return {"quarter": self.params["quarter"], "method": method, **read}
 
-    def _a2_summary(self, kept, excluded):
+    @staticmethod
+    def _unequal_by_exclusion(kept, trades):
+        """Say whether the exclusion left the methods with different book sets (ADR-0310 A2.6).
+
+        True when some book is kept by one method and absent from another's kept set although the
+        other had requested it: a difference in the picks themselves is not an exclusion effect.
+        """
+        have = {m: {t["id"] for t in rows} for m, rows in kept.items()}
+        asked = {m: {t["id"] for t in rows} for m, rows in trades.items()}
+        everyone = set().union(*have.values()) if have else set()
+        return any(i not in have[m] and i in asked[m] for m in have for i in everyone)
+
+    def _a2_summary(self, kept, excluded, trades):
         """Return the run-level A2 keys: quarter, dividends mode, seal crossing and shared books."""
-        sets = {frozenset(t["id"] for t in rows) for rows in kept.values()}
         return {"quarter": self.params["quarter"], "dividends": self.params["dividends"],
                 "seal_crossing": self.params["seal_crossing"],
-                "seal_crossing_excluded": excluded, "unequal_method_sets": len(sets) > 1,
+                "seal_crossing_excluded": excluded, "unequal_method_sets": bool(excluded) and self._unequal_by_exclusion(kept, trades),
                 "total_excludes_seal_crossing": bool(excluded),
                 "formulations_share_books": True, "methods_compared": list(self.params["methods"]),
                 "shared_book_count": self._shared_book_count(kept)}
@@ -799,6 +810,7 @@ class MIOGreeksDiagnostics(BookGreeksReport):
             "stock_hedge_note": STOCK_HEDGE_NOTE,
             "hedge_status": dict(sorted(sum((Counter(s["hedge_status"]) for s in summaries.values()),
                                             Counter()).items())),
+            "htb_unreadable": sum(s["htb_unreadable"] for s in summaries.values()),
             "forward_hedge_status": dict(sorted(sum(
                 (Counter(s["forward_hedge_status"]) for s in summaries.values()), Counter()).items())),
             "decision_greeks_refusals": dict(sorted(sum(

@@ -938,7 +938,7 @@ class CellAttribution(_Configured):
     _STATUS = "hedge_status"
     #: Optional forward-hedge and payoff-split row fields (ADR-0310 A2); absent ones read as null.
     _FORWARD_FIELDS = ("payoff_delta_pnl", "beyond_payoff_delta", "forward_hedge_status",
-                       "forward_hedged_pnl", "hedge_pnl", "forward_hedge_costs")
+                       "forward_hedged_pnl", "hedge_pnl", "forward_hedge_costs", "htb_unreadable")
     _HEDGE_NUMBERS = ("forward_hedged_pnl", "hedge_pnl", "forward_hedge_costs")
 
     @classmethod
@@ -1015,6 +1015,7 @@ class CellAttribution(_Configured):
             "n_hedged": len(ok), "n_unbounded_above": status[HEDGE_UNBOUNDED],
             "n_hard_to_borrow": status[HEDGE_HTB], "n_decision_unmarked": status[DECISION_UNMARKED],
             "n_not_attributed": status[NOT_ATTRIBUTED], "n_classifier_pending": status[CLASSIFIER_PENDING],
+            "n_htb_unreadable": sum(bool(r.get("htb_unreadable")) for r in rows),
             "hedgeable_share_gross": (math.fsum(abs(r["pnl"]) for r in ok) / gross
                                       if gross > 0 else None),
             "forward_hedged_pnl_usd": hedged if ok else None,
@@ -1048,6 +1049,7 @@ class CellAttribution(_Configured):
             "beyond_payoff_usd": self._sum_of(group, "beyond_payoff_delta"),
             **{k: effect[k] for k in (
                 "n_hedged", "n_unbounded_above", "n_hard_to_borrow", "n_not_attributed",
+                "n_decision_unmarked", "n_classifier_pending", "n_htb_unreadable",
                 "hedgeable_share_gross", "forward_hedged_pnl_usd", "hedge_pnl_usd",
                 "hedge_loss_reduction_usd", "hedge_costs_usd")},
         }
@@ -1330,12 +1332,13 @@ class BookGreeksReport(Node):
                     "payoff_delta_sh", "payoff_delta_pnl", "beyond_payoff_delta", "atm_legs",
                     "delta_f_sh", "delta_f_sh_decision", "forward_hedge_units", "hedge_rounding_sh",
                     "trade_costs_usd", "borrow_usd", "forward_hedge_costs", "forward_hedged_pnl",
-                    "hedge_pnl", "forward_hedge_status", "hard_to_borrow", "hedge_cost_source")
+                    "hedge_pnl", "forward_hedge_status", "hard_to_borrow", "hedge_cost_source",
+                    "htb_unreadable")
     #: The forward-hedge and payoff columns a refused book leaves null.
     _FORWARD_COLUMNS = ("payoff_delta_sh", "payoff_delta_pnl", "beyond_payoff_delta", "atm_legs",
                         "delta_f_sh", "delta_f_sh_decision", "forward_hedge_units",
                         "hedge_rounding_sh", "trade_costs_usd", "borrow_usd", "forward_hedge_costs",
-                        "forward_hedged_pnl", "hedge_pnl", "hard_to_borrow")
+                        "forward_hedged_pnl", "hedge_pnl", "hard_to_borrow", "htb_unreadable")
     EXPOSURE_COLUMNS = ("date", "bucket", "dte_min", "dte_max", "n_books", "beta_delta_usd",
                         "vega_usd_per_pt", "gamma_usd_per_1pct", "top_k_share", "excluded")
     CELL_COLUMNS = ("n", "pnl_usd", "static_delta_usd", "beyond_static_usd", "hedged_pnl_usd",
@@ -1343,7 +1346,8 @@ class BookGreeksReport(Node):
                     "static_share_net", "beyond_static_share_net", "gross_pnl_usd",
                     "static_share_gross", "beyond_static_share_gross",
                     "payoff_delta_usd", "beyond_payoff_usd", "n_hedged", "n_unbounded_above",
-                    "n_hard_to_borrow", "n_not_attributed", "hedgeable_share_gross",
+                    "n_hard_to_borrow", "n_not_attributed", "n_decision_unmarked",
+                    "n_classifier_pending", "n_htb_unreadable", "hedgeable_share_gross",
                     "forward_hedged_pnl_usd", "hedge_pnl_usd", "hedge_loss_reduction_usd",
                     "hedge_costs_usd", "top1_share_gross", "top3_share_gross",
                     "loo_sign_stable_pnl", "loo_sign_stable_hedge_pnl", "small_cell",
@@ -1574,10 +1578,14 @@ class BookGreeksReport(Node):
                 "atm_legs": atm}
 
     def _hard_to_borrow(self, book, bars):
-        """Return the proxy's flag from the closes before the DECISION session (False: unreadable)."""
+        """Return ``(flag, unreadable)`` from the closes before the DECISION session.
+
+        An unreadable window gives ``(False, True)``: fail-open, kept as built and COUNTED
+        (``htb_unreadable``); fail-open versus fail-closed is an open owner item (ADR-0310 A2.3).
+        """
         proxy = self._tools[HardToBorrowProxy]
         closes = proxy.closes_before(bars.get(book["symbol"], {}), book["decision_date"])
-        return False if closes is None else proxy.of(closes)
+        return (False, True) if closes is None else (proxy.of(closes), False)
 
     def _forward_columns(self, book, row, quotes, bars):
         """Return the forward-hedge columns of an attributed book row (ADR-0310 A2.3).
@@ -1588,7 +1596,8 @@ class BookGreeksReport(Node):
         counted in the summary).
         """
         forward_fill, s_settle = row["forward"], row["s_settle"]
-        out = {"hard_to_borrow": self._hard_to_borrow(book, bars),
+        flag, unreadable = self._hard_to_borrow(book, bars)
+        out = {"hard_to_borrow": flag, "htb_unreadable": unreadable,
                "forward_hedge_status": DECISION_UNMARKED}
         decision, code = self._greeks_at(book, book["decision_date"], quotes, bars)
         if code is not None:
@@ -1670,15 +1679,11 @@ class BookGreeksReport(Node):
         ok = [r for r in rows if r.get("forward_hedge_status") == HEDGE_OK_FORWARD]
         min_books = self.params["min_books"]
         effect = tools[CellAttribution].hedge_effect(rows)
-        sum_of = CellAttribution._sum_of
-        part = lambda name, other, field: {                                     # noqa: E731
-            "delta_part_usd": sum_of(attributed, name), "beyond_usd": sum_of(attributed, other),
-            "sign_table": self.sign_table(attributed, field)}
         return {
             "n_books": len(attributed), "n_books_total": len(rows),
             "pnl_usd": math.fsum(r["pnl"] for r in attributed), "gross_pnl_usd": gross,
-            "static": part("static_delta_pnl", "beyond_static_delta", "static_delta_pnl"),
-            "payoff": part("payoff_delta_pnl", "beyond_payoff_delta", "payoff_delta_pnl"),
+            "static": self._split_part(attributed, "static_delta_pnl", "beyond_static_delta"),
+            "payoff": self._split_part(attributed, "payoff_delta_pnl", "beyond_payoff_delta"),
             "forward_hedge": {**effect, "min_books": min_books,
                               "hedge_cost_source": self.params["hedge_cost_source"]},
             "basis_usd": self._basis_distribution(attributed, gross),
@@ -1687,6 +1692,14 @@ class BookGreeksReport(Node):
             "concentration_pnl": {**tools[Concentration].of(attributed, "pnl", ["pnl"]),
                                   "min_books": min_books},
             "descriptive_only": DESCRIPTIVE_ONLY_NOTE}
+
+    @classmethod
+    def _split_part(cls, attributed, part_field, beyond_field):
+        """Return one split's ``delta_part_usd``, ``beyond_usd`` and ``sign_table``."""
+        sum_of = CellAttribution._sum_of
+        return {"delta_part_usd": sum_of(attributed, part_field),
+                "beyond_usd": sum_of(attributed, beyond_field),
+                "sign_table": cls.sign_table(attributed, part_field)}
 
     @staticmethod
     def _basis_distribution(attributed, gross):
@@ -1796,6 +1809,7 @@ class BookGreeksReport(Node):
                 "forward_hedge_status": dict(sorted(Counter(
                     r["forward_hedge_status"] for r in rows).items())),
                 "decision_greeks_refusals": dict(sorted(self._decision_refusals.items())),
+                "htb_unreadable": sum(bool(r["htb_unreadable"]) for r in rows),
                 "hedge_status": dict(sorted(Counter(r["hedge_status"] for r in rows).items())),
                 "hedge_dividend_source": self.hedge_dividend_source,
                 "hedge_params": hedge_params,

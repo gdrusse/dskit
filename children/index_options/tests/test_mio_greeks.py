@@ -1413,3 +1413,22 @@ def test_the_template_and_readme_describe_the_direction_read(world):
         assert word in notes, word
     readme = (CHILD / "README.md").read_text()
     assert "direction_read" in readme
+
+
+def test_unequal_method_sets_is_set_only_when_the_exclusion_makes_the_sets_differ(world):
+    def short(table):
+        table["results"][1]["result"]["trades"] = table["results"][1]["result"]["trades"][:2]
+    run_dir, out_dir = world(mutate=short, extra_methods=[{"id": "alt"}])
+    summary = run_node(run_dir, out_dir, methods=[METHOD, "alt"])["summary"]
+    assert summary["unequal_method_sets"] is False          # the picks differ; nothing was excluded
+    run_dir, out_dir = world(mutate=lambda t: _cross(t, poison=True), extra_methods=[{"id": "alt"}])
+    both = run_node(run_dir, out_dir, methods=[METHOD, "alt"], seal_crossing="exclude")["summary"]
+    assert both["unequal_method_sets"] is False             # both lost the same book
+    assert both["total_excludes_seal_crossing"] is True
+
+
+def test_the_run_summary_totals_htb_unreadable(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)          # htb_lookback 20 > the fixture's closes before decision
+    assert out["summary"]["htb_unreadable"] == out["summary"]["methods"][METHOD]["htb_unreadable"] == 3
+    assert out["summary"]["methods"][METHOD]["direction_read"]["forward_hedge"]["n_htb_unreadable"] == 3

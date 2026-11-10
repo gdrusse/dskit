@@ -1602,14 +1602,14 @@ def test_the_cell_columns_tail_matches_the_cells_the_report_writes():
     cols = BookGreeksReport.CELL_COLUMNS
     assert cols[13:] == (
         "payoff_delta_usd", "beyond_payoff_usd", "n_hedged", "n_unbounded_above",
-        "n_hard_to_borrow", "n_not_attributed", "hedgeable_share_gross", "forward_hedged_pnl_usd",
-        "hedge_pnl_usd", "hedge_loss_reduction_usd", "hedge_costs_usd", "top1_share_gross",
+        "n_hard_to_borrow", "n_not_attributed", "n_decision_unmarked", "n_classifier_pending",
+        "n_htb_unreadable", "hedgeable_share_gross", "forward_hedged_pnl_usd", "hedge_pnl_usd", "hedge_loss_reduction_usd", "hedge_costs_usd", "top1_share_gross",
         "top3_share_gross", "loo_sign_stable_pnl", "loo_sign_stable_hedge_pnl", "small_cell",
         "descriptive_only", "hedge_cost_source")
     assert list(out["cells"][0])[-len(cols):] == list(cols)
     assert out["cells"][0]["descriptive_only"] == ox.DESCRIPTIVE_ONLY_NOTE
     assert out["cells"][0]["hedge_cost_source"] == "placeholder"
-    assert BookGreeksReport.BOOK_COLUMNS[-16:] == (
+    assert BookGreeksReport.BOOK_COLUMNS[-17:-1] == (
         "payoff_delta_sh", "payoff_delta_pnl", "beyond_payoff_delta", "atm_legs", "delta_f_sh",
         "delta_f_sh_decision", "forward_hedge_units", "hedge_rounding_sh", "trade_costs_usd",
         "borrow_usd", "forward_hedge_costs", "forward_hedged_pnl", "hedge_pnl",
@@ -1697,3 +1697,42 @@ def test_direction_read_with_no_rows_is_null_not_an_error():
     assert dr["basis_usd"]["n"] == 0 and dr["basis_usd"]["median"] is None
     assert dr["forward_hedge"]["hedgeable_share_gross"] is None
     assert dr["concentration"]["small_cell"] is True
+
+
+# ---- stage 0-1 review minors ------------------------------------------------------------------
+def test_an_unreadable_htb_window_is_counted_not_flagged_and_behaviour_is_unchanged():
+    out = run_with(Pass, [make_book()], bars=make_bars(), **HTB_PARAMS)     # 5 closes before decision < 6
+    row = out["books"][0]
+    assert row["hard_to_borrow"] is False and row["htb_unreadable"] is True
+    assert row["forward_hedge_status"] == "ok"                             # fail-open, as before
+    assert out["summary"]["htb_unreadable"] == 1
+    assert out["cells"][0]["n_htb_unreadable"] == 1
+    fh = Pass("report", {**REPORT, **HTB_PARAMS}).direction_read(out["books"])["forward_hedge"]
+    assert fh["n_htb_unreadable"] == 1
+    readable = run_with(Pass, [make_book()], bars=htb_bars(), **HTB_PARAMS)
+    assert readable["books"][0]["htb_unreadable"] is False and readable["summary"]["htb_unreadable"] == 0
+    assert run_with(Pass, [make_book()], quotes={})["books"][0]["htb_unreadable"] is None
+
+
+def test_a_cells_status_counts_sum_to_its_n():
+    rows = [dict(r, sym="A") for r in eight_rows()]
+    rows.append(frow(1.0, status="not_attributed", sym="A"))
+    cell = CellAttribution({"cell_by": ["sym"], "min_total_usd": 1.0}).summarize(rows)[0]
+    counts = ("n_hedged", "n_unbounded_above", "n_hard_to_borrow", "n_decision_unmarked",
+              "n_not_attributed", "n_classifier_pending")
+    assert sum(cell[k] for k in counts) == cell["n"] == 9
+    assert (cell["n_decision_unmarked"], cell["n_classifier_pending"]) == (1, 2)
+
+
+def test_the_new_count_columns_are_declared_and_written_by_the_report():
+    out = run_with(Pass, [make_book()])
+    for name in ("n_decision_unmarked", "n_classifier_pending", "n_htb_unreadable"):
+        assert name in BookGreeksReport.CELL_COLUMNS and name in out["cells"][0]
+    assert "htb_unreadable" in BookGreeksReport.BOOK_COLUMNS
+    assert list(out["cells"][0])[-len(BookGreeksReport.CELL_COLUMNS):] == list(
+        BookGreeksReport.CELL_COLUMNS)
+
+
+def test_direction_read_has_no_lambda():
+    import inspect
+    assert "lambda" not in inspect.getsource(BookGreeksReport.direction_read)
