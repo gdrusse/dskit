@@ -5213,7 +5213,7 @@ def test_a_day_without_any_forward_carries_the_last_level_flagged_and_counted_ne
 _PROGRAM_BLOCK = {**_HEDGE, "mode": "program", "htb_lookback": 6}
 
 
-def _solved(params, inputs, monkeypatch):
+def _solved_with_programs(params, inputs, monkeypatch):
     """Run the first method; return ``(result, programs, program_identities)`` of every solve."""
     from dskit.pipeline.libs.pyomo import TransportActionScore, TransportPortfolioSolve
 
@@ -5238,8 +5238,8 @@ def _drop_hedge_fields(value):
 def test_program_mode_at_ratio_zero_is_the_unhedged_twin_except_for_its_hedge_fields(monkeypatch):
     from dskit.pipeline.base import value_hash
 
-    plain = _solved(*_block_doc(), monkeypatch)
-    zero = _solved(*_block_doc({"hedge": {**_PROGRAM_BLOCK, "ratio": 0.0}}), monkeypatch)
+    plain = _solved_with_programs(*_block_doc(), monkeypatch)
+    zero = _solved_with_programs(*_block_doc({"hedge": {**_PROGRAM_BLOCK, "ratio": 0.0}}), monkeypatch)
     assert len(plain[1]) >= 1
     assert value_hash(zero[1]) == value_hash(plain[1]), "the programs the solver is handed"
     assert zero[2] == plain[2], "program_identity"
@@ -5249,7 +5249,264 @@ def test_program_mode_at_ratio_zero_is_the_unhedged_twin_except_for_its_hedge_fi
 
 
 def test_program_mode_at_ratio_zero_excludes_nothing_and_adds_no_row(monkeypatch):
-    zero = _solved(*_block_doc({"hedge": {**_PROGRAM_BLOCK, "ratio": 0.0}}), monkeypatch)
+    zero = _solved_with_programs(*_block_doc({"hedge": {**_PROGRAM_BLOCK, "ratio": 0.0}}), monkeypatch)
     counts = zero[0]["hedge"]["counts"]
     assert not [k for k in counts if k.endswith("_excluded")], counts
     assert all(len(g["reserve_rows"]) == len(zero[1][0]["groups"][0]["reserve_rows"]) for g in zero[1][0]["groups"])
+
+
+# --- ADR-0312 program mode 2: hedged coefficients, exclusions, small_delta, the hand-worked tiny program ----------------
+
+_TABLE_BLOCK = {**_PROGRAM_BLOCK, "margin_fraction": 0.0, "hedge_cost_source": "measured", "hedge_fee_per_share": 0.0,
+                "hedge_half_spread_bps": 0.0, "hedge_borrow_rate": 0.0}
+
+
+def _table_group(overlay_units):
+    """The amendment's table, one group, mult 100, fee 0: ``(group, meta, entries)``.
+
+    Items: 0 long call 105 at 2.00 (U -35), 1 long put 95 at 2.00 (+30), 2 short put 90 at 0.80 (-18; with item 1 the
+    bear put spread, net +12), 3 short put 95 at 2.00 (-30: the unhedgeable short put).
+    """
+    items = [{"right": "call", "strike": 105., "sign": 1, "price": 2.0, "capacity": 10},
+             {"right": "put", "strike": 95., "sign": 1, "price": 2.0, "capacity": 10},
+             {"right": "put", "strike": 90., "sign": -1, "price": 0.8, "capacity": 10},
+             {"right": "put", "strike": 95., "sign": -1, "price": 2.0, "capacity": 10}]
+    grid = [80., 90., 95., 100., 105., 110., 120.]
+    credit = [-i["sign"] * i["price"] * 100 for i in items]
+    group = {"id": "g", "grid": grid, "masses": [1 / 7] * 7, "radius": 0., "scale": 100., "credit": credit,
+             "losses": [ledger_studies.WeeklyOptionPortfolioStudy._loss_row(items, s, 100) for s in grid],
+             "capacity": [10] * 4, "exclusive": [], "reserve_rows": [],
+             "linear_rows": [{"coefficients": [-1. if i["right"] == "call" else 0. for i in items], "upper": 0.}]}
+    meta = {"id": "g", "symbol": "X", "expiry": "2019-02-01", "decision_date": "2019-01-15", "dte": 17,
+            "factor": 1., "spot": 100., "items": items}
+    entries = [{"units": u, "target": u, "status": "ok", "hard_to_borrow": False} for u in overlay_units]
+    return group, meta, entries
+
+
+def _rows_value(group, quantities):
+    """The solver's reserve for ``quantities``: the largest reserve row and 0."""
+    return max([0.] + [sum(c * q for c, q in zip(row, quantities)) for row in group["reserve_rows"]])
+
+
+def test_the_hedged_rows_reproduce_the_amendments_table_reserves():
+    study, hedge, _ = _hedge_study(block=_TABLE_BLOCK)
+    group, meta, entries = _table_group([-35., 30., -18., -30.])
+    out, meta2 = hedge.rewrite(group, meta, entries, 100.0, 100)
+    assert _rows_value(out, [1, 0, 0, 0]) == pytest.approx(375.0)          # long call: 375 vs 200 unhedged
+    assert _rows_value(out, [0, 1, 1, 0]) == pytest.approx(820.0)          # bear put spread: 820 vs 120
+    from dskit.pipeline.option_structures import structure_max_loss
+    assert structure_max_loss([("call", 1)], [105.], -200., 100, hedge=(-35., 100.)) == pytest.approx(375.0)
+    assert structure_max_loss([("put", 1), ("put", -1)], [95., 90.], -120., 100, hedge=(12., 100.)) == pytest.approx(820.0)
+    assert meta2["program_hedge"]["units"] == [-35., 30., -18., -30.] and meta2["program_hedge"]["reference"] == 100.0
+
+
+def test_the_slope_row_excludes_the_unhedgeable_classes_and_is_todays_row_at_zero_units():
+    study, hedge, _ = _hedge_study(block=_TABLE_BLOCK)
+    group, meta, entries = _table_group([-35., 30., -18., -30.])
+    out, _ = hedge.rewrite(group, meta, entries, 100.0, 100)
+    (row,) = out["linear_rows"]
+    assert row["upper"] == 0.0
+    assert row["coefficients"] == pytest.approx([-1. + .35, -.30, .18, .30])     # -s[call] - u / mult
+    slope = lambda q: sum(c * x for c, x in zip(row["coefficients"], q))         # noqa: E731
+    assert slope([0, 0, 0, 1]) > 0, "a lone short put (U -30) is unbounded above: excluded"
+    assert slope([1, 0, 0, 0]) < 0 and slope([0, 1, 1, 0]) < 0, "long call and bear put spread are bounded"
+    zero, _ = hedge.rewrite(*_table_group([0., 0., 0., 0.])[:2], _table_group([0., 0., 0., 0.])[2], 100.0, 100)
+    assert zero["linear_rows"] == group["linear_rows"] and zero["losses"] == group["losses"]
+    assert zero["reserve_rows"] == group["reserve_rows"] and zero["credit"] == group["credit"]
+
+
+def test_the_grid_losses_are_the_hedged_losses_through_the_one_loss_row():
+    study, hedge, _ = _hedge_study(block=_TABLE_BLOCK)
+    group, meta, entries = _table_group([-35., 30., -18., -30.])
+    out, _ = hedge.rewrite(group, meta, entries, 100.0, 100)
+    row = ledger_studies.WeeklyOptionPortfolioStudy._loss_row
+    for s, hedged in zip(group["grid"], out["losses"]):
+        assert hedged == row(meta["items"], s, 100, ([-35., 30., -18., -30.], 100.0))
+    assert out["losses"][0][0] == pytest.approx(0.0 - (-35.) * (80. - 100.))      # long call at S 80: loss 0 + 35 x (-20)
+    plain = ledger_studies.WeeklyOptionPortfolioStudy._loss_row(meta["items"], 80., 100)
+    assert plain == row(meta["items"], 80., 100, ([0.0] * 4, 100.0)), "zero units: the unhedged row, bit for bit"
+
+
+def test_the_margin_floor_is_two_netted_rows_and_the_cost_is_the_shared_rule_per_item():
+    block = {**_TABLE_BLOCK, "margin_fraction": 0.15, "hedge_fee_per_share": 0.01, "hedge_half_spread_bps": 10.0}
+    study, hedge, _ = _hedge_study(block=block)
+    group, meta, entries = _table_group([-35., 30., -18., -30.])
+    out, meta2 = hedge.rewrite(group, meta, entries, 100.0, 100)
+    # long call alone: |U| 35 -> floor 0.15 x 100 x 35 = 525, above the table's 375
+    hedged_alone = _rows_value(out, [1, 0, 0, 0])
+    assert hedged_alone >= 525.0
+    # bear put spread nets +30 and -18 to +12 in the floor (180), not the gross 48 (720)
+    spread_rows = [sum(c * q for c, q in zip(row, [0, 1, 1, 0])) for row in out["reserve_rows"][-2:]]
+    assert sorted(spread_rows) == pytest.approx([-180.0, 180.0])
+    # per-item cost: |u| x (2 fee + 2 F bps) at F_0 for both legs
+    assert meta2["program_hedge"]["costs"] == pytest.approx([abs(u) * (0.02 + 200.0 * 10 / 1e4) for u in (-35, 30, -18, -30)])
+    assert out["credit"] == pytest.approx([c - k for c, k in zip(group["credit"], meta2["program_hedge"]["costs"])])
+
+
+def _unhedged_group(group, meta):
+    """The group as `_prepare` builds it: the unhedged reserve rows (loss less credit at 0 and every strike)."""
+    import numpy as np
+
+    row = ledger_studies.WeeklyOptionPortfolioStudy._loss_row
+    credit = np.asarray(group["credit"])
+    rows = [(np.asarray(row(meta["items"], s, 100)) - credit).tolist() for s in [0., *sorted({i["strike"] for i in meta["items"]})]]
+    return {**group, "reserve_rows": [*rows, (-credit).tolist()]}
+
+
+def test_the_tiny_program_solved_with_highs_hedges_the_values_and_never_selects_the_unbounded_class():
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    study, hedge, _ = _hedge_study(block=_TABLE_BLOCK)
+    group, meta, entries = _table_group([-35., 30., -18., -30.])
+    group["masses"] = [0., 0., 0., .1, .3, .3, .3]          # a rising spot: the short put and the credit are the favourite
+    solver_params = {"absolute_gap": 1e-7, "relative_gap": 0., "parity_tolerance": 1e-5,
+                     "solver_options": {"mip_abs_gap": 1e-8, "mip_rel_gap": 0., "threads": 1}}
+
+    def solve(g):
+        program = {"groups": [g], "caps": [{"groups": ["g"], "upper": 30000.0}]}
+        return TransportPortfolioSolve("portfolio", solver_params).run(None, program)["selection"]
+
+    base = _unhedged_group(group, meta)
+    plain = solve(base)
+    assert plain["quantities"][0][3] > 0, "unhedged, the short put is chosen"
+    hedged, _ = hedge.rewrite(base, meta, entries, 100.0, 100)
+    chosen = solve(hedged)["quantities"][0]
+    slope = sum(c * q for c, q in zip(hedged["linear_rows"][0]["coefficients"], chosen))
+    assert slope <= 1e-9, "the selected book is bounded above"
+    assert chosen[3] <= 2.17 * chosen[0] + 1e-9, "a short put only beside the long call that bounds it"
+    rest = hedge.restrict(hedged, meta, entries, [3])[0]                        # the short put alone
+    assert solve(rest)["quantities"][0] == [0], "the unbounded class alone is never selected"
+
+
+def _program_world(block=None, initial=60000.):
+    """The replay-hedge world as a clocked document with one method ``prog_arm`` (iv on every quote; nine history closes)."""
+    params, inputs, spots = _hedge_world()
+    history = ["2018-12-18", "2018-12-19", "2018-12-20", "2018-12-21", "2018-12-24", "2018-12-26", "2018-12-27",
+               "2018-12-28", "2018-12-31"]
+    inputs["X"]["bars"] = [{"symbol": "X", "date": d, "close": 100.} for d in history] + inputs["X"]["bars"]
+    params["correlation_lookback"] = params["correlation_min_pairs"] = 2
+    params["clocks"] = {"sessions": [r["date"] for r in inputs["X"]["bars"]], "history_start": history[0],
+                        "entry_start": "2019-01-02", "entry_end_before": "2019-01-08", "tail_end_before": "2019-02-09"}
+    params["selected_pairs"] = [{"id": "X30", "symbol": "X", "dte_min": 28, "dte_max": 32}]
+    params["initial"] = initial
+    method = {**params["methods"][0], "id": "prog_arm"}
+    if block is not None:
+        method["hedge"] = block
+        params["hedge_parity"] = dict(_PARITY)
+        params["locked_method_ids"] = list(FORMULATIONS)
+    params["methods"] = [method]
+    return params, inputs
+
+
+def test_a_program_mode_run_chooses_hedged_books_whose_reserve_is_the_hedged_max_loss():
+    from dskit.pipeline.option_structures import structure_max_loss
+
+    params, inputs = _program_world(dict(_PROGRAM_BLOCK))
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    result = study._method(params["methods"][0], None)
+    book = result["decisions"][0]["books"][0]
+    program = book["program_hedge"]
+    legs = [(leg["right"], leg["sign"] * leg["quantity"]) for leg in book["legs"]]
+    strikes = [leg["strike"] for leg in book["legs"]]
+    credit = book["credit"] - program["cost_usd"]
+    loss = structure_max_loss(legs, strikes, credit, 100, hedge=(program["units_raw"], program["reference"]))
+    assert book["max_loss"] == pytest.approx(loss) and math.isfinite(loss)
+    assert book["reserve"] == pytest.approx(max(loss, -credit, 0.15 * program["reference"] * abs(program["units_raw"])))
+    trade = result["trades"][0]
+    assert trade["hedge"]["status"] == "ok" and trade["hedge"]["units"] == math.trunc(program["units_raw"])
+    assert result["hedge"]["mode"] == "program" and "program_cost_excess_usd" in result["hedge"]
+    assert study._method(params["methods"][0], None, recorded=result) == result, "P6: re-derived from the block alone"
+
+
+def test_a_program_mode_selection_differs_from_its_unhedged_twin_because_it_is_chosen_by_hedged_value():
+    plain = ledger_studies.WeeklyOptionPortfolioStudy(*_program_world()).run()["methods"][0]
+    hedged = ledger_studies.WeeklyOptionPortfolioStudy(*_program_world(dict(_PROGRAM_BLOCK))).run()["methods"][0]
+    assert plain["decisions"][0]["books"][0]["legs"] != hedged["decisions"][0]["books"][0]["legs"]
+
+
+def test_items_without_iv_are_excluded_from_the_hedged_candidate_set_and_an_emptied_group_is_refused():
+    params, inputs = _program_world(dict(_PROGRAM_BLOCK))
+    for row in inputs["X"]["chain"]:
+        if row["date"] == "2019-01-02" and row["type"] == "call":
+            row["iv"] = None
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    result = study._method(params["methods"][0], None)
+    excluded = result["decisions"][0]["hedge"]["excluded"]
+    assert excluded["leg_no_iv_excluded"] > 0 and result["hedge"]["counts"]["leg_no_iv_excluded"] == excluded["leg_no_iv_excluded"]
+    assert all(leg["right"] == "put" for leg in result["decisions"][0]["books"][0]["legs"]), "no call is left unhedged beside hedged puts"
+    params, inputs = _program_world(dict(_PROGRAM_BLOCK))
+    for row in inputs["X"]["chain"]:
+        row["iv"] = None
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert result["decisions"][0]["status"] == "no_eligible_candidates" and result["trades"] == []
+    assert {"symbol": "X", "expiry": "2019-02-01", "reason": "insufficient_eligible_legs"} in result["decisions"][0]["refusals"]
+
+
+def test_short_hedge_items_on_a_hard_to_borrow_name_are_excluded_and_counted_per_name_and_group():
+    study, hedge, _ = _hedge_study(block=_PROGRAM_BLOCK)
+    group, meta, _ = _table_group([0., 0., 0., 0.])
+    meta["decision_date"] = "2019-01-15"
+    study._bars["X"].update({day: 100. * (3. if day in ("2019-01-04", "2019-01-08", "2019-01-10", "2019-01-14") else 1.)
+                             for day in ("2019-01-04", "2019-01-08", "2019-01-09", "2019-01-10", "2019-01-11", "2019-01-14")})
+    groups, metas, refusals, week = hedge.candidates([group], [meta], 100)
+    kept = [(i["right"], i["strike"], i["sign"]) for i in metas[0]["items"]]
+    assert kept == [("put", 95., 1)], "only the long put (a LONG hedge) survives; the other three would short the name"
+    assert week["hard_to_borrow_excluded"] == 3 and week["htb_excluded_groups"] == 1 and week["htb_excluded_names"] == 1
+    assert refusals == [] and len(groups[0]["capacity"]) == 1 and len(groups[0]["credit"]) == 1
+    assert all(len(row) == 1 for row in groups[0]["losses"] + groups[0]["reserve_rows"])
+
+
+def test_small_delta_is_not_an_exclusion_and_leaves_the_group_as_the_unhedged_twin_has_it():
+    study, hedge, _ = _hedge_study(block={**_PROGRAM_BLOCK, "small_delta": 0.999})
+    group, meta, _ = _table_group([0., 0., 0., 0.])
+    groups, metas, refusals, week = hedge.candidates([group], [meta], 100)
+    assert groups == [group] and metas == [meta] and refusals == []
+    assert hedge.counts["hedge_small_delta"] == 4 and not [k for k in week if k.endswith("_excluded")]
+
+
+def test_the_inputs_of_the_hedge_rewrite_are_never_mutated_the_prepared_groups_are_cached_across_methods():
+    import copy
+
+    study, hedge, _ = _hedge_study(block=_PROGRAM_BLOCK)
+    group, meta, _ = _table_group([0., 0., 0., 0.])
+    before = copy.deepcopy((group, meta))
+    hedge.candidates([group], [meta], 100)
+    assert (group, meta) == before
+
+
+def test_the_shock_rows_see_the_hedged_loss_through_move_terms_and_the_gate_sees_hedged_books():
+    study, hedge, _ = _hedge_study(block=_TABLE_BLOCK)
+    group, meta, entries = _table_group([-35., 30., -18., -30.])
+    out, hmeta = hedge.rewrite(group, meta, entries, 100.0, 100)
+    terms = ledger_studies.WeeklyOptionPortfolioStudy._move_terms
+    plain = terms([-.1], {"X": 1.0}, [meta], [group], 100)[-.1]["g"]
+    hedged = terms([-.1], {"X": 1.0}, [hmeta], [out], 100)[-.1]["g"]
+    # long call at S 90: unhedged loss 0 less credit(-200) = 200; hedged adds -u (S - F) = 35 x (90 - 100) = -350
+    assert plain[0] == pytest.approx(200.0) and hedged[0] == pytest.approx(200.0 - 350.0)
+    assert hmeta["program_hedge"]["reference"] == 100.0 and "program_hedge" not in meta
+
+
+def test_a_program_hedge_with_kelly_or_a_sizer_is_refused_as_hedge_with_sizer():
+    params, _ = _block_doc({"hedge": dict(_PROGRAM_BLOCK)})
+    params["methods"][0]["kelly"] = dict(TOP_FORMULATIONS["kelly025_top100_lp"]["kelly"])
+    with pytest.raises(ValueError, match="hedge_with_sizer"):
+        ledger_studies.WeeklyOptionPortfolioStudy._hedge_configuration(params)
+    params["methods"][0].pop("kelly")
+    params["methods"][0]["sizer"] = dict(SIZER)
+    params["methods"][0]["short_notional_fraction"] = .2
+    _refused_block(params, "hedge_with_sizer")
+
+
+def test_a_held_hedged_book_enters_the_account_shock_with_its_forward_leg_only_in_program_mode():
+    study, hedge, _ = _hedge_study(block=_PROGRAM_BLOCK)
+    book = _filled(study, [("put", 1, 100., 3)])
+    hedge.attach(book, "2019-01-16", None)
+    shock = {"moves": [-0.1], "beta_lookback": 2, "loss_fraction": 0.1, "scope": "filled_account"}
+    day = "2019-01-17"
+    _, plain = study._account_shock([book], day, shock)
+    _, hedged = study._account_shock([book], day, shock, True)
+    spot = study._bars["X"][day]
+    level = max(0., spot * (1. + study._betas(day, 2)["betas"]["X"] * -0.1))
+    leg = ledger_studies.ReplayHedge.net_settle(book["hedge"], level)
+    assert book["hedge"]["units"] > 0
+    assert hedged["-0.1"] == pytest.approx(plain["-0.1"] - leg) and leg != 0.0
