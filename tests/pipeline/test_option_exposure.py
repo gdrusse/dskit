@@ -35,7 +35,8 @@ def chain(forward, strikes, vol=0.2, years=30 / 365, half=0.05):
 def test_all_exports():
     assert sorted(ox.__all__) == sorted(
         ["ParityForward", "LegGreeks", "BookGreeks", "StockEquivalent", "CellAttribution",
-         "ExposureSnapshot", "fit_betas", "BookGreeksReport", "StaticDeltaHedge"])
+         "ExposureSnapshot", "fit_betas", "BookGreeksReport", "StaticDeltaHedge",
+         "ExpiryDelta", "ForwardHedge", "Concentration", "HardToBorrowProxy"])
 
 
 # ---- parity forward -------------------------------------------------------------------
@@ -159,12 +160,15 @@ def test_leg_greeks_raise_on_malformed_input():
 
 
 def test_book_greeks_sum_and_status():
-    a = {"delta_sh": 10.0, "gamma_sh": 1.0, "vega_usd_per_pt": 5.0, "theta_usd_per_day": -2.0}
-    b = {"delta_sh": -4.0, "gamma_sh": 0.5, "vega_usd_per_pt": -1.0, "theta_usd_per_day": 1.0}
+    a = {"delta_sh": 10.0, "gamma_sh": 1.0, "vega_usd_per_pt": 5.0, "theta_usd_per_day": -2.0,
+         "delta_f_sh": 11.0}
+    b = {"delta_sh": -4.0, "gamma_sh": 0.5, "vega_usd_per_pt": -1.0, "theta_usd_per_day": 1.0,
+         "delta_f_sh": -4.5}
     book = BookGreeks.sum([a, b], 101.0, "parity")
     assert (book.delta_sh, book.gamma_sh, book.vega_usd_per_pt, book.theta_usd_per_day) == \
         (6.0, 1.5, 4.0, -1.0)
     assert (book.forward, book.forward_source, book.status) == (101.0, "parity", "ok")
+    assert book.delta_f_sh == 6.5
     assert BookGreeks.sum([a], 100.0, "spot").status == "forward_spot"
     with pytest.raises(Exception):
         book.delta_sh = 0.0
@@ -663,7 +667,9 @@ def test_report_marks_one_days_open_books_symbol_by_symbol():
     out = _Order("report", {**REPORT, "exposure_days": "decision"}).run(
         None, {"books": books, "quotes": quotes, "bars": bars})
     on_day = [s for s, d in _Order.asked if d == mid]
-    assert on_day == sorted(on_day)                        # AAA, AAA, BBB: the cache sees one run per name
+    # two passes read the decision session (the forward hedge's sizing, then the exposure
+    # snapshot), each AAA, AAA, BBB: the cache sees one run per name per pass
+    assert on_day == ["AAA", "AAA", "BBB"] * 2
     total = [r for r in out["exposure"] if r["date"] == mid and r["bucket"] == "total"][0]
     assert total["n_books"] == 3
 
@@ -1058,11 +1064,11 @@ def test_frozen_column_tuples_use_the_a2_names_and_drop_the_a1_ones():
     books, cells = BookGreeksReport.BOOK_COLUMNS, BookGreeksReport.CELL_COLUMNS
     assert {"static_delta_pnl", "beyond_static_delta"} <= set(books)
     assert not {"stock_pnl", "residual"} & set(books)
-    assert cells == ("n", "pnl_usd", "static_delta_usd", "beyond_static_usd", "hedged_pnl_usd",
+    assert cells[:13] == ("n", "pnl_usd", "static_delta_usd", "beyond_static_usd", "hedged_pnl_usd",
                      "n_stock_hedged", "n_dividends_absent", "n_dividend_missing",
                      "static_share_net", "beyond_static_share_net", "gross_pnl_usd",
                      "static_share_gross", "beyond_static_share_gross")
-    assert "n_hedged" not in cells
+    assert "n_hedged" in cells[13:] and "n_stock_hedged" in cells[:13]
 
 
 def test_frozen_constants_and_enums():
@@ -1109,3 +1115,585 @@ def test_summary_echoes_the_cost_source_and_the_stock_hedge_note():
     s = run_report([make_book()])["summary"]
     assert s["hedge_cost_source"] == "placeholder"
     assert s["stock_hedge_note"] == ox.STOCK_HEDGE_NOTE
+
+
+# ---- ADR-0310 Amendment 2, stage 1A: forward hedge, shared cost rule, concentration, HTB -------
+import statistics  # noqa: E402
+
+from dskit.pipeline.stats import sample_quantile  # noqa: E402
+
+BLK_LEGS = [{"right": "call", "strike": 450.0, "sign": 1, "quantity": 5},
+            {"right": "call", "strike": 455.0, "sign": 1, "quantity": 1}]
+FORWARD_RATES = {**HEDGE}
+
+
+def test_leg_and_book_carry_the_forward_delta_and_spot_delta_is_forward_delta_times_f_over_s():
+    forward, spot, vol, strike = 101.5, 100.0, 0.2, 100.0
+    leg = {"right": "call", "strike": strike, "sign": -1, "quantity": 3, "expiry": EXPIRY}
+    row, code = LegGreeks(LEG).of(leg, {"bid": 2.0, "ask": 2.2, "iv": vol}, forward, spot, FILL)
+    assert code is None
+    years = 17 / 365
+    by_hand = -1 * 3 * 100 * black76_delta("call", forward, strike, vol, years, 0.0)
+    assert row["delta_f_sh"] == pytest.approx(by_hand, rel=1e-12)
+    assert row["delta_sh"] == pytest.approx(row["delta_f_sh"] * forward / spot, rel=1e-12)
+    book = BookGreeks.sum([row, row], forward, "parity")
+    assert book.delta_f_sh == pytest.approx(2 * by_hand, rel=1e-12)
+
+
+def test_expiry_delta_blk_book_at_448_458_and_exactly_450():
+    ed = ox.ExpiryDelta({"multiplier": 100})
+    assert ed.of(BLK_LEGS, 448.0) == (0, 0)
+    assert ed.of(BLK_LEGS, 458.0) == (600, 0)
+    assert ed.of(BLK_LEGS, 450.0) == (0, 5)           # the 450 leg is at the money (5 contracts)
+    se = StockEquivalent()
+    # book_pnl at 448: -938.90, both OTM: the whole loss is beyond the payoff delta
+    assert se.split(-938.90, 0, 452.0, 448.0) == (0.0, -938.90)
+    pnl = 4300.0 - 938.90                                # 5 x 8 x 100 + 1 x 3 x 100 - premium
+    assert pnl == pytest.approx(3361.10)
+    assert se.split(pnl, 600, 452.0, 458.0)[0] == pytest.approx(3600.0)
+    assert se.split(pnl, 600, 452.0, 458.0)[1] == pytest.approx(-238.90)
+    assert se.split(pnl, 290, 452.0, 458.0)[0] == pytest.approx(1740.0)
+    assert se.split(pnl, 290, 452.0, 458.0)[1] == pytest.approx(1621.10)
+
+
+def test_expiry_delta_signs_puts_shorts_and_flags_and_refusals():
+    ed = ox.ExpiryDelta({"multiplier": 10})
+    short_put = [{"right": "put", "strike": 100.0, "sign": -1, "quantity": 2}]
+    assert ed.of(short_put, 95.0) == (2 * 10, 0)         # short put ITM: long 20 shares
+    assert ed.of(short_put, 105.0) == (0, 0)
+    short_call = [{"right": "call", "strike": 100.0, "sign": -1, "quantity": 1}]
+    assert ed.of(short_call, 101.0) == (-10, 0)
+    assert ed.of(short_put + short_call, 100.0) == (0, 3)
+    with pytest.raises(ValueError, match="s_settle"):
+        ed.of(short_put, 0.0)
+    with pytest.raises(ValueError, match="malformed leg"):
+        ed.of([{"right": "x", "strike": 1.0, "sign": 1, "quantity": 1}], 1.0)
+
+
+def test_carry_costs_reproduces_the_a1_blk_numbers_and_the_forward_case():
+    h = StaticDeltaHedge(HEDGE)
+    stock = h.carry_costs(-290.0, 452.0, 448.0, 10)
+    assert stock["trade_costs"] == pytest.approx(133.40, abs=1e-9)
+    assert stock["borrow"] == pytest.approx(17.956164, abs=1e-6)
+    fwd = h.carry_costs(-288, 451.0, 448.0, 10)
+    assert fwd["trade_costs"] == pytest.approx(132.336, abs=1e-9)
+    assert fwd["borrow"] == pytest.approx(17.792877, abs=1e-6)
+    mirror = h.carry_costs(288, 451.0, 448.0, 10)
+    assert mirror["trade_costs"] == pytest.approx(132.336, abs=1e-9) and mirror["borrow"] == 0.0
+    assert h.carry_costs(0, 451.0, 448.0, 10) == {"trade_costs": 0.0, "borrow": 0.0}
+
+
+def test_carry_costs_refuses_bad_inputs_and_of_is_unchanged_to_the_cent():
+    h = StaticDeltaHedge(HEDGE)
+    for bad in (dict(units=float("nan")), dict(p_fill=0.0), dict(p_settle=-1.0), dict(days=-1)):
+        args = {"units": -1.0, "p_fill": 1.0, "p_settle": 1.0, "days": 1, **bad}
+        with pytest.raises(ValueError):
+            h.carry_costs(**args)
+    out = h.of(**BLK, dividends_per_share=0.0)
+    assert out["stock_costs"] == pytest.approx(133.40, abs=1e-9)
+    assert out["short_borrow"] == pytest.approx(17.956164, abs=1e-6)
+    assert out["hedged_pnl"] == pytest.approx(69.743836, abs=1e-6)
+    short = h.of(**{**BLK, "entry_delta_sh": -290.0}, dividends_per_share=0.0)
+    assert short["short_borrow"] == 0.0
+    assert short["hedged_pnl"] == pytest.approx(-938.90 - 1160.0 - 133.40, abs=1e-9)
+
+
+def test_of_calls_the_one_cost_rule(monkeypatch):
+    h = StaticDeltaHedge(HEDGE)
+    seen = []
+    original = StaticDeltaHedge.carry_costs
+
+    def spy(self, *args):
+        seen.append(args)
+        return original(self, *args)
+    monkeypatch.setattr(StaticDeltaHedge, "carry_costs", spy)
+    h.of(**BLK, dividends_per_share=0.0)
+    assert seen == [(-290.0, 452.0, 448.0, 10)]
+
+
+def test_forward_hedge_units_truncate_toward_zero_once():
+    fh = ox.ForwardHedge({"hedge_cost_source": "placeholder"})
+    assert fh.units(288.4) == -288 and fh.units(-288.4) == 288
+    assert fh.units(0.9) == 0 and fh.units(-0.9) == 0
+    assert fh.rounding(-288, 288.4) == pytest.approx(0.4)
+    assert fh.rounding(288, -288.4) == pytest.approx(-0.4)
+    with pytest.raises(ValueError):
+        fh.units(float("nan"))
+
+
+def test_forward_hedge_blk_worked_numbers():
+    h = StaticDeltaHedge(HEDGE)
+    fh = ox.ForwardHedge({"hedge_cost_source": "placeholder"})
+    units = fh.units(288.4)
+    costs = h.carry_costs(units, 451.0, 448.0, 10)
+    out = fh.of(-938.90, units, 451.0, 448.0, costs)
+    assert units == -288
+    assert out["trade_costs_usd"] == pytest.approx(132.336, abs=1e-9)
+    assert out["borrow_usd"] == pytest.approx(17.792877, abs=1e-6)
+    assert out["forward_hedge_costs"] == out["trade_costs_usd"]            # no borrow charged
+    assert out["forward_hedged_pnl"] == pytest.approx(-207.236, abs=1e-9)
+    assert out["hedge_pnl"] == pytest.approx(731.664, abs=1e-9)
+    identity = out["forward_hedged_pnl"] - units * (448.0 - 451.0) + out["forward_hedge_costs"]
+    assert identity == pytest.approx(-938.90, abs=1e-9)
+    # borrow rate 0: the hedged P&L does not move (borrow is reported, never charged)
+    h0 = StaticDeltaHedge({**HEDGE, "hedge_borrow_rate": 0.0})
+    out0 = fh.of(-938.90, units, 451.0, 448.0, h0.carry_costs(units, 451.0, 448.0, 10))
+    assert out0["forward_hedged_pnl"] == out["forward_hedged_pnl"] and out0["borrow_usd"] == 0.0
+    # the mirror book: long units, no borrow
+    mirror = fh.of(-938.90, 288, 451.0, 448.0, h.carry_costs(288, 451.0, 448.0, 10))
+    assert mirror["borrow_usd"] == 0.0
+    assert mirror["trade_costs_usd"] == pytest.approx(132.336, abs=1e-9)
+
+
+def test_forward_hedge_does_not_truncate_in_of_and_checks_inputs():
+    fh = ox.ForwardHedge({"hedge_cost_source": "measured"})
+    costs = {"trade_costs": 1.0, "borrow": 0.0}
+    out = fh.of(10.0, -2.5, 100.0, 98.0, costs)
+    assert out["forward_hedged_pnl"] == pytest.approx(10.0 + -2.5 * -2.0 - 1.0)
+    with pytest.raises(ValueError):
+        fh.of(10.0, -2, 0.0, 98.0, costs)
+    with pytest.raises(ValueError):
+        fh.of(float("nan"), -2, 100.0, 98.0, costs)
+
+
+# ---- hard to borrow -------------------------------------------------------------------
+HTB = {"htb_lookback": 6, "htb_vol_threshold": 1.0, "htb_jump_threshold": 0.5}
+
+
+def test_htb_realized_vol_is_sample_stdev_of_log_returns_times_sqrt_252():
+    closes = [100.0, 110.0, 100.0, 110.0, 100.0, 110.0]
+    rets = [math.log(b / a) for a, b in zip(closes, closes[1:])]
+    vol = statistics.stdev(rets) * math.sqrt(252)
+    assert vol == pytest.approx(1.6575, abs=1e-3)
+    assert ox.TRADING_DAYS_PER_YEAR == 252
+    px = ox.HardToBorrowProxy(HTB)
+    assert px.of(closes) is True                                     # vol 1.6575 > 1.0, jump 0.095 < 0.5
+    just = ox.HardToBorrowProxy({**HTB, "htb_vol_threshold": vol})
+    assert just.of(closes) is False                                  # strictly exceeds
+    assert ox.HardToBorrowProxy({**HTB, "htb_vol_threshold": vol - 1e-9}).of(closes) is True
+
+
+def test_htb_largest_five_session_log_move_flags_and_a_flat_name_does_not():
+    jump = [100.0] * 5 + [100.0 * math.exp(0.6)]
+    quiet_vol = {**HTB, "htb_vol_threshold": 100.0}
+    assert ox.HardToBorrowProxy(quiet_vol).of(jump) is True          # 0.6 > 0.5
+    assert ox.HardToBorrowProxy({**quiet_vol, "htb_jump_threshold": 0.6000001}).of(jump) is False
+    assert ox.HardToBorrowProxy(HTB).of([100.0] * 6) is False
+    fall = [100.0] * 5 + [100.0 * math.exp(-0.6)]
+    assert ox.HardToBorrowProxy(quiet_vol).of(fall) is True          # the move counts in absolute value
+
+
+def test_htb_window_is_the_lookback_closes_strictly_before_the_day_and_not_split_adjusted():
+    px = ox.HardToBorrowProxy(HTB)
+    series = {f"2021-02-{d:02d}": 100.0 + d for d in (15, 16, 17, 18, 19, 22, 23, 24)}
+    series["2021-03-01"] = 999.0
+    assert px.closes_before(series, "2021-02-24") == [116.0, 117.0, 118.0, 119.0, 122.0, 123.0]
+    assert px.closes_before(series, "2021-03-02")[-1] == 999.0
+    assert px.closes_before(series, "2021-03-01")[-1] == 124.0       # the day itself is excluded
+    assert px.closes_before(series, "2021-02-17") is None            # fewer than the lookback
+    bad = {**series, "2021-02-19": 0.0}
+    assert px.closes_before(bad, "2021-02-24") is None               # a non-positive close
+    with pytest.raises(ValueError):
+        px.of([100.0] * 5)                                           # not the lookback length
+
+
+# ---- concentration --------------------------------------------------------------------
+def conc(values, min_books=5, field="v"):
+    return ox.Concentration({"min_books": min_books}).of([{field: v} for v in values], field, [field])
+
+
+def test_concentration_on_one_two_five_and_twelve_rows():
+    one = conc([3.0])
+    assert one["n_books"] == 1 and one["top1_share_gross"] == 1.0 and one["top3_share_gross"] == 1.0
+    assert one["loo_sign_stable_v"] is None and one["small_cell"] is True
+    two = conc([3.0, -1.0])
+    assert two["top1_share_gross"] == pytest.approx(0.75) and two["top3_share_gross"] == 1.0
+    assert two["loo_sign_stable_v"] is False                 # dropping the 3 flips the total to -1
+    five = conc([1.0] * 5)
+    assert five["small_cell"] is False and five["loo_sign_stable_v"] is True   # n == min_books
+    assert five["top1_share_gross"] == pytest.approx(0.2) and five["top3_share_gross"] == pytest.approx(0.6)
+    twelve = conc([4.0, 3.0, 2.0] + [1.0] * 9)
+    assert twelve["loo_sign_stable_v"] is True and twelve["small_cell"] is False
+    assert twelve["top3_share_gross"] == pytest.approx(9 / 18)
+    flip = conc([10.0, -4.0, -3.0, -2.0, -1.0] + [0.5] * 7)
+    assert flip["loo_sign_stable_v"] is False and flip["n_books"] == 12
+
+
+def test_concentration_zero_gross_zero_total_and_empty_are_null_or_false():
+    z = conc([0.0, 0.0])
+    assert z["top1_share_gross"] is None and z["top3_share_gross"] is None
+    assert z["loo_sign_stable_v"] is False                   # a zero counts as a change
+    cancel = conc([1.0, -1.0])
+    assert cancel["loo_sign_stable_v"] is False
+    empty = conc([])
+    assert empty["n_books"] == 0 and empty["top1_share_gross"] is None
+    assert empty["loo_sign_stable_v"] is None and empty["small_cell"] is True
+    with pytest.raises(ValueError):
+        conc([float("nan"), 1.0])
+
+
+def test_concentration_signs_each_sign_field():
+    c = ox.Concentration({"min_books": 1}).of(
+        [{"a": 1.0, "b": 5.0}, {"a": 1.0, "b": -9.0}], "a", ["a", "b"])
+    assert c["loo_sign_stable_a"] is True and c["loo_sign_stable_b"] is False
+    assert c["small_cell"] is False
+
+
+# ---- new owners' params ---------------------------------------------------------------
+NEW_OWNERS = [
+    ("ExpiryDelta", {"multiplier": 100}),
+    ("ForwardHedge", {"hedge_cost_source": "placeholder"}),
+    ("Concentration", {"min_books": 5}),
+    ("HardToBorrowProxy", {"htb_lookback": 20, "htb_vol_threshold": 2.5,
+                            "htb_jump_threshold": 0.75}),
+]
+
+
+@pytest.mark.parametrize("cls,good", NEW_OWNERS)
+def test_new_owners_are_default_deny_and_all_required(cls, good):
+    cls = getattr(ox, cls)
+    cls(good)
+    assert tuple(good) == cls._PARAMS or set(good) == set(cls._PARAMS)
+    assert any("unknown" in p for p in cls.validate_params({**good, "typo": 1}))
+    for key in cls._PARAMS:
+        assert any("missing" in p for p in cls.validate_params(
+            {k: v for k, v in good.items() if k != key})), key
+    assert cls.validate_params([]) != []
+
+
+@pytest.mark.parametrize("cls,good,bad", [
+    ("ExpiryDelta", NEW_OWNERS[0][1], {"multiplier": 0}),
+    ("ExpiryDelta", NEW_OWNERS[0][1], {"multiplier": True}),
+    ("ForwardHedge", NEW_OWNERS[1][1], {"hedge_cost_source": "guess"}),
+    ("ForwardHedge", NEW_OWNERS[1][1], {"hedge_cost_source": 1}),
+    ("Concentration", NEW_OWNERS[2][1], {"min_books": 0}),
+    ("Concentration", NEW_OWNERS[2][1], {"min_books": 2.5}),
+    ("Concentration", NEW_OWNERS[2][1], {"min_books": True}),
+    ("HardToBorrowProxy", NEW_OWNERS[3][1], {"htb_lookback": 5}),
+    ("HardToBorrowProxy", NEW_OWNERS[3][1], {"htb_lookback": "20"}),
+    ("HardToBorrowProxy", NEW_OWNERS[3][1], {"htb_vol_threshold": 0.0}),
+    ("HardToBorrowProxy", NEW_OWNERS[3][1], {"htb_vol_threshold": float("nan")}),
+    ("HardToBorrowProxy", NEW_OWNERS[3][1], {"htb_jump_threshold": -0.1}),
+    ("HardToBorrowProxy", NEW_OWNERS[3][1], {"htb_jump_threshold": "x"}),
+])
+def test_new_owners_reject_bad_values(cls, good, bad):
+    cls = getattr(ox, cls)
+    assert cls.validate_params({**good, **bad}) != []
+    with pytest.raises(ConfigError):
+        cls({**good, **bad})
+
+
+def test_the_report_takes_its_new_params_through_the_owners():
+    for name in ("ExpiryDelta", "ForwardHedge", "Concentration", "HardToBorrowProxy"):
+        assert getattr(ox, name) in BookGreeksReport._OWNERS
+    assert set(BookGreeksReport.NEW_CORE_PARAMS) <= set(BookGreeksReport._PARAMS)
+    problems = Mem.validate_params({k: v for k, v in REPORT.items() if k != "min_books"})
+    assert any("Concentration" in p and "missing" in p for p in problems)
+
+
+# ---- the report: decision-day sizing, statuses, hooks -----------------------------------
+class Pass(Mem):
+    """A classifier stub that says every hedge is bounded (the Stage 2b call is not built)."""
+
+    def _unbounded_above(self, book, units, f_fill):
+        return False
+
+
+class Unbounded(Mem):
+    def _unbounded_above(self, book, units, f_fill):
+        return True
+
+
+def decision_quotes(forward=99.0, iv=0.3):
+    return {("AAA", FILL, EXPIRY): priced_chain(),
+            ("AAA", DECISION, EXPIRY): priced_chain(forward, DECISION, EXPIRY, iv=iv)}
+
+
+def run_with(cls, books, quotes=None, bars=None, **params):
+    node = cls("report", {**REPORT, **params})
+    return node.run(None, {"books": books,
+                           "quotes": decision_quotes() if quotes is None else quotes,
+                           "bars": make_bars() if bars is None else bars})
+
+
+def test_the_hedge_is_sized_from_the_decision_session_chain_and_struck_at_f_fill():
+    out = run_with(Pass, [make_book(pnl=150.0)])
+    row = out["books"][0]
+    years_decision = (date_of(EXPIRY) - date_of(DECISION)).days / 365
+    decision_delta = 2 * 100 * black76_delta("call", 99.0, 100.0, 0.3, years_decision, 0.0)
+    assert row["delta_f_sh_decision"] == pytest.approx(decision_delta, rel=1e-9)
+    years_fill = (date_of(EXPIRY) - date_of(FILL)).days / 365
+    fill_delta_f = 2 * 100 * black76_delta("call", 101.5, 100.0, 0.2, years_fill, 0.0)
+    assert row["delta_f_sh"] == pytest.approx(fill_delta_f, rel=1e-9)
+    assert row["delta_f_sh_decision"] != pytest.approx(row["delta_f_sh"], rel=1e-3)
+    assert row["delta_sh"] == pytest.approx(row["delta_f_sh"] * 101.5 / 100.0, rel=1e-9)
+    units = math.trunc(-decision_delta)
+    assert row["forward_hedge_units"] == units and units < 0
+    assert row["hedge_rounding_sh"] == pytest.approx(units + decision_delta)
+    trade = abs(units) * (2 * 0.005 + (101.5 + 104.0) * 5.0 / 1e4)
+    borrow = abs(units) * 101.5 * 0.005 * 17 / 365
+    assert row["trade_costs_usd"] == pytest.approx(trade, rel=1e-9)
+    assert row["borrow_usd"] == pytest.approx(borrow, rel=1e-9)
+    assert row["forward_hedge_costs"] == pytest.approx(trade, rel=1e-9)
+    hedged = 150.0 + units * (104.0 - 101.5) - trade
+    assert row["forward_hedged_pnl"] == pytest.approx(hedged, rel=1e-9)
+    assert row["hedge_pnl"] == pytest.approx(hedged - 150.0, rel=1e-9)
+    assert row["forward_hedge_status"] == "ok" and row["hard_to_borrow"] is False
+    assert row["hedge_cost_source"] == "placeholder"
+
+
+def test_forward_spot_book_hedges_at_f_equals_s():
+    out = run_with(Pass, [make_book(pnl=150.0)], quotes={
+        ("AAA", FILL, EXPIRY): [r for r in priced_chain() if r["right"] == "call"],
+        ("AAA", DECISION, EXPIRY): decision_quotes()[("AAA", DECISION, EXPIRY)]})
+    row = out["books"][0]
+    assert row["status"] == "forward_spot" and row["forward"] == 100.0
+    expected = 150.0 + row["forward_hedge_units"] * (104.0 - 100.0) - row["trade_costs_usd"]
+    assert row["forward_hedged_pnl"] == pytest.approx(expected, rel=1e-9)
+
+
+def test_the_default_classifier_is_pending_and_nulls_the_hedge_columns_but_keeps_the_units():
+    row = run_with(Mem, [make_book()])["books"][0]
+    assert row["forward_hedge_status"] == "classifier_pending"
+    assert row["forward_hedge_units"] is not None and row["trade_costs_usd"] is not None
+    assert row["forward_hedge_costs"] is None and row["forward_hedged_pnl"] is None
+    assert row["hedge_pnl"] is None
+
+
+def test_an_unbounded_hedge_keeps_the_units_and_nulls_the_three_hedge_columns():
+    ok = run_with(Pass, [make_book()])["books"][0]
+    row = run_with(Unbounded, [make_book()])["books"][0]
+    assert row["forward_hedge_status"] == "hedge_unbounded_above"
+    assert row["forward_hedge_units"] == ok["forward_hedge_units"]
+    assert (row["forward_hedge_costs"], row["forward_hedged_pnl"], row["hedge_pnl"]) == (None,) * 3
+
+
+def test_the_classifier_gets_the_truncated_units_and_the_fill_forward():
+    seen = []
+
+    class Spy(Mem):
+        def _unbounded_above(self, book, units, f_fill):
+            seen.append((book["key"], units, f_fill))
+            return False
+    row = run_with(Spy, [make_book()])["books"][0]
+    assert seen == [("b1", row["forward_hedge_units"], pytest.approx(101.5))]
+    assert isinstance(seen[0][1], int)
+
+
+def test_a_book_the_decision_chain_cannot_mark_is_decision_unmarked_and_stays_attributed():
+    quotes = {("AAA", FILL, EXPIRY): priced_chain()}
+    out = run_with(Pass, [make_book()], quotes=quotes)
+    row = out["books"][0]
+    assert row["forward_hedge_status"] == "decision_unmarked" and row["static_delta_pnl"] is not None
+    assert row["delta_f_sh_decision"] is None and row["forward_hedge_units"] is None
+    assert out["summary"]["decision_greeks_refusals"] == {"no_fill_quote": 1}
+    assert out["summary"]["forward_hedge_status"] == {"decision_unmarked": 1}
+
+
+def test_an_unattributed_book_is_not_attributed_with_null_forward_columns():
+    row = run_with(Pass, [make_book()], quotes={})["books"][0]
+    assert row["static_delta_pnl"] is None and row["forward_hedge_status"] == "not_attributed"
+    for name in ("delta_f_sh", "delta_f_sh_decision", "forward_hedge_units", "hedge_pnl",
+                 "payoff_delta_sh", "hard_to_borrow"):
+        assert row[name] is None, name
+
+
+def test_the_payoff_split_columns_use_the_expiry_delta_and_sum_to_the_pnl():
+    row = run_with(Pass, [make_book(pnl=150.0)])["books"][0]
+    # settles at 104 > 100: 2 calls in the money -> 200 payoff-delta shares
+    assert row["payoff_delta_sh"] == 200 and row["atm_legs"] == 0
+    assert row["payoff_delta_pnl"] == pytest.approx(200 * (104.0 - 100.0))
+    assert row["payoff_delta_pnl"] + row["beyond_payoff_delta"] == pytest.approx(150.0)
+    flat = make_bars()
+    flat["AAA"][EXPIRY] = 100.0
+    atm = run_with(Pass, [make_book(pnl=150.0)], bars=flat)["books"][0]
+    assert atm["payoff_delta_sh"] == 0 and atm["atm_legs"] == 2
+
+
+HTB_BARS = {"2021-02-19": 100.0, "2021-02-22": 100.0, "2021-02-23": 100.0, "2021-02-24": 100.0,
+            "2021-02-25": 100.0, "2021-02-26": 100.0 * math.exp(0.6)}
+
+
+def htb_bars():
+    bars = make_bars()
+    bars["AAA"].update(HTB_BARS)
+    return bars
+
+
+HTB_PARAMS = {"htb_lookback": 6, "htb_vol_threshold": 100.0, "htb_jump_threshold": 0.5}
+
+
+def test_a_hard_to_borrow_short_hedge_is_left_unhedged_and_a_long_hedge_is_not():
+    put = [{"right": "put", "strike": 100.0, "sign": 1, "quantity": 2}]
+    books = [make_book("short_hedge"), make_book("long_hedge", legs=put)]
+    out = run_with(Pass, books, bars=htb_bars(), **HTB_PARAMS)
+    short, long = out["books"]
+    assert short["hard_to_borrow"] is True and long["hard_to_borrow"] is True
+    assert short["forward_hedge_units"] < 0 < long["forward_hedge_units"]
+    assert short["forward_hedge_status"] == "hedge_hard_to_borrow"
+    assert (short["forward_hedge_costs"], short["forward_hedged_pnl"], short["hedge_pnl"]) == (None,) * 3
+    assert long["forward_hedge_status"] == "ok" and long["hedge_pnl"] is not None
+    assert out["cells"][0]["n_hard_to_borrow"] == 1 and out["cells"][0]["n_hedged"] == 1
+    quiet = run_with(Pass, [make_book()], bars=make_bars(), **HTB_PARAMS)["books"][0]
+    assert quiet["hard_to_borrow"] is False       # fewer than 6 closes before the decision
+
+
+def test_parity_rows_hook_is_the_identity_by_default_and_feeds_the_forward_only():
+    node = Mem("report", REPORT)
+    rows = priced_chain()
+    assert node._parity_rows(make_book(), FILL, rows) is rows
+    calls = []
+
+    class Filtered(Pass):
+        def _parity_rows(self, book, day, rows):
+            calls.append(day)
+            return []                                 # no usable pair: the forward falls back to spot
+    plain = run_with(Pass, [make_book()])["books"][0]
+    out = run_with(Filtered, [make_book()])["books"][0]
+    assert calls.count(FILL) >= 1 and calls.count(DECISION) == 1
+    assert plain["status"] == "ok" and out["status"] == "forward_spot"
+    assert out["forward"] == 100.0 and out["delta_sh"] != plain["delta_sh"]
+    assert out["static_delta_pnl"] is not None        # the leg quotes still came from the full rows
+    assert plain["forward"] == pytest.approx(101.5)
+
+
+# ---- cells, sign table, direction read ------------------------------------------------------
+def frow(pnl, status="ok", fhp=None, hedge_pnl=None, costs=None, basis=0.0, static=0.0,
+         payoff=0.0, **extra):
+    return {"pnl": pnl, "static_delta_pnl": static, "beyond_static_delta": pnl - static,
+            "payoff_delta_pnl": payoff, "beyond_payoff_delta": pnl - payoff,
+            "forward_hedge_status": status, "forward_hedged_pnl": fhp, "hedge_pnl": hedge_pnl,
+            "forward_hedge_costs": costs, "basis_usd": basis, "hedged_pnl": None, **extra}
+
+
+def test_cell_hedge_effect_and_concentration_by_hand_on_three_books():
+    rows = [frow(100.0, fhp=40.0, hedge_pnl=-60.0, costs=10.0, sym="A"),
+            frow(-300.0, fhp=-100.0, hedge_pnl=200.0, costs=20.0, sym="A"),
+            frow(50.0, status="hedge_unbounded_above", sym="A")]
+    ca = CellAttribution({"cell_by": ["sym"], "min_total_usd": 1.0})
+    cell = ca.summarize(rows, concentration=ox.Concentration({"min_books": 5}))[0]
+    assert cell["n_hedged"] == 2 and cell["n_unbounded_above"] == 1
+    assert cell["n_hard_to_borrow"] == 0 and cell["n_not_attributed"] == 0
+    assert cell["forward_hedged_pnl_usd"] == pytest.approx(-60.0)
+    assert cell["hedge_pnl_usd"] == pytest.approx(-60.0 - (100.0 - 300.0)) == pytest.approx(140.0)
+    assert cell["hedge_loss_reduction_usd"] == pytest.approx(300.0 - 100.0)   # a loss cut, a win cut
+    assert cell["hedge_costs_usd"] == pytest.approx(30.0)
+    assert cell["hedgeable_share_gross"] == pytest.approx(400.0 / 450.0)
+    assert cell["top1_share_gross"] == pytest.approx(300.0 / 450.0) and cell["top3_share_gross"] == 1.0
+    assert cell["small_cell"] is True
+    assert cell["loo_sign_stable_pnl"] is False                # dropping the loss flips -150
+    assert cell["loo_sign_stable_hedge_pnl"] is False
+    assert cell["payoff_delta_usd"] == 0.0 and cell["beyond_payoff_usd"] == pytest.approx(-150.0)
+
+
+def test_cell_without_a_concentration_or_hedge_rows_has_nulls_not_errors():
+    ca = CellAttribution({"cell_by": ["sym"], "min_total_usd": 1.0})
+    cell = ca.summarize([frow(5.0, status="classifier_pending", sym="A")])[0]
+    assert cell["n_hedged"] == 0 and cell["forward_hedged_pnl_usd"] is None
+    assert cell["hedge_pnl_usd"] is None and cell["hedge_loss_reduction_usd"] is None
+    assert cell["hedgeable_share_gross"] == 0.0
+    plain = ca.summarize([{"sym": "A", "pnl": 1.0, "static_delta_pnl": 0.5,
+                           "beyond_static_delta": 0.5}])[0]
+    assert plain["payoff_delta_usd"] is None and plain["n_hedged"] == 0
+
+
+def test_the_cell_columns_tail_matches_the_cells_the_report_writes():
+    out = run_with(Pass, [make_book()])
+    cols = BookGreeksReport.CELL_COLUMNS
+    assert cols[13:] == (
+        "payoff_delta_usd", "beyond_payoff_usd", "n_hedged", "n_unbounded_above",
+        "n_hard_to_borrow", "n_not_attributed", "hedgeable_share_gross", "forward_hedged_pnl_usd",
+        "hedge_pnl_usd", "hedge_loss_reduction_usd", "hedge_costs_usd", "top1_share_gross",
+        "top3_share_gross", "loo_sign_stable_pnl", "loo_sign_stable_hedge_pnl", "small_cell",
+        "descriptive_only", "hedge_cost_source")
+    assert list(out["cells"][0])[-len(cols):] == list(cols)
+    assert out["cells"][0]["descriptive_only"] == ox.DESCRIPTIVE_ONLY_NOTE
+    assert out["cells"][0]["hedge_cost_source"] == "placeholder"
+    assert BookGreeksReport.BOOK_COLUMNS[-16:] == (
+        "payoff_delta_sh", "payoff_delta_pnl", "beyond_payoff_delta", "atm_legs", "delta_f_sh",
+        "delta_f_sh_decision", "forward_hedge_units", "hedge_rounding_sh", "trade_costs_usd",
+        "borrow_usd", "forward_hedge_costs", "forward_hedged_pnl", "hedge_pnl",
+        "forward_hedge_status", "hard_to_borrow", "hedge_cost_source")
+    assert set(BookGreeksReport.BOOK_COLUMNS) <= set(out["books"][0])
+
+
+def test_sign_table_quadrants_and_zero_sum_to_n_and_pnl():
+    rows = [frow(10.0, static=5.0), frow(-20.0, static=5.0), frow(7.0, static=-3.0),
+            frow(-1.0, static=-3.0), frow(-9.0, static=0.0), frow(0.0, static=4.0)]
+    table = BookGreeksReport.sign_table(rows, "static_delta_pnl")
+    assert set(table) == {"pos_pos", "pos_neg", "neg_pos", "neg_neg", "zero"}
+    assert table["pos_pos"] == {"n": 1, "pnl_usd": 10.0, "gross_pnl_usd": 10.0}
+    assert table["pos_neg"] == {"n": 1, "pnl_usd": -20.0, "gross_pnl_usd": 20.0}
+    assert table["neg_pos"] == {"n": 1, "pnl_usd": 7.0, "gross_pnl_usd": 7.0}
+    assert table["neg_neg"] == {"n": 1, "pnl_usd": -1.0, "gross_pnl_usd": 1.0}
+    assert table["zero"] == {"n": 2, "pnl_usd": -9.0, "gross_pnl_usd": 9.0}
+    assert sum(v["n"] for v in table.values()) == len(rows)
+    assert math.fsum(v["pnl_usd"] for v in table.values()) == pytest.approx(-13.0)
+
+
+def test_an_all_otm_loser_lands_in_the_payoff_zero_entry():
+    rows = [frow(-938.90, payoff=0.0)]
+    assert BookGreeksReport.sign_table(rows, "payoff_delta_pnl")["zero"]["n"] == 1
+
+
+def eight_rows():
+    pnls = [100.0, -50.0, 30.0, -200.0, 10.0, 20.0, -5.0, 60.0]
+    rows = [frow(p, basis=b, static=p / 2, payoff=0.0) for p, b in
+            zip(pnls, [1.0, -2.0, 3.0, 0.5, -0.5, 4.0, -1.0, 2.0])]
+    rows[0].update(forward_hedged_pnl=40.0, hedge_pnl=-60.0, forward_hedge_costs=10.0)
+    rows[3].update(forward_hedged_pnl=-120.0, hedge_pnl=80.0, forward_hedge_costs=12.0)
+    for i in (1, 2):
+        rows[i]["forward_hedge_status"] = "hedge_unbounded_above"
+    rows[4]["forward_hedge_status"] = "hedge_hard_to_borrow"
+    rows[5]["forward_hedge_status"] = "decision_unmarked"
+    rows[6]["forward_hedge_status"] = "classifier_pending"
+    rows[7]["forward_hedge_status"] = "classifier_pending"
+    return rows
+
+
+def test_direction_read_concentration_is_over_the_hedged_rows_only():
+    rows = eight_rows()
+    unattributed = {"pnl": 999.0, "static_delta_pnl": None, "beyond_static_delta": None,
+                    "forward_hedge_status": "not_attributed", "basis_usd": None}
+    dr = Pass("report", REPORT).direction_read(rows + [unattributed])
+    assert dr["n_books"] == 8 and dr["n_books_total"] == 9
+    assert dr["concentration"]["n_books"] == 2 and dr["concentration"]["small_cell"] is True
+    assert dr["concentration"]["min_books"] == 5
+    assert dr["concentration_pnl"]["n_books"] == 8 and dr["concentration_pnl"]["small_cell"] is False
+    assert dr["concentration"]["top1_share_gross"] == pytest.approx(80.0 / 140.0)
+    assert dr["concentration"]["loo_sign_stable_hedge_pnl"] is False
+    assert dr["concentration_pnl"]["loo_sign_stable_pnl"] is False   # dropping the -50 flips -35
+    assert dr["pnl_usd"] == pytest.approx(math.fsum([100, -50, 30, -200, 10, 20, -5, 60]))
+    assert dr["gross_pnl_usd"] == pytest.approx(475.0)
+    assert dr["descriptive_only"] == ox.DESCRIPTIVE_ONLY_NOTE
+
+
+def test_direction_read_forward_hedge_block_and_basis_distribution():
+    rows = eight_rows()
+    dr = Pass("report", REPORT).direction_read(rows)
+    fh = dr["forward_hedge"]
+    assert (fh["n_hedged"], fh["n_unbounded_above"], fh["n_hard_to_borrow"],
+            fh["n_decision_unmarked"], fh["n_not_attributed"], fh["n_classifier_pending"]) == (2, 2, 1, 1, 0, 2)
+    assert fh["min_books"] == 5 and fh["hedge_cost_source"] == "placeholder"
+    assert fh["forward_hedged_pnl_usd"] == pytest.approx(40.0 - 120.0)
+    assert fh["hedge_pnl_usd"] == pytest.approx(-80.0 - (100.0 - 200.0)) == pytest.approx(20.0)
+    assert fh["hedge_loss_reduction_usd"] == pytest.approx(200.0 - 120.0)
+    assert fh["hedge_costs_usd"] == pytest.approx(22.0)
+    assert fh["hedgeable_share_gross"] == pytest.approx(300.0 / 475.0)
+    basis = [1.0, -2.0, 3.0, 0.5, -0.5, 4.0, -1.0, 2.0]
+    b = dr["basis_usd"]
+    assert b["n"] == 8 and b["sum"] == pytest.approx(sum(basis))
+    assert (b["min"], b["max"]) == (-2.0, 4.0)
+    assert b["p25"] == sample_quantile(basis, 0.25) and b["median"] == sample_quantile(basis, 0.5)
+    assert b["p75"] == sample_quantile(basis, 0.75)
+    assert b["abs_sum_over_gross"] == pytest.approx(sum(abs(x) for x in basis) / 475.0)
+    assert dr["static"]["delta_part_usd"] == pytest.approx(sum([100, -50, 30, -200, 10, 20, -5, 60]) / 2)
+    assert dr["payoff"]["delta_part_usd"] == 0.0 and dr["payoff"]["sign_table"]["zero"]["n"] == 8
+
+
+def test_direction_read_with_no_rows_is_null_not_an_error():
+    dr = Pass("report", REPORT).direction_read([])
+    assert dr["n_books"] == 0 and dr["pnl_usd"] == 0.0
+    assert dr["basis_usd"]["n"] == 0 and dr["basis_usd"]["median"] is None
+    assert dr["forward_hedge"]["hedgeable_share_gross"] is None
+    assert dr["concentration"]["small_cell"] is True
