@@ -4122,7 +4122,7 @@ class TransportPortfolioSolve(PyomoSolve):
         required = {"id", "grid", "masses", "radius", "scale", "credit",
                     "losses", "capacity", "exclusive", "reserve_rows", "linear_rows"}
         for g in groups:
-            if not isinstance(g, dict) or set(g)-{"risk_charge"} != required:
+            if not isinstance(g, dict) or set(g)-{"risk_charge", "value_adjust"} != required:
                 raise ValueError("group fields differ from contract")
             if not isinstance(g["id"], str) or not g["id"] or g["id"] in ids:
                 raise ValueError("group identities must be unique")
@@ -4138,6 +4138,8 @@ class TransportPortfolioSolve(PyomoSolve):
                 if a.shape != shape or not np.isfinite(a).all():
                     raise ValueError(f"invalid {name} shape or coefficients")
                 g[name] = a.tolist()
+            if "value_adjust" in g:
+                g["value_adjust"] = cls._checked_value_adjust(g["value_adjust"], n)
             reserves = np.asarray(g["reserve_rows"], dtype=float)
             if reserves.ndim != 2 or reserves.shape[1] != n or not np.isfinite(reserves).all():
                 raise ValueError("invalid reserve rows")
@@ -4165,6 +4167,38 @@ class TransportPortfolioSolve(PyomoSolve):
         cls._checked_joint(joint, sizes)
         utility = cls._checked_utility(inputs.get("utility"), groups, charges)
         return groups, caps, duals, joint, charges, utility
+
+    @staticmethod
+    def _checked_value_adjust(raw, n):
+        """Return ``value_adjust`` as ``n`` finite floats; refuse any other shape or value."""
+        import numpy as np
+
+        if not isinstance(raw, (list, tuple)) or len(raw) != n or any(
+                isinstance(v, (bool, str)) or not isinstance(v, (int, float)) for v in raw):
+            raise ValueError("invalid value_adjust shape or coefficients")
+        a = np.asarray(raw, dtype=float)
+        if not np.isfinite(a).all():
+            raise ValueError("invalid value_adjust shape or coefficients")
+        return a.tolist()
+
+    @staticmethod
+    def _value_adjust(group):
+        """The one owner of a group's per-item linear objective term, ``None`` when the key is absent.
+
+        ADR-0313 A1: a group's value is ``credit . x - cost(x) + value_adjust . x``. ``credit`` stays cash (the
+        reserves, shock rows and book parity read it); the adjust is objective-only. The mirror-side rule is the
+        CALLER's: the two sides of one option are separate items, so a caller that adds ``+a`` to one must add
+        ``-a`` to its mirror, or a buy-and-sell round trip would be paid; this solver does not enforce it.
+        """
+        adjust = group.get("value_adjust")
+        return None if adjust is None else [float(v) for v in adjust]
+
+    @classmethod
+    def _effective_credit(cls, group):
+        """Per-item ``credit + value_adjust`` for the objective arithmetic; ``credit`` itself when absent."""
+        adjust = cls._value_adjust(group)
+        credit = group["credit"]
+        return credit if adjust is None else [c+a for c, a in zip(credit, adjust)]
 
     @staticmethod
     def _group_charge(group):
@@ -4267,7 +4301,7 @@ class TransportPortfolioSolve(PyomoSolve):
         """Return each group's expected profit per contract under its nominal masses, ``credit - masses . losses``."""
         import numpy as np
 
-        return [np.asarray(g["credit"], dtype=float)
+        return [np.asarray(TransportPortfolioSolve._effective_credit(g), dtype=float)
                 - np.asarray(g["masses"], dtype=float) @ np.asarray(g["losses"], dtype=float) for g in groups]
 
     @staticmethod
@@ -4385,7 +4419,7 @@ class TransportPortfolioSolve(PyomoSolve):
             rows[r, :n] = np.asarray(row["coefficients"], dtype=float)
             rhs.append(float(row["upper"]))
             r += 1
-        cost = np.r_[-np.asarray(group["credit"], dtype=float),
+        cost = np.r_[-np.asarray(TransportPortfolioSolve._effective_credit(group), dtype=float),
                      np.asarray(group["masses"], dtype=float), float(group["radius"])]
         bounds = ([(0., float(c)) for c in group["capacity"]]
                   + [(None, None)]*m + [(0., None)])
@@ -4490,8 +4524,9 @@ class TransportPortfolioSolve(PyomoSolve):
         ``joint`` holds the group's coefficient lists from every joint row:
         a pair that loosens one (a negative pair sum) is not a pure cost.
         """
+        effective = TransportPortfolioSolve._effective_credit(group)
         return (all(row[a] == -row[b] for row in group["losses"])
-                and group["credit"][a] < -group["credit"][b]
+                and effective[a] < -effective[b]
                 and all(float(row[a]) >= -float(row[b]) for row in group["reserve_rows"])
                 and all(float(row["coefficients"][a]) >= -float(row["coefficients"][b])
                         for row in group["linear_rows"])
@@ -4636,6 +4671,9 @@ class TransportPortfolioSolve(PyomoSolve):
             else:
                 cost = dual.attach(m, losses, name=f"transport_{i}", sparse=True).cost
             value = dot(g["credit"])-cost
+            adjust = self._value_adjust(g)
+            if adjust is not None:
+                value = value+dot(adjust)
             if charges[i] is not None:
                 value = value-charges[i].attach(m, losses, name=f"risk_{i}").cost
             values.append(value)
@@ -4962,7 +5000,8 @@ class TransportPortfolioSolve(PyomoSolve):
                     q[b] -= matched
                     changed = True
                     cleanup["removed_contracts"] += 2*matched
-                    cleanup["profit_gain"] -= matched*(g["credit"][a]+g["credit"][b])
+                    effective = self._effective_credit(g)
+                    cleanup["profit_gain"] -= matched*(effective[a]+effective[b])
                     cleanup["pairs"].append({"group": g["id"], "pair": [a, b],
                                              "matched_quantity": matched})
             if changed:
@@ -5643,8 +5682,9 @@ class TransportActionScore:
             nominal_loss = float(np.dot(group["masses"], loss))
             worst_loss = float(dual.distribution.worst_expected_loss(
                 loss, group["radius"], group["scale"]))
-            nominal_values.append(float(np.dot(group["credit"], q)-nominal_loss))
-            group_values.append(float(np.dot(group["credit"], q)-worst_loss))
+            credit = TransportPortfolioSolve._effective_credit(group)
+            nominal_values.append(float(np.dot(credit, q)-nominal_loss))
+            group_values.append(float(np.dot(credit, q)-worst_loss))
             deductions.append(float(worst_loss-nominal_loss))
             risk_charges.append(0. if charge is None else float(charge.charge(loss)))
         result = {
