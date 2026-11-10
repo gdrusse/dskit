@@ -208,8 +208,8 @@ def test_stock_equivalent_basis_and_refusals():
 # ---- cell attribution -----------------------------------------------------------------
 def rows_for_cells():
     def r(sym, rank, pnl, stock):
-        return {"symbol": sym, "rank": rank, "pnl": pnl, "stock_pnl": stock,
-                "residual": pnl - stock}
+        return {"symbol": sym, "rank": rank, "pnl": pnl, "static_delta_pnl": stock,
+                "beyond_static_delta": pnl - stock}
     return [r("A", 1, 100.0, 40.0), r("A", 1, -30.0, -10.0), r("A", 2, 50.0, 80.0),
             r("B", 1, 60.0, 10.0), r("B", 1, -60.0, -20.0)]
 
@@ -220,35 +220,35 @@ def test_cell_sums_add_to_the_total_and_shares_are_exact():
     assert [(c["symbol"], c["rank"]) for c in cells] == [("A", 1), ("A", 2), ("B", 1)]
     rows = rows_for_cells()
     assert sum(c["pnl_usd"] for c in cells) == pytest.approx(sum(r["pnl"] for r in rows))
-    assert sum(c["stock_pnl_usd"] + c["residual_usd"] for c in cells) == \
+    assert sum(c["static_delta_usd"] + c["beyond_static_usd"] for c in cells) == \
         pytest.approx(sum(r["pnl"] for r in rows))
     a1 = cells[0]
-    assert (a1["n"], a1["pnl_usd"], a1["stock_pnl_usd"], a1["residual_usd"]) == (2, 70.0, 30.0, 40.0)
-    assert a1["stock_share_net"] == pytest.approx(30 / 70)
+    assert (a1["n"], a1["pnl_usd"], a1["static_delta_usd"], a1["beyond_static_usd"]) == (2, 70.0, 30.0, 40.0)
+    assert a1["static_share_net"] == pytest.approx(30 / 70)
     assert a1["gross_pnl_usd"] == 130.0
-    assert a1["stock_share_gross"] == pytest.approx(30 / 130)
-    assert a1["residual_share_gross"] == pytest.approx(40 / 130)
+    assert a1["static_share_gross"] == pytest.approx(30 / 130)
+    assert a1["beyond_static_share_gross"] == pytest.approx(40 / 130)
 
 
 def test_net_share_is_null_below_min_total_but_gross_share_is_kept():
     ca = CellAttribution({"cell_by": ["symbol", "rank"], "min_total_usd": 1.0})
     b1 = ca.summarize(rows_for_cells())[2]                 # total exactly 0
     assert b1["pnl_usd"] == 0.0
-    assert b1["stock_share_net"] is None and b1["residual_share_net"] is None
-    assert b1["gross_pnl_usd"] == 120.0 and b1["stock_share_gross"] == pytest.approx(-10 / 120)
+    assert b1["static_share_net"] is None and b1["beyond_static_share_net"] is None
+    assert b1["gross_pnl_usd"] == 120.0 and b1["static_share_gross"] == pytest.approx(-10 / 120)
     high = CellAttribution({"cell_by": ["symbol", "rank"], "min_total_usd": 100.0})
-    assert high.summarize(rows_for_cells())[0]["stock_share_net"] is None
+    assert high.summarize(rows_for_cells())[0]["static_share_net"] is None
     assert CellAttribution({"cell_by": ["symbol"], "min_total_usd": 0.0}).summarize(
-        [{"symbol": "Z", "pnl": 0.0, "stock_pnl": 0.0, "residual": 0.0}])[0][
-        "stock_share_gross"] is None
+        [{"symbol": "Z", "pnl": 0.0, "static_delta_pnl": 0.0, "beyond_static_delta": 0.0}])[0][
+        "static_share_gross"] is None
 
 
 def test_cell_attribution_refusals():
     ca = CellAttribution({"cell_by": ["symbol"], "min_total_usd": 1.0})
     with pytest.raises(ValueError, match="^cell_field_missing"):
-        ca.summarize([{"pnl": 1.0, "stock_pnl": 0.0, "residual": 1.0}])
+        ca.summarize([{"pnl": 1.0, "static_delta_pnl": 0.0, "beyond_static_delta": 1.0}])
     with pytest.raises(ValueError, match="^pnl_not_finite"):
-        ca.summarize([{"symbol": "A", "pnl": float("nan"), "stock_pnl": 0.0, "residual": 0.0}])
+        ca.summarize([{"symbol": "A", "pnl": float("nan"), "static_delta_pnl": 0.0, "beyond_static_delta": 0.0}])
     assert set(CellAttribution.REFUSALS) == {"cell_field_missing", "pnl_not_finite"}
 
 
@@ -381,6 +381,8 @@ REPORT = {
     "cell_by": ["symbol", "tag"], "min_total_usd": 1.0,
     "dte_edges": [0, 7, 14, 28], "top_k": 1, "exposure_days": "both",
     "beta_lookback": 3, "beta_min_pairs": 2, **HEDGE,
+    "hedge_cost_source": "placeholder", "min_books": 5, "htb_lookback": 20,
+    "htb_vol_threshold": 2.5, "htb_jump_threshold": 0.75,
 }
 FILL, DECISION, EXPIRY = "2021-03-02", "2021-03-01", "2021-03-19"
 FORWARD, SPOT, VOL = 101.5, 100.0, 0.2
@@ -466,8 +468,8 @@ def test_report_splits_a_book_end_to_end():
     assert row["forward"] == pytest.approx(FORWARD, abs=1e-9)
     assert row["delta_sh"] == pytest.approx(delta, rel=1e-12)
     assert row["s_fill"] == 100.0 and row["s_settle"] == 104.0
-    assert row["stock_pnl"] == pytest.approx(delta * 4.0, rel=1e-12)
-    assert row["stock_pnl"] + row["residual"] == pytest.approx(150.0, abs=1e-12)
+    assert row["static_delta_pnl"] == pytest.approx(delta * 4.0, rel=1e-12)
+    assert row["static_delta_pnl"] + row["beyond_static_delta"] == pytest.approx(150.0, abs=1e-12)
     assert row["basis_usd"] == pytest.approx(delta * (SPOT - FORWARD), rel=1e-12)
     assert row["gamma_sh"] > 0 and row["vega_usd_per_pt"] > 0 and row["theta_usd_per_day"] < 0
     assert (row["symbol"], row["tag"], row["id"]) == ("AAA", "t", "b1")
@@ -478,7 +480,7 @@ def test_report_cells_sum_to_the_attributed_total_and_summary_counts():
     out = run_report(books)
     (cell,) = out["cells"]
     assert cell["n"] == 2 and cell["pnl_usd"] == pytest.approx(110.0)
-    assert cell["stock_pnl_usd"] + cell["residual_usd"] == pytest.approx(110.0)
+    assert cell["static_delta_usd"] + cell["beyond_static_usd"] == pytest.approx(110.0)
     summary = out["summary"]
     assert summary["books"] == 2 and summary["attributed"] == 2
     assert summary["attributed_pnl_usd"] == pytest.approx(110.0)
@@ -509,7 +511,7 @@ def test_report_lists_a_refused_book_under_its_code_and_keeps_its_pnl(code, chan
     out = run_report([make_book("good"), book], quotes=quotes, bars=bars)
     by_id = {r["id"]: r for r in out["books"]}
     assert by_id["bad"]["status"] == code and by_id["good"]["status"] == "ok"
-    assert by_id["bad"]["stock_pnl"] is None and by_id["bad"]["pnl"] == 77.0
+    assert by_id["bad"]["static_delta_pnl"] is None and by_id["bad"]["pnl"] == 77.0
     summary = out["summary"]
     assert summary["refusals"] == {code: 1}
     assert summary["unattributed_pnl_usd"] == pytest.approx(77.0)
@@ -522,7 +524,7 @@ def test_report_flags_forward_spot_but_still_attributes():
     out = run_report([make_book()], quotes={("AAA", FILL, EXPIRY): calls})
     (row,) = out["books"]
     assert row["status"] == "forward_spot" and row["forward"] == SPOT
-    assert row["stock_pnl"] is not None
+    assert row["static_delta_pnl"] is not None
     assert out["summary"]["forward_spot"] == 1 and out["summary"]["attributed"] == 1
 
 
@@ -958,12 +960,15 @@ def test_report_default_hook_flags_every_row_dividends_absent_and_uses_zero():
     assert row["hedge_sh"] == pytest.approx(-row["delta_sh"], rel=1e-15) and row["hedge_days"] == 17
     assert row["stock_costs"] == pytest.approx(costs, rel=1e-12)
     assert row["short_borrow"] == pytest.approx(borrow, rel=1e-12)
-    assert row["hedged_pnl"] == pytest.approx(want, rel=1e-12)
+    assert want is not None and row["hedged_pnl"] is None     # D = 0 is not printed (A2.2)
     summary = out["summary"]
     assert summary["hedge_status"] == {"dividends_absent": 1}
     assert summary["hedge_dividend_source"] == "absent"
     assert summary["hedge_params"] == HEDGE
-    assert summary["hedged_pnl_usd"] == pytest.approx(want, rel=1e-12)
+    assert summary["hedged_pnl_usd"] is None and summary["n_stock_hedged"] == 0
+    (cell,) = out["cells"]
+    assert cell["hedged_pnl_usd"] is None and cell["n_stock_hedged"] == 0
+    assert cell["n_dividends_absent"] == 1 and cell["n_dividend_missing"] == 0
 
 
 def test_report_with_a_dividend_adjusts_by_delta_times_the_per_share_over_the_factor():
@@ -983,7 +988,8 @@ def test_report_dividend_missing_nulls_the_hedged_pnl_and_is_counted():
     assert row["hedge_status"] == "dividend_missing"
     assert row["hedged_pnl"] is None and row["dividend_adjust"] is None
     assert out["summary"]["hedge_status"] == {"dividend_missing": 1}
-    assert out["summary"]["hedged_pnl_usd"] is None
+    assert out["summary"]["hedged_pnl_usd"] is None and out["summary"]["n_stock_hedged"] == 0
+    assert out["cells"][0]["n_dividend_missing"] == 1
 
 
 def test_report_unattributed_book_has_null_hedge_columns_and_not_attributed_status():
@@ -995,29 +1001,111 @@ def test_report_unattributed_book_has_null_hedge_columns_and_not_attributed_stat
     assert out["summary"]["hedge_status"] == {"not_attributed": 1}
 
 
-def test_report_cell_hedged_sum_adds_up_and_is_null_when_any_row_is_null():
+def test_report_cell_hedged_sum_adds_up_over_the_ok_rows_and_is_not_nulled_by_one_book():
     books = [make_book("b1", pnl=150.0), make_book("b2", pnl=-40.0)]
-    out = run_report(books)
+    out = run_div((1.0, "ok"), books=books)
     (cell,) = out["cells"]
     rows = out["books"]
-    assert cell["n_hedged"] == 2
+    assert cell["n_stock_hedged"] == 2
     assert cell["hedged_pnl_usd"] == pytest.approx(sum(r["hedged_pnl"] for r in rows))
     ca = CellAttribution({"cell_by": ["symbol"], "min_total_usd": 1.0})
-    base = {"symbol": "A", "pnl": 1.0, "stock_pnl": 0.5, "residual": 0.5}
-    (cell,) = ca.summarize([{**base, "hedged_pnl": 0.25}, {**base, "hedged_pnl": None}])
-    assert cell["hedged_pnl_usd"] is None and cell["n_hedged"] == 1 and cell["n"] == 2
+    base = {"symbol": "A", "pnl": 1.0, "static_delta_pnl": 0.5, "beyond_static_delta": 0.5}
+    (cell,) = ca.summarize([{**base, "hedged_pnl": 0.25, "hedge_status": "ok"},
+                            {**base, "hedged_pnl": None, "hedge_status": "dividend_missing"},
+                            {**base, "hedged_pnl": None, "hedge_status": "dividends_absent"}])
+    assert cell["hedged_pnl_usd"] == 0.25 and cell["n_stock_hedged"] == 1 and cell["n"] == 3
+    assert (cell["n_dividends_absent"], cell["n_dividend_missing"]) == (1, 1)
     (cell,) = ca.summarize([{**base, "hedged_pnl": 0.25}, {**base, "hedged_pnl": 0.5}])
-    assert cell["hedged_pnl_usd"] == 0.75 and cell["n_hedged"] == 2
+    assert cell["hedged_pnl_usd"] == 0.75 and cell["n_stock_hedged"] == 2
+    assert (cell["n_dividends_absent"], cell["n_dividend_missing"]) == (0, 0)
+    (cell,) = ca.summarize([{**base, "hedged_pnl": None}])
+    assert cell["hedged_pnl_usd"] is None and cell["n_stock_hedged"] == 0
     with pytest.raises(ValueError, match="pnl_not_finite"):
         ca.summarize([{**base, "hedged_pnl": float("nan")}])
+
+
+def test_report_summary_hedged_sum_is_over_ok_rows_with_the_count_beside_it():
+    out = run_div((1.0, "ok"), books=[make_book("b1"), make_book("b2", pnl=-3.0)])
+    s = out["summary"]
+    assert s["n_stock_hedged"] == 2
+    assert s["hedged_pnl_usd"] == pytest.approx(math.fsum(r["hedged_pnl"] for r in out["books"]))
+    mixed = [make_book("a", symbol="AAA"), make_book("b", symbol="AAA")]
+    node = DivMem("report", REPORT)
+    node.result = (1.0, "ok")
+    seen = iter([(1.0, "ok"), (None, "dividend_missing")])
+    node._hedge_dividend = lambda book: next(seen)
+    out = node.run(None, {"books": mixed, "quotes": {("AAA", FILL, EXPIRY): priced_chain()},
+                          "bars": make_bars()})
+    ok = [r["hedged_pnl"] for r in out["books"] if r["hedge_status"] == "ok"]
+    assert len(ok) == 1 and out["summary"]["hedged_pnl_usd"] == pytest.approx(ok[0])
+    assert out["summary"]["n_stock_hedged"] == 1
 
 
 def test_report_declares_the_hedge_columns():
     names = ("hedge_sh", "hedge_days", "stock_costs", "short_borrow", "dividend_adjust",
              "hedged_pnl", "hedge_status")
     assert set(names) <= set(BookGreeksReport.BOOK_COLUMNS)
-    assert {"hedged_pnl_usd", "n_hedged"} <= set(BookGreeksReport.CELL_COLUMNS)
+    assert {"hedged_pnl_usd", "n_stock_hedged", "n_dividends_absent",
+            "n_dividend_missing"} <= set(BookGreeksReport.CELL_COLUMNS)
     out = run_report([make_book()])
     assert set(BookGreeksReport.BOOK_COLUMNS) <= set(out["books"][0])
     assert BookGreeksReport.HEDGE_STATUSES == (
         "ok", "dividends_absent", "dividend_missing", "not_attributed")
+
+
+# ---- ADR-0310 Amendment 2, stage 0: the interface freeze ---------------------------------
+def test_frozen_column_tuples_use_the_a2_names_and_drop_the_a1_ones():
+    books, cells = BookGreeksReport.BOOK_COLUMNS, BookGreeksReport.CELL_COLUMNS
+    assert {"static_delta_pnl", "beyond_static_delta"} <= set(books)
+    assert not {"stock_pnl", "residual"} & set(books)
+    assert cells == ("n", "pnl_usd", "static_delta_usd", "beyond_static_usd", "hedged_pnl_usd",
+                     "n_stock_hedged", "n_dividends_absent", "n_dividend_missing",
+                     "static_share_net", "beyond_static_share_net", "gross_pnl_usd",
+                     "static_share_gross", "beyond_static_share_gross")
+    assert "n_hedged" not in cells
+
+
+def test_frozen_constants_and_enums():
+    assert ox.HEDGE_COST_SOURCES == ("placeholder", "measured")
+    assert ox.PLACEHOLDER_HEDGE_RATES == (0.005, 5.0, 0.005)
+    assert ox.PLACEHOLDER_HEDGE_RATES == tuple(HEDGE[k] for k in StaticDeltaHedge._PARAMS)
+    assert ox.DESCRIPTIVE_ONLY_NOTE == (
+        "descriptive only: development quarters, books shared across formulations, no inference")
+    assert ox.STOCK_HEDGE_NOTE == "diagnostic: stock hedge at S_fill, not the ADR-0312 instrument"
+    assert BookGreeksReport.NEW_CORE_PARAMS == (
+        "hedge_cost_source", "min_books", "htb_lookback", "htb_vol_threshold", "htb_jump_threshold")
+    assert set(BookGreeksReport.NEW_CORE_PARAMS) <= set(BookGreeksReport._PARAMS)
+
+
+@pytest.mark.parametrize("change,fragment", [
+    ({"hedge_cost_source": "guess"}, "hedge_cost_source"),
+    ({"hedge_cost_source": 1}, "hedge_cost_source"),
+    ({"min_books": 0}, "min_books"),
+    ({"min_books": 2.5}, "min_books"),
+    ({"min_books": True}, "min_books"),
+    ({"htb_lookback": 5}, "htb_lookback"),
+    ({"htb_lookback": "20"}, "htb_lookback"),
+    ({"htb_vol_threshold": 0.0}, "htb_vol_threshold"),
+    ({"htb_vol_threshold": float("nan")}, "htb_vol_threshold"),
+    ({"htb_jump_threshold": -0.1}, "htb_jump_threshold"),
+    ({"htb_jump_threshold": "x"}, "htb_jump_threshold"),
+])
+def test_new_core_params_are_validated(change, fragment):
+    problems = Mem.validate_params({**REPORT, **change})
+    assert any(fragment in p for p in problems), problems
+    with pytest.raises(ConfigError):
+        Mem("report", {**REPORT, **change})
+
+
+def test_measured_cost_source_is_refused_while_the_rates_are_the_placeholder_triple():
+    problems = Mem.validate_params({**REPORT, "hedge_cost_source": "measured"})
+    assert any("hedge_cost_source_mismatch" in p for p in problems)
+    moved = {**REPORT, "hedge_cost_source": "measured", "hedge_fee_per_share": 0.004}
+    assert Mem.validate_params(moved) == []
+    assert Mem.validate_params({**REPORT, "hedge_fee_per_share": 0.004}) == []   # placeholder label is free
+
+
+def test_summary_echoes_the_cost_source_and_the_stock_hedge_note():
+    s = run_report([make_book()])["summary"]
+    assert s["hedge_cost_source"] == "placeholder"
+    assert s["stock_hedge_note"] == ox.STOCK_HEDGE_NOTE

@@ -42,7 +42,7 @@ from pathlib import Path
 
 from dskit.onboarding.artifacts import PinnedPayloadSource
 from dskit.pipeline.node import atomic_write, check_int_param
-from dskit.pipeline.option_exposure import BookGreeksReport, StaticDeltaHedge
+from dskit.pipeline.option_exposure import STOCK_HEDGE_NOTE, BookGreeksReport, StaticDeltaHedge
 from dskit.pipeline.option_structures import structure_payoff
 
 from .contracts import dividends_paid
@@ -623,7 +623,7 @@ class MIOGreeksDiagnostics(BookGreeksReport):
     def _run_summary(self, summaries, flags, shas):
         """Return the run-level summary: inputs, params hash, per-method counts and totals."""
         identity = {k: v for k, v in self.params.items() if k not in _NON_IDENTITY}
-        hedged = [s["hedged_pnl_usd"] for s in summaries.values()]
+        hedged = [s["hedged_pnl_usd"] for s in summaries.values() if s["hedged_pnl_usd"] is not None]
         return {
             "inputs": dict(sorted(shas.items())),
             "params_hash": hashlib.sha256(json.dumps(
@@ -640,7 +640,10 @@ class MIOGreeksDiagnostics(BookGreeksReport):
             "refusals": dict(sorted(sum((Counter(s["refusals"]) for s in summaries.values()),
                                         Counter()).items())),
             "forward_spot": sum(s["forward_spot"] for s in summaries.values()),
-            "hedged_pnl_usd": None if None in hedged else math.fsum(hedged),
+            "hedged_pnl_usd": math.fsum(hedged) if hedged else None,
+            "n_stock_hedged": sum(s["n_stock_hedged"] for s in summaries.values()),
+            "hedge_cost_source": self.params["hedge_cost_source"],
+            "stock_hedge_note": STOCK_HEDGE_NOTE,
             "hedge_status": dict(sorted(sum((Counter(s["hedge_status"]) for s in summaries.values()),
                                             Counter()).items())),
             "hedge_dividend_source": self.hedge_dividend_source,

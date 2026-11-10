@@ -190,6 +190,8 @@ PARAMS = {
     "dte_edges": [0, 7, 14, 28, 60], "top_k": 1, "exposure_days": "both",
     "beta_lookback": 3, "beta_min_pairs": 2, "chain_cache_days": 8,
     "hedge_fee_per_share": 0.005, "hedge_half_spread_bps": 5.0, "hedge_borrow_rate": 0.005,
+    "hedge_cost_source": "placeholder", "min_books": 5, "htb_lookback": 20,
+    "htb_vol_threshold": 2.5, "htb_jump_threshold": 0.75,
 }
 
 
@@ -240,8 +242,8 @@ def test_blk_book_end_to_end_with_hand_computed_stock_pnl_and_residual(world):
     assert row["status"] == "ok" and row["forward_source"] == "parity"
     assert row["forward"] == pytest.approx(BLK_FORWARD, abs=1e-6)
     assert row["delta_sh"] == pytest.approx(delta_sh, rel=1e-9)
-    assert row["stock_pnl"] == pytest.approx(delta_sh * (448.0 - 452.0), rel=1e-9)
-    assert row["stock_pnl"] + row["residual"] == pytest.approx(pnl, abs=1e-9)
+    assert row["static_delta_pnl"] == pytest.approx(delta_sh * (448.0 - 452.0), rel=1e-9)
+    assert row["static_delta_pnl"] + row["beyond_static_delta"] == pytest.approx(pnl, abs=1e-9)
     assert (row["symbol"], row["rank"], row["cadence"], row["method"]) == (
         "BLK", 2, "weekly", METHOD)
 
@@ -288,8 +290,12 @@ def test_bars_without_dividend_amount_flag_every_row_and_the_summary(world):
     run_dir, out_dir = world()
     out = run_node(run_dir, out_dir)
     assert {r["hedge_status"] for r in out["books"]} == {"dividends_absent"}
-    assert all(r["dividend_adjust"] is None and r["hedged_pnl"] is not None for r in out["books"])
+    assert all(r["dividend_adjust"] is None and r["hedged_pnl"] is None for r in out["books"])
     summary = out["summary"]
+    assert summary["hedged_pnl_usd"] is None and summary["n_stock_hedged"] == 0
+    assert summary["methods"][METHOD]["n_stock_hedged"] == 0
+    assert all(c["hedged_pnl_usd"] is None and c["n_stock_hedged"] == 0
+               and c["n_dividends_absent"] == c["n"] for c in out["cells"])
     assert summary["hedge_dividend_source"] == "absent"
     assert summary["hedge_status"] == {"dividends_absent": 3}
     assert summary["hedge_params"] == {"hedge_fee_per_share": 0.005,
@@ -317,13 +323,15 @@ def test_a_null_dividend_amount_in_the_window_is_dividend_missing_and_nulls_the_
     assert row["hedge_status"] == "dividend_missing"
     assert row["hedged_pnl"] is None and row["dividend_adjust"] is None
     blk = next(c for c in out["cells"] if c["symbol"] == "BLK")
-    assert blk["hedged_pnl_usd"] is None and blk["n_hedged"] == 0
+    assert blk["hedged_pnl_usd"] is None and blk["n_stock_hedged"] == 0
     mmm = next(c for c in out["cells"] if c["symbol"] == "MMM")
-    assert mmm["n_hedged"] == mmm["n"] == 2
+    assert mmm["n_stock_hedged"] == mmm["n"] == 2
     assert mmm["hedged_pnl_usd"] == pytest.approx(
         sum(r["hedged_pnl"] for r in out["books"] if r["symbol"] == "MMM"))
     assert out["summary"]["hedge_status"] == {"dividend_missing": 1, "ok": 2}
-    assert out["summary"]["hedged_pnl_usd"] is None
+    mmm_sum = sum(r["hedged_pnl"] for r in out["books"] if r["symbol"] == "MMM")
+    assert out["summary"]["hedged_pnl_usd"] == pytest.approx(mmm_sum)   # sums the ok rows
+    assert out["summary"]["n_stock_hedged"] == 2 and blk["n_dividend_missing"] == 1
 
 
 def test_a_dividend_outside_the_window_is_ignored_and_nothing_past_the_seal_is_read(world):
@@ -356,7 +364,7 @@ def test_the_four_files_are_written_atomically_with_inputs_and_counts(world):
     assert len(summary["params_hash"]) == 64 and summary["methods"][METHOD]["books"] == 3
     assert summary["refusals"] == {} and summary["rate"] == 0.0
     header = (out_dir / "books.csv").read_text().splitlines()[0].split(",")
-    assert {"method", "id", "symbol", "rank", "stock_pnl", "residual", "status"} <= set(header)
+    assert {"method", "id", "symbol", "rank", "static_delta_pnl", "beyond_static_delta", "status"} <= set(header)
     assert not list(out_dir.glob("*.tmp*"))
 
 
@@ -754,7 +762,7 @@ def test_leg_no_iv(world):
     run_dir, out_dir = world(no_iv=("BLK",))
     out = run_node(run_dir, out_dir)
     assert out["summary"]["refusals"] == {"leg_no_iv": 1}
-    assert rows_by(out)[f"{METHOD}|2021-04-05:BLK:2021-04-16"]["stock_pnl"] is None
+    assert rows_by(out)[f"{METHOD}|2021-04-05:BLK:2021-04-16"]["static_delta_pnl"] is None
 
 
 def test_no_fill_quote(world):
@@ -804,7 +812,7 @@ def test_forward_spot_is_a_flag_and_the_book_is_still_attributed(world):
     run_dir, out_dir = world(calls_only=("BLK",))
     out = run_node(run_dir, out_dir)
     row = rows_by(out)[f"{METHOD}|2021-04-05:BLK:2021-04-16"]
-    assert row["status"] == "forward_spot" and row["stock_pnl"] is not None
+    assert row["status"] == "forward_spot" and row["static_delta_pnl"] is not None
     assert out["summary"]["forward_spot"] == 1 and out["summary"]["refusals"] == {}
 
 
@@ -874,7 +882,7 @@ def test_an_empty_method_still_writes_every_csv_with_its_header(world):
     for name in ("books.csv", "cells.csv", "exposure.csv"):
         lines = (out_dir / name).read_text().splitlines()
         assert len(lines) == 1 and lines[0].startswith(("method,", "symbol,", "date,")), name
-    assert "stock_pnl" in (out_dir / "books.csv").read_text()
+    assert "static_delta_pnl" in (out_dir / "books.csv").read_text()
 
 
 def test_nothing_is_written_when_any_output_cannot_be_serialized(tmp_path):
@@ -998,6 +1006,19 @@ def test_the_template_validates_and_ends_before_the_seal():
         "hedge_fee_per_share": 0.005, "hedge_half_spread_bps": 5.0, "hedge_borrow_rate": 0.005}
     assert "hedge_" in node["notes"] and "no default" in node["notes"]
     assert not (set(range(2022, 2026)) & {int(params["window"][k][:4]) for k in ("start", "end")})
+
+
+def test_the_template_carries_every_frozen_core_key_with_the_placeholder_marker():
+    from dskit.pipeline import option_exposure as ox
+    params = json.loads(TEMPLATE.read_text())["pipeline"]["greeks"]["params"]
+    for name in ox.BookGreeksReport.NEW_CORE_PARAMS:
+        assert name in params, name
+    assert params["hedge_cost_source"] == "placeholder"
+    assert params["hedge_cost_source"] in ox.HEDGE_COST_SOURCES
+    rates = tuple(params[k] for k in ox.StaticDeltaHedge._PARAMS)
+    assert rates == ox.PLACEHOLDER_HEDGE_RATES
+    bad = {**params, "hedge_cost_source": "measured"}
+    assert any("hedge_cost_source_mismatch" in m for m in MIOGreeksDiagnostics.validate_params(bad))
 
 
 # ---- review minors: dividends file, all-or-nothing outputs ------------------------------------
