@@ -606,7 +606,8 @@ def test_public_surface():
 # ================================================================ stage 2a: pooling, name adjustment, map
 # Oracles below restate the maths independently (numpy, row by row); only the stage-1 state is read.
 
-POOL = {"min_clusters": 4, "min_dates": 3, "tau2_floor": 1e-6, "weight_cap": 1.0, "lcb_k": 1.0}
+POOL_BASE = {"min_clusters": 4, "min_dates": 3, "tau2_floor": 1e-6, "weight_cap": 1.0, "lcb_k": 1.0}
+POOL = {**POOL_BASE, "band": "two"}  # the stage-2a behaviour: name + date band, no block gate
 NAME = {"name_prior_clusters": 26, "name_min_clusters": 2}
 LAM = 0.9
 
@@ -658,7 +659,8 @@ class TestPartialPoolingParams:
             PartialPooling(bad)
 
     def test_params_tuple(self):
-        assert PartialPooling._PARAMS == ("min_clusters", "min_dates", "tau2_floor", "weight_cap", "lcb_k")
+        assert PartialPooling._PARAMS == ("min_clusters", "min_dates", "tau2_floor", "weight_cap", "lcb_k",
+                                          "band", "min_blocks", "ci_levels")
         assert NameAdjustment._PARAMS == ("name_prior_clusters", "name_min_clusters")
 
 
@@ -1265,7 +1267,7 @@ class TestDeterminismAcrossResume:
 
         fresh = self._state()
         resumed = LinearEdgeState.from_dict(json.loads(json.dumps(fresh.to_dict())))
-        assert list(fresh._pooled.names.cells) != sorted(fresh._pooled.names.cells)  # the test really has unsorted arrival
+        assert list(fresh._names) != sorted(fresh._names)  # the test really has unsorted arrival (registry order)
         with monkeypatch.context() as m:
             m.setattr(builtins, "sum", _left_fold)
             a = json.dumps(PartialPooling(LOW_FLOOR).fit(fresh), sort_keys=True)
@@ -2009,7 +2011,7 @@ class TestRunningKishSums:
                     # the (name, date) clusters' squared weights, in the arrival units of this eager state
                     assert u.cw2 > 0.0
         want_cw2 = sum((totals[i] * 0.9 ** (len(_weeks()) - 1 - arrived_at[i])) ** 2 for i in totals)
-        assert math.isclose(st._pooled.cw2, want_cw2, rel_tol=1e-9)
+        assert math.isclose(st._pooled.cw2 * st._f1() ** 2, want_cw2, rel_tol=1e-9)
 
     def test_k1_dump_differs_from_stage_1_only_by_new_keys(self):
         st = LinearEdgeState(2, None)
@@ -2017,7 +2019,8 @@ class TestRunningKishSums:
         st.add_cluster("2021-01-01", "AA", "2020-01-10", "2020-01-07", [0] * 3, [1.0, 2.0, 4.0], [1.0, 3.0, 2.0])
         d = st.to_dict()
         stage1_top = {"n_buckets", "decay", "t", "seen", "pooled", "buckets"}
-        assert stage1_top <= set(d) and set(d) - stage1_top == {"regressors", "block_lengths", "counts"}
+        assert stage1_top <= set(d) and set(d) - stage1_top == {
+            "regressors", "block_lengths", "counts", "week_index", "names_registry", "dates_registry"}
         stage1_unit = {"tot", "cross", "rows", "clusters", "names", "dates"}
         assert stage1_unit <= set(d["pooled"])
         assert d["pooled"]["tot"] == [3.0, 7.0, 6.0, 21.0, 1.0 + 6.0 + 8.0, 1.0 + 9.0 + 4.0]
@@ -2570,3 +2573,360 @@ class TestCoverageUnderBlockDependence:
     def test_hac_lies_between_the_four_week_and_quarter_bands(self, mc):
         out = mc[0.5]
         assert out["cr1_4"] < out["hac4"] < out["cr1_13"]
+
+
+# ================================================================ F1.4: layout, lazy decay, cluster sums, pooling in k+1 dimensions
+
+from array import array  # noqa: E402
+
+
+def _unit_sums(cluster, k, lam_weight=1.0):
+    """numpy-formed per-unit sums of one cluster, as the walk forms them for ``add_cluster_sums``."""
+    m = len(cluster["e"])
+    e, r = np.array(cluster["e"]), np.array(cluster["r"])
+    w = np.array(cluster.get("weights", [1.0] * m)) * lam_weight
+    ed = np.array(cluster["e_dir"]) if k == 2 else None
+    z = [e] if k == 1 else [ed, e - ed]
+    p = 5 if k == 1 else 9
+    keys = [None] + sorted(set(cluster["bucket"]))
+    sig = np.array(cluster.get("sigma2", [0.0] * m))
+    out = {}
+    for key in keys:
+        sel = np.ones(m, bool) if key is None else np.array(cluster["bucket"]) == key
+        ww, rr = w[sel], r[sel]
+        zs = [c[sel] for c in z]
+        if k == 1:
+            vec = [ww.sum(), (ww * zs[0]).sum(), (ww * rr).sum(), (ww * zs[0] ** 2).sum(), (ww * zs[0] * rr).sum()]
+        else:
+            vec = [ww.sum(), (ww * zs[0]).sum(), (ww * zs[1]).sum(), (ww * zs[0] ** 2).sum(),
+                   (ww * zs[0] * zs[1]).sum(), (ww * zs[1] ** 2).sum(), (ww * rr).sum(), (ww * zs[0] * rr).sum(),
+                   (ww * zs[1] * rr).sum()]
+        assert len(vec) == p
+        out[key] = {"vec": [float(v) for v in vec], "rr": float((ww * rr * rr).sum()),
+                    "serr": float((ww * sig[sel]).sum()) if k == 2 else 0.0, "rw2": float((ww ** 2).sum()),
+                    "rows": int(sel.sum()), "groups": float(w[sel].sum() / lam_weight)}
+    return out
+
+
+class TestFlatLayoutAndClusterSums:
+    """A-T23: flat array('d') tables with a name registry; add_cluster_sums equals add_cluster."""
+
+    def _pair(self, k, lam, weighted):
+        clusters = _clusters_k2(equal=False)
+        if weighted:
+            clusters = _with_group_weights(clusters)
+        for c in clusters:
+            c["blocks"] = [0 if c["settle"] < "2020-02-20" else 1]
+        a = LinearEdgeState(N_BUCKETS, lam, regressors=k, block_lengths=1)
+        b = LinearEdgeState(N_BUCKETS, lam, regressors=k, block_lengths=1)
+        gate = SettledBefore("2021-07-01")
+        done = set()
+        for t in _weeks():
+            a.advance(t)
+            b.advance(t)
+            for i, c in enumerate(clusters):
+                if i not in done and gate.admits(c["settle"], t):
+                    kw = {"e_dir": c["e_dir"], "sigma2": c["sigma2"]} if k == 2 else {}
+                    if "weights" in c:
+                        kw["weights"] = c["weights"]
+                    a.add_cluster(t, c["name"], c["settle"], c["fill"], c["bucket"], c["e"], c["r"],
+                                  blocks=c["blocks"], **kw)
+                    b.add_cluster_sums(t, c["name"], c["settle"], c["fill"], c["blocks"], _unit_sums(c, k))
+                    done.add(i)
+        return a, b
+
+    @pytest.mark.parametrize("k", [1, 2])
+    @pytest.mark.parametrize("lam", [None, 0.9])
+    @pytest.mark.parametrize("weighted", [False, True])
+    def test_sums_path_equals_rows_path_to_1e_12_for_every_unit(self, k, lam, weighted):
+        a, b = self._pair(k, lam, weighted)
+        for unit in [None, *range(N_BUCKETS)]:
+            fa, fb = a.fit(unit), b.fit(unit)
+            for key, va in fa.items():
+                vb = fb[key]
+                if isinstance(va, float):
+                    assert vb == pytest.approx(va, rel=1e-12, abs=1e-12), key
+                elif isinstance(va, list) and va and isinstance(va[0], float):
+                    assert vb == pytest.approx(va, rel=1e-12, abs=1e-12), key
+                else:
+                    assert vb == va, key
+            theta = fa["theta"]
+            if theta is not None:
+                for way in ("one", "two", "two_block", "hac"):
+                    sa, sb = a.sandwich(unit, theta, way), b.sandwich(unit, theta, way)
+                    assert (sa is None) == (sb is None)
+                    if sa:
+                        assert np.max(np.abs(_arr(sa["cov"]) - _arr(sb["cov"]))) <= 1e-12 * max(1e-12, np.max(np.abs(_arr(sa["cov"]))))
+        assert a._pooled.serr == pytest.approx(b._pooled.serr, rel=1e-12, abs=1e-12)
+        assert a._pooled.rw2 == pytest.approx(b._pooled.rw2, rel=1e-12)
+
+    def test_malformed_sums_refuse_and_leave_the_state(self):
+        st = LinearEdgeState(2, None, regressors=1)
+        st.advance("2021-01-01")
+        c = _clusters_k2()[0]
+        good = _unit_sums({**c, "bucket": [0] * len(c["e"])}, 1)
+        bad_cases = [
+            {None: {**good[None], "vec": good[None]["vec"][:4]}, 0: good[0]},
+            {None: {**good[None], "vec": good[None]["vec"][:4] + [float("nan")]}, 0: good[0]},
+            {None: {**good[None], "vec": [0.0] + good[None]["vec"][1:]}, 0: good[0]},
+            {None: {**good[None], "rows": 0}, 0: good[0]},
+            {0: good[0]},                                   # the pooled unit is required
+            {None: good[None], 7: good[0]},                 # a bucket outside the state
+            {None: good[None], "up": good[0]},              # an unknown unit
+            {None: {k: v for k, v in good[None].items() if k != "rw2"}},
+        ]
+        for units in bad_cases:
+            with pytest.raises(ValueError):
+                st.add_cluster_sums("2021-01-01", "AA", "2020-01-10", "2020-01-07", [0], units)
+        with pytest.raises(ValueError):
+            st.add_cluster_sums("2021-01-01", "AA", "2020-01-10", "2020-01-07", [0, 1], good)  # wrong block count
+        assert st.fit(None)["rows"] == 0
+        st.add_cluster_sums("2021-01-01", "AA", "2020-01-10", "2020-01-07", [0], good)
+        with pytest.raises(ValueError):
+            st.add_cluster_sums("2021-01-01", "AA", "2020-01-10", "2020-01-07", [0], good)  # arrives whole, once
+        with pytest.raises(_Refusal):
+            st.add_cluster_sums("2021-01-01", "BB", "2021-01-01", "2020-01-07", [0], good)  # state_from_future
+
+    def test_tables_are_flat_double_arrays_with_a_name_registry(self):
+        st = LinearEdgeState(N_BUCKETS, None, regressors=1, block_lengths=2)
+        _drive_blocks(st, _block_clusters((4, 13)))
+        u = st._pooled
+        for table in (u.names, u.dates, *u.blocks, *u.pairs):
+            assert isinstance(table.data, array) and table.data.typecode == "d"
+        assert sorted(st._names.values()) == list(range(len(st._names)))
+        assert st.to_dict()["names_registry"] == [n for n, _ in sorted(st._names.items(), key=lambda kv: kv[1])]
+
+    def test_to_dict_round_trip_is_byte_identical_and_continues_identically(self):
+        a = LinearEdgeState(N_BUCKETS, 0.9, regressors=2, block_lengths=1)
+        clusters = _clusters_k2()
+        weeks = _weeks()
+        for c in clusters:
+            c["blocks"] = [0]
+        gate = SettledBefore("2021-07-01")
+        done = set()
+        for t in weeks[:5]:
+            a.advance(t)
+            for i, c in enumerate(clusters):
+                if i not in done and gate.admits(c["settle"], t):
+                    a.add_cluster(t, c["name"], c["settle"], c["fill"], c["bucket"], c["e"], c["r"], blocks=c["blocks"],
+                                  e_dir=c["e_dir"], sigma2=c["sigma2"])
+                    done.add(i)
+        b = LinearEdgeState.from_dict(json.loads(json.dumps(a.to_dict())))
+        assert json.dumps(a.to_dict(), sort_keys=True) == json.dumps(b.to_dict(), sort_keys=True)
+        for st in (a, b):
+            for t in weeks[5:]:
+                st.advance(t)
+                for i, c in enumerate(clusters):
+                    if (c["name"], c["settle"]) not in st._seen and gate.admits(c["settle"], t):
+                        st.add_cluster(t, c["name"], c["settle"], c["fill"], c["bucket"], c["e"], c["r"],
+                                       blocks=c["blocks"], e_dir=c["e_dir"], sigma2=c["sigma2"])
+        assert json.dumps(a.to_dict(), sort_keys=True) == json.dumps(b.to_dict(), sort_keys=True)
+
+    def test_a_synthetic_166_name_23_block_28_unit_state_dumps_under_the_stated_size(self):
+        # the plan's estimate for the layout; fails loudly if the dump regresses to dense dicts of lists
+        rng = np.random.default_rng(0)
+        st = LinearEdgeState(24, None, regressors=2, block_lengths=1)
+        st.advance("2022-01-01")
+        for n in range(166):
+            for blk in range(23):
+                units = {key: {"vec": [float(x) for x in rng.random(9) + 1.0], "rr": 1.0, "serr": 0.1, "rw2": 1.0,
+                               "rows": 3, "groups": 1.0} for key in [None, n % 24, "buy", "top"]}
+                st.add_cluster_sums("2022-01-01", f"N{n}",
+                                    _iso(datetime.date(2020, 1, 1) + datetime.timedelta(days=blk * 28 + n % 20)),
+                                    "2019-12-01", [blk], units)
+        size = len(json.dumps(st.to_dict()))
+        assert size < 8_000_000, size                      # measured 4.1 MB; dense dicts of lists were ~165 MB
+        flat = sum(t.data.buffer_info()[1] * 8 for u in [st._pooled, *st._buckets.values()]
+                   for t in [u.names, u.dates, *u.blocks, *u.pairs])
+        assert flat < 40_000_000, flat                     # measured 17.5 MB of flat doubles
+
+
+class TestLazyDecay:
+    """A-T23 / D8(ii): reference-unit sums, O(1) advance, the rebase rule."""
+
+    LAM = 2 ** (-1 / 3)
+
+    def _run(self, monkeypatch, threshold):
+        if threshold is not None:
+            monkeypatch.setattr(er, "_REBASE_AT", threshold)
+        st = LinearEdgeState(N_BUCKETS, self.LAM, regressors=2)
+        rows = _drive_k2(st, _k2_clusters(equal=False, n_settle=8), _weeks(), lam=self.LAM)
+        for k in range(6):  # pure aging beyond the last arrival
+            st.advance(_iso(datetime.date(2021, 1, 1) + datetime.timedelta(days=7 * k)))
+        return st, rows
+
+    def test_advance_touches_no_stored_sum(self):
+        st = LinearEdgeState(N_BUCKETS, self.LAM)
+        st.advance("2020-02-07")
+        st.add_cluster("2020-02-07", "AA", "2020-02-01", "2020-01-30", [0] * 3, [1.0, 2.0, 4.0], [1.0, 3.0, 2.0])
+        before = list(st._pooled.tot)
+        for k in range(1, 20):
+            st.advance(_iso(datetime.date(2020, 2, 7) + datetime.timedelta(days=7 * k)))
+        assert list(st._pooled.tot) == before                    # reference units: unchanged by aging
+        assert st.fit(None)["n"] == pytest.approx(3 * self.LAM ** 19, rel=1e-12)
+
+    def test_a_forced_rebase_leaves_every_fit_and_sandwich_equal(self, monkeypatch):
+        base, _ = self._run(monkeypatch, None)
+        monkeypatch.undo()
+        forced, _ = self._run(monkeypatch, 3.0)               # lam^-j > 3 after about 5 weeks: several rebases
+        assert forced._j < base._j
+        for unit in (None, 0, 1, 2):
+            fa, fb = base.fit(unit), forced.fit(unit)
+            for key in ("n", "n_eff", "g_eff", "g_eff_names", "g_eff_dates", "sse"):
+                assert fb[key] == pytest.approx(fa[key], rel=1e-12, abs=1e-12)
+            assert fb["theta"] == pytest.approx(fa["theta"], rel=1e-11, abs=1e-12)
+            for way in ("one", "two"):
+                sa, sb = base.sandwich(unit, fa["theta"], way), forced.sandwich(unit, fa["theta"], way)
+                assert np.max(np.abs(_arr(sa["cov"]) - _arr(sb["cov"]))) <= 1e-11 * np.max(np.abs(_arr(sa["cov"])))
+
+    def test_lazy_state_equals_the_explicitly_weighted_batch_after_rebases(self, monkeypatch):
+        forced, rows = self._run(monkeypatch, 3.0)
+        # six extra aging weeks apply to every row equally; the batch fit is unchanged by a common factor
+        _, _, w, _, beta = _wls2(rows)
+        f = forced.fit(None)
+        assert np.allclose(f["theta"], beta, atol=1e-9, rtol=0)
+        assert f["n"] == pytest.approx(w.sum() * self.LAM ** 6, rel=1e-12)
+
+    def test_rebase_threshold_is_a_module_constant(self):
+        assert er._REBASE_AT == 1e6
+
+
+class TestPoolingVectorBands:
+    """A-T10: shrinkage in three dimensions, band, min_blocks, the V_b floor, intervals."""
+
+    P = {**POOL, "band": "two"}
+
+    def test_params_tuple_and_defaults(self):
+        assert PartialPooling._PARAMS == ("min_clusters", "min_dates", "tau2_floor", "weight_cap", "lcb_k",
+                                          "band", "min_blocks", "ci_levels")
+        pp = PartialPooling(POOL_BASE)
+        assert (pp.band, pp.min_blocks, pp.ci_levels) == ("two_block", 6, (0.90, 0.95))
+
+    @pytest.mark.parametrize("bad", [
+        {"band": "three"}, {"band": 2}, {"min_blocks": 1}, {"min_blocks": True}, {"min_blocks": 2.5},
+        {"ci_levels": []}, {"ci_levels": [1.0]}, {"ci_levels": [0.0, 0.9]}, {"ci_levels": 0.9}, {"ci_levels": [True]},
+    ])
+    def test_rejects_bad_new_params(self, bad):
+        with pytest.raises(ValueError):
+            PartialPooling({**POOL, **bad})
+
+    def test_shrinkage_in_three_dimensions_by_hand(self):
+        pp = PartialPooling(self.P)
+        th = [0.5, 1.0, -1.0]
+        th0 = [0.0, 0.0, 0.0]
+        v = [[1.0, 0.2, 0.0], [0.2, 2.0, 0.0], [0.0, 0.0, 0.5]]
+        got, post = pp._shrink_line(th, v, th0, [1.0, 1.0, 1.0])
+        t = np.eye(3)
+        want = np.array(th) + np.array(v) @ np.linalg.solve(t + np.array(v), np.array(th0) - np.array(th))
+        assert np.allclose(got, want, atol=1e-13)
+        assert np.allclose(post, t @ np.linalg.solve(t + np.array(v), np.array(v)), atol=1e-13)
+
+    def test_k1_under_band_two_equals_the_independent_shrinkage(self):
+        state, _ = _built()
+        res = PartialPooling(self.P).fit(state)
+        want, _ = _shrink_oracle(state, range(N_BUCKETS), POOL["tau2_floor"], POOL["min_clusters"])
+        for b in range(N_BUCKETS):
+            assert np.allclose([res["buckets"][b]["a"], res["buckets"][b]["b"]], want[b][0], atol=1e-12)
+
+    def _blocked_state(self, k=1, n_weeks=30, thin_bucket=True, exact_bucket=False):
+        rng = np.random.default_rng(6)
+        st = LinearEdgeState(3, None, regressors=k, block_lengths=1)
+        for wk in range(n_weeks):
+            settle = datetime.date(2020, 1, 3) + datetime.timedelta(days=7 * wk)
+            t = _iso(settle + datetime.timedelta(days=1))
+            st.advance(t)
+            for n in range(4):
+                m = 6
+                e = rng.normal(0, 2, m)
+                ed = 0.5 * e + rng.normal(0, 1, m)
+                bucket = [0, 1, 0, 1, 0, 1]
+                if thin_bucket and wk >= 4:
+                    bucket = [0, 0, 0, 0, 0, 0]          # bucket 1 lives in the first 4 weeks only
+                if exact_bucket:
+                    bucket = [2 if wk % 7 == 0 else b for b in bucket]
+                r = 0.6 * e + rng.normal(0, 1, m)
+                if exact_bucket:
+                    r = [float(0.6 * x) if b == 2 else float(y) for x, y, b in zip(e, r, bucket)]
+                kw = {"e_dir": [float(x) for x in ed]} if k == 2 else {}
+                st.add_cluster(t, f"N{n}", _iso(settle), _iso(settle - datetime.timedelta(days=3)), bucket,
+                               [float(x) for x in e], [float(x) for x in r], blocks=[wk // 4], **kw)
+        return st
+
+    def test_min_blocks_sends_a_thin_bucket_to_the_pool_and_holds_the_pooled_map_at_warm_up(self):
+        st = self._blocked_state()
+        pool = {**POOL, "min_clusters": 4, "min_dates": 2, "band": "two_block", "min_blocks": 6}
+        res = PartialPooling(pool).fit(st)
+        assert res["warm"] is True
+        assert res["buckets"][1]["pooled"] is True and res["counts"]["pooled_bucket_blocks"] >= 1
+        assert res["buckets"][0]["pooled"] is False
+        g_eff = st.fit(None)["g_eff_blocks"][0]                              # 8 raw blocks, Kish 7.76
+        assert 7.0 < g_eff < 8.0
+        cold = PartialPooling({**pool, "min_blocks": 8}).fit(st)           # the gate reads the Kish count, not 8
+        assert cold["warm"] is False and cold["pooled"]["b"] == 0.0 and cold["pooled"]["theta"] == [0.0, 0.0]
+        assert PartialPooling({**pool, "min_blocks": 7}).fit(st)["warm"] is True
+        # band "two" does not look at blocks at all
+        assert PartialPooling({**pool, "band": "two", "min_blocks": 99}).fit(st)["warm"] is True
+
+    def test_two_block_uses_the_block_sandwich(self):
+        st = self._blocked_state(thin_bucket=False)
+        pool = {**POOL, "min_clusters": 4, "min_dates": 2, "band": "two_block", "min_blocks": 2, "tau2_floor": 1e-9}
+        res = PartialPooling(pool).fit(st)
+        f = st.fit(0)
+        sw = st.sandwich(0, f["theta"], "two_block", block=0)
+        # a bucket with its own fit and a huge T keeps (nearly) its own fit and reports the block band
+        assert res["buckets"][0]["pooled"] is False
+        assert np.isfinite(res["buckets"][0]["se_b"]) and res["buckets"][0]["se_b"] <= math.sqrt(sw["cov"][1][1]) * (1 + 1e-9)
+
+    def test_v_b_floor_binds_on_an_over_precise_bucket_and_never_otherwise(self):
+        st = self._blocked_state(thin_bucket=False, exact_bucket=True)
+        pool = {**POOL, "min_clusters": 2, "min_dates": 2, "band": "two_block", "min_blocks": 2, "tau2_floor": 1e-9}
+        res = PartialPooling(pool).fit(st)
+        assert res["counts"]["v_floored"] >= 1
+        # the floor: V_b,jj >= V_0,jj G_eff,blocks,0 / G_eff,blocks,b on the diagonal
+        f0, fb = st.fit(None), st.fit(2)
+        v0 = st.sandwich(None, f0["theta"], "two_block", block=0)["cov"]
+        floor = [v0[j][j] * f0["g_eff_blocks"][0] / fb["g_eff_blocks"][0] for j in (0, 1)]
+        raw = st.sandwich(2, fb["theta"], "two_block", block=0)["cov"]
+        assert any(raw[j][j] < floor[j] for j in (0, 1))
+        calm = self._blocked_state(thin_bucket=False)
+        assert PartialPooling({**pool, "min_clusters": 4}).fit(calm)["counts"]["v_floored"] == 0
+
+    def test_weight_cap_touches_variant_a_only(self):
+        state, _ = _built()
+        capped = PartialPooling({**self.P, "weight_cap": 0.05}).fit(state)
+        loose = PartialPooling({**self.P, "weight_cap": 100.0}).fit(state)
+        for b in range(N_BUCKETS):
+            assert capped["buckets"][b]["b"] == loose["buckets"][b]["b"]
+            assert capped["buckets"][b]["a"] == loose["buckets"][b]["a"]
+        assert any(capped["buckets"][b]["w"] != loose["buckets"][b]["w"] for b in range(N_BUCKETS))
+
+    def test_intervals_at_every_level_in_ci_levels(self):
+        from dskit.pipeline.stats import student_t_critical
+
+        state, _ = _built()
+        pool = {**self.P, "ci_levels": [0.8, 0.9, 0.95]}
+        res = PartialPooling(pool).fit(state)
+        row = res["buckets"][0]
+        assert set(row["bands"]) == {"0.8", "0.9", "0.95"}
+        for lvl in (0.8, 0.9, 0.95):
+            band = row["bands"][f"{lvl:g}"]
+            c = student_t_critical(lvl, row["df"])
+            assert band["lcb"][1] == pytest.approx(row["b"] - c * row["se_b"], rel=1e-12)
+            assert band["ucb"][1] == pytest.approx(row["b"] + c * row["se_b"], rel=1e-12)
+
+    def test_two_regressor_pooling_has_three_coefficients_and_counts_singular_buckets(self):
+        st = self._blocked_state(k=2, thin_bucket=False)
+        # bucket 2: e_dir == 0 exactly -> singular two-regressor unit, takes the pool, counted
+        for wk in range(10):
+            settle = datetime.date(2020, 1, 3) + datetime.timedelta(days=7 * (30 + wk))
+            t = _iso(settle + datetime.timedelta(days=1))
+            st.advance(t)
+            for n in range(4):
+                st.add_cluster(t, f"N{n}", _iso(settle), _iso(settle - datetime.timedelta(days=3)), [2] * 4,
+                               [1.0, 2.0, 3.0, 4.5], [1.0, 2.0, 2.5, 4.0], blocks=[(30 + wk) // 4], e_dir=[0.0] * 4)
+        pool = {**POOL, "min_clusters": 4, "min_dates": 2, "band": "two_block", "min_blocks": 2}
+        res = PartialPooling(pool).fit(st)
+        assert len(res["pooled"]["theta"]) == 3 and len(res["buckets"][0]["theta"]) == 3
+        assert res["counts"]["direction_singular"] >= 1 and res["counts"]["pooled_bucket_direction"] >= 1
+        assert res["buckets"][2]["pooled"] is True and res["buckets"][2]["theta"] == res["pooled"]["theta"]
+        assert "w" not in res["buckets"][0]            # no through-origin variant on the two-regressor map

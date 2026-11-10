@@ -35,6 +35,7 @@ Refusals that carry a stable code raise a private ``ValueError`` subclass
 whose ``code`` attribute and message prefix are that code.
 """
 
+from array import array
 import bisect
 import itertools
 import math
@@ -45,7 +46,7 @@ from types import MappingProxyType
 
 from dskit.pipeline.kinds_split import label_reaches
 from dskit.pipeline.records import cluster_ok, number_ok
-from dskit.pipeline.stats import NO_VARIANCE_RTOL
+from dskit.pipeline.stats import NO_VARIANCE_RTOL, student_t_critical
 
 __all__ = [
     "DEVELOPMENT_SEAL",
@@ -267,6 +268,8 @@ class ReliabilityBuckets:
 
 _FIT_RTOL = NO_VARIANCE_RTOL
 _STRATA = ("buy", "sell", "top")
+#: Rebase the lazy clock when ``lambda ** -j`` would exceed this (about 520 weeks at the 26-week half-life).
+_REBASE_AT = 1e6
 _WAYS = ("one", "two", "two_block", "hac")
 #: Webb's six-point weights, each with probability 1/6 (used when the raw block count is below 12).
 _WEBB_WEIGHTS = (-math.sqrt(1.5), -1.0, -math.sqrt(0.5), math.sqrt(0.5), 1.0, math.sqrt(1.5))
@@ -495,63 +498,103 @@ def _sandwich_matrix(bread, meat, g_eff, n_eff, k=1):
 
 
 class _Table:
-    """A dimension of cluster units (names, dates, ...): key -> weighted moment vector."""
+    """A dimension of cluster units: a dense ``(n1 x n2)`` grid of ``p``-vectors in ONE flat ``array('d')``.
 
-    def __init__(self, p):
-        self.p = p
-        self.cells = {}
-        self.w2 = 0.0  # running sum over cells of (total weight N)^2, for the Kish count
+    One-dimensional dimensions (names, dates, blocks) use ``n2 = 1``; the ``(name, block)`` table is
+    two-dimensional. Cells are indexed ``(i * cap2 + j) * p + component``; the capacity doubles on demand.
+    ``w2`` is the running sum over cells of ``(total weight)^2`` (the first component), kept for the Kish
+    count; every sum over the cells runs in index order, so a resumed state equals a fresh one.
+    """
+
+    def __init__(self, p, two=False):
+        self.p, self.two = p, two
+        self.cap1, self.cap2 = 4, (4 if two else 1)
+        self.data = array("d", bytes(8 * p * self.cap1 * self.cap2))
+        self.present = bytearray(self.cap1 * self.cap2)
+        self.w2 = 0.0
+        self.count = 0
+
+    def _grow(self, i, j):
+        c1, c2 = self.cap1, self.cap2
+        while i >= c1:
+            c1 *= 2
+        while j >= c2:
+            c2 *= 2
+        if (c1, c2) == (self.cap1, self.cap2):
+            return
+        data = array("d", bytes(8 * self.p * c1 * c2))
+        present = bytearray(c1 * c2)
+        for a in range(self.cap1):
+            src, dst = a * self.cap2, a * c2
+            data[dst * self.p:(dst + self.cap2) * self.p] = self.data[src * self.p:(src + self.cap2) * self.p]
+            present[dst:dst + self.cap2] = self.present[src:src + self.cap2]
+        self.cap1, self.cap2, self.data, self.present = c1, c2, data, present
+
+    def add(self, i, j, vec):
+        """Add ``vec`` to cell ``(i, j)``."""
+        if i >= self.cap1 or j >= self.cap2:
+            self._grow(i, j)
+        o = i * self.cap2 + j
+        base, p, data = o * self.p, self.p, self.data
+        old = data[base]
+        for q in range(p):
+            data[base + q] += vec[q]
+        self.w2 += data[base] * data[base] - old * old
+        if not self.present[o]:
+            self.present[o] = 1
+            self.count += 1
+
+    def scale(self, f1, f2):
+        """Multiply every cell by ``f1`` (the squared weights by ``f2``)."""
+        self.data = array("d", (x * f1 for x in self.data))
+        self.w2 *= f2
+
+    def keys(self):
+        """Return the present cell keys in index order (``i`` or ``(i, j)``)."""
+        out = []
+        for o in range(len(self.present)):
+            if self.present[o]:
+                i, j = divmod(o, self.cap2)
+                out.append((i, j) if self.two else i)
+        return out
+
+    def vector(self, key):
+        """Return the cell ``key`` as a list (zeros if absent)."""
+        i, j = key if self.two else (key, 0)
+        if i >= self.cap1 or j >= self.cap2:
+            return [0.0] * self.p
+        base = (i * self.cap2 + j) * self.p
+        return list(self.data[base:base + self.p])
+
+    def vectors(self):
+        """Return the present cells as lists, in index order."""
+        return [self.vector(k) for k in self.keys()]
 
     @property
-    def count(self):
-        return len(self.cells)
+    def cells(self):
+        """Return ``{key: vector}`` of the present cells (index keys)."""
+        return {k: self.vector(k) for k in self.keys()}
 
-    def add(self, key, vec):
-        cell = self.cells.setdefault(key, [0.0] * self.p)
-        old = cell[0]
-        for q in range(self.p):
-            cell[q] += vec[q]
-        self.w2 += cell[0] * cell[0] - old * old
-
-    def scale(self, f):
-        for key, cell in self.cells.items():
-            self.cells[key] = [v * f for v in cell]
-        self.w2 *= f * f
-
-    def sorted_vectors(self):
-        return [self.cells[k] for k in sorted(self.cells)]
-
-    def to_dict(self):
-        return {str(k): list(self.cells[k]) for k in sorted(self.cells)}
-
-    def to_dict_pairs(self):
-        """Dump ``(name, block)`` keys as ``"name|block"`` strings (names hold no NUL)."""
-        return {f"{k[0]}\x00{k[1]}": list(self.cells[k]) for k in sorted(self.cells)}
-
-    @classmethod
-    def from_dict(cls, p, blob, w2, int_keys=False):
-        t = cls(p)
-        t.cells = {(int(k) if int_keys else k): [float(v) for v in vec] for k, vec in blob.items()}
-        t.w2 = float(w2)
-        return t
-
-    @classmethod
-    def from_pairs(cls, p, blob, w2):
-        t = cls(p)
-        for key, vec in blob.items():
-            name, blk = key.rsplit("\x00", 1)
-            t.cells[(name, int(blk))] = [float(v) for v in vec]
-        t.w2 = float(w2)
-        return t
+    def load(self, items, w2):
+        """Fill from ``(key, vector)`` items (a dump) and set ``w2``."""
+        for key, vec in items:
+            i, j = key if self.two else (key, 0)
+            self._grow(i, j)
+            base = (i * self.cap2 + j) * self.p
+            self.data[base:base + self.p] = array("d", vec)
+            if not self.present[i * self.cap2 + j]:
+                self.present[i * self.cap2 + j] = 1
+                self.count += 1
+        self.w2 = float(w2)
 
 
 class _Unit:
-    """Running sums of one regression: a bucket, or the pooled rows."""
+    """Running sums of one regression: a bucket, a stratum, or the pooled rows (all in reference units)."""
 
     def __init__(self, lay, n_blocks=1):
         self.lay = lay
         self.blocks = [_Table(lay.size) for _ in range(n_blocks)]  # one dimension per block length
-        self.pairs = [_Table(lay.size) for _ in range(n_blocks)]  # (name, block) units per block length
+        self.pairs = [_Table(lay.size, True) for _ in range(n_blocks)]  # (name, block) units per block length
         self.tot = [0.0] * (lay.size + 1)  # the moment vector, then r*r (weighted)
         self.serr = 0.0  # sum w sigma^2 of the direction regressor
         self.rw2 = 0.0  # sum w^2 over rows (the row Kish count)
@@ -563,8 +606,8 @@ class _Unit:
         self.rows = 0  # unweighted counts
         self.clusters = 0
 
-    def add(self, name, day, vec, rr, serr, rows, rw2, groups, blocks):
-        """Fold one whole (name, date) cluster, given as its moment vector, into the sums."""
+    def add(self, ni, di, vec, rr, serr, rows, rw2, groups, blocks):
+        """Fold one whole (name, date) cluster, ALREADY in reference units, into the sums."""
         for q in range(self.lay.size):
             self.tot[q] += vec[q]
         self.tot[self.lay.size] += rr
@@ -574,49 +617,57 @@ class _Unit:
         self.groups += groups
         for idx, (i, j) in enumerate(self.lay.tri):
             self.cross[idx] += vec[i] * vec[j]
-        self.names.add(name, vec)
-        self.dates.add(day, vec)
+        self.names.add(ni, 0, vec)
+        self.dates.add(di, 0, vec)
         for table, pairs, blk in zip(self.blocks, self.pairs, blocks):
-            table.add(blk, vec)
-            pairs.add((name, blk), vec)
+            table.add(blk, 0, vec)
+            pairs.add(ni, blk, vec)
         self.rows += rows
         self.clusters += 1
 
-    def decay(self, lam):
-        """Age every sum by one decision week."""
-        self.tot = [v * lam for v in self.tot]
-        self.serr *= lam
-        self.rw2 *= lam * lam
-        self.cw2 *= lam * lam
-        self.cross = [v * lam * lam for v in self.cross]
-        self.names.scale(lam)
-        self.dates.scale(lam)
-        for table in (*self.blocks, *self.pairs):
-            table.scale(lam)
+    def rescale(self, f1):
+        """Multiply first-order sums by ``f1`` and second-order ones by ``f1 ** 2`` (the lazy-decay rebase)."""
+        f2 = f1 * f1
+        self.tot = [v * f1 for v in self.tot]
+        self.serr *= f1
+        self.rw2 *= f2
+        self.cw2 *= f2
+        self.cross = [v * f2 for v in self.cross]
+        for table in (self.names, self.dates, *self.blocks, *self.pairs):
+            table.scale(f1, f2)
 
-    def to_dict(self):
+    def to_dict(self, names, dates):
+        """Dump the sums; ``names`` and ``dates`` are the state's registries (index -> label)."""
         return {
             "tot": list(self.tot), "serr": self.serr, "rw2": self.rw2, "cw2": self.cw2, "groups": self.groups,
-            "cross": list(self.cross), "rows": self.rows,
-            "clusters": self.clusters, "names": self.names.to_dict(), "dates": self.dates.to_dict(),
+            "cross": list(self.cross), "rows": self.rows, "clusters": self.clusters,
+            "names": {names[i]: self.names.vector(i) for i in self.names.keys()},
+            "dates": {dates[i]: self.dates.vector(i) for i in self.dates.keys()},
             "names_w2": self.names.w2, "dates_w2": self.dates.w2,
-            "blocks": [t.to_dict() for t in self.blocks], "blocks_w2": [t.w2 for t in self.blocks],
-            "pairs": [t.to_dict_pairs() for t in self.pairs],
+            "blocks": [{str(i): t.vector(i) for i in t.keys()} for t in self.blocks],
+            "blocks_w2": [t.w2 for t in self.blocks],
+            "pairs": [{f"{names[i]}\x00{j}": t.vector((i, j)) for i, j in t.keys()} for t in self.pairs],
             "pairs_w2": [t.w2 for t in self.pairs],
         }
 
     @classmethod
-    def from_dict(cls, lay, blob):
+    def from_dict(cls, lay, blob, name_idx, date_idx):
         unit = cls(lay, len(blob["blocks"]))
         unit.tot = [float(v) for v in blob["tot"]]
         unit.serr, unit.rw2 = float(blob["serr"]), float(blob["rw2"])
         unit.cw2, unit.groups = float(blob["cw2"]), float(blob["groups"])
         unit.cross = [float(v) for v in blob["cross"]]
         unit.rows, unit.clusters = int(blob["rows"]), int(blob["clusters"])
-        unit.names = _Table.from_dict(lay.size, blob["names"], blob["names_w2"])
-        unit.dates = _Table.from_dict(lay.size, blob["dates"], blob["dates_w2"])
-        unit.blocks = [_Table.from_dict(lay.size, b, w2, int_keys=True) for b, w2 in zip(blob["blocks"], blob["blocks_w2"])]
-        unit.pairs = [_Table.from_pairs(lay.size, b, w2) for b, w2 in zip(blob["pairs"], blob["pairs_w2"])]
+        unit.names.load(sorted(((name_idx[k], v) for k, v in blob["names"].items())), blob["names_w2"])
+        unit.dates.load(sorted(((date_idx[k], v) for k, v in blob["dates"].items())), blob["dates_w2"])
+        for table, b, w2 in zip(unit.blocks, blob["blocks"], blob["blocks_w2"]):
+            table.load(sorted((int(k), v) for k, v in b.items()), w2)
+        for table, b, w2 in zip(unit.pairs, blob["pairs"], blob["pairs_w2"]):
+            items = []
+            for key, vec in b.items():
+                name, blk = key.rsplit("\x00", 1)
+                items.append(((name_idx[name], int(blk)), vec))
+            table.load(sorted(items), w2)
         if len(unit.tot) != lay.size + 1 or len(unit.cross) != len(lay.tri):
             raise ValueError("unit sums have the wrong size")
         return unit
@@ -681,11 +732,14 @@ class LinearEdgeState:
         self._pooled = _Unit(self._lay, self.block_lengths)
         self._buckets = {}
         self._seen = set()
+        self._names = {}  # name -> index (the registry every dimension table is indexed by)
+        self._dates = {}  # settlement date -> index
+        self._j = 0  # decision-week index of the lazy clock: stored sums are in units where week j has weight 1
         #: Rows counted, never silent: ``sigma2_missing`` (a direction row without a forward error variance).
         self.counts = {"sigma2_missing": 0}
 
     def advance(self, t):
-        """Move to decision week ``t``, aging a decayed state by one week.
+        """Move to decision week ``t``, aging a decayed state by one week (O(1): the lazy clock moves).
 
         Parameters
         ----------
@@ -704,9 +758,17 @@ class LinearEdgeState:
             raise ValueError(f"time cannot run backward: {day} is before {self._t}")
         elif day > self._t:
             if self.decay is not None:
-                for unit in (self._pooled, *self._buckets.values()):
-                    unit.decay(self.decay)
+                self._j += 1
+                if self.decay ** (-self._j) > _REBASE_AT:
+                    f1 = self.decay ** self._j
+                    for unit in (self._pooled, *self._buckets.values()):
+                        unit.rescale(f1)
+                    self._j = 0
             self._t = day
+
+    def _f1(self):
+        """Return the factor taking reference-unit first-order sums to current weights (``lambda ** j``)."""
+        return 1.0 if self.decay is None else self.decay ** self._j
 
     def _rows(self, buckets, e, r, e_dir, sigma2):
         """Validate one cluster's rows and return the finite floats ``(e, r, e_dir, sigma2)``."""
@@ -832,17 +894,87 @@ class LinearEdgeState:
             if tp is not None and tp[i]:
                 keys.append("top")
             for key in keys:
-                a = acc.setdefault(key, [[0.0] * lay.size, 0.0, 0.0, 0, 0.0, 0.0])
+                a = acc.setdefault(key, {"vec": [0.0] * lay.size, "rr": 0.0, "serr": 0.0, "rows": 0, "rw2": 0.0,
+                                         "groups": 0.0})
                 for q in range(lay.size):
-                    a[0][q] += row[q]
-                a[1] += w * rv[i] * rv[i]
-                a[2] += serr
-                a[3] += 1
-                a[4] += w * w
-                a[5] += w
-        for key, (vec, rr, serr, rows, rw2, groups) in acc.items():
+                    a["vec"][q] += row[q]
+                a["rr"] += w * rv[i] * rv[i]
+                a["serr"] += serr
+                a["rows"] += 1
+                a["rw2"] += w * w
+                a["groups"] += w
+        self._absorb(name, s, bl, acc)
+
+    def _absorb(self, name, s, blocks, units):
+        """Register the cluster and fold its per-unit sums (current weights) into reference units."""
+        ni = self._names.setdefault(name, len(self._names))
+        di = self._dates.setdefault(s, len(self._dates))
+        if self.decay is None:
+            s1 = s2 = 1.0
+        else:
+            s1 = self.decay ** (-self._j)
+            s2 = s1 * s1
+        lay = self._lay
+        for key, a in units.items():
             unit = self._pooled if key is None else self._buckets.setdefault(key, _Unit(lay, self.block_lengths))
-            unit.add(name, s, vec, rr, serr, rows, rw2, groups, bl)
+            unit.add(ni, di, [v * s1 for v in a["vec"]], a["rr"] * s1, a["serr"] * s1, a["rows"], a["rw2"] * s2,
+                     a["groups"], blocks)
+
+    def add_cluster_sums(self, t, name, settle_date, fill_date, blocks, per_unit_sums):
+        """Fold one whole cluster given as per-unit moment vectors that the caller has already formed.
+
+        The tier-2 walk forms the vectors for a week's settled rows with numpy (no Python row loop) and
+        calls this; :meth:`add_cluster` (row lists, stdlib) remains for tests and small users and the two
+        paths agree to 1e-12.
+
+        Parameters
+        ----------
+        t, name, settle_date, fill_date : as for :meth:`add_cluster`.
+        blocks : list of int
+            One non-negative block index per configured block length.
+        per_unit_sums : dict
+            Unit (``None`` pooled, required; a bucket int; ``"buy"``, ``"sell"``, ``"top"``) -> dict with
+            ``vec`` (the moment vector of that unit's rows in this cluster: length 5 or 9, ``vec[0] > 0``),
+            ``rr`` (``sum w r r``), ``serr`` (``sum w sigma2``), ``rw2`` (``sum w w``), ``rows`` (int >= 1)
+            and ``groups`` (``sum`` of the base weights).
+
+        Raises
+        ------
+        ValueError
+            ``state_from_future`` as for :meth:`add_cluster`; a plain error for a malformed vector, an
+            unknown unit, a missing pooled unit, a wrong block count or a cluster already added. The state is
+            unchanged.
+        """
+        day, s, f = _iso(t, "t"), _iso(settle_date, "settle_date"), _iso(fill_date, "fill_date")
+        if label_reaches(s, day):
+            raise _Refusal("state_from_future", f"settlement {s} is not before t {day}")
+        if label_reaches(f, s):
+            raise _Refusal("state_from_future", f"fill {f} is not before settlement {s}")
+        if not cluster_ok(name):
+            raise ValueError(f"name must be a non-empty string, got {name!r}")
+        bl = self._blocks(blocks)
+        if not isinstance(per_unit_sums, dict) or None not in per_unit_sums:
+            raise ValueError("per_unit_sums must be a dict holding the pooled unit under None")
+        lay = self._lay
+        for key, a in per_unit_sums.items():
+            if not (key is None or key in _STRATA or (isinstance(key, int) and not isinstance(key, bool)
+                                                      and 0 <= key < self.n_buckets)):
+                raise ValueError(f"unknown unit {key!r}")
+            if not isinstance(a, dict) or not {"vec", "rr", "serr", "rw2", "rows", "groups"} <= set(a):
+                raise ValueError(f"unit {key!r} needs vec, rr, serr, rw2, rows and groups")
+            vec = a["vec"]
+            if not isinstance(vec, (list, tuple)) or len(vec) != lay.size or not all(
+                    not isinstance(v, bool) and number_ok(v) for v in vec) or not vec[0] > 0.0:
+                raise ValueError(f"unit {key!r}: vec must be {lay.size} finite numbers with vec[0] > 0")
+            if any(isinstance(a[x], bool) or not number_ok(a[x]) or a[x] < 0 for x in ("rr", "serr", "rw2", "groups")):
+                raise ValueError(f"unit {key!r}: rr, serr, rw2 and groups must be finite numbers >= 0")
+            if isinstance(a["rows"], bool) or not isinstance(a["rows"], int) or a["rows"] < 1:
+                raise ValueError(f"unit {key!r}: rows must be an integer >= 1")
+        if (name, s) in self._seen:
+            raise ValueError(f"cluster ({name}, {s}) was already added: a cluster arrives whole, once")
+        self.advance(day)
+        self._seen.add((name, s))
+        self._absorb(name, s, bl, {k: {**a, "vec": [float(v) for v in a["vec"]]} for k, a in per_unit_sums.items()})
 
     def _unit(self, b):
         """Return the sums of bucket ``b`` (``None`` pooled; ``"buy"``, ``"sell"``, ``"top"``); an unused unit is empty."""
@@ -905,7 +1037,8 @@ class LinearEdgeState:
         """
         u = self._unit(b)
         lay, v = u.lay, u.tot
-        out = {"n": v[0], "rows": u.rows, "clusters": u.clusters, "dates": u.dates.count,
+        f1 = self._f1()
+        out = {"n": v[0] * f1, "rows": u.rows, "clusters": u.clusters, "dates": u.dates.count,
                "names": u.names.count, "theta": None, "a": None, "sse": None, **self._effective(u)}
         if lay.k == 1:
             out["b"] = None
@@ -916,7 +1049,7 @@ class LinearEdgeState:
             return out
         theta, c, _, _ = got
         sse = v[lay.size] - theta[0] * v[lay.r] - sum(theta[j + 1] * v[lay.zr[j]] for j in range(lay.k))
-        out.update(theta=theta, a=theta[0], sse=sse)
+        out.update(theta=theta, a=theta[0], sse=sse * f1)
         if lay.k == 1:
             out["b"] = theta[1]
             return out
@@ -994,14 +1127,14 @@ class LinearEdgeState:
         else:
             other, g_other, count_other = u.blocks[block], eff["g_eff_blocks"][block], u.blocks[block].count
             pairs = u.pairs[block]
-            pair = _sandwich_matrix(bread, _outer_from_vectors(lay, pairs.sorted_vectors(), theta),
+            pair = _sandwich_matrix(bread, _outer_from_vectors(lay, pairs.vectors(), theta),
                                     kish_effective(u.tot[0], pairs.w2), n_eff, k)
         gn = u.names.count
         if gn < 2 or count_other < 2 or eff["g_eff_names"] <= 1.0 or g_other <= 1.0:
             return None
-        by_name = _sandwich_matrix(bread, _outer_from_vectors(lay, u.names.sorted_vectors(), theta),
+        by_name = _sandwich_matrix(bread, _outer_from_vectors(lay, u.names.vectors(), theta),
                                    eff["g_eff_names"], n_eff, k)
-        by_date = _sandwich_matrix(bread, _outer_from_vectors(lay, other.sorted_vectors(), theta), g_other, n_eff, k)
+        by_date = _sandwich_matrix(bread, _outer_from_vectors(lay, other.vectors(), theta), g_other, n_eff, k)
         cov = [[by_name[p][q] + by_date[p][q] - pair[p][q] for q in range(k + 1)] for p in range(k + 1)]
         rule = "two_way"
         if not _positive_definite(cov):
@@ -1024,9 +1157,10 @@ class LinearEdgeState:
         g_eff = eff["g_eff_blocks"][block]
         if table.count < 2 or g_eff <= 1.0:
             return None
-        lo, hi = min(table.cells), max(table.cells)
+        present = {i: lay.score(theta, table.vector(i)) for i in table.keys()}
+        lo, hi = min(present), max(present)
         zero = [0.0] * (k + 1)
-        scores = [lay.score(theta, table.cells[i]) if i in table.cells else zero for i in range(lo, hi + 1)]
+        scores = [present.get(i, zero) for i in range(lo, hi + 1)]
         q = k + 1
         meat = [[0.0] * q for _ in range(q)]
         for s in scores:
@@ -1062,7 +1196,8 @@ class LinearEdgeState:
         """
         self._block_arg(block)
         table = self._unit(b).blocks[block]
-        return [list(table.cells[i]) for i in sorted(table.cells)]
+        f1 = self._f1()
+        return [[x * f1 for x in table.vector(i)] for i in table.keys()]
 
     def bread(self, b):
         """Return ``(X'WX)^-1`` of a unit in the state's current weight units, or ``None`` if it cannot be fitted."""
@@ -1070,7 +1205,9 @@ class LinearEdgeState:
         if self._centred(u) is None:
             return None
         k = self.regressors
-        return _solve(u.lay.gram(u.tot), [[1.0 if i == j else 0.0 for j in range(k + 1)] for i in range(k + 1)])
+        inv = _solve(u.lay.gram(u.tot), [[1.0 if i == j else 0.0 for j in range(k + 1)] for i in range(k + 1)])
+        f1 = self._f1()
+        return [[x / f1 for x in row] for row in inv]
 
     def fit_ratio(self, b, block=0):
         """Return the ratio ``L = sum w r / sum w e`` of a unit with its linearised block scores.
@@ -1091,19 +1228,22 @@ class LinearEdgeState:
         lay, v = u.lay, u.tot
         e_tot = v[1] if lay.k == 1 else v[1] + v[2]
         eff = self._effective(u)
-        out = {"L": None, "R": v[lay.r], "E": e_tot, "rows": u.rows, "clusters": u.clusters, "n_eff": eff["n_eff"],
+        f1 = self._f1()
+        out = {"L": None, "R": v[lay.r] * f1, "E": e_tot * f1, "rows": u.rows, "clusters": u.clusters, "n_eff": eff["n_eff"],
                "g_eff_blocks": eff["g_eff_blocks"], "scores": [], "se": None, "df": None}
         if u.rows == 0 or e_tot == 0.0:
             return out
         ratio = v[lay.r] / e_tot
         out["L"] = ratio
         table = u.blocks[block]
-        out["scores"] = [table.cells[i][lay.r] - ratio * (table.cells[i][1] if lay.k == 1 else
-                                                          table.cells[i][1] + table.cells[i][2])
-                         for i in sorted(table.cells)]
+        zs = []
+        for i in table.keys():
+            c = table.vector(i)
+            zs.append(c[lay.r] - ratio * (c[1] if lay.k == 1 else c[1] + c[2]))
+        out["scores"] = [z * f1 for z in zs]
         g_eff = eff["g_eff_blocks"][block]
         if table.count >= 2 and g_eff > 1.0 and eff["n_eff"] > 2.0:
-            out["se"] = math.sqrt(_cr1(g_eff, eff["n_eff"], 1) * sum(z * z for z in out["scores"])) / abs(e_tot)
+            out["se"] = math.sqrt(_cr1(g_eff, eff["n_eff"], 1) * sum(z * z for z in zs)) / abs(e_tot)
             out["df"] = g_eff - 1
         return out
 
@@ -1115,12 +1255,15 @@ class LinearEdgeState:
         dict
             Restorable with :meth:`from_dict`; keys are sorted so equal states dump equal.
         """
+        names = [n for n, _ in sorted(self._names.items(), key=lambda kv: kv[1])]
+        dates = [d for d, _ in sorted(self._dates.items(), key=lambda kv: kv[1])]
         return {
             "n_buckets": self.n_buckets, "decay": self.decay, "t": self._t,
             "regressors": self.regressors, "block_lengths": self.block_lengths, "counts": dict(self.counts),
+            "week_index": self._j, "names_registry": names, "dates_registry": dates,
             "seen": sorted([name, day] for name, day in self._seen),
-            "pooled": self._pooled.to_dict(),
-            "buckets": {str(k): self._buckets[k].to_dict() for k in sorted(self._buckets, key=str)},
+            "pooled": self._pooled.to_dict(names, dates),
+            "buckets": {str(k): self._buckets[k].to_dict(names, dates) for k in sorted(self._buckets, key=str)},
         }
 
     @classmethod
@@ -1146,10 +1289,13 @@ class LinearEdgeState:
         try:
             state = cls(blob["n_buckets"], blob["decay"], blob["regressors"], blob["block_lengths"])
             state._t = blob["t"]
+            state._j = int(blob["week_index"])
             state.counts = {k: int(v) for k, v in blob["counts"].items()}
             state._seen = {(name, day) for name, day in blob["seen"]}
-            state._pooled = _Unit.from_dict(state._lay, blob["pooled"])
-            state._buckets = {(k if k in _STRATA else int(k)): _Unit.from_dict(state._lay, v)
+            state._names = {n: i for i, n in enumerate(blob["names_registry"])}
+            state._dates = {d: i for i, d in enumerate(blob["dates_registry"])}
+            state._pooled = _Unit.from_dict(state._lay, blob["pooled"], state._names, state._dates)
+            state._buckets = {(k if k in _STRATA else int(k)): _Unit.from_dict(state._lay, v, state._names, state._dates)
                               for k, v in blob["buckets"].items()}
         except (KeyError, TypeError) as exc:
             raise ValueError(f"malformed LinearEdgeState dump: {exc!r}") from exc
@@ -1444,35 +1590,42 @@ def _checked_params(params, allowed):
 
 
 class PartialPooling:
-    """Partially pooled ``(a_b, b_b)`` per bucket, from a :class:`LinearEdgeState`.
+    """Partially pooled coefficient vectors per bucket, from a :class:`LinearEdgeState`.
 
-    Each bucket's fit ``theta_b`` with sandwich covariance ``V_b`` (the
-    two-way band, owner B-2) is shrunk toward the pooled ``theta_0``::
+    Each bucket's fit ``theta_b`` (``(a, b)`` for one regressor, ``(a, b_dir, b_shape)`` for two) with its
+    sandwich covariance ``V_b`` is shrunk toward the pooled ``theta_0``::
 
         theta* = theta_b + V_b (T + V_b)^-1 (theta_0 - theta_b)
         cov*   = T (T + V_b)^-1 V_b
 
-    which equals ``(T^-1 + V^-1)^-1 (T^-1 theta_0 + V^-1 theta_b)`` but needs
-    no inverse of ``V_b``, so a bucket that fits exactly (``V_b = 0``) keeps
-    its fit. ``T = diag(tau_a^2, tau_b^2)`` is the method-of-moments
-    between-bucket variance (variance of ``theta_b`` across the eligible
-    buckets minus the mean of their sampling variances), each entry floored at
-    ``tau2_floor``; with fewer than two eligible buckets ``T`` is the floor. A
-    bucket below ``min_clusters`` clusters, with no fit (zero ``e`` variance)
-    or no sandwich takes ``theta_0``. Until the pooled state has ``min_dates``
-    settlement dates and ``min_clusters`` clusters the prior holds: every
-    ``a``, ``b`` and weight is 0.
+    which equals ``(T^-1 + V^-1)^-1 (T^-1 theta_0 + V^-1 theta_b)`` but needs no inverse of ``V_b``, so a
+    bucket that fits exactly (``V_b = 0``) keeps its fit. ``T`` is diagonal, the method-of-moments
+    between-bucket variance of each coefficient (variance of ``theta_b`` across the eligible buckets minus
+    the mean of their sampling variances), each entry floored at ``tau2_floor``; with fewer than two eligible
+    buckets ``T`` is the floor. The dimension is the state's (``k + 1``); one :func:`_solve` serves it.
 
-    Beside the line, the same shrinkage in one dimension gives variant (a),
-    the slope through the origin ``w`` clipped to ``[0, weight_cap]``, and both
-    variants get a lower bound ``x - lcb_k * se``.
+    The band of ``V_b`` is ``band``: ``"one"`` (``(name, date)`` clusters), ``"two"`` (name + date) or
+    ``"two_block"`` (name + 4-week block, the PRIMARY band of ADR-0311 D1, descriptive). A bucket takes the
+    pool when it has too few effective (Kish) clusters, no fit (a regressor without variance; for two
+    regressors exact collinearity too, counted ``direction_singular``), no sandwich, or, under
+    ``"two_block"``, fewer than ``min_blocks`` effective blocks (counted ``pooled_bucket_blocks``). Under
+    ``"two_block"`` the diagonal of ``V_b`` is floored at ``V_0,jj G_eff,blocks,0 / G_eff,blocks,b`` (off
+    diagonal scaled to keep the correlation; counted ``v_floored``). Until the pooled state has
+    ``min_dates`` settlement dates, ``min_clusters`` effective clusters and (``"two_block"``) ``min_blocks``
+    effective blocks, the prior holds: every coefficient is 0.
+
+    With one regressor the same shrinkage in one dimension gives variant (a), the slope through the origin
+    ``w`` clipped to ``[0, weight_cap]``; ``weight_cap`` applies to nothing else, and the two-regressor map
+    has no through-origin variant. Each coefficient gets a lower bound ``x - lcb_k * se`` and, at every level
+    in ``ci_levels``, a Student-t interval.
 
     Parameters
     ----------
     params : dict
-        ``min_clusters`` (int >= 2), ``min_dates`` (int >= 1), ``tau2_floor``
-        (number > 0), ``weight_cap`` (number > 0), ``lcb_k`` (number >= 0); all
-        required.
+        ``min_clusters`` (int >= 2), ``min_dates`` (int >= 1), ``tau2_floor`` (number > 0), ``weight_cap``
+        (number > 0), ``lcb_k`` (number >= 0) are required; ``band`` (``"two_block"`` default, ``"two"``,
+        ``"one"``), ``min_blocks`` (int >= 2, default 6) and ``ci_levels`` (list of levels in (0, 1), default
+        ``[0.90, 0.95]``) default as stated.
 
     Raises
     ------
@@ -1483,21 +1636,40 @@ class PartialPooling:
     --------
     Fit the map inputs of a state::
 
-        pooling = PartialPooling({"min_clusters": 20, "min_dates": 13,
-                                  "tau2_floor": 1e-6, "weight_cap": 1.0, "lcb_k": 1.0})
+        pooling = PartialPooling({"min_clusters": 20, "min_dates": 13, "tau2_floor": 1e-6,
+                                  "weight_cap": 1.0, "lcb_k": 1.0, "band": "two"})
         out = pooling.fit(state)
         out["buckets"][3]["b"]
     """
 
-    _PARAMS = ("min_clusters", "min_dates", "tau2_floor", "weight_cap", "lcb_k")
+    _PARAMS = ("min_clusters", "min_dates", "tau2_floor", "weight_cap", "lcb_k", "band", "min_blocks", "ci_levels")
+    _DEFAULTS = {"band": "two_block", "min_blocks": 6, "ci_levels": [0.90, 0.95]}
+    _BANDS = ("one", "two", "two_block")
 
     def __init__(self, params):
+        params = self._with_defaults(params)
         _checked_params(params, self._PARAMS)
         self.min_clusters = _count_param(params, "min_clusters", 2, True)
         self.min_dates = _count_param(params, "min_dates", 1, True)
         self.tau2_floor = float(_count_param(params, "tau2_floor", 0.0, False))
         self.weight_cap = float(_count_param(params, "weight_cap", 0.0, False))
         self.lcb_k = self._lcb_k(params["lcb_k"])
+        if params["band"] not in self._BANDS:
+            raise ValueError(f"band must be one of {list(self._BANDS)}, got {params['band']!r}")
+        self.band = params["band"]
+        self.min_blocks = _count_param(params, "min_blocks", 2, True)
+        levels = params["ci_levels"]
+        if not isinstance(levels, (list, tuple)) or not levels or any(
+                isinstance(v, bool) or not number_ok(v) or not 0.0 < v < 1.0 for v in levels):
+            raise ValueError(f"ci_levels must be a non-empty list of levels in (0, 1), got {levels!r}")
+        self.ci_levels = tuple(float(v) for v in levels)
+
+    @classmethod
+    def _with_defaults(cls, params):
+        """Return ``params`` with the documented defaults for the keys that have one."""
+        if not isinstance(params, dict):
+            return params
+        return {**{k: v for k, v in cls._DEFAULTS.items() if k not in params}, **params}
 
     @staticmethod
     def _lcb_k(v):
@@ -1510,22 +1682,56 @@ class PartialPooling:
         """Say whether a unit has enough effective (Kish) clusters to stand alone."""
         return effective_clusters >= self.min_clusters
 
-    def _line(self, state, b):
-        """``(theta, V, df)`` of bucket ``b`` (two-way band), or ``None`` when it cannot stand alone."""
-        f = state.fit(b)
-        if f["a"] is None or not self._enough(f["g_eff"]):
+    def _cov(self, state, b, theta):
+        """Return the sandwich of a unit under the configured band (block length index 0), or ``None``."""
+        return state.sandwich(b, theta, self.band, block=0)
+
+    def _floored(self, v, v0, g0, gb, counts):
+        """Floor the diagonal of ``v`` at ``v0_jj g0 / gb`` (correlation kept); count a binding floor."""
+        q = len(v)
+        floor = [v0[j][j] * g0 / gb for j in range(q)]
+        diag = [max(v[j][j], floor[j]) for j in range(q)]
+        if all(diag[j] == v[j][j] for j in range(q)):
+            return v
+        counts["v_floored"] += 1
+        out = [[0.0] * q for _ in range(q)]
+        for i in range(q):
+            for j in range(q):
+                if i == j:
+                    out[i][j] = diag[i]
+                elif v[i][i] > 0.0 and v[j][j] > 0.0:
+                    out[i][j] = v[i][j] * math.sqrt(diag[i] / v[i][i] * diag[j] / v[j][j])
+        return out
+
+    def _line(self, state, b, f, ctx):
+        """``(theta, V, df)`` of bucket ``b``, or ``None`` when it takes the pool (reasons counted)."""
+        if f["rows"] == 0:
             return None
-        sw = state.sandwich(b, (f["a"], f["b"]), "two")
+        counts, k = ctx["counts"], state.regressors
+        if f["theta"] is None:
+            if k == 2:
+                counts["direction_singular"] += 1
+            return None
+        if not self._enough(f["g_eff"]):
+            return None
+        two_block = self.band == "two_block"
+        if two_block and f["g_eff_blocks"][0] < self.min_blocks:
+            counts["pooled_bucket_blocks"] += 1
+            return None
+        sw = self._cov(state, b, f["theta"])
         if sw is None:
             return None
-        return [f["a"], f["b"]], sw["cov"], sw["df"]
+        v = sw["cov"]
+        if two_block and ctx["v0"] is not None:
+            v = self._floored(v, ctx["v0"], ctx["g0"], f["g_eff_blocks"][0], counts)
+        return f["theta"], v, sw["df"]
 
     @staticmethod
     def _origin(unit):
         """``(w, variance, df)`` of the slope through the origin (two-way band), or ``None``.
 
         The variance carries the same Kish CR1 factor as :func:`_sandwich_matrix` (``k = 1``); every sum
-        over the name or date table runs in sorted key order, so a resumed state equals a fresh one.
+        over the name or date table runs in index order, so a resumed state equals a fresh one.
         """
         n, see, ser = unit.tot[0], unit.tot[3], unit.tot[4]
         if unit.rows < 3 or unit.clusters < 2 or see <= 0.0 or n <= 0:
@@ -1545,7 +1751,7 @@ class PartialPooling:
         gn, gd = unit.names.count, unit.dates.count
         if gn < 2 or gd < 2:
             return None
-        by = [one(sum((cell[4] - w * cell[3]) ** 2 for cell in table.sorted_vectors()), g)
+        by = [one(sum((cell[4] - w * cell[3]) ** 2 for cell in table.vectors()), g)
               for table, g in ((unit.names, g_name), (unit.dates, g_date))]
         var = by[0] + by[1] - pair
         if not var > 0.0:
@@ -1553,7 +1759,7 @@ class PartialPooling:
         return w, var, min(g_name, g_date) - 1
 
     def _tau(self, items):
-        """Method-of-moments between-bucket variances of one or two parameters, floored."""
+        """Method-of-moments between-bucket variances of each coefficient, floored."""
         dim = len(items[0][0]) if items else 1
         if len(items) < 2:
             return [self.tau2_floor] * dim
@@ -1578,20 +1784,37 @@ class PartialPooling:
         """Clip a weight to ``[0, weight_cap]``."""
         return min(max(w, 0.0), self.weight_cap)
 
-    def _record(self, state, b, line, origin, pooled):
-        """One bucket's output row."""
+    def _bands(self, theta, se, df):
+        """Return the Student-t interval of every coefficient at every level of ``ci_levels``."""
+        if se is None or df is None or not df > 0.0:
+            return {f"{lvl:g}": {"lcb": None, "ucb": None} for lvl in self.ci_levels}
+        out = {}
+        for lvl in self.ci_levels:
+            c = student_t_critical(lvl, df)
+            out[f"{lvl:g}"] = {"lcb": [t - c * s for t, s in zip(theta, se)],
+                               "ucb": [t + c * s for t, s in zip(theta, se)]}
+        return out
+
+    def _record(self, state, b, theta, se, df, origin, pooled):
+        """One unit's output row."""
         f = state.fit(b)
-        a, slope, se_a, se_b, w, se_w = line
-        w_lcb = self._clip(w - self.lcb_k * se_w) if se_w is not None else 0.0
-        return {
-            "a": a, "b": slope, "se_a": se_a, "se_b": se_b,
-            "b_lcb": None if se_b is None else slope - self.lcb_k * se_b,
-            "w": w, "se_w": se_w, "w_lcb": w_lcb, "pooled": pooled,
+        row = {
+            "theta": list(theta), "se": None if se is None else list(se), "df": df,
+            "lcb": None if se is None else [t - self.lcb_k * s for t, s in zip(theta, se)],
+            "bands": self._bands(theta, se, df), "pooled": pooled,
             "clusters": f["clusters"], "rows": f["rows"], "dates": f["dates"], "names": f["names"],
+            "g_eff": f["g_eff"], "g_eff_blocks": f["g_eff_blocks"],
         }
+        if state.regressors == 1:
+            w, se_w = origin
+            row.update(
+                a=theta[0], b=theta[1], se_a=None if se is None else se[0], se_b=None if se is None else se[1],
+                b_lcb=None if se is None else theta[1] - self.lcb_k * se[1], w=w, se_w=se_w,
+                w_lcb=self._clip(w - self.lcb_k * se_w) if se_w is not None else 0.0)
+        return row
 
     def fit(self, state):
-        """Return the shrunk per-bucket lines and weights of a state.
+        """Return the shrunk per-bucket coefficients (and, for one regressor, weights) of a state.
 
         Parameters
         ----------
@@ -1601,12 +1824,14 @@ class PartialPooling:
         Returns
         -------
         dict
-            ``warm`` (bool), ``pooled`` (the pooled row) and ``buckets`` (a list
-            over every bucket index). A row holds ``a``, ``b``, ``se_a``,
-            ``se_b`` (``None`` when unavailable), ``b_lcb``, ``w``, ``se_w``,
-            ``w_lcb``, ``pooled`` (True when the bucket took the pool) and the raw
-            ``clusters``, ``rows``, ``dates``, ``names``. Before warm-up every
-            ``a``, ``b`` and ``w`` is 0.
+            ``warm`` (bool), ``pooled`` (the pooled row), ``buckets`` (a list over every bucket index) and
+            ``counts`` (``pooled_bucket_blocks``, ``v_floored``, ``direction_singular``,
+            ``pooled_bucket_direction``). A row holds ``theta`` and ``se`` (lists over the coefficients,
+            ``None`` when unavailable), ``df``, ``lcb`` (``x - lcb_k se``), ``bands`` (per level in
+            ``ci_levels``, ``lcb`` and ``ucb`` lists), ``pooled`` (True when the bucket took the pool) and the
+            raw ``clusters``, ``rows``, ``dates``, ``names`` with the Kish ``g_eff`` and ``g_eff_blocks``;
+            with one regressor also ``a``, ``b``, ``se_a``, ``se_b``, ``b_lcb``, ``w``, ``se_w``, ``w_lcb``.
+            Before warm-up every coefficient and weight is 0.
 
         Raises
         ------
@@ -1615,40 +1840,59 @@ class PartialPooling:
         """
         if not isinstance(state, LinearEdgeState):
             raise ValueError(f"state must be a LinearEdgeState, got {type(state).__name__}")
-        zero = (0.0, 0.0, None, None, 0.0, None)
+        k = state.regressors
+        q = k + 1
+        counts = {"pooled_bucket_blocks": 0, "v_floored": 0, "direction_singular": 0, "pooled_bucket_direction": 0}
+        no_origin = (0.0, None)
         pf = state.fit(None)
-        warm = pf["a"] is not None and self._enough(pf["g_eff"]) and pf["dates"] >= self.min_dates
+        warm = (pf["theta"] is not None and self._enough(pf["g_eff"]) and pf["dates"] >= self.min_dates
+                and (self.band != "two_block" or pf["g_eff_blocks"][0] >= self.min_blocks))
         if not warm:
-            return {"warm": False, "pooled": self._record(state, None, zero, None, True),
-                    "buckets": [self._record(state, b, zero, None, True) for b in range(state.n_buckets)]}
-        th0 = [pf["a"], pf["b"]]
-        sw0 = state.sandwich(None, th0, "two")
-        se0 = None if sw0 is None else [math.sqrt(sw0["cov"][0][0]), math.sqrt(sw0["cov"][1][1])]
-        org0 = self._origin(state._unit(None))
-        w0 = 0.0 if org0 is None else self._clip(org0[0])
-        se_w0 = None if org0 is None else math.sqrt(org0[1])
-        pooled_row = (th0[0], th0[1], se0 and se0[0], se0 and se0[1], w0, se_w0)
-        lines = {b: self._line(state, b) for b in range(state.n_buckets)}
+            zero = [0.0] * q
+            return {"warm": False, "counts": counts,
+                    "pooled": self._record(state, None, zero, None, None, no_origin, True),
+                    "buckets": [self._record(state, b, zero, None, None, no_origin, True)
+                                for b in range(state.n_buckets)]}
+        th0 = pf["theta"]
+        sw0 = self._cov(state, None, th0)
+        se0 = None if sw0 is None else [math.sqrt(sw0["cov"][i][i]) for i in range(q)]
+        df0 = None if sw0 is None else sw0["df"]
+        org0 = self._origin(state._unit(None)) if k == 1 else None
+        origin0 = (0.0, None) if k == 2 else (0.0 if org0 is None else self._clip(org0[0]),
+                                                None if org0 is None else math.sqrt(org0[1]))
+        ctx = {"counts": counts, "v0": None if sw0 is None else sw0["cov"], "g0": pf["g_eff_blocks"][0]}
+        fits = {b: state.fit(b) for b in range(state.n_buckets)}
+        lines = {b: self._line(state, b, fits[b], ctx) for b in range(state.n_buckets)}
         tau = self._tau([(x[0], x[1]) for x in lines.values() if x is not None])
-        origins = {b: self._origin(state._unit(b)) if self._enough(state.fit(b)["g_eff"]) else None
-                   for b in range(state.n_buckets)}
-        tau_w = self._tau([([o[0]], [[o[1]]]) for o in origins.values() if o is not None])
+        origins = {}
+        tau_w = None
+        if k == 1:
+            origins = {b: self._origin(state._unit(b)) if self._enough(fits[b]["g_eff"]) else None
+                       for b in range(state.n_buckets)}
+            tau_w = self._tau([([o[0]], [[o[1]]]) for o in origins.values() if o is not None])
         rows = []
         for b in range(state.n_buckets):
-            ln, org = lines[b], origins[b]
+            ln = lines[b]
             if ln is None:
-                a, slope, se_a, se_b = pooled_row[:4]
+                if k == 2 and fits[b]["rows"] > 0:
+                    counts["pooled_bucket_direction"] += 1
+                theta, se, df = th0, se0, df0
             else:
-                (a, slope), post = self._shrink_line(ln[0], ln[1], th0, tau)
-                se_a, se_b = math.sqrt(max(post[0][0], 0.0)), math.sqrt(max(post[1][1], 0.0))
-            if org is None:
-                w, se_w = w0, se_w0
+                theta, post = self._shrink_line(ln[0], ln[1], th0, tau)
+                se, df = [math.sqrt(max(post[i][i], 0.0)) for i in range(q)], ln[2]
+            if k == 1:
+                org = origins[b]
+                if org is None:
+                    wse = origin0
+                else:
+                    wb, vb = self._clip(org[0]), org[1]
+                    wse = (self._clip(wb + vb / (tau_w[0] + vb) * (origin0[0] - wb)),
+                           math.sqrt(tau_w[0] * vb / (tau_w[0] + vb)))
             else:
-                wb, vb = self._clip(org[0]), org[1]
-                w = self._clip(wb + vb / (tau_w[0] + vb) * (w0 - wb))
-                se_w = math.sqrt(tau_w[0] * vb / (tau_w[0] + vb))
-            rows.append(self._record(state, b, (a, slope, se_a, se_b, w, se_w), org, ln is None))
-        return {"warm": True, "pooled": self._record(state, None, pooled_row, org0, False), "buckets": rows}
+                wse = no_origin
+            rows.append(self._record(state, b, theta, se, df, wse, ln is None))
+        return {"warm": True, "counts": counts, "buckets": rows,
+                "pooled": self._record(state, None, th0, se0, df0, origin0, False)}
 
 
 class NameAdjustment:

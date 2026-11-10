@@ -29,7 +29,7 @@ EXPIRY_DAYS = (14, 21, 13)  # two Fridays and a Thursday (a holiday expiry settl
 ABS_Z = {90.0: 1.6, 100.0: 0.0, 110.0: 0.5}
 STATES = ("expanding_fill", "decayed_fill", "expanding_decision", "decayed_decision")
 EDGES = {"dte_edges": [8, 22], "abs_z_edges": [1.0], "spread_edges": [0.15]}
-POOL = {"min_clusters": 2, "min_dates": 2, "tau2_floor": 1e-6, "weight_cap": 1.0, "lcb_k": 1.0}
+POOL = {"min_clusters": 2, "min_dates": 2, "tau2_floor": 1e-6, "weight_cap": 1.0, "lcb_k": 1.0, "band": "two"}
 ADJUST = {"name_prior_clusters": 26, "name_min_clusters": 2}
 REGIME = {"regime_lookback_weeks": 4, "regime_min_weeks": 2}
 
