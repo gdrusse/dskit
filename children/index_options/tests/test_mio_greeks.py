@@ -1270,3 +1270,146 @@ def test_the_template_carries_the_a2_child_keys_and_every_declared_param():
     notes = json.loads(TEMPLATE.read_text())["pipeline"]["greeks"]["notes"]
     for word in ("quarter", "dividends", "seal_crossing", "cadence", "A1"):
         assert word in notes, word
+
+
+# ---- ADR-0310 A2 stage 2a: child wiring of the core outputs --------------------------------------
+BOOK_PNLS = {BLK_ID: -938.90, f"{METHOD}|2021-04-05:MMM:2021-05-21": 398.7,
+             f"{METHOD}|2021-04-12:MMM:2021-05-21": 398.7}
+
+
+def test_the_quarter_is_stamped_on_every_row_of_every_output(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)
+    for name in ("books", "cells", "exposure"):
+        assert out[name] and {r["quarter"] for r in out[name]} == {"2021Q2"}, name
+        header = (out_dir / f"{name}.csv").read_text().splitlines()[0].split(",")
+        assert "quarter" in header, name
+
+
+def test_an_empty_method_still_declares_the_quarter_column(world):
+    def empty(table):
+        for r in table["results"]:
+            r["result"]["trades"] = []
+    run_dir, out_dir = world(mutate=empty)
+    run_node(run_dir, out_dir)
+    for name in ("books", "cells", "exposure"):
+        assert "quarter" in (out_dir / f"{name}.csv").read_text().splitlines()[0].split(","), name
+
+
+def test_direction_read_is_the_method_by_quarter_block_with_the_tests_own_sums(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)
+    read = out["summary"]["methods"][METHOD]["direction_read"]
+    assert (read["quarter"], read["method"]) == ("2021Q2", METHOD)
+    assert (read["n_books"], read["n_books_total"], read["n_books_excluded"]) == (3, 3, 0)
+    assert read["pnl_usd"] == pytest.approx(sum(BOOK_PNLS.values()))
+    assert read["gross_pnl_usd"] == pytest.approx(sum(abs(v) for v in BOOK_PNLS.values()))
+    rows = out["books"]
+    assert read["static"]["delta_part_usd"] == pytest.approx(sum(r["static_delta_pnl"] for r in rows))
+    assert read["static"]["beyond_usd"] == pytest.approx(sum(r["beyond_static_delta"] for r in rows))
+    assert read["payoff"]["delta_part_usd"] == pytest.approx(sum(r["payoff_delta_pnl"] for r in rows))
+    for part in ("static", "payoff"):
+        table = read[part]["sign_table"]
+        assert sum(q["n"] for q in table.values()) == 3
+        assert sum(q["pnl_usd"] for q in table.values()) == pytest.approx(read["pnl_usd"])
+    assert read["descriptive_only"].startswith("descriptive only")
+    json.dumps(read, allow_nan=False)
+
+
+def test_direction_read_basis_usd_is_the_distribution_of_the_books_basis(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)
+    basis = [r["delta_sh"] * (r["s_fill"] - r["forward"]) for r in out["books"]]
+    got = out["summary"]["methods"][METHOD]["direction_read"]["basis_usd"]
+    assert got["n"] == 3 and got["sum"] == pytest.approx(sum(basis))
+    assert (got["min"], got["max"]) == (pytest.approx(min(basis)), pytest.approx(max(basis)))
+    assert got["median"] == pytest.approx(sorted(basis)[1])
+    gross = sum(abs(v) for v in BOOK_PNLS.values())
+    assert got["abs_sum_over_gross"] == pytest.approx(sum(abs(b) for b in basis) / gross)
+
+
+def test_direction_read_forward_hedge_block_echoes_min_books_and_the_cost_source(world):
+    run_dir, out_dir = world()
+    read = run_node(run_dir, out_dir)["summary"]["methods"][METHOD]["direction_read"]
+    block = read["forward_hedge"]
+    assert block["min_books"] == 5 and block["hedge_cost_source"] == "placeholder"
+    assert block["n_decision_unmarked"] == 0 and block["n_not_attributed"] == 0
+    # every attributed book is a candidate: nothing is hard-to-borrow in the fixture's calm closes
+    assert block["n_hard_to_borrow"] == 0
+    assert block["n_hedged"] + block["n_unbounded_above"] + block["n_classifier_pending"] == 3
+    conc = read["concentration"]
+    assert conc["min_books"] == 5 and conc["small_cell"] is True
+    assert conc["n_books"] == block["n_hedged"]
+    assert read["concentration_pnl"]["n_books"] == 3 and read["concentration_pnl"]["min_books"] == 5
+
+
+def test_the_decision_session_sizes_the_forward_hedge_not_the_fill_session(world):
+    run_dir, out_dir = world()
+    row = rows_by(run_node(run_dir, out_dir))[BLK_ID]
+    scale = 100 * (5 + 1) / 6
+    d450 = black76_delta("call", BLK_FORWARD, 450.0, BLK_VOL, 11 / 365)       # decision: 11 days
+    d455 = black76_delta("call", BLK_FORWARD, 455.0, BLK_VOL, 11 / 365)
+    decision = 100 * (5 * d450 + d455)
+    assert scale > 0 and row["delta_f_sh_decision"] == pytest.approx(decision, rel=1e-9)
+    fill = 100 * (5 * black76_delta("call", BLK_FORWARD, 450.0, BLK_VOL, 10 / 365)
+                  + black76_delta("call", BLK_FORWARD, 455.0, BLK_VOL, 10 / 365))
+    assert row["delta_f_sh"] == pytest.approx(fill, rel=1e-9)
+    assert row["delta_f_sh_decision"] != pytest.approx(row["delta_f_sh"], rel=1e-6)
+    assert row["forward_hedge_units"] == math.trunc(-decision)
+    assert row["hedge_rounding_sh"] == pytest.approx(row["forward_hedge_units"] + decision)
+    assert row["trade_costs_usd"] == pytest.approx(
+        abs(row["forward_hedge_units"]) * (2 * 0.005 + (BLK_FORWARD + BLK_SETTLE) * 5.0 / 1e4))
+    assert row["borrow_usd"] == pytest.approx(
+        abs(row["forward_hedge_units"]) * BLK_FORWARD * 0.005 * 10 / 365)
+
+
+def test_a_book_the_decision_chain_cannot_mark_is_decision_unmarked_and_stays_attributed(world):
+    run_dir, out_dir = world(drop_chain=(("BLK", DECISION),))
+    out = run_node(run_dir, out_dir)
+    row = rows_by(out)[BLK_ID]
+    assert row["forward_hedge_status"] == "decision_unmarked"
+    assert row["status"] == "ok" and row["static_delta_pnl"] is not None
+    assert all(row[c] is None for c in ("forward_hedged_pnl", "hedge_pnl", "forward_hedge_costs"))
+    summary = out["summary"]
+    assert summary["decision_greeks_refusals"] == {"no_fill_quote": 1}
+    assert summary["methods"][METHOD]["direction_read"]["forward_hedge"]["n_decision_unmarked"] == 1
+    assert summary["methods"][METHOD]["direction_read"]["n_books"] == 3      # rank-null books count
+
+
+def test_the_run_summary_totals_the_forward_hedge_statuses_and_decision_refusals(world):
+    run_dir, out_dir = world(extra_methods=[{"id": "alt"}], drop_chain=(("BLK", DECISION),))
+    summary = run_node(run_dir, out_dir, methods=[METHOD, "alt"])["summary"]
+    assert summary["decision_greeks_refusals"] == {"no_fill_quote": 2}
+    per = [s["forward_hedge_status"] for s in summary["methods"].values()]
+    total = summary["forward_hedge_status"]
+    assert sum(total.values()) == 6 and total["decision_unmarked"] == 2
+    assert all(total[k] == sum(p.get(k, 0) for p in per) for k in total)
+
+
+def test_direction_read_carries_the_exclusion_counts_of_a_seal_crossing_run(world):
+    run_dir, out_dir = world(mutate=lambda t: _cross(t, poison=True))
+    out = run_node(run_dir, out_dir, seal_crossing="exclude")
+    read = out["summary"]["methods"][METHOD]["direction_read"]
+    assert (read["n_books"], read["n_books_total"], read["n_books_excluded"]) == (2, 3, 1)
+    assert read["pnl_usd"] == pytest.approx(-938.90 + 398.7)
+
+
+def test_cells_carry_the_forward_hedge_columns_and_null_sums_do_not_propagate(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)
+    header = (out_dir / "cells.csv").read_text().splitlines()[0].split(",")
+    for name in ("n_hedged", "n_unbounded_above", "hedgeable_share_gross", "forward_hedged_pnl_usd",
+                 "hedge_pnl_usd", "hedge_loss_reduction_usd", "hedge_costs_usd",
+                 "loo_sign_stable_hedge_pnl", "small_cell", "top1_share_gross", "descriptive_only"):
+        assert name in header, name
+    summary = out["summary"]
+    assert summary["hedged_pnl_usd"] is None and summary["n_stock_hedged"] == 0   # no dividend column
+    assert all(c["loo_sign_stable_hedge_pnl"] is None for c in out["cells"])
+
+
+def test_the_template_and_readme_describe_the_direction_read(world):
+    notes = json.loads(TEMPLATE.read_text())["pipeline"]["greeks"]["notes"]
+    for word in ("direction_read", "decision", "forward_hedge_status", "quarter"):
+        assert word in notes, word
+    readme = (CHILD / "README.md").read_text()
+    assert "direction_read" in readme

@@ -25,7 +25,8 @@ Refusals carry stable codes (:class:`GreeksRefusal`): ``window_outside_data_righ
 ``beta_min_pairs_mismatch`` (the run's ``correlation_min_pairs``), ``symbols_missing`` and
 ``multiplier_mismatch`` (the config's ``multiplier`` must equal the run's own solver
 multiplier), and (ADR-0310 A2) ``quarter_mismatch``, ``dividend_column_absent`` and
-``cell_by_incomplete``; ``seal_crossing`` ``exclude`` drops, by dates alone, books that settle past
+``cell_by_incomplete``; every output row carries the run's ``quarter`` and each method's summary
+carries ``direction_read`` (:meth:`MIOGreeksDiagnostics._direction_read`); ``seal_crossing`` ``exclude`` drops, by dates alone, books that settle past
 the seal. The per-book and per-day codes are the core's, hedge flags included. The static delta-hedge column's dividends come from the pinned bar
 files' ``dividend_amount`` column when it exists (:meth:`MIOGreeksDiagnostics._hedge_dividend`
 through :func:`~index_options.contracts.dividends_paid`), else every row is flagged
@@ -728,10 +729,12 @@ class MIOGreeksDiagnostics(BookGreeksReport):
             out["summary"]["rank_reasons"] = dict(sorted(Counter(r["rank_reason"] for r in ranked).items()))
             out["summary"]["rank_null_pnl_usd"] = self._null_rank_pnl(ranked)
             for name in merged:
-                merged[name] += [{"method": method, **row} if "method" not in row else row
+                merged[name] += [{"method": method, "quarter": p["quarter"], **row}
+                                 if "method" not in row else {"quarter": p["quarter"], **row}
                                  for row in out[name]]
             out["summary"]["n_books_total"] = len(trades[method])
             out["summary"]["n_books_excluded"] = len(trades[method]) - len(kept[method])
+            out["summary"]["direction_read"] = self._direction_read(method, out["books"], out["summary"])
             summaries[method] = out["summary"]
         summary = self._run_summary(summaries, flags, {**shas, **bar_shas, **{
             f"chain/{Path(f).stem}": d for f, d in quotes.files.items()}})
@@ -739,6 +742,17 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         result = {**merged, "summary": summary}
         self._write(out_dir, result)
         return result
+
+    def _direction_read(self, method, rows, summary):
+        """Return the method x quarter block ADR-0312 reads (ADR-0310 A2.1.3).
+
+        The core's :meth:`~dskit.pipeline.option_exposure.BookGreeksReport.direction_read` over
+        the method's book rows, led by ``quarter`` and ``method``; its ``n_books_total`` is the
+        method's requested books BEFORE any seal-crossing exclusion, beside ``n_books_excluded``.
+        """
+        read = self.direction_read(rows)
+        read.update(n_books_total=summary["n_books_total"], n_books_excluded=summary["n_books_excluded"])
+        return {"quarter": self.params["quarter"], "method": method, **read}
 
     def _a2_summary(self, kept, excluded):
         """Return the run-level A2 keys: quarter, dividends mode, seal crossing and shared books."""
@@ -785,6 +799,10 @@ class MIOGreeksDiagnostics(BookGreeksReport):
             "stock_hedge_note": STOCK_HEDGE_NOTE,
             "hedge_status": dict(sorted(sum((Counter(s["hedge_status"]) for s in summaries.values()),
                                             Counter()).items())),
+            "forward_hedge_status": dict(sorted(sum(
+                (Counter(s["forward_hedge_status"]) for s in summaries.values()), Counter()).items())),
+            "decision_greeks_refusals": dict(sorted(sum(
+                (Counter(s["decision_greeks_refusals"]) for s in summaries.values()), Counter()).items())),
             "hedge_dividend_source": self.hedge_dividend_source,
             "hedge_params": {k: self.params[k] for k in StaticDeltaHedge._PARAMS},
             "open_leg_unmarked": sum(s["open_leg_unmarked"] for s in summaries.values()),
@@ -809,8 +827,9 @@ class MIOGreeksDiagnostics(BookGreeksReport):
     def _declared(self):
         """Return the header each CSV has when it has no row."""
         cells = [*self.params["cell_by"], *BookGreeksReport.CELL_COLUMNS]
-        books = ["method", *(c for c in BookGreeksReport.BOOK_COLUMNS), "rank", "cadence", "rank_reason"]
-        return (books, ["method", *cells], ["method", *BookGreeksReport.EXPOSURE_COLUMNS])
+        books = ["method", "quarter", *BookGreeksReport.BOOK_COLUMNS, "rank", "cadence", "rank_reason"]
+        return (books, ["method", "quarter", *cells],
+                ["method", "quarter", *BookGreeksReport.EXPOSURE_COLUMNS])
 
     def _write(self, out_dir, result):
         """Serialize all four outputs in memory, then land them under ``out_dir``, all or nothing.
