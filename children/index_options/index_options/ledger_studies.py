@@ -1293,6 +1293,72 @@ class _SQLiteQuoteView:
             raise QuoteIndexIntegrityError(str(exc)) from exc
 
 
+class ParityForwards:
+    """The study's one owner of a day's usable chain rows, its spot and its parity forward (hedge and exposure share it).
+
+    Every parity forward goes through the one filter and owner, ``usable_parity_rows`` then
+    ``ParityForward.from_chain(rows, spot, exclude_strikes)``.
+
+    Parameters
+    ----------
+    study : WeeklyOptionPortfolioStudy
+        Supplies ``_quotes``, ``_bars``, ``_by_day`` and ``params``.
+    parity : dict
+        ``ParityForward`` params (``parity_strikes``, ``min_pairs``, ``max_pair_spread_frac``).
+    """
+
+    def __init__(self, study, parity):
+        self.study = study
+        self.parity = ParityForward(dict(parity))
+        self._rows = {}
+
+    def chain(self, symbol, day, expiry):
+        """Return one expiry's rows on ``day`` in the Greeks tool's shape (``right``, ``strike``, sizes, ``basis_factor``)."""
+        key = (symbol, day, expiry)
+        if key not in self._rows:
+            quotes = self.study._quotes[symbol]
+            if hasattr(quotes, "iter_for"):
+                raw = list(quotes.iter_for(day, expiry))
+            elif symbol in getattr(self.study, "_by_day", {}):
+                raw = [r for k, r in self.study._by_day[symbol].get(day, {}).items() if k[1] == expiry]
+            else:
+                raw = [r for k, r in quotes.items() if k[0] == day and k[1] == expiry]
+            self._rows[key] = [{"right": r["type"], "strike": float(r["strike_raw"]), "bid": r.get("bid"),
+                                "ask": r.get("ask"), "iv": r.get("iv"), "bid_size": r.get("bid_size"),
+                                "ask_size": r.get("ask_size"), "basis_factor": r.get("basis_factor")} for r in raw]
+        return self._rows[key]
+
+    def spot(self, symbol, day, factor):
+        """Return the underlying on ``day`` on the book's basis, or ``None``."""
+        close = self.study._bars[symbol].get(day)
+        return close / factor if number_ok(close) and close > 0 else None
+
+    def forward(self, symbol, day, expiry, factor, exclude=()):
+        """Return ``(forward, source)``: the parity forward of the usable rows, ``(spot, "spot")`` without a pair.
+
+        ``(None, code)`` when the day has no spot (``no_spot``) or its chain quotes a contract twice
+        (``duplicate_quote``).
+        """
+        spot = self.spot(symbol, day, factor)
+        if spot is None:
+            return None, "no_spot"
+        bridge = self.study.params["bridge"]
+        rows = usable_parity_rows(self.chain(symbol, day, expiry), factor, bridge["min_quote_size"],
+                                  bridge["max_relative_spread"], rescale=True)
+        try:
+            return self.parity.from_chain(rows, spot, exclude)
+        except ValueError:
+            return None, ParityForward.DUPLICATE_QUOTE
+
+    def quote(self, symbol, day, expiry, factor, right, strike):
+        """Return the contract's ``{bid, ask, iv}`` on ``day`` on the book's basis, or ``None`` (no row, no usable bid/ask)."""
+        row = next((r for r in self.chain(symbol, day, expiry) if r["right"] == right
+                    and math.isclose(r["strike"], strike, rel_tol=1e-9)), None)
+        if row is None or not (number_ok(row["bid"]) and number_ok(row["ask"])):
+            return None
+        return {"bid": row["bid"] / factor, "ask": row["ask"] / factor, "iv": row["iv"]}
+
+
 class ReplayHedge:
     """ADR-0312 Amendment 1 S3: the hedge of a saved selection, attached to a study's fills and settlements.
 
@@ -1349,9 +1415,9 @@ class ReplayHedge:
         self.study, self.block, self.mark_rule = study, dict(block), mark_rule
         self.missing = set()                                # (book id, day) marks on a carried-forward level
         self.overlay = HedgeOverlay.from_method({"hedge": self.block})
-        self.parity = ParityForward(dict(parity))
+        self.forwards = ParityForwards(study, parity)
+        self.parity = self.forwards.parity
         self._htb = HardToBorrowProxy({k: block[k] for k in HardToBorrowProxy._PARAMS})
-        self._rows = {}
 
     @property
     def counts(self):
@@ -1359,42 +1425,16 @@ class ReplayHedge:
         return self.overlay.counts
 
     def _chain(self, symbol, day, expiry):
-        """Return one expiry's rows on ``day`` in the Greeks tool's shape (``right``, ``strike``, sizes, ``basis_factor``)."""
-        key = (symbol, day, expiry)
-        if key not in self._rows:
-            quotes = self.study._quotes[symbol]
-            if hasattr(quotes, "iter_for"):
-                raw = list(quotes.iter_for(day, expiry))
-            elif symbol in getattr(self.study, "_by_day", {}):
-                raw = [r for k, r in self.study._by_day[symbol].get(day, {}).items() if k[1] == expiry]
-            else:
-                raw = [r for k, r in quotes.items() if k[0] == day and k[1] == expiry]
-            self._rows[key] = [{"right": r["type"], "strike": float(r["strike_raw"]), "bid": r.get("bid"),
-                                "ask": r.get("ask"), "iv": r.get("iv"), "bid_size": r.get("bid_size"),
-                                "ask_size": r.get("ask_size"), "basis_factor": r.get("basis_factor")} for r in raw]
-        return self._rows[key]
+        """Return one expiry's rows on ``day`` (the shared :class:`ParityForwards` owner's)."""
+        return self.forwards.chain(symbol, day, expiry)
 
     def _spot(self, symbol, day, factor):
         """Return the underlying on ``day`` on the book's basis, or ``None``."""
-        close = self.study._bars[symbol].get(day)
-        return close / factor if number_ok(close) and close > 0 else None
+        return self.forwards.spot(symbol, day, factor)
 
     def forward(self, symbol, day, expiry, factor, exclude=()):
-        """Return ``(forward, source)``: the parity forward of the usable rows, ``(spot, "spot")`` without a pair.
-
-        ``(None, code)`` when the day has no spot (``no_spot``) or its chain quotes a contract twice
-        (``duplicate_quote``).
-        """
-        spot = self._spot(symbol, day, factor)
-        if spot is None:
-            return None, "no_spot"
-        bridge = self.study.params["bridge"]
-        rows = usable_parity_rows(self._chain(symbol, day, expiry), factor, bridge["min_quote_size"],
-                                  bridge["max_relative_spread"], rescale=True)
-        try:
-            return self.parity.from_chain(rows, spot, exclude)
-        except ValueError:
-            return None, ParityForward.DUPLICATE_QUOTE
+        """Return ``(forward, source)`` (see :meth:`ParityForwards.forward`)."""
+        return self.forwards.forward(symbol, day, expiry, factor, exclude)
 
     def _entries(self, symbol, expiry, factor, decision, forward, legs):
         """Return the overlay's per-item entries for one-contract ``legs`` (``right``, ``strike``, ``sign``) on the decision session."""
