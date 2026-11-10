@@ -36,7 +36,9 @@ whose ``code`` attribute and message prefix are that code.
 """
 
 import bisect
+import itertools
 import math
+import random
 from dataclasses import dataclass
 from datetime import date, datetime
 from types import MappingProxyType
@@ -50,7 +52,11 @@ __all__ = [
     "LinearEdgeState",
     "ReliabilityBuckets",
     "SettledBefore",
+    "block_index",
     "kish_effective",
+    "wild_cluster_test",
+    "three_way_verdict",
+    "read_one",
     "PartialPooling",
     "NameAdjustment",
     "EdgeCalibrationMap",
@@ -261,6 +267,11 @@ class ReliabilityBuckets:
 
 _FIT_RTOL = NO_VARIANCE_RTOL
 _STRATA = ("buy", "sell", "top")
+_WAYS = ("one", "two", "two_block", "hac")
+#: Webb's six-point weights, each with probability 1/6 (used when the raw block count is below 12).
+_WEBB_WEIGHTS = (-math.sqrt(1.5), -1.0, -math.sqrt(0.5), math.sqrt(0.5), 1.0, math.sqrt(1.5))
+_ENUMERATE_MAX = 100_000
+_WEBB_BELOW = 12
 
 
 def _solve(m, rhs):
@@ -295,6 +306,36 @@ def _solve(m, rhs):
                 s -= a[i][j] * x[j][col]
             x[i][col] = s / a[i][i]
     return [row[0] for row in x] if not matrix else x
+
+
+def block_index(day, window_start, weeks):
+    """Return the time block of ``day``: ``floor((day - window_start).days / (7 * weeks))``.
+
+    Parameters
+    ----------
+    day : str or datetime.date
+        The settlement date.
+    window_start : str or datetime.date
+        The first day of the window (block 0 starts here).
+    weeks : int
+        The block length in weeks, at least 1.
+
+    Returns
+    -------
+    int
+        The block index, at least 0.
+
+    Raises
+    ------
+    ValueError
+        On a malformed date, a ``day`` before ``window_start`` or a bad ``weeks``.
+    """
+    if isinstance(weeks, bool) or not isinstance(weeks, int) or weeks < 1:
+        raise ValueError(f"weeks must be an integer >= 1, got {weeks!r}")
+    days = (date.fromisoformat(_iso(day, "day")) - date.fromisoformat(_iso(window_start, "window_start"))).days
+    if days < 0:
+        raise ValueError(f"{day} is before the window start {window_start}")
+    return days // (7 * weeks)
 
 
 def kish_effective(weight_sum, weight_sq_sum):
@@ -483,10 +524,23 @@ class _Table:
     def to_dict(self):
         return {str(k): list(self.cells[k]) for k in sorted(self.cells)}
 
+    def to_dict_pairs(self):
+        """Dump ``(name, block)`` keys as ``"name|block"`` strings (names hold no NUL)."""
+        return {f"{k[0]}\x00{k[1]}": list(self.cells[k]) for k in sorted(self.cells)}
+
     @classmethod
-    def from_dict(cls, p, blob, w2):
+    def from_dict(cls, p, blob, w2, int_keys=False):
         t = cls(p)
-        t.cells = {k: [float(v) for v in vec] for k, vec in blob.items()}
+        t.cells = {(int(k) if int_keys else k): [float(v) for v in vec] for k, vec in blob.items()}
+        t.w2 = float(w2)
+        return t
+
+    @classmethod
+    def from_pairs(cls, p, blob, w2):
+        t = cls(p)
+        for key, vec in blob.items():
+            name, blk = key.rsplit("\x00", 1)
+            t.cells[(name, int(blk))] = [float(v) for v in vec]
         t.w2 = float(w2)
         return t
 
@@ -494,8 +548,10 @@ class _Table:
 class _Unit:
     """Running sums of one regression: a bucket, or the pooled rows."""
 
-    def __init__(self, lay):
+    def __init__(self, lay, n_blocks=1):
         self.lay = lay
+        self.blocks = [_Table(lay.size) for _ in range(n_blocks)]  # one dimension per block length
+        self.pairs = [_Table(lay.size) for _ in range(n_blocks)]  # (name, block) units per block length
         self.tot = [0.0] * (lay.size + 1)  # the moment vector, then r*r (weighted)
         self.serr = 0.0  # sum w sigma^2 of the direction regressor
         self.rw2 = 0.0  # sum w^2 over rows (the row Kish count)
@@ -507,7 +563,7 @@ class _Unit:
         self.rows = 0  # unweighted counts
         self.clusters = 0
 
-    def add(self, name, day, vec, rr, serr, rows, rw2, groups):
+    def add(self, name, day, vec, rr, serr, rows, rw2, groups, blocks):
         """Fold one whole (name, date) cluster, given as its moment vector, into the sums."""
         for q in range(self.lay.size):
             self.tot[q] += vec[q]
@@ -520,6 +576,9 @@ class _Unit:
             self.cross[idx] += vec[i] * vec[j]
         self.names.add(name, vec)
         self.dates.add(day, vec)
+        for table, pairs, blk in zip(self.blocks, self.pairs, blocks):
+            table.add(blk, vec)
+            pairs.add((name, blk), vec)
         self.rows += rows
         self.clusters += 1
 
@@ -532,6 +591,8 @@ class _Unit:
         self.cross = [v * lam * lam for v in self.cross]
         self.names.scale(lam)
         self.dates.scale(lam)
+        for table in (*self.blocks, *self.pairs):
+            table.scale(lam)
 
     def to_dict(self):
         return {
@@ -539,11 +600,14 @@ class _Unit:
             "cross": list(self.cross), "rows": self.rows,
             "clusters": self.clusters, "names": self.names.to_dict(), "dates": self.dates.to_dict(),
             "names_w2": self.names.w2, "dates_w2": self.dates.w2,
+            "blocks": [t.to_dict() for t in self.blocks], "blocks_w2": [t.w2 for t in self.blocks],
+            "pairs": [t.to_dict_pairs() for t in self.pairs],
+            "pairs_w2": [t.w2 for t in self.pairs],
         }
 
     @classmethod
     def from_dict(cls, lay, blob):
-        unit = cls(lay)
+        unit = cls(lay, len(blob["blocks"]))
         unit.tot = [float(v) for v in blob["tot"]]
         unit.serr, unit.rw2 = float(blob["serr"]), float(blob["rw2"])
         unit.cw2, unit.groups = float(blob["cw2"]), float(blob["groups"])
@@ -551,6 +615,8 @@ class _Unit:
         unit.rows, unit.clusters = int(blob["rows"]), int(blob["clusters"])
         unit.names = _Table.from_dict(lay.size, blob["names"], blob["names_w2"])
         unit.dates = _Table.from_dict(lay.size, blob["dates"], blob["dates_w2"])
+        unit.blocks = [_Table.from_dict(lay.size, b, w2, int_keys=True) for b, w2 in zip(blob["blocks"], blob["blocks_w2"])]
+        unit.pairs = [_Table.from_pairs(lay.size, b, w2) for b, w2 in zip(blob["pairs"], blob["pairs_w2"])]
         if len(unit.tot) != lay.size + 1 or len(unit.cross) != len(lay.tri):
             raise ValueError("unit sums have the wrong size")
         return unit
@@ -612,7 +678,7 @@ class LinearEdgeState:
         self.block_lengths = block_lengths
         self._lay = _LAYOUTS[regressors]
         self._t = None
-        self._pooled = _Unit(self._lay)
+        self._pooled = _Unit(self._lay, self.block_lengths)
         self._buckets = {}
         self._seen = set()
         #: Rows counted, never silent: ``sigma2_missing`` (a direction row without a forward error variance).
@@ -671,6 +737,15 @@ class LinearEdgeState:
         return ([float(v) for v in e], [float(v) for v in r], [float(v) for v in e_dir],
                 None if sigma2 is None else [None if v is None else float(v) for v in sigma2])
 
+    def _blocks(self, blocks):
+        """Return the cluster's block indices, one per block length (all 0 when ``blocks`` is ``None``)."""
+        if blocks is None:
+            return [0] * self.block_lengths
+        if not isinstance(blocks, (list, tuple)) or len(blocks) != self.block_lengths or not all(
+                isinstance(b, int) and not isinstance(b, bool) and b >= 0 for b in blocks):
+            raise ValueError(f"blocks must be {self.block_lengths} non-negative integers, got {blocks!r}")
+        return list(blocks)
+
     @staticmethod
     def _per_row(values, m, what, ok):
         """Return ``values`` (a list of ``m`` entries each passing ``ok``), or ``None`` when absent."""
@@ -701,7 +776,8 @@ class LinearEdgeState:
         r : list of float
             Realized edge per row.
         blocks : list of int, optional
-            One non-negative block index per configured block length.
+            One non-negative block index per configured block length
+            (see :func:`block_index`); ``None`` puts the cluster in block 0.
         e_dir : list of float, optional
             Direction edge per row (required with ``regressors = 2``, refused with 1).
         weights : list of float, optional
@@ -733,6 +809,7 @@ class LinearEdgeState:
         wv = self._per_row(weights, m, "weights", lambda v: not isinstance(v, bool) and number_ok(v) and v > 0)
         sd = self._per_row(sides, m, "sides", lambda v: isinstance(v, int) and not isinstance(v, bool) and v in (1, -1))
         tp = self._per_row(top, m, "top", lambda v: isinstance(v, bool))
+        bl = self._blocks(blocks)
         if (name, s) in self._seen:
             raise ValueError(f"cluster ({name}, {s}) was already added: a cluster arrives whole, once")
         self.advance(day)
@@ -764,25 +841,26 @@ class LinearEdgeState:
                 a[4] += w * w
                 a[5] += w
         for key, (vec, rr, serr, rows, rw2, groups) in acc.items():
-            unit = self._pooled if key is None else self._buckets.setdefault(key, _Unit(lay))
-            unit.add(name, s, vec, rr, serr, rows, rw2, groups)
+            unit = self._pooled if key is None else self._buckets.setdefault(key, _Unit(lay, self.block_lengths))
+            unit.add(name, s, vec, rr, serr, rows, rw2, groups, bl)
 
     def _unit(self, b):
         """Return the sums of bucket ``b`` (``None`` pooled; ``"buy"``, ``"sell"``, ``"top"``); an unused unit is empty."""
         if b is None:
             return self._pooled
         if b in _STRATA:
-            return self._buckets.get(b) or _Unit(self._lay)
+            return self._buckets.get(b) or _Unit(self._lay, self.block_lengths)
         if isinstance(b, bool) or not isinstance(b, int) or not 0 <= b < self.n_buckets:
             raise ValueError(f"bucket must be None, one of {list(_STRATA)} or an integer in 0..{self.n_buckets - 1}, got {b!r}")
-        return self._buckets.get(b) or _Unit(self._lay)
+        return self._buckets.get(b) or _Unit(self._lay, self.block_lengths)
 
     @staticmethod
     def _effective(u):
         """Return the Kish counts of a unit: rows, groups and the cluster dimensions (part C)."""
         n = u.tot[0]
         return {"n_eff": kish_effective(n, u.rw2), "n_groups": u.groups, "g_eff": kish_effective(n, u.cw2),
-                "g_eff_names": kish_effective(n, u.names.w2), "g_eff_dates": kish_effective(n, u.dates.w2)}
+                "g_eff_names": kish_effective(n, u.names.w2), "g_eff_dates": kish_effective(n, u.dates.w2),
+                "g_eff_blocks": [kish_effective(n, t.w2) for t in u.blocks]}
 
     def _centred(self, u):
         """``(theta, centred Gram, centred cross, z sums)`` of a unit, or ``None`` when it cannot be fitted."""
@@ -848,7 +926,7 @@ class LinearEdgeState:
                    corr_dir_shape=c[0][1] / math.sqrt(c[0][0] * c[1][1]))
         return out
 
-    def sandwich(self, b, theta, way):
+    def sandwich(self, b, theta, way, block=0, lags=0):
         """Return the CR1 cluster-robust covariance of ``theta`` for a bucket.
 
         Parameters
@@ -860,7 +938,14 @@ class LinearEdgeState:
             taken at (the unit's own fit, or a shrunk one).
         way : str
             ``"one"`` for ``(name, settlement date)`` clusters, ``"two"`` for
-            name plus date minus ``(name, date)``.
+            name plus date minus ``(name, date)``, ``"two_block"`` for name plus
+            block minus ``(name, block)`` (Cameron-Gelbach-Miller on the time
+            blocks of length index ``block``), ``"hac"`` for the Driscoll-Kraay
+            band across the ordered blocks with Bartlett ``lags``.
+        block : int
+            Which configured block length (an index) the block ways use.
+        lags : int
+            Bartlett lags of the ``"hac"`` band (at least 0).
 
         Returns
         -------
@@ -884,6 +969,10 @@ class LinearEdgeState:
         if not (isinstance(theta, (list, tuple)) and len(theta) == k + 1 and all(
                 number_ok(x) and not isinstance(x, bool) for x in theta)):
             raise ValueError(f"theta must be {k + 1} finite numbers, got {theta!r}")
+        if way in ("two_block", "hac"):
+            self._block_arg(block)
+        if isinstance(lags, bool) or not isinstance(lags, int) or lags < 0:
+            raise ValueError(f"lags must be an integer >= 0, got {lags!r}")
         u = self._unit(b)
         lay = u.lay
         if u.rows < k + 2 or u.clusters < 2 or self._centred(u) is None:
@@ -898,20 +987,125 @@ class LinearEdgeState:
         if way == "one":
             return {"cov": pair, "rule": "one_way", "df": eff["g_eff"] - 1, "n_clusters": [u.clusters],
                     "g_eff": [eff["g_eff"]]}
-        gn, gd = u.names.count, u.dates.count
-        if gn < 2 or gd < 2 or eff["g_eff_names"] <= 1.0 or eff["g_eff_dates"] <= 1.0:
+        if way == "hac":
+            return self._hac(u, bread, theta, eff, block, lags)
+        if way == "two":
+            other, pairs, g_other, count_other = u.dates, None, eff["g_eff_dates"], u.dates.count
+        else:
+            other, g_other, count_other = u.blocks[block], eff["g_eff_blocks"][block], u.blocks[block].count
+            pairs = u.pairs[block]
+            pair = _sandwich_matrix(bread, _outer_from_vectors(lay, pairs.sorted_vectors(), theta),
+                                    kish_effective(u.tot[0], pairs.w2), n_eff, k)
+        gn = u.names.count
+        if gn < 2 or count_other < 2 or eff["g_eff_names"] <= 1.0 or g_other <= 1.0:
             return None
         by_name = _sandwich_matrix(bread, _outer_from_vectors(lay, u.names.sorted_vectors(), theta),
                                    eff["g_eff_names"], n_eff, k)
-        by_date = _sandwich_matrix(bread, _outer_from_vectors(lay, u.dates.sorted_vectors(), theta),
-                                   eff["g_eff_dates"], n_eff, k)
+        by_date = _sandwich_matrix(bread, _outer_from_vectors(lay, other.sorted_vectors(), theta), g_other, n_eff, k)
         cov = [[by_name[p][q] + by_date[p][q] - pair[p][q] for q in range(k + 1)] for p in range(k + 1)]
         rule = "two_way"
         if not _positive_definite(cov):
             cov = max(by_name, by_date, key=lambda m: m[1][1])
             rule = "max_one_way"
-        return {"cov": cov, "rule": rule, "df": min(eff["g_eff_names"], eff["g_eff_dates"]) - 1,
-                "n_clusters": [gn, gd, u.clusters], "g_eff": [eff["g_eff_names"], eff["g_eff_dates"], eff["g_eff"]]}
+        return {"cov": cov, "rule": rule, "df": min(eff["g_eff_names"], g_other) - 1,
+                "n_clusters": [gn, count_other, u.clusters],
+                "g_eff": [eff["g_eff_names"], g_other, kish_effective(u.tot[0], pairs.w2) if pairs else eff["g_eff"]]}
+
+    def _block_arg(self, block):
+        """Validate a block-length index."""
+        if isinstance(block, bool) or not isinstance(block, int) or not 0 <= block < self.block_lengths:
+            raise ValueError(f"block must be an integer in 0..{self.block_lengths - 1}, got {block!r}")
+
+    @staticmethod
+    def _hac(u, bread, theta, eff, block, lags):
+        """Return the Driscoll-Kraay band across the ordered blocks (Bartlett ``lags``), or ``None``."""
+        lay, k = u.lay, u.lay.k
+        table = u.blocks[block]
+        g_eff = eff["g_eff_blocks"][block]
+        if table.count < 2 or g_eff <= 1.0:
+            return None
+        lo, hi = min(table.cells), max(table.cells)
+        zero = [0.0] * (k + 1)
+        scores = [lay.score(theta, table.cells[i]) if i in table.cells else zero for i in range(lo, hi + 1)]
+        q = k + 1
+        meat = [[0.0] * q for _ in range(q)]
+        for s in scores:
+            for a in range(q):
+                for c in range(q):
+                    meat[a][c] += s[a] * s[c]
+        for lag in range(1, lags + 1):
+            wgt = 1.0 - lag / (lags + 1.0)
+            for g in range(len(scores) - lag):
+                for a in range(q):
+                    for c in range(q):
+                        meat[a][c] += wgt * (scores[g][a] * scores[g + lag][c] + scores[g + lag][a] * scores[g][c])
+        cov = _sandwich_matrix(bread, meat, g_eff, eff["n_eff"], k)
+        return {"cov": cov, "rule": "hac", "df": g_eff - 1, "n_clusters": [table.count], "g_eff": [g_eff]}
+
+    def block_vectors(self, b, block=0):
+        """Return the stored block moment vectors of a unit, in time order (present blocks only).
+
+        These are the block score inputs of the wild-cluster test and the HAC band: each vector is the
+        weighted sum of the unit's rows in one block, in the state's current weight units.
+
+        Parameters
+        ----------
+        b : int, str or None
+            The unit (as for :meth:`fit`).
+        block : int
+            Which configured block length (an index).
+
+        Returns
+        -------
+        list of list of float
+            One moment vector (``N, ...``) per block, ascending block index.
+        """
+        self._block_arg(block)
+        table = self._unit(b).blocks[block]
+        return [list(table.cells[i]) for i in sorted(table.cells)]
+
+    def bread(self, b):
+        """Return ``(X'WX)^-1`` of a unit in the state's current weight units, or ``None`` if it cannot be fitted."""
+        u = self._unit(b)
+        if self._centred(u) is None:
+            return None
+        k = self.regressors
+        return _solve(u.lay.gram(u.tot), [[1.0 if i == j else 0.0 for j in range(k + 1)] for i in range(k + 1)])
+
+    def fit_ratio(self, b, block=0):
+        """Return the ratio ``L = sum w r / sum w e`` of a unit with its linearised block scores.
+
+        The tail level of ADR-0311 D5 (``b = "top"``): how much of the predicted edge was realized. With two
+        regressors ``e`` is ``e_dir + e_shape``. The block score is ``z_g = R_g - L E_g``; the band is the CR1
+        sandwich ``G_eff/(G_eff-1) (n_eff-1)/(n_eff-2) sum z_g^2 / E^2`` on the blocks of length index ``block``.
+
+        Returns
+        -------
+        dict
+            ``L`` (``None`` when there are no rows or ``sum w e`` is 0), ``R``, ``E``, ``rows``, ``clusters``,
+            ``n_eff``, ``g_eff_blocks``, ``scores`` (ascending block index), ``se`` and ``df`` (``None`` below
+            two effective blocks).
+        """
+        self._block_arg(block)
+        u = self._unit(b)
+        lay, v = u.lay, u.tot
+        e_tot = v[1] if lay.k == 1 else v[1] + v[2]
+        eff = self._effective(u)
+        out = {"L": None, "R": v[lay.r], "E": e_tot, "rows": u.rows, "clusters": u.clusters, "n_eff": eff["n_eff"],
+               "g_eff_blocks": eff["g_eff_blocks"], "scores": [], "se": None, "df": None}
+        if u.rows == 0 or e_tot == 0.0:
+            return out
+        ratio = v[lay.r] / e_tot
+        out["L"] = ratio
+        table = u.blocks[block]
+        out["scores"] = [table.cells[i][lay.r] - ratio * (table.cells[i][1] if lay.k == 1 else
+                                                          table.cells[i][1] + table.cells[i][2])
+                         for i in sorted(table.cells)]
+        g_eff = eff["g_eff_blocks"][block]
+        if table.count >= 2 and g_eff > 1.0 and eff["n_eff"] > 2.0:
+            out["se"] = math.sqrt(_cr1(g_eff, eff["n_eff"], 1) * sum(z * z for z in out["scores"])) / abs(e_tot)
+            out["df"] = g_eff - 1
+        return out
 
     def to_dict(self):
         """Return the whole state as JSON-safe sums (no row history).
@@ -960,6 +1154,267 @@ class LinearEdgeState:
         except (KeyError, TypeError) as exc:
             raise ValueError(f"malformed LinearEdgeState dump: {exc!r}") from exc
         return state
+
+
+# ---------------------------------------------------------------- the wild-cluster test and the reads
+
+
+def _wild_terms(vectors, q, score):
+    """Return per-block ``(u_g, G_g)`` with score ``s_g(theta) = u_g - G_g theta`` and the block count."""
+    if not vectors:
+        raise ValueError("block_vectors must not be empty")
+    p = len(vectors[0])
+    if p not in (5, 9) or any(len(v) != p for v in vectors):
+        raise ValueError("block_vectors must be moment vectors of 5 or 9 numbers")
+    lay = _LAYOUTS[1 if p == 5 else 2]
+    if score == "ratio":
+        if q != 1:
+            raise ValueError("the ratio score map has one parameter")
+        terms = [([v[lay.r]], [[v[1] if lay.k == 1 else v[1] + v[2]]]) for v in vectors]
+    elif score == "ols":
+        if q != lay.k + 1:
+            raise ValueError(f"theta_hat must have {lay.k + 1} entries for these block vectors")
+        terms = [(lay.xr(v), lay.gram(v)) for v in vectors]
+    else:
+        raise ValueError(f"score must be 'ols' or 'ratio', got {score!r}")
+    return terms
+
+
+class _Wild:
+    """The restricted wild-cluster bootstrap of one hypothesis, formed from stored block sums."""
+
+    def __init__(self, terms, theta_hat, bread, h, h0, factor):
+        self.terms, self.bread, self.h, self.h0, self.factor = terms, bread, h, h0, factor
+        q = len(theta_hat)
+        self.q = q
+        bh = bread[h]
+        self.theta_hat = [float(x) for x in theta_hat]
+        shift = (self.theta_hat[h] - h0) / bread[h][h]
+        self.theta_r = [self.theta_hat[i] - bread[i][h] * shift for i in range(q)]
+        self.s_r = [self._score(u, g, self.theta_r) for u, g in terms]
+        self.c_r = [sum(bh[a] * s[a] for a in range(q)) for s in self.s_r]
+        obs = [sum(bh[a] * x for a, x in enumerate(self._score(u, g, self.theta_hat))) for u, g in terms]
+        var = factor * sum(c * c for c in obs)
+        self.se = math.sqrt(var)
+        self.t = (self.theta_hat[h] - h0) / self.se if self.se > 0.0 else math.inf
+
+    @staticmethod
+    def _score(u, g, theta):
+        return [u[i] - sum(g[i][j] * theta[j] for j in range(len(theta))) for i in range(len(theta))]
+
+    def draw(self, eps):
+        """Return ``(theta_star, t_star)`` for one vector of block weights."""
+        q, bread, h = self.q, self.bread, self.h
+        v = [sum(e * s[a] for e, s in zip(eps, self.s_r)) for a in range(q)]
+        delta = [sum(bread[i][a] * v[a] for a in range(q)) for i in range(q)]
+        theta_star = [self.theta_r[i] + delta[i] for i in range(q)]
+        bh = bread[h]
+        total = 0.0
+        for (_, g), e, c_r in zip(self.terms, eps, self.c_r):
+            gd = [sum(g[a][j] * delta[j] for j in range(q)) for a in range(q)]
+            c = e * c_r - sum(bh[a] * gd[a] for a in range(q))
+            total += c * c
+        var = self.factor * total
+        return theta_star, (theta_star[h] - self.h0) / math.sqrt(var) if var > 0.0 else math.inf
+
+
+def _wild_draw(block_vectors, theta_hat, bread, h0_index, h0_value, eps, factor=1.0, score="ols"):
+    """Return ``(theta_r, theta_star, t_star)`` of ONE draw with the given block weights ``eps``."""
+    terms = _wild_terms(block_vectors, len(theta_hat), score)
+    w = _Wild(terms, theta_hat, bread, h0_index, float(h0_value), factor)
+    theta_star, t_star = w.draw(list(eps))
+    return w.theta_r, theta_star, t_star
+
+
+def wild_cluster_test(block_vectors, theta_hat, bread, h0_index, h0_value, alternative, level, draws, seed,
+                      factor=None, score="ols"):
+    """Test ``theta[h0_index] = h0_value`` by the restricted wild-cluster bootstrap over time blocks.
+
+    Formed entirely from the stored block moment vectors (so it is incremental and deterministic). The
+    restricted estimate ``theta_r`` imposes the null; per draw each block ``g`` gets a weight ``eps_g``,
+    ``theta* = theta_r + bread sum_g eps_g s_g`` with ``s_g`` the restricted block score, the bootstrap
+    block scores are ``G_g (theta_r - theta*) + eps_g s_g`` (``G_g = X_g'WX_g``), and ``t*`` is the
+    bootstrap CR1 t of the tested coefficient. The weights are Webb's six-point weights when the RAW block
+    count is below 12, else Rademacher; all ``6^G`` (``2^G``) patterns are enumerated when there are at most
+    ``10^5``, else ``draws`` random patterns from ``random.Random(seed)``.
+
+    Parameters
+    ----------
+    block_vectors : list of list of float
+        The stored block moment vectors (:meth:`LinearEdgeState.block_vectors`), at least two.
+    theta_hat : sequence of float
+        The unrestricted estimate.
+    bread : list of list of float
+        ``(X'WX)^-1`` in the same weight units as the block vectors (:meth:`LinearEdgeState.bread`).
+    h0_index : int
+        The coefficient tested.
+    h0_value : float
+        Its value under the null.
+    alternative : str
+        ``"greater"`` (reject when ``theta_h`` is established above the null), ``"less"`` or ``"two_sided"``.
+    level : float
+        The confidence level in (0, 1); the test rejects when ``p < (1 - level) / 2`` (one-sided) or
+        ``p < 1 - level`` (two-sided).
+    draws : int
+        Random draws when the patterns are too many to enumerate (at least 1).
+    seed : int
+        Seed of the random draws.
+    factor : float, optional
+        The CR1 factor applied to the sandwich (default ``G / (G - 1)`` on the raw block count). A common
+        factor does not change ``p``; it scales ``t``.
+    score : str
+        ``"ols"`` (the regression score map) or ``"ratio"`` (the one-parameter ratio ``sum R / sum E``).
+
+    Returns
+    -------
+    dict
+        ``p``, ``reject``, ``t`` (observed), ``se``, ``scheme`` (``"webb"`` or ``"rademacher"``), ``draws``
+        (patterns used) and ``theta_restricted``.
+
+    Raises
+    ------
+    ValueError
+        On fewer than two blocks, a bad argument, or a zero standard error.
+    """
+    if alternative not in ("greater", "less", "two_sided"):
+        raise ValueError(f"alternative must be 'greater', 'less' or 'two_sided', got {alternative!r}")
+    if isinstance(level, bool) or not number_ok(level) or not 0.0 < level < 1.0:
+        raise ValueError(f"level must be a number in (0, 1), got {level!r}")
+    for what, v, low in (("draws", draws, 1), ("seed", seed, None)):
+        if isinstance(v, bool) or not isinstance(v, int) or (low is not None and v < low):
+            raise ValueError(f"{what} must be an integer" + ("" if low is None else f" >= {low}") + f", got {v!r}")
+    q = len(theta_hat)
+    if isinstance(h0_index, bool) or not isinstance(h0_index, int) or not 0 <= h0_index < q:
+        raise ValueError(f"h0_index must be an integer in 0..{q - 1}, got {h0_index!r}")
+    if isinstance(h0_value, bool) or not number_ok(h0_value):
+        raise ValueError(f"h0_value must be a finite number, got {h0_value!r}")
+    terms = _wild_terms(block_vectors, q, score)
+    g_raw = len(terms)
+    if g_raw < 2:
+        raise ValueError("the wild-cluster test needs at least two blocks")
+    cr1 = g_raw / (g_raw - 1) if factor is None else float(factor)
+    w = _Wild(terms, theta_hat, bread, h0_index, float(h0_value), cr1)
+    if not w.se > 0.0:
+        raise ValueError("the observed standard error is zero")
+    webb = g_raw < _WEBB_BELOW
+    weights = _WEBB_WEIGHTS if webb else (-1.0, 1.0)
+    patterns = len(weights) ** g_raw
+    if patterns <= _ENUMERATE_MAX:
+        stream = itertools.product(weights, repeat=g_raw)
+        used = patterns
+    else:
+        rng = random.Random(seed)
+        stream = ([rng.choice(weights) for _ in range(g_raw)] for _ in range(draws))
+        used = draws
+    tol = 1e-12 * max(1.0, abs(w.t))
+    hits = 0
+    for eps in stream:
+        t_star = w.draw(eps)[1]
+        if alternative == "greater":
+            hits += t_star >= w.t - tol
+        elif alternative == "less":
+            hits += t_star <= w.t + tol
+        else:
+            hits += abs(t_star) >= abs(w.t) - tol
+    p = hits / used
+    alpha = (1.0 - level) / 2.0 if alternative != "two_sided" else 1.0 - level
+    return {"p": p, "reject": p < alpha, "t": w.t, "se": w.se, "scheme": "webb" if webb else "rademacher",
+            "draws": used, "theta_restricted": list(w.theta_r)}
+
+
+def three_way_verdict(pass_rejects, fail_rejects, ok=True):
+    """Return ``"PASS"``, ``"FAIL"`` or ``"UNRESOLVED"`` from the one-sided tests of a read (ADR-0311 D5).
+
+    PASS iff ``ok`` and every test in ``pass_rejects`` rejected (each statistic is established above 0);
+    FAIL iff ``ok`` and every test in ``fail_rejects`` rejected (each statistic is established below its
+    material floor); anything else, including a read whose fill checks failed (``ok`` False), is
+    UNRESOLVED.
+
+    Parameters
+    ----------
+    pass_rejects : sequence of bool
+        ``reject`` flags of the tests ``statistic <= 0``.
+    fail_rejects : sequence of bool
+        ``reject`` flags of the tests ``statistic >= floor``.
+    ok : bool
+        Whether the fill-rate and sensitivity checks hold (D2(iv)).
+
+    Returns
+    -------
+    str
+        The verdict.
+    """
+    if ok and pass_rejects and all(pass_rejects):
+        return "PASS"
+    if ok and fail_rejects and all(fail_rejects):
+        return "FAIL"
+    return "UNRESOLVED"
+
+
+def _floor_param(name, value):
+    if isinstance(value, bool) or not number_ok(value) or not 0.0 < value <= 1.0:
+        raise ValueError(f"{name} must be a finite number in (0, 1], got {value!r}")
+    return float(value)
+
+
+def _statistic_tests(value, vectors, theta_hat, bread, h, factor, score, floor, level, draws, seed):
+    """Run the two one-sided tests of one statistic: ``> 0`` and ``< floor``."""
+    greater = wild_cluster_test(vectors, theta_hat, bread, h, 0.0, "greater", level, draws, seed, factor, score)
+    less = wild_cluster_test(vectors, theta_hat, bread, h, floor, "less", level, draws, seed, factor, score)
+    return {"value": value, "t": greater["t"], "se": greater["se"], "p_gt": greater["p"], "p_lt": less["p"],
+            "scheme": greater["scheme"], "draws": greater["draws"], "gt0": greater["reject"],
+            "lt_floor": less["reject"]}
+
+
+def read_one(state, block, level, draws, seed, b0_floor, tail_level_floor, ok=True):
+    """Return read 1 of ADR-0311 D5 from a one-regressor state: ``b_0`` and ``L_top``, with the verdict.
+
+    ``b_0`` is the pooled slope of ``r`` on ``e``; ``L_top`` the tail level ``sum w r / sum w e`` of the
+    ``"top"`` unit. Each is tested ``> 0`` and ``< floor`` by :func:`wild_cluster_test` on the blocks of
+    length index ``block`` (the quarter blocks). The verdict is :func:`three_way_verdict` with ``ok`` the
+    fill-rate and sensitivity checks the caller made.
+
+    Parameters
+    ----------
+    state : LinearEdgeState
+        A one-regressor state holding the reported rows, with a ``"top"`` unit.
+    block : int
+        The block-length index to test on.
+    level : float
+        The confidence level of the fixed-sequence tests.
+    draws, seed : int
+        As for :func:`wild_cluster_test`.
+    b0_floor, tail_level_floor : float
+        The material floors in (0, 1].
+    ok : bool
+        Whether the fill checks hold.
+
+    Returns
+    -------
+    dict
+        ``b0`` and ``ltop`` (each ``value``, ``t``, ``se``, ``p_gt``, ``p_lt``, ``scheme``, ``draws``, ``gt0``,
+        ``lt_floor``, or ``None`` when the statistic cannot be formed) and ``verdict``.
+    """
+    if not isinstance(state, LinearEdgeState) or state.regressors != 1:
+        raise ValueError("read_one needs a one-regressor LinearEdgeState")
+    b0f, tlf = _floor_param("b0_floor", b0_floor), _floor_param("tail_level_floor", tail_level_floor)
+    out = {"b0": None, "ltop": None, "verdict": "UNRESOLVED"}
+    fit = state.fit(None)
+    if fit["theta"] is not None and len(state.block_vectors(None, block)) >= 2:
+        eff = fit
+        factor = _cr1(eff["g_eff_blocks"][block], eff["n_eff"], 1) if eff["g_eff_blocks"][block] > 1.0 else None
+        if factor is not None and eff["n_eff"] > 2.0:
+            out["b0"] = _statistic_tests(fit["b"], state.block_vectors(None, block), fit["theta"], state.bread(None),
+                                         1, factor, "ols", b0f, level, draws, seed)
+    ratio = state.fit_ratio("top", block)
+    if ratio["L"] is not None and ratio["se"] is not None:
+        factor = _cr1(ratio["g_eff_blocks"][block], ratio["n_eff"], 1)
+        out["ltop"] = _statistic_tests(ratio["L"], state.block_vectors("top", block), [ratio["L"]],
+                                       [[1.0 / ratio["E"]]], 0, factor, "ratio", tlf, level, draws, seed)
+    if out["b0"] and out["ltop"]:
+        out["verdict"] = three_way_verdict([out["b0"]["gt0"], out["ltop"]["gt0"]],
+                                           [out["b0"]["lt_floor"], out["ltop"]["lt_floor"]], ok)
+    return out
 
 
 # ---------------------------------------------------------------- stage 2a: pooling, names, the map
