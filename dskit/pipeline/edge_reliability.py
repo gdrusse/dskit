@@ -45,6 +45,7 @@ from datetime import date, datetime
 from types import MappingProxyType
 
 from dskit.pipeline.kinds_split import label_reaches
+from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL  # the single owner (ADR-0313 X4)
 from dskit.pipeline.records import cluster_ok, number_ok
 from dskit.pipeline.stats import NO_VARIANCE_RTOL, student_t_critical
 
@@ -65,9 +66,6 @@ __all__ = [
     "TrailingRegime",
 ]
 
-# single owner moves to dskit.pipeline.method_blocks (ADR-0313 X4); switched at merge
-#: Newest ``sealed_from`` a config may name until the owner lifts the seal (ADR-0311 rule 7).
-DEVELOPMENT_SEAL = "2021-07-01"
 #: First day that is never readable, whatever the config says (ADR-0311 rule 7).
 _HARD_DATA_END = "2024-01-01"
 _REGIMES = ("low", "high")
