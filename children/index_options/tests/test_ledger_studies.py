@@ -5510,3 +5510,58 @@ def test_a_held_hedged_book_enters_the_account_shock_with_its_forward_leg_only_i
     leg = ledger_studies.ReplayHedge.net_settle(book["hedge"], level)
     assert book["hedge"]["units"] > 0
     assert hedged["-0.1"] == pytest.approx(plain["-0.1"] - leg) and leg != 0.0
+
+
+# --- ADR-0312 program mode 3: fills, settlement and costs of a program-mode selection ------------------------------------
+
+def test_a_partial_fill_scales_the_hedge_with_the_filled_quantity():
+    full, hedge_full, _ = _hedge_study(block=_PROGRAM_BLOCK)
+    thin, hedge_thin, _ = _hedge_study(block=_PROGRAM_BLOCK, bump=lambda day, right, k, row: row.update(ask_size=3)
+                                       if (day == "2019-01-16" and right == "put" and k == 100.) else None)
+    thin.params["fill_sizing"] = ledger_studies.WeeklyOptionPortfolioStudy._AVAILABLE_SIZE
+    big, small = _filled(full, [("put", 1, 100., 8)]), _filled(thin, [("put", 1, 100., 8)])
+    assert [leg["quantity"] for leg in big["legs"]] == [8] and [leg["quantity"] for leg in small["legs"]] == [3]
+    hedge_full.attach(big, "2019-01-16", None)
+    hedge_thin.attach(small, "2019-01-16", None)
+    assert small["hedge"]["raw"] == pytest.approx(big["hedge"]["raw"] * 3 / 8)
+    assert small["hedge"]["units"] == math.trunc(small["hedge"]["raw"]) and small["hedge"]["units"] < big["hedge"]["units"]
+    assert small["reserve"] < big["reserve"]
+
+
+def test_a_program_mode_settlement_carries_the_forward_leg_and_the_trade_pnl_is_option_plus_hedge():
+    from dskit.pipeline.option_structures import structure_payoff
+
+    params, inputs = _program_world(dict(_PROGRAM_BLOCK))
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    result = study._method(params["methods"][0], None)
+    trade = result["trades"][0]
+    level = study._bars["X"][trade["expiry"]] / trade["factor"]
+    option = trade["credit"] + 100 * structure_payoff([(leg["right"], leg["sign"] * leg["quantity"]) for leg in trade["legs"]],
+                                                      level, [leg["strike"] for leg in trade["legs"]])
+    leg = ledger_studies.ReplayHedge.net_settle(trade["hedge"], level)
+    assert trade["hedge"]["units"] != 0 and leg != 0.0
+    assert trade["pnl"] == pytest.approx(option + leg) and result["pnl"] == pytest.approx(trade["pnl"])
+
+
+def test_the_program_cost_excess_is_signed_and_splits_into_a_units_effect_and_a_price_effect_by_hand():
+    params, inputs = _program_world(dict(_PROGRAM_BLOCK))
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    result = study._method(params["methods"][0], None)
+    record = result["trades"][0]["hedge"]
+    level = study._bars["X"]["2019-02-01"]
+    fee, bps = 0.005, 5.0
+    program = record["program_gross_units"] * (2 * fee + 2 * record["decision_forward"] * bps / 1e4)
+    replay = abs(record["units"]) * (2 * fee + (record["reference"] + level) * bps / 1e4)
+    assert record["program_cost_usd"] == pytest.approx(program)
+    out = result["hedge"]
+    assert out["program_cost_excess_usd"] == pytest.approx(program - replay) and program > replay > 0
+    assert out["program_cost_units_effect_usd"] + out["program_cost_price_effect_usd"] == pytest.approx(program - replay)
+    assert out["program_cost_units_effect_usd"] == pytest.approx(
+        (record["program_gross_units"] - abs(record["units"])) * (2 * fee + 2 * record["decision_forward"] * bps / 1e4))
+
+
+def test_a_replay_mode_result_carries_no_program_cost_field():
+    params, inputs = _program_world(dict(_REPLAY_BLOCK))
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert not [k for k in result["hedge"] if "program" in k]
+    assert all("program_cost_usd" not in t["hedge"] for t in result["trades"])
