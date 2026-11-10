@@ -1317,6 +1317,9 @@ dskit/pipeline/
 │                      structure_credit (shorts at the bid, longs at the ask), structure_payoff,
 │                      structure_max_loss, leg_intrinsic, quote_defect (coded quote refusals);
 │                      classify_option_strategy (post-solve anatomy/quantity labels, ADR-0276)
+├── hedge_overlay.py   HedgeOverlay, NullHedgeOverlay, FixedDeltaForwardHedge (ADR-0312 A1): held-share forward-delta units
+│                      (LegGreeks), one truncated net quantity per book, netted +/- margin rows, hedgeable classifier
+│                      (structure_max_loss), HardToBorrowProxy, carry_costs; parity forwards are inputs
 ├── false_signal.py    per-signal false-signal probability (ADR-0152):
 │                      SignalEvidence + FalseSignalEstimator ->
 │                      pi_hat and a widened pi_widened (NOT a bound);

@@ -217,6 +217,15 @@ def _hedge_terms(hedge, multiplier):
     return hedge[0] / multiplier, hedge[1]
 
 
+def _hedge_pnl(terms, level):
+    """Return the forward leg's P&L per option unit at ``level``, ``h x (level - F_ref)``; ``0`` without a hedge.
+
+    The one owner of the hedge term, read by :func:`structure_payoff` and :func:`structure_max_loss`;
+    ``terms`` is :func:`_hedge_terms`' output.
+    """
+    return 0 if terms is None else terms[0] * (level - terms[1])
+
+
 def structure_payoff(legs, level, strikes, hedge=None, multiplier=None):
     """Return a leg set's settlement payoff per unit, credit excluded.
 
@@ -267,8 +276,7 @@ def structure_payoff(legs, level, strikes, hedge=None, multiplier=None):
         return _unhedged_payoff(legs, level, strikes)
     if multiplier is None:
         raise ValueError("a hedged payoff needs the multiplier")
-    h, reference = _hedge_terms(hedge, multiplier)
-    return _unhedged_payoff(legs, level, strikes) + h * (level - reference)
+    return _unhedged_payoff(legs, level, strikes) + _hedge_pnl(_hedge_terms(hedge, multiplier), level)
 
 
 def _unhedged_payoff(legs, level, strikes):
@@ -368,8 +376,7 @@ def structure_max_loss(legs, strikes, credit_usd, multiplier, hedge=None):
     slope = multiplier * sum(sign for right, sign in legs if right == "call") + (0 if hedge is None else hedge[0])
     if slope < 0:
         return math.inf
-    return -min(credit_usd + multiplier * (_unhedged_payoff(legs, level, strikes)
-                                           + (0 if terms is None else terms[0] * (level - terms[1])))
+    return -min(credit_usd + multiplier * (_unhedged_payoff(legs, level, strikes) + _hedge_pnl(terms, level))
                 for level in (0, *strikes))
 
 
