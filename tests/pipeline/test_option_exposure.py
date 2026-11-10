@@ -36,7 +36,8 @@ def test_all_exports():
     assert sorted(ox.__all__) == sorted(
         ["ParityForward", "LegGreeks", "BookGreeks", "StockEquivalent", "CellAttribution",
          "ExposureSnapshot", "fit_betas", "BookGreeksReport", "StaticDeltaHedge",
-         "ExpiryDelta", "ForwardHedge", "Concentration", "HardToBorrowProxy"])
+         "ExpiryDelta", "ForwardHedge", "Concentration", "HardToBorrowProxy",
+         "ExposureLimits"])
 
 
 # ---- parity forward -------------------------------------------------------------------
@@ -1784,3 +1785,200 @@ def test_the_new_count_columns_are_declared_and_written_by_the_report():
 def test_direction_read_has_no_lambda():
     import inspect
     assert "lambda" not in inspect.getsource(BookGreeksReport.direction_read)
+
+
+# ---- ExposureLimits (ADR-0313 I6 core) -------------------------------------------------
+LIMITS = {"beta_delta_fraction": 0.5, "vega_fraction_per_pt": 0.02, "dte_edges": [8, 22, 60],
+          "beta_lookback": 60, "scope": "account"}
+
+
+def xgroup(gid, delta, vega=0.0, units=0.0, dte=10, symbol="A", forward=100.0):
+    """One candidate group with a single item (delta_f_sh and vega already signed)."""
+    return {"id": gid, "symbol": symbol, "dte": dte, "forward": forward,
+            "items": [{"delta_f_sh": delta, "vega_usd_per_pt": vega, "units": units}]}
+
+
+def test_exposure_limits_short_call_counts_one_minus_h_not_one_plus_h():
+    # short call, forward delta 0.35 x 100 shares: delta_f_sh = -35; beta 1.2, F0 100
+    el = ox.ExposureLimits(LIMITS)
+    betas = {"A": 1.2}
+    k = lambda u: el.coefficients([xgroup("g", -35.0, units=u)], betas)["delta"]["g"][0]
+    assert k(0.0) == pytest.approx(-35 * 1.2 * 100)
+    assert k(35.0) == pytest.approx(0.0, abs=1e-9)           # h = 1: fully hedged
+    assert k(17.5) == pytest.approx(-(1 - 0.5) * 35 * 1.2 * 100)  # h = 0.5, never (1+h)
+
+
+def test_exposure_limits_long_put_is_negative_and_a_hedged_item_adds_its_units():
+    el = ox.ExposureLimits(LIMITS)
+    betas = {"A": 0.8}
+    put = el.coefficients([xgroup("p", -40.0)], betas)["delta"]["p"][0]
+    assert put == pytest.approx(-40 * 0.8 * 100)
+    hedged = el.coefficients([xgroup("p", -40.0, units=20.0)], betas)["delta"]["p"][0]
+    assert hedged == pytest.approx((-40 + 20) * 0.8 * 100)
+
+
+def test_exposure_limits_vega_buckets_are_half_open_and_match_the_snapshot():
+    el = ox.ExposureLimits(LIMITS)
+    snap = ExposureSnapshot({"dte_edges": LIMITS["dte_edges"], "top_k": 1})
+    groups = [xgroup("lo", 1.0, vega=-5.0, dte=8), xgroup("mid", 1.0, vega=7.0, dte=21.9),
+              xgroup("edge", 1.0, vega=3.0, dte=22), xgroup("out", 1.0, vega=9.0, dte=7.9)]
+    out = el.coefficients(groups, {"A": 1.0})
+    assert out["bucket"] == {"lo": 0, "mid": 0, "edge": 1, "out": None}
+    for g in groups:
+        books = [{"symbol": "A", "dte": g["dte"], "spot": 100.0, "delta_sh": 0.0,
+                  "gamma_sh": 0.0, "vega_usd_per_pt": 1.0, "status": "ok"}]
+        placed = [i for i, b in enumerate(snap.of({"A": 1.0}, books)["buckets"]) if b["n_books"]]
+        assert (placed or [None])[0] == out["bucket"][g["id"]]
+    assert out["vega"]["lo"] == [-5.0]                          # a sold option is negative
+    assert out["excluded"] == {"dte_outside_edges": 1}
+
+
+def test_exposure_limits_rows_are_two_rows_per_limit_and_per_bucket():
+    el = ox.ExposureLimits(LIMITS)
+    groups = [xgroup("a", -35.0, vega=-5.0, dte=10), xgroup("b", 20.0, vega=4.0, dte=30)]
+    rows = el.rows(groups, {"A": 1.0}, funding=10_000.0)
+    assert [r["id"] for r in rows] == [
+        "exposure:delta:+", "exposure:delta:-", "exposure:vega:8_22:+", "exposure:vega:8_22:-",
+        "exposure:vega:22_60:+", "exposure:vega:22_60:-"]
+    assert all(set(r) == {"id", "terms", "upper"} for r in rows)
+    up, dn = rows[0], rows[1]
+    assert up["terms"] == {"a": [-3500.0], "b": [2000.0]}
+    assert dn["terms"] == {"a": [3500.0], "b": [-2000.0]}
+    assert up["upper"] == dn["upper"] == pytest.approx(0.5 * 10_000.0)
+    assert rows[2]["terms"] == {"a": [-5.0]} and rows[3]["terms"] == {"a": [5.0]}
+    assert rows[4]["terms"] == {"b": [4.0]}
+    assert rows[2]["upper"] == pytest.approx(0.02 * 10_000.0)
+
+
+def test_exposure_limits_rows_encode_the_absolute_value_exactly():
+    el = ox.ExposureLimits(LIMITS)
+    rows = el.rows([xgroup("a", -35.0)], {"A": 1.0}, funding=1_000.0)
+    up, dn = rows[0], rows[1]
+    for x, ok in ((0.1, True), (0.2, False), (-0.1, True), (-0.2, False)):
+        value = lambda r: sum(c * x for c in r["terms"]["a"])
+        assert (value(up) <= up["upper"] and value(dn) <= dn["upper"]) is ok
+
+
+def test_exposure_limits_coefficients_sum_to_the_snapshots_beta_delta():
+    leg = LegGreeks({**LEG, "iv_source": "vendor"})
+    quote = {"bid": 1.0, "ask": 1.2, "iv": 0.25}
+    spot, forward, betas = 100.0, 101.0, {"A": 1.3, "B": 0.7}
+    legs = [("A", "call", -1, 3), ("B", "put", 1, 2)]
+    groups, books = [], []
+    for n, (sym, right, sign, qty) in enumerate(legs):
+        one, _ = leg.of({"right": right, "strike": 100.0, "sign": sign, "quantity": 1,
+                         "expiry": "2020-02-14"}, quote, forward, spot, "2020-01-15")
+        full, _ = leg.of({"right": right, "strike": 100.0, "sign": sign, "quantity": qty,
+                          "expiry": "2020-02-14"}, quote, forward, spot, "2020-01-15")
+        groups.append({"id": f"g{n}", "symbol": sym, "dte": 30, "forward": forward,
+                       "items": [{"delta_f_sh": one["delta_f_sh"],
+                                  "vega_usd_per_pt": one["vega_usd_per_pt"]}]})
+        books.append({"symbol": sym, "dte": 30, "spot": spot, "delta_sh": full["delta_sh"],
+                      "gamma_sh": full["gamma_sh"], "vega_usd_per_pt": full["vega_usd_per_pt"],
+                      "status": "ok"})
+    snap = ExposureSnapshot({"dte_edges": [8, 60], "top_k": 1}).of(betas, books)["total"]
+    out = ox.ExposureLimits(LIMITS).coefficients(groups, betas)
+    qty = [3, 2]
+    assert sum(out["delta"][f"g{n}"][0] * q for n, q in enumerate(qty)) == pytest.approx(
+        snap["beta_delta_usd"])
+    assert sum(out["vega"][f"g{n}"][0] * q for n, q in enumerate(qty)) == pytest.approx(
+        snap["vega_usd_per_pt"])
+
+
+def test_exposure_limits_held_exposure_moves_the_bounds():
+    el = ox.ExposureLimits(LIMITS)
+    held = {"beta_delta_usd": 1_000.0, "vega_usd_per_pt": [-50.0, 20.0]}
+    rows = {r["id"]: r for r in el.rows([xgroup("a", 1.0, dte=10), xgroup("b", 1.0, dte=30)],
+                                        {"A": 1.0}, funding=10_000.0, held=held)}
+    assert rows["exposure:delta:+"]["upper"] == pytest.approx(5_000.0 - 1_000.0)
+    assert rows["exposure:delta:-"]["upper"] == pytest.approx(5_000.0 + 1_000.0)
+    assert rows["exposure:vega:8_22:+"]["upper"] == pytest.approx(200.0 + 50.0)
+    assert rows["exposure:vega:8_22:-"]["upper"] == pytest.approx(200.0 - 50.0)
+    assert rows["exposure:vega:22_60:+"]["upper"] == pytest.approx(180.0)
+
+
+def test_exposure_limits_held_at_exactly_the_limit_gives_a_zero_bound_not_negative():
+    el = ox.ExposureLimits(LIMITS)
+    rows = el.rows([xgroup("a", 1.0)], {"A": 1.0}, funding=10_000.0,
+                   held={"beta_delta_usd": 5_000.0, "vega_usd_per_pt": [0.0, 0.0]})
+    assert rows[0]["upper"] == 0.0 and rows[1]["upper"] == pytest.approx(10_000.0)
+
+
+@pytest.mark.parametrize("held", [
+    {"beta_delta_usd": 5_000.01, "vega_usd_per_pt": [0.0, 0.0]},
+    {"beta_delta_usd": -5_001.0, "vega_usd_per_pt": [0.0, 0.0]},
+    {"beta_delta_usd": 0.0, "vega_usd_per_pt": [200.5, 0.0]},
+    {"beta_delta_usd": 0.0, "vega_usd_per_pt": [0.0, -200.5]}])
+def test_exposure_limits_a_held_breach_refuses_with_its_code(held):
+    with pytest.raises(ValueError, match="^exposure_held_breach"):
+        ox.ExposureLimits(LIMITS).rows([xgroup("a", 1.0)], {"A": 1.0}, 10_000.0, held=held)
+
+
+@pytest.mark.parametrize("held", [
+    {"beta_delta_usd": float("nan"), "vega_usd_per_pt": [0.0, 0.0]},
+    {"beta_delta_usd": 0.0, "vega_usd_per_pt": [0.0]},
+    {"beta_delta_usd": 0.0},
+    "x"])
+def test_exposure_limits_unreadable_held_greeks_refuse_as_risk_input(held):
+    with pytest.raises(ValueError, match="^exposure_risk_input"):
+        ox.ExposureLimits(LIMITS).rows([xgroup("a", 1.0)], {"A": 1.0}, 10_000.0, held=held)
+
+
+def test_exposure_limits_bad_candidate_inputs_refuse_as_risk_input():
+    el = ox.ExposureLimits(LIMITS)
+    for bad in (xgroup("a", float("nan")), xgroup("a", 1.0, vega=float("inf")),
+                xgroup("a", 1.0, forward=0.0), xgroup("a", 1.0, symbol="Z")):
+        with pytest.raises(ValueError, match="^exposure_risk_input"):
+            el.coefficients([bad], {"A": 1.0})
+    with pytest.raises(ValueError, match="^exposure_risk_input"):
+        el.rows([xgroup("a", 1.0)], {"A": 1.0}, funding=float("nan"))
+
+
+def test_exposure_limits_nonpositive_funding_gives_zero_limits_and_a_bucket_without_groups_has_no_row():
+    rows = ox.ExposureLimits(LIMITS).rows([xgroup("a", 1.0, dte=10)], {"A": 1.0}, funding=-5.0)
+    assert [r["id"] for r in rows if "22_60" in r["id"]] == []
+    assert all(r["upper"] == 0.0 for r in rows)
+
+
+def test_exposure_limits_refuses_a_kelly_method():
+    ox.ExposureLimits.check_method({"id": "m", "exposure_limits": LIMITS})
+    with pytest.raises(ConfigError, match="exposure_limits_with_kelly"):
+        ox.ExposureLimits.check_method({"id": "m", "kelly": {}, "exposure_limits": LIMITS})
+
+
+def test_exposure_limits_params_are_the_declared_tuple_and_default_deny():
+    assert ox.ExposureLimits._PARAMS == (
+        "beta_delta_fraction", "vega_fraction_per_pt", "dte_edges", "beta_lookback", "scope")
+    ox.ExposureLimits(LIMITS)
+    bad = [{**LIMITS, "extra": 1}, {**LIMITS, "beta_delta_fraction": 0},
+           {**LIMITS, "beta_delta_fraction": True}, {**LIMITS, "vega_fraction_per_pt": -1},
+           {**LIMITS, "vega_fraction_per_pt": float("nan")}, {**LIMITS, "dte_edges": [8]},
+           {**LIMITS, "dte_edges": [22, 8]}, {**LIMITS, "beta_lookback": 0},
+           {**LIMITS, "beta_lookback": 1.5}, {**LIMITS, "scope": "book"}, [], "x"]
+    for params in bad:
+        assert ox.ExposureLimits.validate_params(params), params
+    for name in ox.ExposureLimits._PARAMS:
+        assert ox.ExposureLimits.validate_params({k: v for k, v in LIMITS.items() if k != name})
+
+
+def test_exposure_limits_held_delta_usd_counts_outside_edge_books_against_the_delta_cap():
+    # a held book below the first edge (dte < 8) is in no vega bucket but is still delta
+    held = {"beta_delta_usd": 0.0, "vega_usd_per_pt": [0.0, 0.0]}
+    rows = ox.ExposureLimits(LIMITS).rows(
+        [xgroup("a", 1.0)], {"A": 1.0}, 10_000.0, held=held, held_delta_usd=4_000.0)
+    upper = {r["id"]: r["upper"] for r in rows}
+    assert upper["exposure:delta:+"] == pytest.approx(1_000.0)
+    assert upper["exposure:delta:-"] == pytest.approx(9_000.0)
+    with pytest.raises(ValueError, match="^exposure_held_breach"):
+        ox.ExposureLimits(LIMITS).rows([xgroup("a", 1.0)], {"A": 1.0}, 10_000.0, held=held,
+                                       held_delta_usd=5_000.5)
+    with pytest.raises(ValueError, match="^exposure_risk_input"):
+        ox.ExposureLimits(LIMITS).rows([xgroup("a", 1.0)], {"A": 1.0}, 10_000.0, held=held,
+                                       held_delta_usd=float("nan"))
+
+
+def test_exposure_limits_no_groups_emit_no_rows():
+    assert ox.ExposureLimits(LIMITS).rows([], {"A": 1.0}, 10_000.0) == []
+    assert ox.ExposureLimits(LIMITS).rows(
+        [{"id": "g", "symbol": "A", "dte": 10, "forward": 100.0, "items": []}],
+        {"A": 1.0}, 10_000.0) == []

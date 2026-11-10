@@ -47,6 +47,7 @@ from pathlib import Path
 
 from dskit.onboarding.artifacts import PinnedPayloadSource
 from dskit.pipeline.node import atomic_write, check_int_param
+from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL
 from dskit.pipeline.option_exposure import STOCK_HEDGE_NOTE, BookGreeksReport, StaticDeltaHedge
 from dskit.pipeline.option_structures import structure_payoff
 
@@ -57,9 +58,6 @@ __all__ = ["ChainQuotes", "CellRank", "GreeksRefusal", "MIOGreeksDiagnostics"]
 
 #: Path A0003: the holdout opens on this session; no seal may lie beyond it.
 PROTECTED_FROM = "2024-01-02"
-#: The first date the owner has NOT opened for development economics (RE-ENTRY: no 2022-2023 MIO
-#: economics before the owner's 3 picks). One owner; it moves only when the owner lifts it.
-DEVELOPMENT_SEAL = "2021-07-01"
 #: The ADR's exact-match gate between a saved P&L and its recomputation, in dollars.
 PNL_GATE_USD = 0.005
 #: A0006 / ADR-0310 A1: a cell rank is the book expiry's position among the listed slots; weekly

@@ -6351,3 +6351,258 @@ def test_transport_portfolio_group_screen_keep_retains_the_largest_relaxed_value
                 {"group_screen": "none", "group_screen_keep": 1}):
         assert TransportPortfolioSolve.validate_params({**_screen_params("lp"), **bad})
     assert not TransportPortfolioSolve.validate_params({**_screen_params("lp"), "group_screen_keep": 3})
+
+
+# --- ADR-0313 I0: the optional per-item linear objective term ``value_adjust`` -----------------------------------
+
+_PINNED_IDENTITY = {  # program_identity at the parent commit, key absent: must never move
+    "screen0": "e2ce8b14c30c37188e1abf85364820ed6072b313ada1aa52e4f50fdd6a8b7937",
+    "screen03": "8f7203bcf9f928e8491b481e5d5de7fc335ef5bcdee48fbf4b5b6eb7b771f8be",
+    "roundtrip": "20222b696cec04a0af0ecece724756836547ea51424da762ec3ff40bb328abdd"}
+
+
+def _adjust_params(screen="none"):
+    return {"absolute_gap": 1e-7, "relative_gap": 0., "parity_tolerance": 1e-5,
+            "solver_options": {"mip_abs_gap": 1e-8, "mip_rel_gap": 0., "threads": 1},
+            "group_screen": screen}
+
+
+def _adjust_inputs(radius=0., adjust=None):
+    """Two items: e = (0, 1) per contract at radius 0 (item 0 pays 1, loses 2 on the up atom)."""
+    group = {"id": "g", "grid": [0., 1.], "masses": [.5, .5], "radius": radius, "scale": 1.,
+             "credit": [1., 1.], "losses": [[0., 0.], [2., 0.]], "capacity": [3, 3],
+             "exclusive": [], "reserve_rows": [[0., 0.], [1., 0.]], "linear_rows": []}
+    if adjust is not None:
+        group["value_adjust"] = adjust
+    return {"groups": [group], "caps": [{"groups": ["g"], "upper": 100.}]}
+
+
+def _adjust_solve(inputs, screen="none"):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+    return TransportPortfolioSolve("adj", _adjust_params(screen)).run(None, inputs)["selection"]
+
+
+def _adjust_score(inputs, quantities):
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+    return TransportActionScore(inputs, {"parity_tolerance": 1e-5}).evaluate(quantities)
+
+
+def test_value_adjust_absent_identity_is_byte_identical():
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+    for name, program in (("screen0", dict(zip(("groups", "caps"), _screen_groups(0.)))),
+                          ("screen03", dict(zip(("groups", "caps"), _screen_groups(.03)))),
+                          ("roundtrip", _roundtrip_portfolio(.08))):
+        got = TransportActionScore(program, {"parity_tolerance": 1e-5}).program_identity
+        assert got == _PINNED_IDENTITY[name]
+
+
+def test_value_adjust_zero_list_equals_absent_except_the_key():
+    base, zero = _adjust_inputs(), _adjust_inputs(adjust=[0., 0.])
+    a, b = _adjust_solve(base), _adjust_solve(zero)
+    for key in ("quantities", "value", "group_values", "bound"):
+        assert a[key] == b[key]
+    assert (_adjust_score(base, a["quantities"])["program_identity"]
+            != _adjust_score(zero, a["quantities"])["program_identity"])
+
+
+@pytest.mark.parametrize("radius", [0., .1])
+def test_value_adjust_hand_solved_objective(radius):
+    """value = [credit.x - worst(x)] + adj.x; the optimum flips from item 1 to item 0."""
+    base = _adjust_solve(_adjust_inputs(radius))
+    assert base["quantities"] == [[0, 3]]
+    inputs = _adjust_inputs(radius, [.5, -2.])
+    chosen = _adjust_solve(inputs)
+    assert chosen["quantities"] == [[3, 0]]
+    plain = _adjust_score(_adjust_inputs(radius), chosen["quantities"])["group_values"][0]
+    assert chosen["group_values"][0] == pytest.approx(plain+1.5)
+    assert chosen["value"] == pytest.approx(plain+1.5)
+    # the radius premium is untouched: c.x - P(x) with P = worst - nominal
+    scored = _adjust_score(inputs, chosen["quantities"])
+    assert scored["uncertainty_deductions"] == _adjust_score(_adjust_inputs(radius), chosen["quantities"])["uncertainty_deductions"]
+    assert scored["nominal_values"][0] == pytest.approx(
+        _adjust_score(_adjust_inputs(radius), chosen["quantities"])["nominal_values"][0]+1.5)
+    if radius == 0.:
+        assert chosen["value"] == pytest.approx(0.+1.5)
+
+
+def test_value_adjust_shifts_lp_bound_and_never_screens_out_a_selected_group():
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+    plain, adj = _adjust_inputs()["groups"][0], _adjust_inputs(adjust=[0., 2.])["groups"][0]
+    assert TransportPortfolioSolve._group_lp_bound(adj) == pytest.approx(
+        TransportPortfolioSolve._group_lp_bound(plain)+6.)
+    # a group worthless on credit alone, live only through the adjust, survives the lp screen
+    dead = {"id": "dead", "grid": [0., 1.], "masses": [.5, .5], "radius": 0., "scale": 1.,
+            "credit": [-1.], "losses": [[0.], [0.]], "capacity": [2], "exclusive": [],
+            "reserve_rows": [[1.]], "linear_rows": [], "value_adjust": [1.5]}
+    inputs = {"groups": [dead], "caps": [{"groups": ["dead"], "upper": 10.}]}
+    assert TransportPortfolioSolve._group_lp_bound(dead) == pytest.approx(1.)
+    screened, full = _adjust_solve(inputs, "lp"), _adjust_solve(inputs, "none")
+    assert screened["quantities"] == full["quantities"] == [[2]]
+    assert screened["value"] == pytest.approx(1.)
+
+
+def test_value_adjust_absent_lp_bound_unchanged():
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+    groups, _ = _screen_groups(.03)
+    for g in groups:
+        assert TransportPortfolioSolve._group_lp_bound(g) == TransportPortfolioSolve._group_lp_bound(
+            {k: v for k, v in g.items() if k != "value_adjust"})
+
+
+def test_value_adjust_antisymmetric_mirror_leaves_roundtrip_value_unchanged():
+    """The mirror rule is the caller's: +adj on one side, -adj on its mirror cancels in a round trip."""
+    inputs = _roundtrip_portfolio(0.)
+    g = inputs["groups"][0]
+    mirrored = json.loads(json.dumps(inputs))
+    mirrored["groups"][0]["value_adjust"] = [.7, -.7, 0.]
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve as solver
+    credit, effective = g["credit"], solver._effective_credit(mirrored["groups"][0])
+    assert effective[0]+effective[1] == pytest.approx(credit[0]+credit[1])
+    assert solver._costly_roundtrip(mirrored["groups"][0], 0, 1) == solver._costly_roundtrip(g, 0, 1) is True
+    # and the dominated-pair presolve still recognises the costly round trip
+    node = _roundtrip_selector()
+    assert len(node.build_model(mirrored, node.params).side) == 0
+    # a one-sided positive adjust that pays the round trip is NOT dominated: the model keeps the binary
+    paying = json.loads(json.dumps(inputs))
+    paying["groups"][0]["value_adjust"] = [5., 5., 0.]
+    assert len(node.build_model(paying, node.params).side) == 1
+
+
+@pytest.mark.parametrize("bad", [[1.], [1., 2., 3.], [1., float("nan")], [1., float("inf")], [1., "x"], "ab", 3.,
+                                 [[1., 2.]]])
+def test_value_adjust_refuses_malformed(bad):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+    with pytest.raises(ValueError, match="invalid value_adjust"):
+        TransportPortfolioSolve._checked_program(_adjust_inputs(adjust=bad))
+
+
+# --- ADR-0313 I0 fix round: every reader of the credit values a group through the one effective-credit owner ------
+
+def _pair_adjust_inputs():
+    """A costly pair (0, 1) whose RAW credit sum is +.5 but whose effective sum is -.2 (a non-antisymmetric adjust)."""
+    inputs = _roundtrip_portfolio()
+    g = inputs["groups"][0]
+    g.update(credit=[1., -.5, 1.5], losses=[[0., 0., 0.]]*3, capacity=[3, 3, 3],
+             exclusive=[[0, 1]], reserve_rows=[[1., 1., 1.]], linear_rows=[], value_adjust=[-.3, -.4, 0.])
+    inputs["caps"][0]["upper"] = 100.
+    return inputs
+
+
+def test_value_adjust_enters_expected_profit_and_the_scenario_range_exactly():
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve as solver
+
+    plain, adjusted = _adjust_inputs()["groups"], _adjust_inputs(adjust=[.5, -2.])["groups"]
+    base, moved = solver._expected_profit(plain)[0], solver._expected_profit(adjusted)[0]
+    assert list(base) == [0., 1.] and list(moved-base) == [.5, -2.]
+    assert solver._scenario_range([base], {}, plain, [0]) == (0., 3.)
+    assert solver._scenario_range([moved], {}, adjusted, [0]) == (-3., 1.5)
+
+
+def test_value_adjust_costly_roundtrip_and_cleanup_gain_read_the_effective_credit():
+    from pyomo.environ import value
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve as solver
+
+    inputs = _pair_adjust_inputs()
+    g = inputs["groups"][0]
+    assert g["credit"][0]+g["credit"][1] > 0 > sum(solver._effective_credit(g)[:2])
+    assert solver._costly_roundtrip(g, 0, 1) is True
+    raw = json.loads(json.dumps(inputs))
+    del raw["groups"][0]["value_adjust"]
+    assert solver._costly_roundtrip(raw["groups"][0], 0, 1) is False
+    node = _roundtrip_selector()
+    assert len(node.build_model(inputs, node.params).side) == 0
+    assert len(node.build_model(raw, node.params).side) == 1
+    model = node.build_model(inputs, node.params)
+    for j, q in enumerate([2, 1, 0]):
+        model.x[0, j].set_value(q)
+    before = value(model.profit)
+    audited = node._incumbent(model)
+    cleanup = audited["canonicalization"]
+    assert audited["quantities"] == [[1, 0, 0]] and cleanup["removed_contracts"] == 2
+    assert cleanup["profit_gain"] == pytest.approx(.2)
+    assert value(model.profit)-before == pytest.approx(.2)
+
+
+def test_value_adjust_cleanup_round_trips_through_derived_and_the_recorded_route():
+    from dskit.pipeline.libs.pyomo import SolveRecord, TransportPortfolioSolve as solver
+
+    inputs = _pair_adjust_inputs()
+    node = _roundtrip_selector()
+    model = node.build_model(inputs, node.params)
+    for j, q in enumerate([2, 1, 0]):
+        model.x[0, j].set_value(q)
+    from pyomo.environ import Constraint, Var, value
+    n_var = sum(1 for _ in model.component_data_objects(Var, active=True))
+    n_con = sum(1 for _ in model.component_data_objects(Constraint, active=True))
+    before = value(model.profit)
+    node.solve_record = SolveRecord("appsi_highs", "ok", "optimal", before, .7, SolveRecord._gap(before, .7), .01,
+                                    n_var, n_con, ())
+    selection = node.extract(model, None)["selection"]
+    assert selection["canonicalization"]["primary"]["profit_gain"] == pytest.approx(.2)
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in selection.pop("certificates")]
+    wire = json.loads(json.dumps([selection, certificates]))
+    replay = _roundtrip_selector()._recorded(inputs, *wire)
+    assert replay["quantities"] == selection["quantities"]
+    assert replay["value"] == pytest.approx(selection["value"])
+    derived = solver("derive", _roundtrip_selector().params).derived(
+        inputs, solver.actions(selection), certificates)["selection"]
+    assert derived["canonicalization"] == selection["canonicalization"]
+    assert derived["value"] == pytest.approx(selection["value"])
+
+
+def test_value_adjust_utility_objective_reads_it_only_through_expected_profit():
+    """A Kelly book's adjust shifts the expected wealth, never the dispersion charge or the scenario terms."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve, tangent_utility
+
+    def oracle(n, adjust, w0=10000.):
+        mean = .85*100.-.15*400.+adjust
+        spread = _point_spread([.85, .15], [100., -400.])
+        return w0*tangent_utility([w0+mean*n], w0, 1.)[0][0]-(spread*n)**2/(2.*w0)
+
+    stakes = []
+    for adjust in (0., 20.):
+        group = _bet_group()
+        if adjust:
+            group["value_adjust"] = [adjust]
+        chosen = TransportPortfolioSolve("kelly", _kelly_params()).run(None, _kelly_program([group]))["selection"]
+        stakes.append(chosen["quantities"][0][0])
+        assert abs(stakes[-1]-max(range(26), key=lambda n: oracle(n, adjust))) <= 1
+    assert stakes[1] > stakes[0]+3
+
+
+def test_every_credit_reader_in_pyomo_values_a_group_through_the_effective_credit_owner():
+    """Sweep: a read of ``"credit"`` is allowed only in the owner, the validator, the tangent window's own book,
+    and ``build_model`` (which adds ``_value_adjust`` beside it)."""
+    import ast
+
+    source = pathlib.Path(sys.modules["dskit.pipeline.libs.pyomo"].__file__).read_text()
+    tree = ast.parse(source)
+    found = {}
+
+    def visit(node, stack):
+        for child in ast.iter_child_nodes(node):
+            inner = stack+((child.name,) if isinstance(child, (ast.FunctionDef, ast.ClassDef)) else ())
+            if isinstance(child, ast.Constant) and child.value == "credit":
+                found.setdefault(inner[-2:], 0)
+                found[inner[-2:]] += 1
+            visit(child, inner)
+
+    visit(tree, ())
+    allowed = {("_TangentWindow", "_book"), ("_TangentWindow", "_book_value_range"),
+               ("TransportPortfolioSolve", "_checked_program"), ("TransportPortfolioSolve", "_effective_credit"),
+               ("TransportPortfolioSolve", "build_model")}
+    assert set(found) == allowed, set(found)^allowed
+    build = next(f for c in ast.walk(tree) if isinstance(c, ast.ClassDef) and c.name == "TransportPortfolioSolve"
+                 for f in c.body if isinstance(f, ast.FunctionDef) and f.name == "build_model")
+    calls = {n.func.attr for n in ast.walk(build) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+    assert "_value_adjust" in calls
+
+
+def test_value_adjust_accepts_numpy_scalars_and_still_refuses_bool():
+    import numpy as np
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve as solver
+
+    assert solver._checked_value_adjust([np.float32(.5), np.float64(1.), np.int64(2), 3], 4) == [.5, 1., 2., 3.]
+    for bad in ([True, 1.], [np.bool_(True), 1.]):
+        with pytest.raises(ValueError, match="invalid value_adjust"):
+            solver._checked_value_adjust(bad, 2)

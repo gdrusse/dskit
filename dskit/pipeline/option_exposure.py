@@ -54,7 +54,7 @@ from dskit.pipeline.stats import sample_quantile
 
 __all__ = ["BookGreeks", "BookGreeksReport", "CellAttribution", "Concentration", "ExpiryDelta",
            "ExposureSnapshot", "ForwardHedge", "HardToBorrowProxy", "LegGreeks", "ParityForward",
-           "StaticDeltaHedge", "StockEquivalent", "fit_betas"]
+           "StaticDeltaHedge", "StockEquivalent", "fit_betas", "ExposureLimits"]
 
 #: Calendar days per year: the one divisor for years-to-expiry and per-day theta.
 DAYS_PER_YEAR = 365
@@ -1820,3 +1820,209 @@ class BookGreeksReport(Node):
                 "iv_disagree_legs": sum(r["iv_disagree_legs"] or 0 for r in attributed),
                 "rate": self.params["rate"], "iv_source": self.params.get("iv_source",
                                                                            DEFAULT_IV_SOURCE)}
+
+
+class ExposureLimits(_Configured):
+    """Greeks exposure limits as solver-neutral linear rows (ADR-0313 section C).
+
+    Per candidate item the coefficients are ``k_i = beta x (delta_f_sh_i + u_i)
+    x F_0`` (dollars of basket-equivalent delta per contract, the unit of
+    :class:`ExposureSnapshot`'s ``beta_delta_usd``) and the item's signed
+    ``vega_usd_per_pt``. ``delta_f_sh`` is :meth:`LegGreeks.of`'s value for a
+    one-contract leg and is ALREADY signed by the side, so no side factor is
+    applied here; ``u_i`` is the item's held-share hedge units (0 unhedged), so
+    a short call of ``delta_f_sh = -35`` is ``-35 beta F_0`` unhedged and ``0``
+    fully hedged.
+
+    Rows are ``{"id", "terms", "upper"}`` with ``terms`` mapping a group id to
+    its per-item coefficient list, two rows (``+`` and ``-``) per absolute
+    limit: the beta-weighted delta, and the vega of each remaining-DTE bucket
+    (half-open ``[edge_i, edge_i+1)``, the :class:`ExposureSnapshot` rule). A
+    bucket with no candidate yields no row. Held exposure moves the bounds:
+    ``limit - held`` and ``limit + held``.
+
+    Parameters
+    ----------
+    params : dict
+        ``beta_delta_fraction`` (> 0): the delta limit as a share of funding.
+        ``vega_fraction_per_pt`` (> 0): each bucket's vega limit, share of
+        funding. ``dte_edges`` (strictly increasing, >= 2 numbers).
+        ``beta_lookback`` (int >= 1): sessions of the beta fit (read by the
+        caller that fits :func:`fit_betas`). ``scope``: ``"account"``.
+
+    Raises
+    ------
+    ValueError
+        Starting with :attr:`RISK_INPUT` for an unreadable input and with
+        :attr:`HELD_BREACH` for held exposure already beyond a limit; the
+        caller maps these to week statuses (cash, counted).
+
+    Examples
+    --------
+    One short call, unhedged::
+
+        el = ExposureLimits({"beta_delta_fraction": 0.5, "vega_fraction_per_pt": 0.02,
+                             "dte_edges": [8, 22], "beta_lookback": 60, "scope": "account"})
+        group = {"id": "g", "symbol": "A", "dte": 10, "forward": 100.0,
+                 "items": [{"delta_f_sh": -35.0, "vega_usd_per_pt": -5.0}]}
+        el.rows([group], {"A": 1.2}, funding=10_000.0)
+    """
+
+    _PARAMS = ("beta_delta_fraction", "vega_fraction_per_pt", "dte_edges", "beta_lookback",
+               "scope")
+    SCOPES = ("account",)
+    RISK_INPUT = "exposure_risk_input"
+    HELD_BREACH = "exposure_held_breach"
+    WITH_KELLY = "exposure_limits_with_kelly"
+    REFUSALS = (RISK_INPUT, HELD_BREACH, WITH_KELLY)
+    DTE_OUTSIDE_EDGES = ExposureSnapshot.DTE_OUTSIDE_EDGES
+
+    @classmethod
+    def _check(cls, problems, params):
+        for name in ("beta_delta_fraction", "vega_fraction_per_pt"):
+            if name in params:
+                check_number_param(problems, name, params[name], lower=0.0, upper=_INF)
+                if number_ok(params[name]) and not params[name] > 0:
+                    problems.append(f"{name} must be positive, got {params[name]!r}")
+        if "beta_lookback" in params:
+            check_int_param(problems, "beta_lookback", params["beta_lookback"], ge=1)
+        if "dte_edges" in params:
+            problems.extend(p for p in ExposureSnapshot.validate_params(
+                {"dte_edges": params["dte_edges"], "top_k": 1}))
+        if "scope" in params and params["scope"] not in cls.SCOPES:
+            problems.append(f"scope must be one of {list(cls.SCOPES)}, got {params['scope']!r}")
+        _required(problems, params, cls._PARAMS)
+
+    @classmethod
+    def check_method(cls, method):
+        """Refuse an ``exposure_limits`` block on a one-stage ``kelly`` method."""
+        if "kelly" in method and "exposure_limits" in method:
+            raise ConfigError([f"{cls.WITH_KELLY}: method {method.get('id')!r} carries both"])
+
+    @classmethod
+    def _risk(cls, what):
+        return ValueError(f"{cls.RISK_INPUT}: {what}")
+
+    def _buckets(self):
+        """Return the ``ExposureSnapshot`` that owns the bucket rule for these edges."""
+        return ExposureSnapshot({"dte_edges": self.params["dte_edges"], "top_k": 1})
+
+    def coefficients(self, groups, betas):
+        """Return the per-item coefficients of every group.
+
+        Parameters
+        ----------
+        groups : list of dict
+            ``id``, ``symbol``, ``dte`` (remaining), ``forward`` (positive
+            ``F_0``) and ``items``: dicts with the one-contract signed
+            ``delta_f_sh`` and ``vega_usd_per_pt`` and an optional ``units``
+            (hedge units ``u_i``, default 0).
+        betas : dict
+            Symbol to beta (see :func:`fit_betas`).
+
+        Returns
+        -------
+        dict
+            ``delta`` and ``vega``: group id to a list per item; ``bucket``:
+            group id to its bucket index or ``None`` outside the edges;
+            ``excluded``: counts by code (outside-edges groups get no vega row).
+
+        Raises
+        ------
+        ValueError
+            Starting ``exposure_risk_input`` for a missing beta, a non-positive
+            or non-finite forward or a non-finite Greek.
+        """
+        snapshot = self._buckets()
+        out = {"delta": {}, "vega": {}, "bucket": {}, "excluded": {}}
+        for group in groups:
+            gid = group["id"]
+            if group["symbol"] not in betas or not number_ok(betas[group["symbol"]]):
+                raise self._risk(f"no beta for {group['symbol']!r}")
+            if not _is_positive(group["forward"]) or not number_ok(group["dte"]):
+                raise self._risk(f"group {gid!r} has no usable forward or dte")
+            beta, forward = betas[group["symbol"]], group["forward"]
+            delta, vega = [], []
+            for item in group["items"]:
+                units = item.get("units", 0.0)
+                if not all(number_ok(v) for v in
+                           (item["delta_f_sh"], item["vega_usd_per_pt"], units)):
+                    raise self._risk(f"group {gid!r} has a non-finite Greek")
+                delta.append(beta * (item["delta_f_sh"] + units) * forward)
+                vega.append(float(item["vega_usd_per_pt"]))
+            index = snapshot._bucket(group["dte"])
+            if index is None:
+                out["excluded"][self.DTE_OUTSIDE_EDGES] = (
+                    out["excluded"].get(self.DTE_OUTSIDE_EDGES, 0) + 1)
+            out["delta"][gid], out["vega"][gid], out["bucket"][gid] = delta, vega, index
+        return out
+
+    def _held(self, held):
+        """Return ``(beta_delta, [vega per bucket])`` of the held books, 0s when none."""
+        n = len(self.params["dte_edges"]) - 1
+        if held is None:
+            return 0.0, [0.0] * n
+        if (not isinstance(held, dict) or not number_ok(held.get("beta_delta_usd"))
+                or not isinstance(held.get("vega_usd_per_pt"), list)
+                or len(held["vega_usd_per_pt"]) != n
+                or not all(number_ok(v) for v in held["vega_usd_per_pt"])):
+            raise self._risk("held Greeks are unreadable")
+        return float(held["beta_delta_usd"]), [float(v) for v in held["vega_usd_per_pt"]]
+
+    def rows(self, groups, betas, funding, held=None, held_delta_usd=None):
+        """Return the joint rows ``{"id", "terms", "upper"}``, two per limit.
+
+        Parameters
+        ----------
+        groups, betas
+            As in :meth:`coefficients`.
+        funding : float
+            The account funding the fractions apply to (a non-positive value
+            gives zero limits).
+        held : dict or None
+            The open books' ``beta_delta_usd`` and ``vega_usd_per_pt`` (a list,
+            one per bucket) at decision-day Greeks; ``None`` for no held book.
+            Vega rows cover in-edge buckets only (the :class:`ExposureSnapshot`
+            rule), so its ``beta_delta_usd`` omits books outside ``dte_edges``.
+        held_delta_usd : float or None
+            The held beta-weighted delta over ALL held books, outside-edge ones
+            included, which the caller computes; candidate groups outside the
+            edges add to the delta row, so the held side must count them too.
+            ``None`` falls back to ``held["beta_delta_usd"]``.
+
+        Raises
+        ------
+        ValueError
+            ``exposure_risk_input`` for an unreadable input;
+            ``exposure_held_breach`` when held exposure already exceeds a limit.
+        """
+        if not number_ok(funding):
+            raise self._risk(f"funding {funding!r}")
+        held_delta, held_vega = self._held(held)
+        if held_delta_usd is not None:
+            if not number_ok(held_delta_usd):
+                raise self._risk(f"held_delta_usd {held_delta_usd!r}")
+            held_delta = float(held_delta_usd)
+        delta_cap = self.params["beta_delta_fraction"] * max(0.0, funding)
+        vega_cap = self.params["vega_fraction_per_pt"] * max(0.0, funding)
+        if abs(held_delta) > delta_cap or any(abs(v) > vega_cap for v in held_vega):
+            raise ValueError(f"{self.HELD_BREACH}: held exposure beyond a limit")
+        coef = self.coefficients(groups, betas)
+        edges = self.params["dte_edges"]
+        rows = []
+        if any(coef["delta"].values()):
+            rows += self._pair("delta", coef["delta"], delta_cap, held_delta)
+        for b, (low, high) in enumerate(zip(edges, edges[1:])):
+            members = {g: v for g, v in coef["vega"].items() if coef["bucket"][g] == b}
+            if any(members.values()):
+                rows += self._pair(f"vega:{low:g}_{high:g}", members, vega_cap, held_vega[b])
+        return rows
+
+    @staticmethod
+    def _pair(name, terms, cap, held):
+        """Return the ``+`` and ``-`` rows of ``|sum terms x| <= cap`` net of ``held``."""
+        return [{"id": f"exposure:{name}:+", "terms": {g: list(v) for g, v in terms.items()},
+                 "upper": max(0.0, cap - held)},
+                {"id": f"exposure:{name}:-",
+                 "terms": {g: [-c for c in v] for g, v in terms.items()},
+                 "upper": max(0.0, cap + held)}]
