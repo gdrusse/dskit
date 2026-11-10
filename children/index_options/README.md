@@ -721,6 +721,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # solves one method anywhere and returns integer actions plus solver certificates (an objective and a bound, on
                            # disk in sealed directories, never shown); WSL re-derives every value);
                            # (the coordinator is NOT in this package, so a fix never changes a code pin: see tools/ below);
+                           # mio_greeks.py (ADR-0310: MIOGreeksDiagnostics, Greeks, stock-equivalent split and exposure over a SAVED closed MIO run; read-only, sealed window; A2 keys quarter, dividends, seal_crossing, cell_by with cadence; per-method direction_read in the summary, quarter on every row, decision-session forward hedge; configs/mio-greeks-template.json);
                            # mio_run_events.py (ADR-0283: MioRunRows, one method of a saved MIO result.json as event rows; the
                            # report document is configs/mio-report-limited36-available-size-20261029.json)
                            # mio_stress_coverage.py (ADR-0278: pinned opt-in 2019 one-day account mark coverage driver; prepare, execute, aggregate);
