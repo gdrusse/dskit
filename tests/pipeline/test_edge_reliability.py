@@ -2984,3 +2984,64 @@ class TestTwoRegressorMap:
         assert not set(one.to_dict()["pooled"]) & {"theta", "se", "df", "bands"}
         with pytest.raises(ValueError, match="two-regressor"):
             one.bucket_only_two(0, 1.0, 1.0)
+
+
+class TestOriginTwo:
+    """ADR-0313 X2: the clipped no-intercept two-regressor line."""
+
+    def _state(self, true_w=(0.8, -0.3), thin=True):
+        rng = np.random.default_rng(9)
+        st = LinearEdgeState(3, None, regressors=2, block_lengths=1)
+        rows = []
+        for wk in range(30):
+            settle = datetime.date(2020, 1, 3) + datetime.timedelta(days=7 * wk)
+            t = _iso(settle + datetime.timedelta(days=1))
+            st.advance(t)
+            for n in range(4):
+                d, sh = rng.normal(0, 1, 6), rng.normal(0, 1, 6)
+                r = true_w[0] * d + true_w[1] * sh + rng.normal(0, 0.5, 6)
+                bucket = [0, 1, 0, 1, 0, 1] if not (thin and wk >= 3) else [0, 0, 0, 0, 0, 0]
+                st.add_cluster(t, f"N{n}", _iso(settle), _iso(settle - datetime.timedelta(days=3)), bucket,
+                               [float(x) for x in d + sh], [float(x) for x in r], blocks=[wk // 4],
+                               e_dir=[float(x) for x in d])
+                rows.append((bucket, d, sh, r))
+        return st, rows
+
+    def _pool(self, cap=1.0):
+        return PartialPooling({**POOL, "weight_cap": cap, "min_clusters": 2})
+
+    def test_equals_a_no_intercept_least_squares_and_clips_each_weight(self):
+        st, rows = self._state()
+        out = er.origin_two(self._pool(), st, True)
+        d = np.concatenate([x[1] for x in rows])
+        sh = np.concatenate([x[2] for x in rows])
+        r = np.concatenate([x[3] for x in rows])
+        want = np.linalg.lstsq(np.stack([d, sh], 1), r, rcond=None)[0]
+        assert out["warm"] and out["pooled"] == pytest.approx([max(want[0], 0.0), max(want[1], 0.0)], abs=1e-9)
+        assert out["pooled"][1] == 0.0                      # the true shape weight is negative: clipped, never flipped
+        capped = er.origin_two(self._pool(cap=0.5), st, True)
+        assert capped["pooled"][0] == 0.5
+
+    def test_a_thin_bucket_takes_the_pool_and_before_warm_up_the_prior_is_zero(self):
+        st, _ = self._state()
+        out = er.origin_two(self._pool(), st, True)
+        assert out["buckets"][2]["pooled"] and out["buckets"][2]["w"] == out["pooled"]
+        cold = er.origin_two(self._pool(), st, False)
+        assert not cold["warm"] and all(b["w"] == [0.0, 0.0] for b in cold["buckets"])
+
+    def test_collinear_regressors_take_the_pool_and_count(self):
+        st = LinearEdgeState(2, None, regressors=2, block_lengths=1)
+        for wk in range(12):
+            settle = datetime.date(2020, 1, 3) + datetime.timedelta(days=7 * wk)
+            t = _iso(settle + datetime.timedelta(days=1))
+            st.advance(t)
+            for n in range(3):
+                e = [1.0, 2.0, 3.0, 4.0]
+                st.add_cluster(t, f"N{n}", _iso(settle), _iso(settle - datetime.timedelta(days=3)), [0, 0, 1, 1],
+                               [2 * x for x in e], [x + 0.1 * wk for x in e], blocks=[0], e_dir=e)
+        out = er.origin_two(self._pool(), st, True)
+        assert out["warm"] is False                           # the pooled 2x2 is singular: no line at all
+
+    def test_a_one_regressor_state_is_refused(self):
+        with pytest.raises(ValueError, match="two-regressor"):
+            er.origin_two(self._pool(), LinearEdgeState(3, None), True)

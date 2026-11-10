@@ -32,7 +32,7 @@ DIR_STATES = tuple("dir_" + k for k in STATES)
 EXTRA_STATES = ("reported_fill", "reported_dir", "forward", "fill_sensitivity", "reported_sensitivity", "dollar")
 FOURTEEN = STATES + DIR_STATES + EXTRA_STATES
 EDGES = {"dte_edges": [8, 22], "abs_z_edges": [1.0], "spread_edges": [0.15]}
-POOL = {"min_clusters": 2, "min_dates": 2, "tau2_floor": 1e-6, "weight_cap": 1.0, "lcb_k": 1.0, "band": "two",
+POOL = {"min_clusters": 2, "min_dates": 2, "tau2_floor": 1e-6, "weight_cap": 1.0, "lcb_k": 1.0, "band": "two_block",
         "min_blocks": 2, "ci_levels": [0.90, 0.95]}
 ADJUST = {"name_prior_clusters": 26, "name_min_clusters": 2}
 REGIME = {"regime_lookback_weeks": 4, "regime_min_weeks": 2}
@@ -51,8 +51,9 @@ class World:
     """Decision rows, fill quotes and bars, all dated; poisoned or deleted from a date on."""
 
     def __init__(self, poison_from=None, delete_from=None, quote_override=None, extra_rows=None,
-                 no_rows_before=None, mult_factor=1.0):
+                 no_rows_before=None, mult_factor=1.0, skip_name_before=None):
         self.mult_factor = mult_factor
+        self.skip_name_before = skip_name_before or {}
         self.poison_from = poison_from
         self.delete_from = delete_from
         self.quote_override = quote_override
@@ -112,6 +113,8 @@ class World:
             return []
         rows = []
         for name in NAMES:
+            if t < self.skip_name_before.get(name, ""):
+                continue
             for days in EXPIRY_DAYS:
                 expiry = add_days(t, days)
                 for right in RIGHTS:
@@ -129,12 +132,14 @@ class World:
         key = (r["name"], d, r["expiry"], r["right"], r["strike"])
         if u("miss", *key) < 0.04:
             return "quote"
+        if u("size", *key) < 0.03:
+            return "size"
         price = 1.0 + 4.0 * u("q", *key)
         if self.quote_override is not None:
             price = self.quote_override(*key) or price
         if self._bad(d):
             price = 1e6
-        return -r["sign"] * price * r["multiplier"] - 0.65 * r["multiplier"] / 100.0
+        return -r["sign"] * price * r["multiplier"] - 0.65 * r["multiplier"] / 100.0, price
 
     def level(self, r):
         s = r["settle_date"]
@@ -214,11 +219,29 @@ def tree(root):
 
 
 def maps_upto(root, last):
-    return {k: v for k, v in tree(root).items() if k.startswith("map-") and k[4:14] <= last}
+    """The map files up to ``last``; the ``regimes`` of ``last`` itself read its own decision rows, so they are set aside."""
+    out = {}
+    for k, v in tree(root).items():
+        if k.startswith("map-") and k[4:14] <= last:
+            if k[4:14] == last:
+                blob = json.loads(v)
+                blob.pop("regimes")
+                v = json.dumps(blob, sort_keys=True).encode()
+            out[k] = v
+    return out
+
+
+def manifest(root):
+    return json.loads((Path(root) / "checkpoint.json").read_text())
 
 
 def checkpoint(root):
-    return json.loads((Path(root) / "checkpoint.json").read_text())
+    """The manifest plus the decoded arrays in the shape ``states[name] = {"state", "adjust"}``."""
+    blob = manifest(root)
+    tree = ew._npz_tree((Path(root) / blob["npz"]["file"]).read_bytes())
+    blob["states"] = {k: {"state": v, "adjust": tree["adjust"].get(k)} for k, v in tree["states"].items()}
+    blob["regime"] = tree["regime"]
+    return blob
 
 
 def fill_weeks(events):
@@ -743,7 +766,7 @@ class TestRamPeaks:
         monkeypatch.setattr(EdgeReliabilityWalk, "_rss_gb", staticmethod(spy))
         run(make(tmp_path, end=CAL[6]), tmp_path)
         assert {"_week", "_admit", "_decide"} <= set(callers)
-        assert callers.count("_decide") == 2 * 7  # after the hook returns and after the shards are built
+        assert callers.count("_decide") == 3 * 7  # before the hook, after it returns, after the shards are built
 
 
 class TestCheckpointVersion:
@@ -861,7 +884,7 @@ class TestStatesAndParams:
         with pytest.raises(ValueError, match="checkpoint_mismatch") as err:
             run(make(tmp_path, end=CAL[8]), tmp_path)
         assert "version 2" in str(err.value) and f"version {ew._VERSION}" in str(err.value)
-        assert ew._VERSION == 3
+        assert ew._VERSION == 6
 
 
 class TestRowFeeds:
@@ -934,3 +957,710 @@ class TestRowFeeds:
         a, b = fits(World(), "s1"), fits(World(mult_factor=7.0), "s7")
         assert a["expanding_fill"] == pytest.approx(b["expanding_fill"], rel=1e-9)
         assert abs(a["dollar"] - b["dollar"]) > 1e-3
+
+
+# --------------------------------------------------------------------------- F3.2: numpy cluster sums
+
+
+def _all_state_dicts(tmp_path, out, **over):
+    seen = {}
+
+    def hook(walk, t):
+        if t == CAL[20]:
+            seen["s"] = {k: st.to_dict() for k, st in walk._states.items()}
+            seen["a"] = {k: a.to_dict() for k, a in walk._adjust.items()}
+
+    run(make(tmp_path, end=CAL[20], out=out, on_decide=hook, **over), tmp_path)
+    return seen
+
+
+def _close(a, b, path=""):
+    if isinstance(a, dict):
+        assert a.keys() == b.keys(), path
+        for k in a:
+            _close(a[k], b[k], f"{path}/{k}")
+    elif isinstance(a, (list, tuple)):
+        assert len(a) == len(b), path
+        for i, (x, y) in enumerate(zip(a, b)):
+            _close(x, y, f"{path}[{i}]")
+    elif isinstance(a, float):
+        assert a == pytest.approx(b, rel=1e-12, abs=1e-12), path
+    else:
+        assert a == b, path
+
+
+class TestNumpySums:
+    def test_the_walk_folds_through_add_cluster_sums_not_add_cluster(self, tmp_path, monkeypatch):
+        from dskit.pipeline.edge_reliability import LinearEdgeState
+
+        calls = {"rows": 0, "sums": 0}
+        rows_real, sums_real = LinearEdgeState.add_cluster, LinearEdgeState.add_cluster_sums
+
+        def rows(self, *a, **k):
+            calls["rows"] += 1
+            return rows_real(self, *a, **k)
+
+        def sums(self, *a, **k):
+            calls["sums"] += 1
+            return sums_real(self, *a, **k)
+
+        monkeypatch.setattr(LinearEdgeState, "add_cluster", rows)
+        monkeypatch.setattr(LinearEdgeState, "add_cluster_sums", sums)
+        run(make(tmp_path, end=CAL[10]), tmp_path)
+        assert calls["rows"] == 0 and calls["sums"] > 0
+
+    @pytest.mark.parametrize("over", [{}, {"row_weight": "none"}, {"edge_scale": "none"}])
+    def test_the_numpy_path_equals_the_stdlib_twin_to_1e_12_in_every_state(self, tmp_path, monkeypatch, over):
+        fast = _all_state_dicts(tmp_path, "fast", **over)
+        monkeypatch.setattr(EdgeReliabilityWalk, "_numpy_sums", False)
+        slow = _all_state_dicts(tmp_path, "slow", **over)
+        assert set(fast["s"]) == set(FOURTEEN)
+        _close(fast["s"], slow["s"])
+        _close(fast["a"], slow["a"])
+        assert any(st["pooled"]["rows"] > 0 for st in fast["s"].values())
+
+    def test_a_100k_row_week_is_admitted_with_bounded_retained_memory(self, tmp_path):
+        names = [f"N{k:04d}" for k in range(1000)]
+        t, expiry = CAL[0], CAL[1]
+
+        class Big(SynthWalk):
+            def _decision_rows(self, tt):
+                if tt != t:
+                    return []
+                return [{"group": f"{n}|{expiry}|{k // 6}", "name": n, "expiry": expiry, "settle_date": expiry,
+                         "fill_date": add_days(t, 3), "factor": 1.0, "right": "call", "strike": 50.0 + k,
+                         "sign": 1, "e": 0.01 * k, "dte": 14.0, "abs_z": 0.5, "spread": 0.1, "v": 0.3,
+                         "credit": -1.0, "multiplier": 100.0, "scale": 1e4, "e_dir": 0.001 * k,
+                         "direction_code": None} for n in names for k in range(100)]
+
+            def _fill_credits(self, rows):
+                return [-100.0 * (1 + 0.001 * r["strike"]) for r in rows]
+
+            def _settlement_levels(self, rows):
+                return [100.0 + r["strike"] % 7 for r in rows]
+
+            def _next_session(self, tt):
+                return add_days(tt, 3)
+
+        class Short(Big):
+            pass
+
+        # settle date must follow the fill session: expiry two weeks out
+        expiry = add_days(t, 14)
+        node = Short("walk", params(tmp_path / "big", window={"start": t, "end": CAL[3]}, report_from=CAL[1],
+                                    direction_regressor=False), World())
+        tracemalloc.start()
+        before = tracemalloc.get_traced_memory()[0]
+        out = run(node, tmp_path)["summary"]
+        retained = tracemalloc.get_traced_memory()[0] - before
+        tracemalloc.stop()
+        assert out["counts"]["rows_admitted"] == 100_000
+        assert retained < 60_000_000
+
+
+# --------------------------------------------------------------------------- F3.3: .npz checkpoint
+
+
+def npz_files(root):
+    return sorted(Path(root).glob("checkpoint-*.npz"))
+
+
+class TestNpzCheckpoint:
+    def test_one_manifest_and_one_npz_holding_the_state_arrays(self, tmp_path):
+        import numpy as np
+
+        run(make(tmp_path, end=CAL[12]), tmp_path)
+        files = npz_files(tmp_path / "out")
+        assert len(files) == 1
+        blob = manifest(tmp_path / "out")
+        assert blob["npz"]["file"] == files[0].name
+        assert blob["npz"]["sha256"] == hashlib.sha256(files[0].read_bytes()).hexdigest()
+        assert "states" not in blob and (tmp_path / "out" / "checkpoint.json").stat().st_size < 50_000
+        with np.load(files[0], allow_pickle=False) as z:
+            assert set(z.files) == {"floats", "ints", "tree"}
+            assert z["floats"].dtype == np.float64 and len(z["floats"]) > 1000
+
+    def test_every_four_weeks_writes_at_weeks_4_8_and_keeps_one(self, tmp_path):
+        seen = []
+
+        def hook(walk, t):
+            seen.append((t, sorted(p.name for p in Path(walk._out).glob("checkpoint*"))))
+
+        run(make(tmp_path, end=CAL[12], checkpoint_every=4, on_decide=hook), tmp_path)
+        by_week = dict(seen)
+        assert by_week[CAL[3]] == []                                  # nothing before the first checkpoint
+        assert by_week[CAL[4]] == ["checkpoint-" + CAL[3] + ".npz", "checkpoint.json"]   # after the 4th week
+        assert by_week[CAL[7]] == ["checkpoint-" + CAL[3] + ".npz", "checkpoint.json"]
+        assert by_week[CAL[8]] == ["checkpoint-" + CAL[7] + ".npz", "checkpoint.json"]   # the older one is gone
+        assert all(len([n for n in names if n.endswith(".npz")]) <= 1 for names in by_week.values())
+
+    def test_consumed_shards_go_only_after_the_new_checkpoint_is_durable(self, tmp_path, monkeypatch):
+        real = ew.atomic_write
+        marks = {}
+
+        def spy(path, raw):
+            if Path(path).name == "checkpoint.json":
+                marks["shards_at_manifest_write"] = len(list((tmp_path / "out" / "pending").rglob("*.json")))
+            return real(path, raw)
+
+        monkeypatch.setattr(ew, "atomic_write", spy)
+        run(make(tmp_path, end=CAL[12], checkpoint_every=4), tmp_path)
+        monkeypatch.setattr(ew, "atomic_write", real)
+        assert marks["shards_at_manifest_write"] > sum(len(v) for v in manifest(tmp_path / "out")["pending"].values())
+
+    def test_a_crash_between_the_npz_and_the_manifest_leaves_the_previous_checkpoint_readable(
+            self, tmp_path, monkeypatch):
+        real = ew.atomic_write
+        state = {"n": 0}
+
+        def flaky(path, raw):
+            if Path(path).name == "checkpoint.json":
+                state["n"] += 1
+                if state["n"] == 3:
+                    raise OSError("disk")
+            return real(path, raw)
+
+        monkeypatch.setattr(ew, "atomic_write", flaky)
+        with pytest.raises(OSError):
+            run(make(tmp_path, checkpoint_every=2), tmp_path)
+        assert (tmp_path / "out" / manifest(tmp_path / "out")["npz"]["file"]).exists()
+        monkeypatch.setattr(ew, "atomic_write", real)
+        run(make(tmp_path, checkpoint_every=2), tmp_path)
+        run(make(tmp_path, out="whole", checkpoint_every=2), tmp_path)
+        assert tree(tmp_path / "out") == tree(tmp_path / "whole")
+        assert len(npz_files(tmp_path / "out")) == 1
+
+    def _broken(self, tmp_path):
+        with pytest.raises(RuntimeError):
+            run(make(tmp_path, fail_at=CAL[9], checkpoint_every=4), tmp_path)
+        return tmp_path / "out"
+
+    def test_a_tampered_npz_refuses(self, tmp_path):
+        out = self._broken(tmp_path)
+        f = npz_files(out)[0]
+        raw = bytearray(f.read_bytes())
+        raw[len(raw) // 2] ^= 0xFF
+        f.write_bytes(bytes(raw))
+        with pytest.raises(ValueError, match="checkpoint_mismatch"):
+            run(make(tmp_path, checkpoint_every=4), tmp_path)
+
+    def test_a_missing_npz_refuses(self, tmp_path):
+        out = self._broken(tmp_path)
+        npz_files(out)[0].unlink()
+        with pytest.raises(ValueError, match="checkpoint_mismatch"):
+            run(make(tmp_path, checkpoint_every=4), tmp_path)
+
+    @pytest.mark.parametrize("key", ["npz", "pending", "manifest", "counts", "pins", "params_hash", "cursor"])
+    def test_a_manifest_lacking_any_key_refuses(self, tmp_path, key):
+        out = self._broken(tmp_path)
+        blob = json.loads((out / "checkpoint.json").read_text())
+        del blob[key]
+        (out / "checkpoint.json").write_text(json.dumps(blob))
+        with pytest.raises(ValueError, match="checkpoint_mismatch"):
+            run(make(tmp_path, checkpoint_every=4), tmp_path)
+
+    def test_the_manifest_content_hash_catches_an_edited_map_file(self, tmp_path):
+        out = self._broken(tmp_path)
+        m = out / f"map-{CAL[1]}.json"
+        m.write_text(m.read_text().replace("0", "1", 1))
+        with pytest.raises(ValueError, match="checkpoint_mismatch") as err:
+            run(make(tmp_path, checkpoint_every=4), tmp_path)
+        assert "content" in str(err.value)
+
+    def test_the_content_hash_catches_an_edited_pending_shard(self, tmp_path):
+        out = self._broken(tmp_path)
+        shard = sorted((out / "pending").rglob("*.json"))[0]
+        shard.write_text(shard.read_text().replace("0", "9", 1))
+        with pytest.raises(ValueError, match="checkpoint_mismatch"):
+            run(make(tmp_path, checkpoint_every=4), tmp_path)
+
+    @pytest.mark.parametrize("every", [1, 4])
+    def test_resume_is_byte_identical_with_unsorted_arrival(self, tmp_path, every):
+        late = {"AAA": CAL[6], "BBB": CAL[3]}
+        run(make(tmp_path, World(skip_name_before=late), out="whole", checkpoint_every=every), tmp_path)
+        with pytest.raises(RuntimeError):
+            run(make(tmp_path, World(skip_name_before=late), out="cut", fail_at=CAL[17], checkpoint_every=every),
+                tmp_path)
+        run(make(tmp_path, World(skip_name_before=late), out="cut", checkpoint_every=every), tmp_path)
+        assert tree(tmp_path / "whole") == tree(tmp_path / "cut")
+
+    def test_the_npz_bytes_do_not_depend_on_the_clock(self, tmp_path):
+        import time
+
+        run(make(tmp_path, end=CAL[8], out="a"), tmp_path)
+        time.sleep(2.1)
+        run(make(tmp_path, end=CAL[8], out="b"), tmp_path)
+        assert npz_files(tmp_path / "a")[0].read_bytes() == npz_files(tmp_path / "b")[0].read_bytes()
+
+
+# --------------------------------------------------------------------------- F3.4: fill sensitivity (D2)
+
+
+def cluster_calls(tmp_path, out="sens", end=CAL[-1], **over):
+    """Run the walk and log every ``add_cluster_sums`` call on the sensitivity state (t, name, s)."""
+    from dskit.pipeline.edge_reliability import LinearEdgeState
+
+    calls = []
+    real = LinearEdgeState.add_cluster_sums
+
+    def spy(self, t, name, s, f, blocks, sums):
+        if self is node_box["node"]._states.get("fill_sensitivity"):
+            calls.append((t, name, s))
+        return real(self, t, name, s, f, blocks, sums)
+
+    node_box = {}
+    node = make(tmp_path, out=out, end=end, **over)
+    node_box["node"] = node
+    LinearEdgeState.add_cluster_sums = spy
+    try:
+        res = run(node, tmp_path)["summary"]
+    finally:
+        LinearEdgeState.add_cluster_sums = real
+    return node, calls, res
+
+
+class TestFillSensitivity:
+    def test_q95_by_hand_pooled_fallback_and_the_imputed_credit(self):
+        vals = [0.01 * k for k in range(20)] + [0.5, 0.6, 0.7]
+        buckets = [0] * 20 + [1] * 3
+        got = EdgeReliabilityWalk._freeze_q95(buckets, vals, 20)
+        assert got["b"] == {"0": pytest.approx(0.18 + 0.05 * 0.01, abs=1e-12)}   # p = 0.95 * 19 = 18.05
+        ordered = sorted(vals)
+        p = 0.95 * 22
+        assert got["pool"] == pytest.approx(ordered[21] + (p - 21) * (ordered[22] - ordered[21]), abs=1e-12)
+        imp = EdgeReliabilityWalk._imputed_credit
+        assert imp(1, 2.0, 0.10, 100.0, 0.65) == pytest.approx(-2.2 * 100 - 0.65)      # buy at mid (1 + q)
+        assert imp(-1, 2.0, 0.10, 100.0, 0.65) == pytest.approx(1.8 * 100 - 0.65)      # sell at mid (1 - q)
+        assert imp(-1, 2.0, 1.5, 100.0, 0.65) == pytest.approx(-0.65)                  # floored at a zero price
+
+    def test_a_cluster_enters_the_sensitivity_state_whole_once_after_every_contributing_week_is_complete(
+            self, tmp_path):
+        node, calls, _ = cluster_calls(tmp_path)
+        assert len(calls) == len(set((n, s) for _, n, s in calls)) > 50     # once each
+        latest = {}
+        for ev in node.events:
+            if ev[0] == "fill":
+                for row in ev[1]:
+                    latest[row[3]] = max(latest.get(row[3], ""), row[0])      # decision week -> last settlement
+        weeks_of = {}
+        for ev in node.events:
+            if ev[0] == "fill":
+                for s, f, name, dec, *_ in ev[1]:
+                    weeks_of.setdefault((name, s), set()).add(dec)
+        for t, name, s in calls:
+            assert s < t
+            assert all(latest[w] < t for w in weeks_of[(name, s)]), (t, name, s)
+
+    def test_session_and_basis_rows_enter_no_sensitivity_state(self, tmp_path):
+        node, calls, res = cluster_calls(tmp_path)
+        c = res["counts"]
+        sens = node._states["fill_sensitivity"].fit(None)["rows"]
+        excluded = (c["no_fill_quote.basis"] + c["basis_changed"] + c["no_settlement_bar"]
+                    + c.get("fill_unimputable", 0))
+        assert sens + c.get("imputation_unflushed_rows", 0) == c["rows_admitted"] - excluded
+        assert c["fill_imputed"] > 0 and c["no_fill_quote.size"] > 0
+
+    def test_the_imputed_rows_are_the_difference_between_the_fill_and_the_sensitivity_states(self, tmp_path):
+        node, _, res = cluster_calls(tmp_path)
+        a, b = node._states["expanding_fill"].fit(None), node._states["fill_sensitivity"].fit(None)
+        assert b["rows"] > a["rows"] - res["counts"].get("imputation_unflushed_rows", 0)
+        assert node._states["fill_sensitivity"].decay is None and node._states["reported_sensitivity"].decay is None
+
+    def test_q95_is_frozen_once_per_week_and_dropped_after_its_last_cluster(self, tmp_path, monkeypatch):
+        seen = {}
+        real = EdgeReliabilityWalk._flush_sensitivity
+
+        def spy(self, t):
+            seen[t] = ({w: json.dumps(q, sort_keys=True) for w, q in self._q95.items()}, dict(self._refs))
+            return real(self, t)
+
+        monkeypatch.setattr(EdgeReliabilityWalk, "_flush_sensitivity", spy)
+        run(make(tmp_path), tmp_path)
+        weeks = {w for q, _ in seen.values() for w in q}
+        assert weeks
+        week = max(sorted(weeks), key=lambda w: sum(w in q for q, _ in seen.values()))
+        holders = [t for t, (q, _) in seen.items() if week in q]
+        assert len(holders) >= 2                                              # lives across several admissions
+        assert len({seen[t][0][week] for t in holders}) == 1                   # never recomputed
+        assert week not in seen[CAL[-1]][0]                                    # dropped after the last cluster
+        assert all(r > 0 for _, refs in seen.values() for r in refs.values())
+
+    def test_a_resume_between_two_admissions_of_one_week_is_byte_identical(self, tmp_path):
+        run(make(tmp_path, out="whole", checkpoint_every=3), tmp_path)
+        for cut in (CAL[10], CAL[14]):
+            with pytest.raises(RuntimeError):
+                run(make(tmp_path, out=f"cut{cut}", fail_at=cut, checkpoint_every=3), tmp_path)
+            run(make(tmp_path, out=f"cut{cut}", checkpoint_every=3), tmp_path)
+            assert tree(tmp_path / "whole") == tree(tmp_path / f"cut{cut}")
+
+    def test_the_buffer_shard_round_trips_and_a_missing_one_refuses(self, tmp_path):
+        with pytest.raises(RuntimeError):
+            run(make(tmp_path, fail_at=CAL[12], checkpoint_every=4), tmp_path)
+        shards = sorted((tmp_path / "out" / "sensitivity").rglob("*.json"))
+        assert shards
+        listed = manifest_sens(tmp_path / "out")
+        assert len(shards) >= len(listed)
+        victim = next(p for p in shards if (p.parent.name, p.stem) in listed)
+        victim.unlink()
+        with pytest.raises(ValueError, match="checkpoint_mismatch"):
+            run(make(tmp_path, checkpoint_every=4), tmp_path)
+
+    def test_the_window_end_counts_what_could_not_be_flushed(self, tmp_path):
+        node, _, res = cluster_calls(tmp_path)
+        unflushed = res["counts"]["imputation_unflushed"]
+        assert unflushed == sum(len(v) for v in node._sens.values()) > 0
+        later = max(s for s in node._sens)
+        assert later > CAL[-2]
+
+    def test_a_poisoned_future_changes_no_sensitivity_buffer_or_q95_at_t(self, tmp_path):
+        seen = {}
+
+        def capture(label):
+            def hook(walk, t):
+                if t == T:
+                    seen[label] = json.dumps([walk._sens, walk._q95, walk._refs, walk._adv, walk._twin.to_dict()],
+                                             sort_keys=True)
+            return hook
+
+        run(make(tmp_path, World(), end=T, out="c", on_decide=capture("c")), tmp_path)
+        run(make(tmp_path, World(poison_from=T), end=T, out="d", on_decide=capture("d")), tmp_path)
+        assert seen["c"] == seen["d"]
+
+    def test_the_twin_holds_real_fills_of_exactly_the_clusters_the_sensitivity_state_holds(self, tmp_path):
+        node, _, _ = cluster_calls(tmp_path)
+        twin, rep = node._twin.fit(None), node._states["reported_sensitivity"].fit(None)
+        assert 0 < twin["rows"] < rep["rows"]
+        assert twin["clusters"] == rep["clusters"] or twin["clusters"] < rep["clusters"]
+
+
+def manifest_sens(root):
+    tree_ = ew._npz_tree((Path(root) / manifest(root)["npz"]["file"]).read_bytes())
+    return {(s_, name) for s_, names in tree_["sens"]["index"].items() for name in names}
+
+
+# --------------------------------------------------------------------------- F3.5: reads and outputs
+
+
+def csv_rows(path):
+    lines = Path(path).read_text().splitlines()
+    head = lines[0].split(",")
+    return [dict(zip(head, ln.split(","))) for ln in lines[1:]]
+
+
+def reported_rows(root):
+    return [json.loads(ln) for p in sorted((Path(root) / "rows").glob("*.jsonl")) for ln in p.read_text().splitlines()]
+
+
+@pytest.fixture(scope="module")
+def full_run(tmp_path_factory):
+    tmp = tmp_path_factory.mktemp("full")
+    holder = {}
+
+    def hook(walk, t):
+        holder["node"] = walk
+
+    node = make(tmp, on_decide=hook, report_from=CAL[2])
+    summary = run(node, tmp)["summary"]
+    return {"node": node, "summary": summary, "out": tmp / "out", "tmp": tmp}
+
+
+class TestReadsAndOutputs:
+    def test_summary_carries_the_two_gated_reads_and_the_counts(self, full_run):
+        s = full_run["summary"]
+        r1 = s["reads"]["read1"]
+        assert set(r1) == {"b0", "ltop", "fill_ok", "sensitivity_agrees", "verdict"}
+        assert r1["verdict"] in ("PASS", "FAIL", "UNRESOLVED")
+        assert s["confirmatory_reads"] == 2
+        assert set(s["reads"]["read2"]) == {"gated", "slope", "verdict"}
+        assert (s["reads"]["read2"]["gated"]) == (r1["verdict"] != "PASS")
+        assert s["bh_tested_buckets"] > 0
+        assert s["bh_positive_buckets"] + s["bh_negative_buckets"] <= s["bh_tested_buckets"]
+        for key in ("b0", "ltop"):
+            if r1[key] is not None:
+                assert set(r1[key]) == {"t", "p_gt", "p_lt", "scheme"}     # p-values, never a slope value
+
+    def test_fill_rate_axes_each_partition_the_counts(self, full_run):
+        c = full_run["summary"]["counts"]
+        rows = csv_rows(full_run["out"] / "fill-rate.csv")
+        for axis in ("bucket", "decile", "quarter", "group_size"):
+            sel = [r for r in rows if r["axis"] == axis]
+            assert sum(int(r["decided"]) for r in sel) == c["rows_decided"] + c.get("no_fill_quote.session", 0), axis
+            assert sum(int(r["quote"]) for r in sel) == c.get("no_fill_quote.quote", 0), axis
+            assert sum(int(r["size"]) for r in sel) == c.get("no_fill_quote.size", 0), axis
+            assert sum(int(r["session"]) for r in sel) == c.get("no_fill_quote.session", 0), axis
+            assert sum(int(r["basis"]) for r in sel) == c.get("no_fill_quote.basis", 0), axis
+            assert sum(int(r["filled"]) for r in sel) + sum(int(r["other"]) for r in sel) + sum(
+                int(r["quote"]) + int(r["size"]) + int(r["basis"]) for r in sel) == c["rows_admitted"], axis
+        assert {int(r["value"]) for r in rows if r["axis"] == "group_size"} == {6}
+        assert {int(r["value"]) for r in rows if r["axis"] == "decile"} <= set(range(10))
+
+    def test_the_reported_axes_count_only_reported_decisions(self, full_run):
+        rep = {r["axis"] + ":" + r["value"]: r for r in csv_rows(full_run["out"] / "fill-rate.csv")}
+        done = reported_rows(full_run["out"])
+        assert int(rep["reported:all"]["filled"]) == sum(1 for r in done if r["code"] is None)
+        assert int(rep["reported:top"]["decided"]) > 0
+        assert int(rep["reported:top"]["decided"]) < int(rep["reported:all"]["decided"])
+
+    def test_read_one_statistics_are_the_batch_values_on_reported_rows(self, full_run):
+        import numpy as np
+
+        done = [r for r in reported_rows(full_run["out"]) if r["code"] is None]
+        st = full_run["node"]._states["reported_fill"]
+        w = np.array([r["w"] for r in done])
+        e = np.array([r["e"] / r["scale"] for r in done])
+        y = np.array([r["r"] / r["scale"] for r in done])
+        xm, ym = (w * e).sum() / w.sum(), (w * y).sum() / w.sum()
+        slope = (w * (e - xm) * (y - ym)).sum() / (w * (e - xm) ** 2).sum()
+        assert st.fit(None)["b"] == pytest.approx(slope, rel=1e-9)               # map_warmup rows included
+        top = np.array([r["top"] for r in done])
+        assert top.any()
+        assert st.fit_ratio("top")["L"] == pytest.approx((w * y)[top].sum() / (w * e)[top].sum(), rel=1e-9)
+
+    def test_warm_up_rows_leave_read_two_and_the_forward_table_only(self, full_run):
+        done = [r for r in reported_rows(full_run["out"]) if r["code"] is None]
+        warm = [r for r in done if r["map_warmup"]]
+        assert warm and len(warm) < len(done)
+        node = full_run["node"]
+        assert node._states["forward"].fit(None)["rows"] == len(done) - len(warm)
+        assert node._states["reported_fill"].fit(None)["rows"] == len(done)
+        fwd = csv_rows(full_run["out"] / "forward-reliability.csv")
+        top = next(r for r in fwd if r["variant"] == "c_bucket" and r["side"] == "all" and r["quarter"] == "all"
+                   and r["bin"] == "all")
+        assert int(top["n"]) == len(done) - len(warm)
+
+    def test_bh_counts_equal_an_independent_step_up(self, full_run):
+        from dskit.pipeline.stats import student_t_sf
+
+        st = full_run["node"]._states["expanding_fill"]
+        ps = {}
+        for b in range(24):
+            f = st.fit(b)
+            if f["theta"] is None:
+                continue
+            sw = st.sandwich(b, f["theta"], "two_block", block=0)
+            if sw is None or not sw["cov"][1][1] > 0:
+                continue
+            ps[b] = (f["b"], min(1.0, 2 * student_t_sf(abs(f["b"] / sw["cov"][1][1] ** 0.5), sw["df"])))
+        order = sorted(ps, key=lambda k: ps[k][1])
+        m, last = len(order), -1
+        for rank, k in enumerate(order, 1):
+            if ps[k][1] <= 0.10 * rank / m:
+                last = rank
+        rej = order[:last] if last > 0 else []
+        s = full_run["summary"]
+        assert s["bh_tested_buckets"] == m
+        assert s["bh_positive_buckets"] == sum(1 for k in rej if ps[k][0] > 0)
+        assert s["bh_negative_buckets"] == sum(1 for k in rej if ps[k][0] < 0)
+
+    def test_direction_tables_and_the_e4_input(self, full_run):
+        d = full_run["summary"]["direction"]["e4_input"]
+        if d is not None:
+            for key in ("w_dir", "w_dir_shrunk"):
+                rec = d[key]
+                assert set(rec["bands"]) == {"0.9", "0.95"}
+                for band in rec["bands"].values():
+                    assert band["lcb"] < rec["value"] < band["ucb"]
+                assert rec["bands"]["0.95"]["ucb"] - rec["bands"]["0.95"]["lcb"] > (
+                    rec["bands"]["0.9"]["ucb"] - rec["bands"]["0.9"]["lcb"])
+            assert d["g_eff_blocks_13"] > 1
+        rows = csv_rows(full_run["out"] / "direction-slope.csv")
+        assert [r["bucket"] for r in rows][0] == "pooled" and len(rows) == 25
+        side = csv_rows(full_run["out"] / "side-slope.csv")
+        node = full_run["node"]
+        for r in side:
+            st = {"reported_fill_common": node._twin, **node._integ, **node._states}[r["state"]]
+            assert int(r["rows"]) == st.fit(r["unit"])["rows"]
+        assert any(r["state"] == "dir_expanding_fill" for r in side)
+        div = csv_rows(full_run["out"] / "divergence.csv")
+        assert {"dollar", "fill_sensitivity", "expanding_decision"} <= {r["state"] for r in div}
+
+    def test_the_outputs_are_listed_with_their_hashes(self, full_run):
+        outs = full_run["summary"]["outputs"]
+        assert set(outs) >= {"fill-rate.csv", "side-slope.csv", "divergence.csv", "direction-slope.csv",
+                             "forward-reliability.csv"}
+        for name, sha in outs.items():
+            assert hashlib.sha256((full_run["out"] / name).read_bytes()).hexdigest() == sha
+
+    def test_a_low_fill_rate_makes_read_one_unresolved_and_read_two_gated(self, tmp_path):
+        s = run(make(tmp_path, min_fill_rate=1.0), tmp_path)["summary"]
+        assert s["counts"]["low_fill_rate"] == 1
+        assert s["reads"]["read1"]["fill_ok"] is False
+        assert s["reads"]["read1"]["verdict"] == "UNRESOLVED"
+        assert s["reads"]["read2"] == {"gated": True, "slope": None, "verdict": "UNRESOLVED"}
+
+    def test_read_one_does_not_depend_on_any_map(self, tmp_path):
+        a = run(make(tmp_path, out="a"), tmp_path)["summary"]["reads"]["read1"]
+        b = run(make(tmp_path, out="b", pooling={**POOL, "lcb_k": 3.0, "tau2_floor": 1e-3}),
+                tmp_path)["summary"]["reads"]["read1"]
+        assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+    def test_sensitivity_disagreement_on_both_sides_is_unresolved(self):
+        agrees = EdgeReliabilityWalk._agrees
+        up = {"gt0": True, "lt_floor": False}
+        down = {"gt0": False, "lt_floor": True}
+        flat = {"gt0": False, "lt_floor": False}
+        ok = {"b0": up, "ltop": up}
+        assert agrees(ok, {"b0": up, "ltop": up})
+        assert not agrees(ok, {"b0": up, "ltop": flat})                  # PASS side not established by the sensitivity
+        assert not agrees({"b0": down, "ltop": down}, {"b0": down, "ltop": flat})   # FAIL side likewise
+        assert not agrees({"b0": flat, "ltop": up}, {"b0": flat, "ltop": None})
+        assert agrees({"b0": flat, "ltop": flat}, {"b0": None, "ltop": None})
+        assert agrees({"b0": flat, "ltop": flat}, {"b0": up, "ltop": down})   # only the fill state's side binds
+
+    def test_the_walk_passes_the_fill_and_sensitivity_checks_to_read_one(self, tmp_path, monkeypatch):
+        calls = []
+
+        def stub(state, block, level, draws, seed, b0, tl, ok=True):
+            calls.append((state, ok))
+            stat = {"t": 1.0, "p_gt": 0.01, "p_lt": 0.9, "scheme": "webb", "gt0": True, "lt_floor": False}
+            return {"b0": dict(stat), "ltop": dict(stat), "verdict": "PASS" if ok else "UNRESOLVED"}
+
+        monkeypatch.setattr(ew, "read_one", stub)
+        s = run(make(tmp_path, min_fill_rate=0.5), tmp_path)["summary"]
+        node_states = [c[0].regressors for c in calls]
+        assert len(calls) == 3 and set(node_states) == {1}
+        assert s["reads"]["read1"]["fill_ok"] and s["reads"]["read1"]["sensitivity_agrees"]
+        assert s["reads"]["read1"]["verdict"] == "PASS" and calls[2][1] is True
+        assert s["reads"]["read2"]["gated"] is False
+
+
+# --------------------------------------------------------------------------- F3.6: next-session bound, RAM before the hook
+
+
+class TestNextSessionBound:
+    @pytest.mark.parametrize("nxt,ok", [(3, True), (7, True), (0, False), (-1, False), (8, False), (14, False)])
+    def test_the_next_session_lies_after_t_and_not_after_the_next_decision(self, tmp_path, nxt, ok):
+        class Odd(SynthWalk):
+            def _next_session(self, t):
+                return add_days(t, nxt)
+
+        node = Odd("walk", params(tmp_path / "x", window={"start": CAL[0], "end": CAL[6]}),
+                   World(no_rows_before="2099-01-01"))
+        if ok:
+            run(node, tmp_path)
+        else:
+            with pytest.raises(ValueError, match="calendar_mismatch") as err:
+                run(node, tmp_path)
+            assert err.value.code == "calendar_mismatch"
+
+    def test_the_last_decision_has_no_upper_bound_but_still_needs_nxt_after_t(self, tmp_path):
+        class Far(SynthWalk):
+            def _next_session(self, t):
+                return add_days(t, 30)
+
+        node = Far("walk", params(tmp_path / "x", window={"start": CAL[0], "end": CAL[0]}), World(no_rows_before=CAL[9]))
+        with pytest.raises(ValueError, match="calendar_mismatch"):   # CAL[1] is the next decision date
+            run(node, tmp_path)
+
+
+class TestRamBeforeTheHook:
+    def test_the_ram_check_runs_before_the_decision_hook_allocates(self, tmp_path, monkeypatch):
+        order = []
+        real = EdgeReliabilityWalk._check_ram
+
+        def spy(self):
+            order.append("ram")
+            return real(self)
+
+        monkeypatch.setattr(EdgeReliabilityWalk, "_check_ram", spy)
+
+        class Probe(SynthWalk):
+            def _decision_rows(self, t):
+                order.append("hook")
+                return super()._decision_rows(t)
+
+        run(Probe("walk", params(tmp_path / "x", window={"start": CAL[0], "end": CAL[0]}), World()), tmp_path)
+        assert order.index("ram") < order.index("hook")
+
+    def test_a_ram_limit_breach_before_the_hook_never_opens_the_hook(self, tmp_path):
+        node = make(tmp_path, ram_gb_limit=1e-9, end=CAL[0])
+        with pytest.raises(ValueError, match="ram_limit"):
+            run(node, tmp_path)
+        assert not any(ev[0] == "decide" for ev in node.events)
+
+
+class TestTwoBlockIsLoudWhenOnlyOneBlockIsPopulated:
+    def test_a_single_populated_block_is_counted_each_week_it_holds(self, tmp_path):
+        s = run(make(tmp_path, end=CAL[6]), tmp_path)["summary"]
+        assert s["counts"].get("two_block_single_block", 0) >= 1
+        s2 = run(make(tmp_path, out="late"), tmp_path)["summary"]
+        assert s2["counts"].get("two_block_single_block", 0) < N_WEEKS
+
+
+# --------------------------------------------------------------------------- F3.7: integration asks (ADR-0313 X1, X2, X6, X7)
+
+
+class TestIntegrationAsks:
+    def test_x1_every_map_carries_the_regimes_of_the_names_decided_that_week(self, full_run):
+        from dskit.pipeline.edge_reliability import TrailingRegime
+
+        regime = TrailingRegime(REGIME)
+        root = full_run["out"]
+        for t in CAL:
+            vols = {n: 0.2 * (1.0 + 0.5 * u("v", n, t)) for n in NAMES}
+            want = {n: list(regime.of(n, t, v)) for n, v in vols.items()}
+            got = json.loads((root / f"map-{t}.json").read_text())["regimes"]
+            assert got == want, t
+            for n, v in vols.items():
+                regime.add(n, t, v)
+
+    def test_x6_cw_bucket_is_the_stored_origin_weight_times_the_scaled_edge(self, full_run):
+        done = [r for r in reported_rows(full_run["out"]) if r["code"] is None]
+        maps = {}
+        for r in done[:400]:
+            m = maps.setdefault(r["t"], json.loads((full_run["out"] / f"map-{r['t']}.json").read_text()))
+            w = m["states"]["expanding_fill"]["buckets"][r["bucket"]]["w"]
+            assert r["cw"] == pytest.approx(w * r["e"] / r["scale"], rel=1e-12, abs=1e-15)
+        assert any(r["cw"] != 0 for r in done)
+
+    def test_x2_the_decision_line_is_the_stored_no_intercept_two_regressor_line(self, full_run):
+        done = [r for r in reported_rows(full_run["out"]) if r["code"] is None]
+        maps, seen = {}, 0
+        for r in done:
+            m = maps.setdefault(r["t"], json.loads((full_run["out"] / f"map-{r['t']}.json").read_text()))
+            if r["e_dir"] is None:
+                assert r["c2w"] is None
+                continue
+            wd, ws = m["origin_two"]["buckets"][r["bucket"]]["w"]
+            d, e = r["e_dir"] / r["scale"], r["e"] / r["scale"]
+            assert r["c2w"] == pytest.approx(wd * d + ws * (e - d), rel=1e-12, abs=1e-15)
+            assert 0.0 <= wd <= 1.0 and 0.0 <= ws <= 1.0                      # clipped to [0, weight_cap]
+            seen += wd > 0 or ws > 0
+        assert seen > 0
+
+    def test_integration_reads_are_descriptive_and_leave_the_confirmatory_count_at_two(self, full_run):
+        s, node = full_run["summary"], full_run["node"]
+        assert s["confirmatory_reads"] == 2 and len(s["states"]) == 14
+        ir = s["integration_reads"]
+        assert set(ir) == {"read2w", "read2b", "affine_side"}
+        assert (ir["read2w"]["state"], ir["read2w"]["line"], ir["read2w"]["form"]) == ("forward_w", "cw_bucket", "slope")
+        assert (ir["read2b"]["state"], ir["read2b"]["form"]) == ("forward_b2", "no_intercept")
+        assert ir["affine_side"]["form"] == "affine" and ir["affine_side"]["verdict"] in ("PASS", "UNRESOLVED")
+        assert all(v["verdict"] in ("PASS", "FAIL", "UNRESOLVED") for v in ir.values())
+        assert node._integ["forward_w"].fit(None)["rows"] == node._states["forward"].fit(None)["rows"]
+        assert 0 < node._integ["forward_b2"].fit(None)["rows"] <= node._states["forward"].fit(None)["rows"]
+
+    def test_x7_the_walk_summary_keys_a_study_reads(self, full_run):
+        s = full_run["summary"]
+        assert s["sealed_from"] == "2021-07-01" and s["report_from"] == CAL[2]
+        assert s["window"] == {"start": CAL[0], "end": CAL[-1]}
+        assert s["edge_scale"] == "notional" and s["row_weight"] == "group_equal"
+        assert {"weight_cap", "band", "min_blocks", "ci_levels"} <= set(s["pooling"])
+        assert s["buckets"] == EDGES and s["regime"] == REGIME
+        assert s["walk_decision_dates"] == CAL and "decision_weeks" not in s
+        warm = {}
+        for t in CAL:
+            m = json.loads((full_run["out"] / f"map-{t}.json").read_text())
+            q = f"{t[:4]}Q{(int(t[5:7]) - 1) // 3 + 1}"
+            for k, rec in {**m["states"], **m["direction"]}.items():
+                warm.setdefault(q, {}).setdefault(k, 0)
+                warm[q][k] += bool(rec["warm"])
+        assert s["warm_weeks"] == {q: dict(sorted(v.items())) for q, v in sorted(warm.items())}
+        assert s["reads"]["read1"]["verdict"] in ("PASS", "FAIL", "UNRESOLVED")
+
+    def test_the_new_states_resume_byte_identically(self, tmp_path):
+        run(make(tmp_path, out="whole", checkpoint_every=4), tmp_path)
+        with pytest.raises(RuntimeError):
+            run(make(tmp_path, out="cut", fail_at=CAL[17], checkpoint_every=4), tmp_path)
+        run(make(tmp_path, out="cut", checkpoint_every=4), tmp_path)
+        assert tree(tmp_path / "whole") == tree(tmp_path / "cut")

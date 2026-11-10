@@ -58,12 +58,14 @@ __all__ = [
     "wild_cluster_test",
     "three_way_verdict",
     "read_one",
+    "origin_two",
     "PartialPooling",
     "NameAdjustment",
     "EdgeCalibrationMap",
     "TrailingRegime",
 ]
 
+# single owner moves to dskit.pipeline.method_blocks (ADR-0313 X4); switched at merge
 #: Newest ``sealed_from`` a config may name until the owner lifts the seal (ADR-0311 rule 7).
 DEVELOPMENT_SEAL = "2021-07-01"
 #: First day that is never readable, whatever the config says (ADR-0311 rule 7).
@@ -1893,6 +1895,65 @@ class PartialPooling:
             rows.append(self._record(state, b, theta, se, df, wse, ln is None))
         return {"warm": True, "counts": counts, "buckets": rows,
                 "pooled": self._record(state, None, th0, se0, df0, origin0, False)}
+
+
+def _origin_two(unit, cap):
+    """Return the clipped no-intercept ``(w_dir, w_shape)`` of a two-regressor unit, or ``None`` if singular."""
+    v = unit.tot
+    dd, ds, ss, dr, sr = v[3], v[4], v[5], v[7], v[8]
+    det = dd * ss - ds * ds
+    if unit.rows == 0 or dd <= 0.0 or ss <= 0.0 or det <= _FIT_RTOL * dd * ss:
+        return None
+    w = ((dr * ss - sr * ds) / det, (sr * dd - dr * ds) / det)
+    return [min(max(x, 0.0), cap) for x in w]
+
+
+def origin_two(pooling, state, warm):
+    """Return the no-intercept two-regressor line ``c = w_dir e_dir + w_shape e_shape`` per bucket and pooled.
+
+    The 2x2 normal equations of ``r`` on ``(e_dir, e_shape)`` without an intercept (ADR-0313 X2), each weight
+    clipped to ``[0, weight_cap]`` so neither part is ever sign-flipped or amplified. A bucket with no fit
+    (a singular 2x2, or too few effective clusters) takes the pooled weights, counted. Before ``warm`` every
+    weight is 0 (the prior). No shrinkage between buckets: "pooling" here is the substitution of the pool.
+
+    Parameters
+    ----------
+    pooling : PartialPooling
+        Supplies ``weight_cap`` and the ``min_clusters`` gate.
+    state : LinearEdgeState
+        A two-regressor state.
+    warm : bool
+        Whether the map built from the state is warm (the same gate :meth:`PartialPooling.fit` applies).
+
+    Returns
+    -------
+    dict
+        ``warm``, ``pooled`` (the two weights), ``buckets`` (a list of ``{"w": [w_dir, w_shape], "pooled": bool}``
+        over every bucket) and ``counts`` (``origin_singular``).
+
+    Raises
+    ------
+    ValueError
+        When ``state`` is not a two-regressor :class:`LinearEdgeState`.
+    """
+    if not isinstance(state, LinearEdgeState) or state.regressors != 2:
+        raise ValueError("origin_two needs a two-regressor LinearEdgeState")
+    counts = {"origin_singular": 0}
+    pool = _origin_two(state._unit(None), pooling.weight_cap) if warm else None
+    if pool is None:
+        zero = [0.0, 0.0]
+        return {"warm": False, "pooled": zero, "counts": counts,
+                "buckets": [{"w": list(zero), "pooled": True} for _ in range(state.n_buckets)]}
+    buckets = []
+    for b in range(state.n_buckets):
+        unit = state._unit(b)
+        got = None
+        if unit.rows > 0 and pooling._enough(state.fit(b)["g_eff"]):
+            got = _origin_two(unit, pooling.weight_cap)
+            if got is None:
+                counts["origin_singular"] += 1
+        buckets.append({"w": pool if got is None else got, "pooled": got is None})
+    return {"warm": True, "pooled": pool, "buckets": buckets, "counts": counts}
 
 
 class NameAdjustment:
