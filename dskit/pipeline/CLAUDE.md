@@ -170,6 +170,8 @@ dskit/pipeline/
 ├── option_structures.py leg-set algebra (credit, payoff, max loss, quote_defect) graduated from
 │                      the index_options child (ADR-0265); classify_option_strategy adds post-solve
 │                      anatomy/quantity labels without selection templates (ADR-0276)
+├── hedge_overlay.py   HedgeOverlay + Null + FixedDeltaForwardHedge (ADR-0312 A1): held-share forward-delta
+│                      units, one truncated book quantity, netted margin rows, hedgeable classifier
 ├── false_signal.py    pi_hat + a widened pi_widened per signal, from
 │                      out-of-fold evidence and a scramble null (ADR-0152);
 │                      pi_widened is a widened point estimate, not a bound
