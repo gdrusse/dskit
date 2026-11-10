@@ -258,104 +258,259 @@ class ReliabilityBuckets:
         return ((d_bin * 2 + z_bin) * 2 + s_bin) * 2 + _REGIMES.index(regime)
 
 
-# Column order of the five cluster sums: rows, e, r, e*e, e*r (the sixth running sum, r*r, is not
-# a cluster-score input).
-_TRI = [(i, j) for i in range(5) for j in range(i, 5)]
 _FIT_RTOL = NO_VARIANCE_RTOL
 
 
-def _score_map(theta):
-    """Return the 2x5 matrix taking a cluster's five sums to its OLS score at ``theta``."""
-    a, b = theta
-    return ((-a, -b, 1.0, 0.0, 0.0), (0.0, -a, 0.0, -b, 1.0))
+def _solve(m, rhs):
+    """Solve ``m x = rhs`` by Gaussian elimination with partial pivoting, for any dimension.
+
+    ``rhs`` is a vector or a matrix (a list of rows); the answer has the same shape.
+
+    Raises
+    ------
+    ValueError
+        When ``m`` is singular (a pivot is zero or not finite).
+    """
+    n = len(m)
+    matrix = isinstance(rhs[0], (list, tuple))
+    cols = len(rhs[0]) if matrix else 1
+    a = [list(map(float, m[i])) + ([float(x) for x in rhs[i]] if matrix else [float(rhs[i])]) for i in range(n)]
+    for c in range(n):
+        piv = max(range(c, n), key=lambda i: abs(a[i][c]))
+        if not abs(a[piv][c]) > 0.0 or not math.isfinite(a[piv][c]):
+            raise ValueError("singular matrix")
+        a[c], a[piv] = a[piv], a[c]
+        for i in range(c + 1, n):
+            f = a[i][c] / a[c][c]
+            if f:
+                for j in range(c, n + cols):
+                    a[i][j] -= f * a[c][j]
+    x = [[0.0] * cols for _ in range(n)]
+    for col in range(cols):
+        for i in range(n - 1, -1, -1):
+            s = a[i][n + col]
+            for j in range(i + 1, n):
+                s -= a[i][j] * x[j][col]
+            x[i][col] = s / a[i][i]
+    return [row[0] for row in x] if not matrix else x
 
 
-def _outer_from_cross(cross, theta):
-    """``M C M'`` for the symmetric 5x5 cross-product ``cross`` (15 numbers)."""
-    c = [[0.0] * 5 for _ in range(5)]
-    for k, (i, j) in enumerate(_TRI):
-        c[i][j] = c[j][i] = cross[k]
-    m = _score_map(theta)
-    mc = [[sum(m[p][i] * c[i][j] for i in range(5)) for j in range(5)] for p in range(2)]
-    return [[sum(mc[p][j] * m[q][j] for j in range(5)) for q in range(2)] for p in range(2)]
+def _mat_mul(a, b):
+    """Product of two matrices given as lists of rows."""
+    return [[sum(a[p][k] * b[k][q] for k in range(len(b))) for q in range(len(b[0]))] for p in range(len(a))]
 
 
-def _outer_from_vectors(vectors, theta):
-    """``sum M x x' M'`` over five-vectors ``x``."""
-    m = _score_map(theta)
-    out = [[0.0, 0.0], [0.0, 0.0]]
+def _det(m):
+    """Return the determinant by elimination with partial pivoting (small matrices)."""
+    n, a, d = len(m), [list(map(float, r)) for r in m], 1.0
+    for c in range(n):
+        piv = max(range(c, n), key=lambda i: abs(a[i][c]))
+        if a[piv][c] == 0.0:
+            return 0.0
+        if piv != c:
+            a[c], a[piv] = a[piv], a[c]
+            d = -d
+        d *= a[c][c]
+        for i in range(c + 1, n):
+            f = a[i][c] / a[c][c]
+            for j in range(c, n):
+                a[i][j] -= f * a[c][j]
+    return d
+
+
+def _positive_definite(m):
+    """Say whether every leading principal minor of the symmetric ``m`` is positive."""
+    return all(_det([row[:i] for row in m[:i]]) > 0.0 for i in range(1, len(m) + 1))
+
+
+class _Layout:
+    """Index map of a cluster's moment vector for ``k`` regressors.
+
+    ``k = 1``: ``(N, E, R, EE, ER)``; ``k = 2``: ``(N, D, S, DD, DS, SS, R, DR, SR)``
+    (``D`` the direction edge, ``S`` the shape edge). ``N`` is the total row weight.
+    """
+
+    def __init__(self, k):
+        self.k = k
+        if k == 1:
+            self.z, self.r, self.zr, self.zz = (1,), 2, (4,), {(0, 0): 3}
+            self.size = 5
+        else:
+            self.z, self.r, self.zr = (1, 2), 6, (7, 8)
+            self.zz = {(0, 0): 3, (0, 1): 4, (1, 0): 4, (1, 1): 5}
+            self.size = 9
+        self.tri = [(i, j) for i in range(self.size) for j in range(i, self.size)]
+
+    def row_vector(self, w, z, r):
+        """Return the weighted moment vector of one row with regressors ``z`` and outcome ``r``."""
+        out = [0.0] * self.size
+        out[0] = w
+        for j, zj in enumerate(z):
+            out[self.z[j]] = w * zj
+            out[self.zr[j]] = w * zj * r
+            for ll in range(j, len(z)):
+                out[self.zz[(j, ll)]] = w * zj * z[ll]
+        out[self.r] = w * r
+        return out
+
+    def gram(self, vec):
+        """Return the ``(k+1) x (k+1)`` matrix ``X'WX`` of a moment vector."""
+        k = self.k
+        g = [[0.0] * (k + 1) for _ in range(k + 1)]
+        g[0][0] = vec[0]
+        for j in range(k):
+            g[0][j + 1] = g[j + 1][0] = vec[self.z[j]]
+            for ll in range(k):
+                g[j + 1][ll + 1] = vec[self.zz[(j, ll)]]
+        return g
+
+    def xr(self, vec):
+        """Return the vector ``X'Wr`` of a moment vector."""
+        return [vec[self.r]] + [vec[i] for i in self.zr]
+
+    def score(self, theta, vec):
+        """Return the OLS score ``X'W(r - X theta) = M(theta) vec`` of a moment vector."""
+        g, u = self.gram(vec), self.xr(vec)
+        return [u[i] - sum(g[i][j] * theta[j] for j in range(self.k + 1)) for i in range(self.k + 1)]
+
+    def score_map(self, theta):
+        """Return the ``(k+1) x size`` matrix ``M(theta)`` taking a moment vector to its score."""
+        k = self.k
+        m = [[0.0] * self.size for _ in range(k + 1)]
+        m[0][0] = -theta[0]
+        m[0][self.r] = 1.0
+        for j in range(k):
+            m[0][self.z[j]] = -theta[j + 1]
+            m[j + 1][self.z[j]] = -theta[0]
+            m[j + 1][self.zr[j]] = 1.0
+            for ll in range(k):
+                m[j + 1][self.zz[(j, ll)]] -= theta[ll + 1]
+        return m
+
+
+_LAYOUTS = {1: _Layout(1), 2: _Layout(2)}
+
+
+def _outer_from_cross(lay, cross, theta):
+    """``M C M'`` for the symmetric cross-product ``cross`` of the moment vectors."""
+    p = lay.size
+    c = [[0.0] * p for _ in range(p)]
+    for idx, (i, j) in enumerate(lay.tri):
+        c[i][j] = c[j][i] = cross[idx]
+    m = lay.score_map(theta)
+    mc = _mat_mul(m, c)
+    return [[sum(mc[a][j] * m[b][j] for j in range(p)) for b in range(len(m))] for a in range(len(m))]
+
+
+def _outer_from_vectors(lay, vectors, theta):
+    """``sum s s'`` over the scores ``s`` of the moment vectors."""
+    q = lay.k + 1
+    out = [[0.0] * q for _ in range(q)]
     for x in vectors:
-        s = [sum(m[p][i] * x[i] for i in range(5)) for p in range(2)]
-        for p in range(2):
-            for q in range(2):
-                out[p][q] += s[p] * s[q]
+        s = lay.score(theta, x)
+        for a in range(q):
+            for b in range(q):
+                out[a][b] += s[a] * s[b]
     return out
 
 
-def _sandwich_matrix(bread, meat, groups, rows):
-    """CR1 ``G/(G-1) * (n-1)/(n-2) * bread meat bread``."""
-    factor = groups / (groups - 1) * (rows - 1) / (rows - 2)
-    bm = [[sum(bread[p][k] * meat[k][q] for k in range(2)) for q in range(2)] for p in range(2)]
-    return [[factor * sum(bm[p][k] * bread[k][q] for k in range(2)) for q in range(2)] for p in range(2)]
+def _sandwich_matrix(bread, meat, groups, rows, k=1):
+    """CR1 ``G/(G-1) * (n-1)/(n-k-1) * bread meat bread``."""
+    factor = groups / (groups - 1) * (rows - 1) / (rows - k - 1)
+    bm = _mat_mul(bread, meat)
+    full = _mat_mul(bm, bread)
+    return [[factor * v for v in row] for row in full]
+
+
+class _Table:
+    """A dimension of cluster units (names, dates, ...): key -> weighted moment vector."""
+
+    def __init__(self, p):
+        self.p = p
+        self.cells = {}
+
+    @property
+    def count(self):
+        return len(self.cells)
+
+    def add(self, key, vec):
+        cell = self.cells.setdefault(key, [0.0] * self.p)
+        for q in range(self.p):
+            cell[q] += vec[q]
+
+    def scale(self, f):
+        for key, cell in self.cells.items():
+            self.cells[key] = [v * f for v in cell]
+
+    def sorted_vectors(self):
+        return [self.cells[k] for k in sorted(self.cells)]
+
+    def to_dict(self):
+        return {str(k): list(self.cells[k]) for k in sorted(self.cells)}
+
+    @classmethod
+    def from_dict(cls, p, blob):
+        t = cls(p)
+        t.cells = {k: [float(v) for v in vec] for k, vec in blob.items()}
+        return t
 
 
 class _Unit:
     """Running sums of one regression: a bucket, or the pooled rows."""
 
-    def __init__(self):
-        self.tot = [0.0] * 6  # rows, e, r, e*e, e*r, r*r (weighted)
-        self.cross = [0.0] * 15  # sum over (name, date) clusters of x x', x the five cluster sums
-        self.names = {}  # name -> weighted five-vector
-        self.dates = {}  # settlement date -> weighted five-vector
-        self.rows = 0  # unweighted counts, for the CR1 factor and degrees of freedom
+    def __init__(self, lay):
+        self.lay = lay
+        self.tot = [0.0] * (lay.size + 1)  # the moment vector, then r*r (weighted)
+        self.serr = 0.0  # sum w sigma^2 of the direction regressor
+        self.cross = [0.0] * len(lay.tri)  # sum over (name, date) clusters of x x'
+        self.names = _Table(lay.size)
+        self.dates = _Table(lay.size)
+        self.rows = 0  # unweighted counts
         self.clusters = 0
 
-    def add(self, name, day, e, r):
-        """Fold one whole (name, date) cluster of rows into the sums."""
-        x = [float(len(e)), sum(e), sum(r), sum(v * v for v in e), sum(u * v for u, v in zip(e, r))]
-        for k in range(5):
-            self.tot[k] += x[k]
-        self.tot[5] += sum(v * v for v in r)
-        for k, (i, j) in enumerate(_TRI):
-            self.cross[k] += x[i] * x[j]
-        for table, key in ((self.names, name), (self.dates, day)):
-            vec = table.setdefault(key, [0.0] * 5)
-            for k in range(5):
-                vec[k] += x[k]
-        self.rows += len(e)
+    def add(self, name, day, vec, rr, serr, rows):
+        """Fold one whole (name, date) cluster, given as its moment vector, into the sums."""
+        for q in range(self.lay.size):
+            self.tot[q] += vec[q]
+        self.tot[self.lay.size] += rr
+        self.serr += serr
+        for idx, (i, j) in enumerate(self.lay.tri):
+            self.cross[idx] += vec[i] * vec[j]
+        self.names.add(name, vec)
+        self.dates.add(day, vec)
+        self.rows += rows
         self.clusters += 1
 
     def decay(self, lam):
         """Age every sum by one decision week."""
         self.tot = [v * lam for v in self.tot]
+        self.serr *= lam
         self.cross = [v * lam * lam for v in self.cross]
-        for table in (self.names, self.dates):
-            for key, vec in table.items():
-                table[key] = [v * lam for v in vec]
+        self.names.scale(lam)
+        self.dates.scale(lam)
 
     def to_dict(self):
         return {
-            "tot": list(self.tot), "cross": list(self.cross), "rows": self.rows,
-            "clusters": self.clusters,
-            "names": {k: list(self.names[k]) for k in sorted(self.names)},
-            "dates": {k: list(self.dates[k]) for k in sorted(self.dates)},
+            "tot": list(self.tot), "serr": self.serr, "cross": list(self.cross), "rows": self.rows,
+            "clusters": self.clusters, "names": self.names.to_dict(), "dates": self.dates.to_dict(),
         }
 
     @classmethod
-    def from_dict(cls, blob):
-        unit = cls()
+    def from_dict(cls, lay, blob):
+        unit = cls(lay)
         unit.tot = [float(v) for v in blob["tot"]]
+        unit.serr = float(blob["serr"])
         unit.cross = [float(v) for v in blob["cross"]]
         unit.rows, unit.clusters = int(blob["rows"]), int(blob["clusters"])
-        unit.names = {k: [float(v) for v in vec] for k, vec in blob["names"].items()}
-        unit.dates = {k: [float(v) for v in vec] for k, vec in blob["dates"].items()}
-        if len(unit.tot) != 6 or len(unit.cross) != 15:
+        unit.names = _Table.from_dict(lay.size, blob["names"])
+        unit.dates = _Table.from_dict(lay.size, blob["dates"])
+        if len(unit.tot) != lay.size + 1 or len(unit.cross) != len(lay.tri):
             raise ValueError("unit sums have the wrong size")
         return unit
 
 
 class LinearEdgeState:
-    """``r = a + b e`` per bucket and pooled, from running sums, with cluster-robust SEs.
+    """``r = a + b e`` (or ``r = a + b_dir e_dir + b_shape e_shape``) per bucket and pooled, from running sums.
 
     The clock is the sequence of decision weeks the caller advances through:
     each :meth:`advance` to a later ``t`` ages a decayed state by one week
@@ -363,9 +518,10 @@ class LinearEdgeState:
     clusters are added. A ``(name, settlement date)`` cluster arrives whole,
     once. The one-way band clusters on ``(name, date)``; the two-way band is
     Cameron-Gelbach-Miller ``name + date - (name, date)``, the same rule as
-    :func:`~dskit.pipeline.ordering.clustered_calibration_slope`. The CR1
-    factor and degrees of freedom use the raw (unweighted) row and cluster
-    counts, also when the state is decayed.
+    :func:`~dskit.pipeline.ordering.clustered_calibration_slope`.
+
+    With ``regressors = 2`` the row's regressors are ``(e_dir, e_shape)`` with
+    ``e_shape = e - e_dir`` formed here (one owner); the fit is a 3x3 solve.
 
     Parameters
     ----------
@@ -373,11 +529,15 @@ class LinearEdgeState:
         Number of buckets (at least 1); bucket indices run ``0..n_buckets-1``.
     decay : float or None
         ``None`` for the expanding state, else the weekly factor ``lambda`` in (0, 1).
+    regressors : int
+        1 (``e``) or 2 (``e_dir`` and ``e - e_dir``).
+    block_lengths : int
+        How many block indices each cluster carries (at least 1).
 
     Raises
     ------
     ValueError
-        On a bad bucket count or decay.
+        On a bad bucket count, decay, regressor count or block count.
 
     Examples
     --------
@@ -390,17 +550,26 @@ class LinearEdgeState:
         state.fit(None)["n"]  # -> 3.0
     """
 
-    def __init__(self, n_buckets, decay):
+    def __init__(self, n_buckets, decay, regressors=1, block_lengths=1):
         if isinstance(n_buckets, bool) or not isinstance(n_buckets, int) or n_buckets < 1:
             raise ValueError(f"n_buckets must be an integer >= 1, got {n_buckets!r}")
         if decay is not None and (isinstance(decay, bool) or not number_ok(decay) or not 0.0 < decay < 1.0):
             raise ValueError(f"decay must be None or a number in (0, 1), got {decay!r}")
+        if isinstance(regressors, bool) or regressors not in (1, 2):
+            raise ValueError(f"regressors must be 1 or 2, got {regressors!r}")
+        if isinstance(block_lengths, bool) or not isinstance(block_lengths, int) or block_lengths < 1:
+            raise ValueError(f"block_lengths must be an integer >= 1, got {block_lengths!r}")
         self.n_buckets = n_buckets
         self.decay = None if decay is None else float(decay)
+        self.regressors = regressors
+        self.block_lengths = block_lengths
+        self._lay = _LAYOUTS[regressors]
         self._t = None
-        self._pooled = _Unit()
+        self._pooled = _Unit(self._lay)
         self._buckets = {}
         self._seen = set()
+        #: Rows counted, never silent: ``sigma2_missing`` (a direction row without a forward error variance).
+        self.counts = {"sigma2_missing": 0}
 
     def advance(self, t):
         """Move to decision week ``t``, aging a decayed state by one week.
@@ -426,7 +595,37 @@ class LinearEdgeState:
                     unit.decay(self.decay)
             self._t = day
 
-    def add_cluster(self, t, name, settle_date, fill_date, buckets, e, r):
+    def _rows(self, buckets, e, r, e_dir, sigma2):
+        """Validate one cluster's rows and return the finite floats ``(e, r, e_dir, sigma2)``."""
+        m = len(e) if isinstance(e, (list, tuple)) else -1
+        if m < 1 or not all(isinstance(v, (list, tuple)) and len(v) == m for v in (buckets, r)):
+            raise ValueError("buckets, e and r must be non-empty lists of the same length")
+        for b in buckets:
+            if isinstance(b, bool) or not isinstance(b, int) or not 0 <= b < self.n_buckets:
+                raise ValueError(f"bucket {b!r} is not an integer in 0..{self.n_buckets - 1}")
+        for v in (*e, *r):
+            if isinstance(v, bool) or not number_ok(v):
+                raise ValueError(f"e and r must be finite numbers, got {v!r}")
+        if self.regressors == 1:
+            if e_dir is not None or sigma2 is not None:
+                raise ValueError("e_dir and sigma2 belong to a two-regressor state")
+            return [float(v) for v in e], [float(v) for v in r], None, None
+        if not isinstance(e_dir, (list, tuple)) or len(e_dir) != m:
+            raise ValueError("a two-regressor state needs e_dir, a list of the same length as e")
+        for v in e_dir:
+            if isinstance(v, bool) or not number_ok(v):
+                raise ValueError(f"e_dir must be finite numbers, got {v!r}")
+        if sigma2 is not None:
+            if not isinstance(sigma2, (list, tuple)) or len(sigma2) != m:
+                raise ValueError("sigma2 must be a list of the same length as e")
+            for v in sigma2:
+                if v is not None and (isinstance(v, bool) or not number_ok(v) or v < 0):
+                    raise ValueError(f"sigma2 must be None or a finite number >= 0, got {v!r}")
+        return ([float(v) for v in e], [float(v) for v in r], [float(v) for v in e_dir],
+                None if sigma2 is None else [None if v is None else float(v) for v in sigma2])
+
+    def add_cluster(self, t, name, settle_date, fill_date, buckets, e, r, blocks=None, e_dir=None,
+                    weights=None, sides=None, top=None, sigma2=None):
         """Fold one whole ``(name, settle_date)`` cluster into the state at ``t``.
 
         Parameters
@@ -445,6 +644,14 @@ class LinearEdgeState:
             Predicted edge per row.
         r : list of float
             Realized edge per row.
+        blocks : list of int, optional
+            One non-negative block index per configured block length.
+        e_dir : list of float, optional
+            Direction edge per row (required with ``regressors = 2``, refused with 1).
+        weights, sides, top : list, optional
+            Per-row base weight, side (+1 buy, -1 sell) and top-decile flag.
+        sigma2 : list of float or None, optional
+            Per-row error variance of the direction regressor (two-regressor states).
 
         Raises
         ------
@@ -460,27 +667,32 @@ class LinearEdgeState:
             raise _Refusal("state_from_future", f"fill {f} is not before settlement {s}")
         if not cluster_ok(name):
             raise ValueError(f"name must be a non-empty string, got {name!r}")
-        m = len(e) if isinstance(e, (list, tuple)) else -1
-        if m < 1 or not all(isinstance(v, (list, tuple)) and len(v) == m for v in (buckets, r)):
-            raise ValueError("buckets, e and r must be non-empty lists of the same length")
-        for b in buckets:
-            if isinstance(b, bool) or not isinstance(b, int) or not 0 <= b < self.n_buckets:
-                raise ValueError(f"bucket {b!r} is not an integer in 0..{self.n_buckets - 1}")
-        for v in (*e, *r):
-            if isinstance(v, bool) or not number_ok(v):
-                raise ValueError(f"e and r must be finite numbers, got {v!r}")
+        ev, rv, dv, sv = self._rows(buckets, e, r, e_dir, sigma2)
         if (name, s) in self._seen:
             raise ValueError(f"cluster ({name}, {s}) was already added: a cluster arrives whole, once")
         self.advance(day)
         self._seen.add((name, s))
-        groups = {}
-        for b, ev, rv in zip(buckets, e, r):
-            es, rs = groups.setdefault(b, ([], []))
-            es.append(float(ev))
-            rs.append(float(rv))
-        self._pooled.add(name, s, [float(v) for v in e], [float(v) for v in r])
-        for b, (es, rs) in groups.items():
-            self._buckets.setdefault(b, _Unit()).add(name, s, es, rs)
+        lay = self._lay
+        acc = {}
+        for i, b in enumerate(buckets):
+            z = [ev[i]] if dv is None else [dv[i], ev[i] - dv[i]]
+            row = lay.row_vector(1.0, z, rv[i])
+            serr = 0.0
+            if sv is not None:
+                if sv[i] is None:
+                    self.counts["sigma2_missing"] += 1
+                else:
+                    serr = sv[i]
+            for key in (None, b):
+                a = acc.setdefault(key, [[0.0] * lay.size, 0.0, 0.0, 0])
+                for q in range(lay.size):
+                    a[0][q] += row[q]
+                a[1] += rv[i] * rv[i]
+                a[2] += serr
+                a[3] += 1
+        for key, (vec, rr, serr, rows) in acc.items():
+            unit = self._pooled if key is None else self._buckets.setdefault(key, _Unit(lay))
+            unit.add(name, s, vec, rr, serr, rows)
 
     def _unit(self, b):
         """Return the sums of bucket ``b`` (``None`` is pooled); an unused bucket is empty."""
@@ -488,7 +700,24 @@ class LinearEdgeState:
             return self._pooled
         if isinstance(b, bool) or not isinstance(b, int) or not 0 <= b < self.n_buckets:
             raise ValueError(f"bucket must be None or an integer in 0..{self.n_buckets - 1}, got {b!r}")
-        return self._buckets.get(b) or _Unit()
+        return self._buckets.get(b) or _Unit(self._lay)
+
+    def _centred(self, u):
+        """``(theta, centred Gram, centred cross, z sums)`` of a unit, or ``None`` when it cannot be fitted."""
+        lay, v = u.lay, u.tot
+        n, k = v[0], lay.k
+        if u.rows == 0 or not n > 0.0:
+            return None
+        z = [v[i] for i in lay.z]
+        c = [[v[lay.zz[(i, j)]] - z[i] * z[j] / n for j in range(k)] for i in range(k)]
+        if any(c[i][i] <= _FIT_RTOL * v[lay.zz[(i, i)]] for i in range(k)):
+            return None
+        if k == 2 and c[0][0] * c[1][1] - c[0][1] * c[1][0] <= _FIT_RTOL * c[0][0] * c[1][1]:
+            return None
+        cz = [v[lay.zr[j]] - z[j] * v[lay.r] / n for j in range(k)]
+        beta = _solve(c, cz)
+        a = (v[lay.r] - sum(beta[j] * z[j] for j in range(k))) / n
+        return [a, *beta], c, cz, z
 
     def fit(self, b):
         """Return the least-squares fit of one bucket (``None`` for the pooled rows).
@@ -502,8 +731,11 @@ class LinearEdgeState:
         -------
         dict
             ``n`` (weighted rows), ``rows`` and ``clusters`` (raw counts),
-            ``dates`` and ``names`` (distinct, raw), ``a`` and ``b`` (``None`` when
-            the ``e`` variance is zero or there are no rows), ``sse``.
+            ``dates`` and ``names`` (distinct, raw), ``theta`` (``None`` when a
+            regressor has no variance, the two are exactly collinear or there
+            are no rows), ``a`` and ``b`` (one regressor) or ``a``, ``b_dir``,
+            ``b_shape``, ``reliability_dir``, ``b_dir_corrected`` and
+            ``corr_dir_shape`` (two regressors), ``sse``.
 
         Raises
         ------
@@ -511,29 +743,38 @@ class LinearEdgeState:
             On a bucket outside the state.
         """
         u = self._unit(b)
-        n, se, sr, see, ser, srr = u.tot
-        out = {"n": n, "rows": u.rows, "clusters": u.clusters, "dates": len(u.dates),
-               "names": len(u.names), "a": None, "b": None, "sse": None}
-        if u.rows == 0:
+        lay, v = u.lay, u.tot
+        out = {"n": v[0], "rows": u.rows, "clusters": u.clusters, "dates": u.dates.count,
+               "names": u.names.count, "theta": None, "a": None, "sse": None}
+        if lay.k == 1:
+            out["b"] = None
+        else:
+            out.update(b_dir=None, b_shape=None, reliability_dir=None, b_dir_corrected=None, corr_dir_shape=None)
+        got = self._centred(u)
+        if got is None:
             return out
-        varx = see - se * se / n
-        if varx <= _FIT_RTOL * see:
+        theta, c, _, _ = got
+        sse = v[lay.size] - theta[0] * v[lay.r] - sum(theta[j + 1] * v[lay.zr[j]] for j in range(lay.k))
+        out.update(theta=theta, a=theta[0], sse=sse)
+        if lay.k == 1:
+            out["b"] = theta[1]
             return out
-        slope = (ser - se * sr / n) / varx
-        icept = (sr - slope * se) / n
-        out.update(a=icept, b=slope, sse=srr - icept * sr - slope * ser)
+        rel = max((c[0][0] - u.serr) / c[0][0], 0.0)
+        out.update(b_dir=theta[1], b_shape=theta[2], reliability_dir=rel,
+                   b_dir_corrected=None if rel <= 0.0 else theta[1] / rel,
+                   corr_dir_shape=c[0][1] / math.sqrt(c[0][0] * c[1][1]))
         return out
 
     def sandwich(self, b, theta, way):
-        """Return the CR1 cluster-robust covariance of ``theta = (a, b)`` for a bucket.
+        """Return the CR1 cluster-robust covariance of ``theta`` for a bucket.
 
         Parameters
         ----------
         b : int or None
             The bucket index, or ``None`` for pooled.
-        theta : tuple of float
-            The ``(a, b)`` point the scores are taken at (the unit's own fit,
-            or a shrunk one).
+        theta : sequence of float
+            The ``(a, b)`` or ``(a, b_dir, b_shape)`` point the scores are
+            taken at (the unit's own fit, or a shrunk one).
         way : str
             ``"one"`` for ``(name, settlement date)`` clusters, ``"two"`` for
             name plus date minus ``(name, date)``.
@@ -541,11 +782,11 @@ class LinearEdgeState:
         Returns
         -------
         dict or None
-            ``cov`` (2x2), ``rule`` (``"one_way"``, ``"two_way"`` or
-            ``"max_one_way"`` when the two-way matrix is not positive definite),
-            ``df`` (clusters - 1; two-way: fewest of names and dates - 1) and
-            ``n_clusters``. ``None`` when there are too few rows or clusters, or
-            the ``e`` variance is zero.
+            ``cov``, ``rule`` (``"one_way"``, ``"two_way"`` or ``"max_one_way"``
+            when the two-way matrix is not positive definite), ``df`` (clusters
+            - 1; two-way: fewest of names and dates - 1) and ``n_clusters``.
+            ``None`` when there are too few rows or clusters, or a regressor
+            has no variance.
 
         Raises
         ------
@@ -554,27 +795,27 @@ class LinearEdgeState:
         """
         if way not in _WAYS:
             raise ValueError(f"way must be one of {list(_WAYS)}, got {way!r}")
-        if not (isinstance(theta, (list, tuple)) and len(theta) == 2 and all(
-                number_ok(v) and not isinstance(v, bool) for v in theta)):
-            raise ValueError(f"theta must be two finite numbers, got {theta!r}")
+        k = self.regressors
+        if not (isinstance(theta, (list, tuple)) and len(theta) == k + 1 and all(
+                number_ok(x) and not isinstance(x, bool) for x in theta)):
+            raise ValueError(f"theta must be {k + 1} finite numbers, got {theta!r}")
         u = self._unit(b)
-        n, se, _, see, _, _ = u.tot
-        if u.rows < 3 or u.clusters < 2 or n <= 0 or see - se * se / n <= _FIT_RTOL * see:
+        lay = u.lay
+        if u.rows < k + 2 or u.clusters < 2 or self._centred(u) is None:
             return None
-        det = n * see - se * se
-        bread = [[see / det, -se / det], [-se / det, n / det]]
-        theta = (float(theta[0]), float(theta[1]))
-        pair = _sandwich_matrix(bread, _outer_from_cross(u.cross, theta), u.clusters, u.rows)
+        bread = _solve(lay.gram(u.tot), [[1.0 if i == j else 0.0 for j in range(k + 1)] for i in range(k + 1)])
+        theta = [float(x) for x in theta]
+        pair = _sandwich_matrix(bread, _outer_from_cross(lay, u.cross, theta), u.clusters, u.rows, k)
         if way == "one":
             return {"cov": pair, "rule": "one_way", "df": u.clusters - 1, "n_clusters": [u.clusters]}
-        gn, gd = len(u.names), len(u.dates)
+        gn, gd = u.names.count, u.dates.count
         if gn < 2 or gd < 2:
             return None
-        by_name = _sandwich_matrix(bread, _outer_from_vectors((u.names[k] for k in sorted(u.names)), theta), gn, u.rows)
-        by_date = _sandwich_matrix(bread, _outer_from_vectors((u.dates[k] for k in sorted(u.dates)), theta), gd, u.rows)
-        cov = [[by_name[p][q] + by_date[p][q] - pair[p][q] for q in range(2)] for p in range(2)]
+        by_name = _sandwich_matrix(bread, _outer_from_vectors(lay, u.names.sorted_vectors(), theta), gn, u.rows, k)
+        by_date = _sandwich_matrix(bread, _outer_from_vectors(lay, u.dates.sorted_vectors(), theta), gd, u.rows, k)
+        cov = [[by_name[p][q] + by_date[p][q] - pair[p][q] for q in range(k + 1)] for p in range(k + 1)]
         rule = "two_way"
-        if not (cov[0][0] > 0.0 and cov[1][1] > 0.0 and cov[0][0] * cov[1][1] - cov[0][1] * cov[1][0] > 0.0):
+        if not _positive_definite(cov):
             cov = max(by_name, by_date, key=lambda m: m[1][1])
             rule = "max_one_way"
         return {"cov": cov, "rule": rule, "df": min(gn, gd) - 1, "n_clusters": [gn, gd, u.clusters]}
@@ -589,6 +830,7 @@ class LinearEdgeState:
         """
         return {
             "n_buckets": self.n_buckets, "decay": self.decay, "t": self._t,
+            "regressors": self.regressors, "block_lengths": self.block_lengths, "counts": dict(self.counts),
             "seen": sorted([name, day] for name, day in self._seen),
             "pooled": self._pooled.to_dict(),
             "buckets": {str(k): self._buckets[k].to_dict() for k in sorted(self._buckets)},
@@ -611,14 +853,16 @@ class LinearEdgeState:
         Raises
         ------
         ValueError
-            On a missing key or a malformed blob.
+            On a missing key or a malformed blob (including a dump from before
+            the two-regressor layout).
         """
         try:
-            state = cls(blob["n_buckets"], blob["decay"])
+            state = cls(blob["n_buckets"], blob["decay"], blob["regressors"], blob["block_lengths"])
             state._t = blob["t"]
+            state.counts = {k: int(v) for k, v in blob["counts"].items()}
             state._seen = {(name, day) for name, day in blob["seen"]}
-            state._pooled = _Unit.from_dict(blob["pooled"])
-            state._buckets = {int(k): _Unit.from_dict(v) for k, v in blob["buckets"].items()}
+            state._pooled = _Unit.from_dict(state._lay, blob["pooled"])
+            state._buckets = {int(k): _Unit.from_dict(state._lay, v) for k, v in blob["buckets"].items()}
         except (KeyError, TypeError) as exc:
             raise ValueError(f"malformed LinearEdgeState dump: {exc!r}") from exc
         return state
@@ -660,20 +904,6 @@ def _checked_params(params, allowed):
     if missing:
         raise ValueError(f"missing params {missing}")
     return params
-
-
-def _mat2_solve(m, rhs):
-    """Solve the 2x2 system ``m x = rhs`` for a 2x2 or 2-vector ``rhs`` (``m`` positive definite)."""
-    det = m[0][0] * m[1][1] - m[0][1] * m[1][0]
-    inv = ((m[1][1] / det, -m[0][1] / det), (-m[1][0] / det, m[0][0] / det))
-    if isinstance(rhs[0], (list, tuple)):
-        return [[sum(inv[p][k] * rhs[k][q] for k in range(2)) for q in range(2)] for p in range(2)]
-    return [sum(inv[p][k] * rhs[k] for k in range(2)) for p in range(2)]
-
-
-def _mat2_mul(a, b):
-    """Product of two 2x2 matrices."""
-    return [[sum(a[p][k] * b[k][q] for k in range(2)) for q in range(2)] for p in range(2)]
 
 
 class PartialPooling:
@@ -760,21 +990,22 @@ class PartialPooling:
         The variance carries the same CR1 factor as :func:`_sandwich_matrix`; every sum over the
         name or date table runs in sorted key order, so a resumed state equals a fresh one.
         """
-        n, _, _, see, ser, _ = unit.tot
+        n, see, ser = unit.tot[0], unit.tot[3], unit.tot[4]
         if unit.rows < 3 or unit.clusters < 2 or see <= 0.0 or n <= 0:
             return None
         w = ser / see
-        i, j, k = _TRI.index((3, 3)), _TRI.index((3, 4)), _TRI.index((4, 4))
+        tri = unit.lay.tri
+        i, j, k = tri.index((3, 3)), tri.index((3, 4)), tri.index((4, 4))
         small = (unit.rows - 1) / (unit.rows - 2)
 
         def one(meat, g):
             return g / (g - 1) * small * meat / (see * see)
 
         pair = one(unit.cross[k] - 2 * w * unit.cross[j] + w * w * unit.cross[i], unit.clusters)
-        gn, gd = len(unit.names), len(unit.dates)
+        gn, gd = unit.names.count, unit.dates.count
         if gn < 2 or gd < 2:
             return None
-        by = [one(sum((table[key][4] - w * table[key][3]) ** 2 for key in sorted(table)), len(table))
+        by = [one(sum((cell[4] - w * cell[3]) ** 2 for cell in table.sorted_vectors()), table.count)
               for table in (unit.names, unit.dates)]
         var = by[0] + by[1] - pair
         if not var > 0.0:
@@ -795,13 +1026,13 @@ class PartialPooling:
         return out
 
     def _shrink_line(self, th, v, th0, tdiag):
-        """Posterior mean and covariance of one bucket's line."""
-        t = [[tdiag[0], 0.0], [0.0, tdiag[1]]]
-        tv = [[t[p][q] + v[p][q] for q in range(2)] for p in range(2)]
-        gap = [th0[0] - th[0], th0[1] - th[1]]
-        shift = _mat2_mul(v, _mat2_solve(tv, [[gap[0], 0.0], [gap[1], 0.0]]))
-        post = _mat2_mul(t, _mat2_solve(tv, v))
-        return [th[0] + shift[0][0], th[1] + shift[1][0]], post
+        """Posterior mean and covariance of one bucket's coefficient vector (any dimension)."""
+        q = len(th)
+        t = [[tdiag[i] if i == j else 0.0 for j in range(q)] for i in range(q)]
+        tv = [[t[i][j] + v[i][j] for j in range(q)] for i in range(q)]
+        shift = _mat_mul(v, [[x] for x in _solve(tv, [th0[i] - th[i] for i in range(q)])])
+        post = _mat_mul(t, _solve(tv, v))
+        return [th[i] + shift[i][0] for i in range(q)], post
 
     def _clip(self, w):
         """Clip a weight to ``[0, weight_cap]``."""

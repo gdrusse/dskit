@@ -1255,7 +1255,7 @@ class TestDeterminismAcrossResume:
 
         fresh = self._state()
         resumed = LinearEdgeState.from_dict(json.loads(json.dumps(fresh.to_dict())))
-        assert list(fresh._pooled.names) != sorted(fresh._pooled.names)  # the test really has unsorted arrival
+        assert list(fresh._pooled.names.cells) != sorted(fresh._pooled.names.cells)  # the test really has unsorted arrival
         with monkeypatch.context() as m:
             m.setattr(builtins, "sum", _left_fold)
             a = json.dumps(PartialPooling(LOW_FLOOR).fit(fresh), sort_keys=True)
@@ -1353,7 +1353,7 @@ class TestBoundaryExact:
             for n in ("A", "B"):
                 state.add_cluster("2021-01-01", n, day, _iso(FIRST_SETTLE + datetime.timedelta(days=7 * k - 3)),
                                   [0] * 3, [0.7] * 3, [float(k + j) for j in range(3)])
-        n, se, _, see, _, _ = state._pooled.tot
+        n, se, _, see = state._pooled.tot[:4]
         assert 0.0 < see - se * se / n <= 1e-12 * see  # rounding noise, positive
         f = state.fit(None)
         assert f["a"] is None and f["b"] is None
@@ -1415,3 +1415,302 @@ class TestRegimeWarmupCountedOnce:
         back = TrailingRegime.from_dict(json.loads(json.dumps(reg.to_dict())))
         back.of("AA", _wk(0), 1.0)
         assert back.warmups == 1 and back.to_dict() == reg.to_dict()
+
+
+# ================================================================ ADR-0311 Amendment 1, F1.1: two regressors
+# Oracles are restated here in numpy, row by row; only the state under test is read from the module.
+
+
+def _k2_clusters(equal=True, seed=5, b_dir=0.0, b_shape=0.8, n_settle=N_SETTLE):
+    """Synthetic (name, settle date) clusters with a direction edge, a shape edge and a forward error variance."""
+    rng = np.random.default_rng(seed)
+    names = ["AA", "BB", "CC", "DD", "EE", "FF"]
+    out = []
+    for k in range(n_settle):
+        settle = FIRST_SETTLE + datetime.timedelta(days=7 * k)
+        shock = rng.normal(0, 1.0)
+        for name in names:
+            if not equal and rng.random() < 0.1:
+                continue
+            m = 6 if equal else int(rng.integers(3, 9))
+            e_dir = rng.normal(0, 1.5, m)
+            shape = rng.normal(0, 1.0, m)
+            bucket = rng.integers(0, 3, m)
+            r = 0.2 + b_dir * e_dir + b_shape * shape + shock + rng.normal(0, 0.8, m) + 0.1 * bucket
+            out.append({
+                "name": name, "settle": _iso(settle), "fill": _iso(settle - datetime.timedelta(days=3)),
+                "bucket": [int(b) for b in bucket], "e": [float(x) for x in e_dir + shape],
+                "e_dir": [float(x) for x in e_dir], "r": [float(x) for x in r],
+                "sigma2": [float(x) for x in np.abs(rng.normal(0.1, 0.02, m))],
+            })
+    return out
+
+
+def _drive_k2(state, clusters, weeks, lam=None, **extra):
+    """Like ``_drive`` but passes ``e_dir`` and ``sigma2`` (and any ``extra`` per-cluster keys)."""
+    gate = SettledBefore("2021-07-01")
+    arrival, rows = {}, []
+    for k, t in enumerate(weeks):
+        state.advance(t)
+        for i, c in enumerate(clusters):
+            if i not in arrival and gate.admits(c["settle"], t):
+                kw = {key: c[key] for key in ("e_dir", "sigma2", "weights") if key in c}
+                state.add_cluster(t, c["name"], c["settle"], c["fill"], c["bucket"], c["e"], c["r"], **kw)
+                arrival[i] = k
+    last = len(weeks) - 1
+    for i, k0 in arrival.items():
+        c = clusters[i]
+        for j in range(len(c["e"])):
+            base = c["weights"][j] if "weights" in c else 1.0
+            w = base * (1.0 if lam is None else lam ** (last - k0))
+            rows.append({"name": c["name"], "date": c["settle"], "bucket": c["bucket"][j], "e": c["e"][j],
+                         "e_dir": c["e_dir"][j], "e_shape": c["e"][j] - c["e_dir"][j], "r": c["r"][j],
+                         "w": w, "sigma2": c["sigma2"][j] if "sigma2" in c else None})
+    return rows
+
+
+def _x2(rows):
+    return np.array([[1.0, q["e_dir"], q["e_shape"]] for q in rows])
+
+
+def _wls2(rows):
+    x, y, w = _x2(rows), np.array([q["r"] for q in rows]), np.array([q["w"] for q in rows])
+    xtwx = x.T @ (w[:, None] * x)
+    return x, y, w, xtwx, np.linalg.solve(xtwx, x.T @ (w * y))
+
+
+def _kish(v):
+    v = np.asarray(v, float)
+    return v.sum() ** 2 / (v ** 2).sum()
+
+
+def _cov_k2(rows, labels, beta):
+    """CR1 ``G_eff/(G_eff-1) (n_eff-1)/(n_eff-3)`` sandwich, Kish counts on row / cluster total weights."""
+    x, y, w, xtwx, _ = _wls2(rows)
+    resid = y - x @ beta
+    sums, tot_w = {}, {}
+    for xi, ri, wi, lab in zip(x, resid, w, labels):
+        sums[lab] = sums.get(lab, np.zeros(3)) + wi * xi * ri
+        tot_w[lab] = tot_w.get(lab, 0.0) + wi
+    meat = sum((np.outer(s, s) for s in sums.values()), np.zeros((3, 3)))
+    g_eff, n_eff = _kish(list(tot_w.values())), _kish(w)
+    bread = np.linalg.inv(xtwx)
+    return g_eff / (g_eff - 1) * (n_eff - 1) / (n_eff - 3) * bread @ meat @ bread
+
+
+def _expected_k2(rows, way):
+    _, _, _, _, beta = _wls2(rows)
+    names, dates = [q["name"] for q in rows], [q["date"] for q in rows]
+    pairs = list(zip(names, dates))
+    if way == "one":
+        return beta, _cov_k2(rows, pairs, beta)
+    return beta, _cov_k2(rows, names, beta) + _cov_k2(rows, dates, beta) - _cov_k2(rows, pairs, beta)
+
+
+class TestTwoRegressorParity:
+    """A-T2 (expanding) and A-T3 (decayed): the 3x3 fit and bands equal batch weighted least squares."""
+
+    LAM = 2 ** (-1 / 3)
+
+    @pytest.fixture(scope="class", params=["expanding"])
+    def built(self, request):
+        lam = None if request.param == "expanding" else self.LAM
+        state = LinearEdgeState(N_BUCKETS, lam, regressors=2)
+        rows = _drive_k2(state, _k2_clusters(), _weeks(), lam=lam)
+        return state, rows
+
+    @pytest.mark.parametrize("unit", UNITS)
+    def test_fit_equals_batch(self, built, unit):
+        state, rows = built
+        sel = _unit_rows(rows, unit)
+        _, _, w, _, beta = _wls2(sel)
+        fit = state.fit(unit)
+        assert math.isclose(fit["n"], w.sum(), rel_tol=1e-12)
+        assert np.allclose([fit["a"], fit["b_dir"], fit["b_shape"]], beta, atol=1e-9, rtol=0)
+        assert np.allclose(fit["theta"], beta, atol=1e-9, rtol=0)
+
+    @pytest.mark.parametrize("way", ["one", "two"])
+    @pytest.mark.parametrize("unit", [None])  # per-bucket units have unequal clusters: Kish arrives in F1.2
+    def test_sandwich_equals_row_by_row_cr1(self, built, unit, way):
+        state, rows = built
+        sel = _unit_rows(rows, unit)
+        beta, cov = _expected_k2(sel, way)
+        out = state.sandwich(unit, list(beta), way)
+        assert out["rule"] == ("one_way" if way == "one" else "two_way")
+        assert np.max(np.abs(_arr(out["cov"]) - cov)) < 1e-9 * max(1.0, np.max(np.abs(cov)))
+
+    def test_sandwich_at_a_shrunk_theta(self, built):
+        state, rows = built
+        theta = np.array([0.1, 0.2, 0.5])
+        x, y, w, xtwx, _ = _wls2(rows)
+        resid = y - x @ theta
+        sums = {}
+        for xi, ri, wi, q in zip(x, resid, w, rows):
+            key = (q["name"], q["date"])
+            sums[key] = sums.get(key, np.zeros(3)) + wi * xi * ri
+        meat = sum((np.outer(s, s) for s in sums.values()), np.zeros((3, 3)))
+        tw = {}
+        for wi, q in zip(w, rows):
+            tw[(q["name"], q["date"])] = tw.get((q["name"], q["date"]), 0.0) + wi
+        g_eff, n_eff = _kish(list(tw.values())), _kish(w)
+        bread = np.linalg.inv(xtwx)
+        want = g_eff / (g_eff - 1) * (n_eff - 1) / (n_eff - 3) * bread @ meat @ bread
+        got = _arr(state.sandwich(None, list(theta), "one")["cov"])
+        assert np.max(np.abs(got - want)) < 1e-9 * np.max(np.abs(want))
+
+
+class TestTwoRegressorSingularity:
+    """A-T4: exact collinearity or a constant regressor gives no two-regressor fit; near collinearity fits."""
+
+    def _state(self, e_dir_of_e, k=2):
+        rng = np.random.default_rng(3)
+        st = LinearEdgeState(2, None, regressors=k)
+        st.advance("2021-01-01")
+        for g in range(8):
+            e = [float(x) for x in rng.normal(0, 2, 6)]
+            ed = [e_dir_of_e(x, i) for i, x in enumerate(e)]
+            r = [float(0.3 * x + rng.normal(0, 1)) for x in e]
+            kw = {"e_dir": ed} if k == 2 else {}
+            st.add_cluster("2021-01-01", "AA" if g % 2 else "BB", _iso(FIRST_SETTLE + datetime.timedelta(days=7 * g)),
+                           _iso(FIRST_SETTLE + datetime.timedelta(days=7 * g - 3)), [0] * 6, e, r, **kw)
+        return st
+
+    @pytest.mark.parametrize("make", [
+        pytest.param(lambda x, i: 0.0, id="e_dir_zero"),
+        pytest.param(lambda x, i: x, id="e_dir_is_e"),
+        pytest.param(lambda x, i: 0.4 * x, id="shape_proportional"),
+    ])
+    def test_no_fit_two_regressors_while_one_regressor_fits(self, make):
+        two, one = self._state(make), self._state(make, k=1)
+        f = two.fit(0)
+        assert f["theta"] is None and f["b_dir"] is None and f["b_shape"] is None
+        assert two.sandwich(0, [0.0, 0.0, 0.0], "one") is None
+        assert one.fit(0)["b"] is not None
+
+    def test_near_collinear_fits_with_inflated_band(self):
+        loose = self._state(lambda x, i: x / 1.5 + 1.0 * math.sin(3.0 * i))
+        tight = self._state(lambda x, i: x / 1.5 + 0.02 * math.sin(3.0 * i))
+        fl, ft = loose.fit(0), tight.fit(0)
+        assert ft["theta"] is not None and ft["corr_dir_shape"] > 0.99 > abs(fl["corr_dir_shape"])
+        sl, st_ = loose.sandwich(0, fl["theta"], "one"), tight.sandwich(0, ft["theta"], "one")
+        assert st_ is not None and st_["cov"][1][1] > 3 * sl["cov"][1][1]
+
+
+class TestTwoRegressorRecoveryAndReliability:
+    """A-T5 recovery, A-T24 by hand."""
+
+    def test_true_slopes_are_recovered_within_band(self):
+        state = LinearEdgeState(N_BUCKETS, None, regressors=2)
+        _drive_k2(state, _k2_clusters(b_dir=0.0, b_shape=0.8, n_settle=40, seed=9), [_iso(FIRST_SETTLE + datetime.timedelta(days=7 * k + 1)) for k in range(41)])
+        f = state.fit(None)
+        sw = state.sandwich(None, f["theta"], "two")
+        se = [math.sqrt(sw["cov"][i][i]) for i in range(3)]
+        assert abs(f["b_dir"] - 0.0) < 4 * se[1] and abs(f["b_shape"] - 0.8) < 4 * se[2]
+
+    def test_attenuation_by_forward_error_is_corrected(self):
+        rng = np.random.default_rng(17)
+        st = LinearEdgeState(1, None, regressors=2)
+        st.advance("2021-01-01")
+        true_dir, var_err, var_sig = 0.9, 0.5, 1.0
+        for g in range(200):
+            m = 6
+            sig = rng.normal(0, np.sqrt(var_sig), m)              # true direction edge
+            err = rng.normal(0, np.sqrt(var_err), m)               # planted forward error
+            shape = rng.normal(0, 1, m)
+            e_dir_obs = sig + err
+            r = true_dir * sig + 0.5 * shape + rng.normal(0, 0.5, m)
+            e = e_dir_obs + shape
+            st.add_cluster("2021-01-01", f"N{g % 20}", _iso(FIRST_SETTLE + datetime.timedelta(days=g)),
+                           _iso(FIRST_SETTLE + datetime.timedelta(days=g - 1)), [0] * m,
+                           [float(x) for x in e], [float(x) for x in r], e_dir=[float(x) for x in e_dir_obs],
+                           sigma2=[var_err] * m)
+        f = st.fit(None)
+        planted = var_sig / (var_sig + var_err)
+        assert abs(f["b_dir"] - true_dir * planted) < 0.1
+        assert abs(f["reliability_dir"] - planted) < 0.1
+        assert abs(f["b_dir_corrected"] - true_dir) < 0.15
+        assert f["b_dir"] < f["b_dir_corrected"]
+
+    def test_serr_reliability_and_correlation_by_hand(self):
+        st = LinearEdgeState(1, None, regressors=2)
+        st.advance("2021-01-01")
+        e_dir, shape = [1.0, 2.0, 4.0, 3.0], [0.5, -1.0, 2.0, 1.5]
+        r = [1.0, 0.0, 3.0, 2.0]
+        sig = [0.25, 0.5, None, 0.25]
+        st.add_cluster("2021-01-01", "AA", "2020-01-10", "2020-01-07", [0] * 4,
+                       [a + b for a, b in zip(e_dir, shape)], r, e_dir=e_dir, sigma2=sig)
+        st.add_cluster("2021-01-01", "BB", "2020-01-11", "2020-01-08", [0] * 4,
+                       [a + b for a, b in zip(e_dir, shape)], [x + 0.3 for x in r], e_dir=[x + 0.2 for x in e_dir],
+                       sigma2=[0.1] * 4)
+        f = st.fit(None)
+        d = np.array(e_dir + [x + 0.2 for x in e_dir])
+        s = np.array(shape + [x - 0.2 for x in shape])
+        serr = 0.25 + 0.5 + 0.25 + 0.4          # the None row is skipped
+        cdd = ((d - d.mean()) ** 2).sum()
+        assert math.isclose(f["reliability_dir"], max((cdd - serr) / cdd, 0.0), rel_tol=1e-12)
+        assert math.isclose(f["corr_dir_shape"], np.corrcoef(d, s)[0, 1], rel_tol=1e-9)
+        assert st.counts["sigma2_missing"] == 1
+
+    def test_reliability_is_floored_at_zero(self):
+        st = LinearEdgeState(1, None, regressors=2)
+        st.advance("2021-01-01")
+        st.add_cluster("2021-01-01", "AA", "2020-01-10", "2020-01-07", [0] * 3, [1.0, 2.0, 4.0], [1.0, 2.0, 2.5],
+                       e_dir=[0.5, 1.5, 0.2], sigma2=[50.0] * 3)
+        f = st.fit(None)
+        assert f["reliability_dir"] == 0.0 and f["b_dir_corrected"] is None
+
+
+class TestTwoRegressorInputs:
+    def _st(self, k):
+        st = LinearEdgeState(2, None, regressors=k)
+        st.advance("2021-01-01")
+        return st
+
+    def _add(self, st, **kw):
+        base = dict(t="2021-01-01", name="AA", settle_date="2020-01-10", fill_date="2020-01-07",
+                    buckets=[0, 0, 1], e=[1.0, 2.0, 3.0], r=[1.0, 2.0, 2.0])
+        base.update(kw)
+        st.add_cluster(base.pop("t"), base.pop("name"), base.pop("settle_date"), base.pop("fill_date"),
+                       base.pop("buckets"), base.pop("e"), base.pop("r"), **base)
+
+    @pytest.mark.parametrize("kw", [
+        {}, {"e_dir": [0.1, 0.2]}, {"e_dir": [0.1, None, 0.3]}, {"e_dir": [0.1, float("nan"), 0.3]},
+        {"e_dir": [0.1, 0.2, 0.3], "sigma2": [0.1, 0.2]}, {"e_dir": [0.1, 0.2, 0.3], "sigma2": [0.1, -1.0, 0.2]},
+    ])
+    def test_bad_two_regressor_input_is_a_value_error_and_leaves_the_state(self, kw):
+        st = self._st(2)
+        with pytest.raises(ValueError):
+            self._add(st, **kw)
+        assert st.fit(None)["rows"] == 0
+
+    def test_one_regressor_state_refuses_e_dir_and_sigma2(self):
+        for kw in ({"e_dir": [0.1, 0.2, 0.3]}, {"sigma2": [0.1, 0.2, 0.3]}):
+            with pytest.raises(ValueError):
+                self._add(self._st(1), **kw)
+
+    @pytest.mark.parametrize("k", [0, 3, True, 1.5, None])
+    def test_bad_regressors(self, k):
+        with pytest.raises(ValueError):
+            LinearEdgeState(2, None, regressors=k)
+
+    def test_dump_round_trip_two_regressors(self):
+        state = LinearEdgeState(N_BUCKETS, 0.9, regressors=2)
+        _drive_k2(state, _k2_clusters(), _weeks(), lam=0.9)
+        back = LinearEdgeState.from_dict(json.loads(json.dumps(state.to_dict())))
+        assert json.dumps(back.to_dict(), sort_keys=True) == json.dumps(state.to_dict(), sort_keys=True)
+        assert back.fit(None)["theta"] == state.fit(None)["theta"]
+
+
+def test_solve_is_one_gaussian_elimination_for_any_dimension():
+    rng = np.random.default_rng(2)
+    for n in (1, 2, 3, 5):
+        a = rng.normal(size=(n, n)) + n * np.eye(n)
+        b = rng.normal(size=n)
+        got = er._solve([list(map(float, row)) for row in a], [float(x) for x in b])
+        assert np.allclose(got, np.linalg.solve(a, b), atol=1e-12)
+        m = rng.normal(size=(n, 2))
+        got2 = er._solve([list(map(float, row)) for row in a], [[float(x) for x in row] for row in m])
+        assert np.allclose(np.array(got2), np.linalg.solve(a, m), atol=1e-12)
+    with pytest.raises(ValueError):
+        er._solve([[1.0, 2.0], [2.0, 4.0]], [1.0, 1.0])
+    assert not hasattr(er, "_mat2_solve") and not hasattr(er, "_mat2_mul")
