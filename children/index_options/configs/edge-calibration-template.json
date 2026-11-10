@@ -1,14 +1,40 @@
 {
   "name": "edge-calibration-template",
-  "notes": "Template, not a run config: no edge-calibration walk is approved yet (ADR-0311 stage 5 and the 2019Q4-seeded run need the owner). Replace every PLACEHOLDER (the pinned MIO run document and its sha256, one forecasts/contexts sha256 pair per decision quarter, a NEW out_dir outside every input root) and nothing else changes the arithmetic. Use from Python: IndexOptionsEdgeWalk('edge', params).run(ctx, {}). The window ends 2021-06-30 and sealed_from is 2021-07-01 (the development seal): decisions 2019Q4 (a seed: state only, the HPO tuning year, A0008) and reported 2020Q1-2021Q2; a row settling on or after sealed_from is neither admitted nor scored, and nothing from 2024 on is ever read (A0003). RE-ENTRY Do-not list: forecasts, scores and calibrated edges are consumed in code only, agents report counts and hashes.",
+  "notes": "Template, not a run config: no edge-calibration walk is approved yet (ADR-0311 stage 5 and the 2019Q4-seeded run need the owner). Replace every PLACEHOLDER (the pinned MIO run document and its sha256, one forecasts/contexts sha256 pair per decision quarter, a NEW out_dir outside every input root) and nothing else changes the arithmetic. Use from Python: IndexOptionsEdgeWalk('edge', params).run(ctx, {}). The window ends 2021-06-30 and sealed_from is 2021-07-01 (the development seal): decisions 2019Q4 (a seed: state only, the HPO tuning year, A0008) and reported 2020Q1-2021Q2; a row settling on or after sealed_from is neither admitted nor scored, and nothing from 2024 on is ever read (A0003). RE-ENTRY Do-not list: forecasts, scores and calibrated edges are consumed in code only, agents report counts and hashes. Run command and prerequisite: see pipeline.edge.notes.",
   "pipeline": {
     "edge": {
       "uses": "index_options.edge_calibration:IndexOptionsEdgeWalk",
-      "notes": "mio_document is the pinned MIO run document (its domain gives the study params, pairs, history_start and source pins; the quote filter values, multiplier and fee are READ from it, never restated here). forecast_pins must equal, per quarter, the sha256 pair among the document's forecast source pins (forecast_not_pinned otherwise). side_rule best keeps the larger-e side of each option. study_scope window builds one study; quarter builds one per decision quarter with identical output (the memory lever of stage 5). direction_regressor true needs the direction block (DirectionEdge: rate must be 0.0, multiplier must equal the study's; iv_source mid because the archive carries no vendor iv). buckets, regime, pooling and name_adjust are ADR-0311's B-1..B-4 defaults; edges are fixed numbers, never quantiles. edge_scale notional (spot x multiplier) is A-6(a); row_weight group_equal is A-7(a). out_dir must be new and outside the document's directory and every pin root. history_start (2019-07-01 gives the 60-session beta lookback; confirm against the pinned bars) and protected_end_before are the WALK's clocks (a packet document's own values follow its packet and would refuse): history_start must precede window.start by enough sessions for the study's lookback and the pinned bars/sessions must reach back to it (history_not_covered otherwise); protected_end_before lies in [sealed_from, 2024-01-01] (A0003). The document's corporate-action source is not read (no held books). Forecasts are read one quarter at a time from <q>/forecasts.parquet and <q>/contexts.parquet under the document's forecast pin, each bound to forecast_pins[q].",
+      "notes": "mio_documents maps each decision quarter to ITS pinned MIO run document ({path, sha256}): the owner's documents are per quarter and bind that year's chain file (aapl/options_<year>.parquet) and that quarter's forecast files, so one document cannot cover a window spanning years (the single form mio_document stays valid only when one document truly covers the whole window). Each document's domain gives the study params, pairs and source pins; the quote filter values (min_quote_size, max_relative_spread, max_abs_z), multiplier and fee are READ from the documents and must be identical across them (quote_params_differ), never restated here. A chain whose selected rows are 0 or whose last date precedes the quarter's last fill session refuses chain_not_covered; a symbol outside a quarter's document universe is a counted drop (symbols_absent). forecast_pins must equal, per quarter, the sha256 pair among the document's forecast source pins (forecast_not_pinned otherwise). side_rule best keeps the larger-e side of each option. study_scope window builds one study; quarter builds one per decision quarter with identical output (the memory lever of stage 5). direction_regressor true needs the direction block (DirectionEdge: rate must be 0.0, multiplier must equal the study's; iv_source mid because the archive carries no vendor iv). buckets, regime, pooling and name_adjust are ADR-0311's B-1..B-4 defaults; edges are fixed numbers, never quantiles. edge_scale notional (spot x multiplier) is A-6(a); row_weight group_equal is A-7(a). out_dir must be new and outside the document's directory and every pin root. history_start (2019-07-01 gives the 60-session beta lookback; confirm against the pinned bars) and protected_end_before are the WALK's clocks (a packet document's own values follow its packet and would refuse): history_start must precede window.start by enough sessions for the study's lookback and the pinned bars/sessions must reach back to it (history_not_covered otherwise); protected_end_before lies in [sealed_from, 2024-01-01] (A0003). The document's corporate-action source is not read (no held books). Forecasts are read one quarter at a time from <q>/forecasts.parquet and <q>/contexts.parquet under the document's forecast pin, each bound to forecast_pins[q]. RUN COMMAND (from the repository root, after copying this file to a new name and replacing every PLACEHOLDER): PYTHONPATH=.:children/index_options python -m dskit.pipeline validate <cfg>.json, then PYTHONPATH=.:children/index_options python -m dskit.pipeline run <cfg>.json --asof 2021-06-30 (exit 0 ran, 1 error or a refusal code, 3 halted). PREREQUISITE: the documents and forecast pins come from `python -m index_options.quarterly_forecasts pin RUN.json --onboarding-root <root> --source <name>` (docs/plans/quarterly-forecasts-runbook.md step 11); never hand-write a pin. EXPECTED OUTPUT under out_dir: map-<t>.json per decision week, rows/rows-<settle>.jsonl, the walk's csv tables and summary.json holding `reads` (read1, read2), `direction.e4_input` (direction_regressor true) plus the X7 keys (forecast_pins, mio_quote_values, symbols_dropped, symbols_absent, symbols_no_forecast, symbol_list_sha256).",
       "params": {
-        "mio_document": {
-          "path": "PLACEHOLDER/absolute/path/to/the/pinned/mio-run-document.json",
-          "sha256": "PLACEHOLDER-sha256-of-that-file"
+        "mio_documents": {
+          "2019Q4": {
+            "path": "PLACEHOLDER/absolute/path/to/the/pinned/mio-run-document-2019Q4.json",
+            "sha256": "PLACEHOLDER-sha256-of-that-file-2019Q4"
+          },
+          "2020Q1": {
+            "path": "PLACEHOLDER/absolute/path/to/the/pinned/mio-run-document-2020Q1.json",
+            "sha256": "PLACEHOLDER-sha256-of-that-file-2020Q1"
+          },
+          "2020Q2": {
+            "path": "PLACEHOLDER/absolute/path/to/the/pinned/mio-run-document-2020Q2.json",
+            "sha256": "PLACEHOLDER-sha256-of-that-file-2020Q2"
+          },
+          "2020Q3": {
+            "path": "PLACEHOLDER/absolute/path/to/the/pinned/mio-run-document-2020Q3.json",
+            "sha256": "PLACEHOLDER-sha256-of-that-file-2020Q3"
+          },
+          "2020Q4": {
+            "path": "PLACEHOLDER/absolute/path/to/the/pinned/mio-run-document-2020Q4.json",
+            "sha256": "PLACEHOLDER-sha256-of-that-file-2020Q4"
+          },
+          "2021Q1": {
+            "path": "PLACEHOLDER/absolute/path/to/the/pinned/mio-run-document-2021Q1.json",
+            "sha256": "PLACEHOLDER-sha256-of-that-file-2021Q1"
+          },
+          "2021Q2": {
+            "path": "PLACEHOLDER/absolute/path/to/the/pinned/mio-run-document-2021Q2.json",
+            "sha256": "PLACEHOLDER-sha256-of-that-file-2021Q2"
+          }
         },
         "forecast_pins": {
           "2019Q4": {

@@ -22,7 +22,8 @@ study, plus the guards a domain owns. No statistics live here.
 
 Refusals (stable ``code``): ``mio_document_not_pinned``, ``mio_document_invalid``, ``forecast_not_pinned``,
 ``out_dir_inside_inputs``, ``multiplier_mismatch``, ``direction_config_invalid``, ``side_rule_invalid``,
-``study_scope_invalid``, ``calendar_mismatch``, ``window_outside_data_rights`` and the walk's own.
+``study_scope_invalid``, ``calendar_mismatch``, ``window_outside_data_rights``, ``quote_params_differ``,
+``bridge_params_differ``, ``chain_not_covered`` and the walk's own.
 Reading is two seams, :meth:`IndexOptionsEdgeWalk._read_market` and :meth:`~IndexOptionsEdgeWalk._read_forecasts`;
 the shipped ones delegate to ``MIOPacketInputs.read_bounded`` and are exercised only by the real-week stage.
 Import cost: stdlib, numpy and the study module inside methods.
@@ -32,6 +33,8 @@ import bisect
 import hashlib
 import json
 import math
+import re
+import sqlite3
 import statistics
 from datetime import date, timedelta
 from pathlib import Path
@@ -213,7 +216,9 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
     ----------
     params : dict
         The walk's own (``window``, ``report_from``, ``sealed_from``, ``out_dir``, ``buckets``, ``regime``,
-        ``pooling``, ``name_adjust``, ``direction_regressor`` ...) plus ``mio_document`` (``{path, sha256}``: a MIO
+        ``pooling``, ``name_adjust``, ``direction_regressor`` ...) plus ``mio_documents`` (``{quarter: {path, sha256}}``, the owner's
+        layout: one MIO run document per decision quarter, each binding that year's chain file and that quarter's
+        forecast files) or ``mio_document`` (``{path, sha256}``, one document that truly covers the window; a MIO
         run document, whose ``pipeline.plan.params.study.domain`` names the study params, pairs and source pins),
         ``forecast_pins`` (per decision quarter ``{forecasts, contexts}`` sha256, each also among the document's
         forecast source pins), ``side_rule`` (``best``: the walk keeps the larger-``e`` side of an option),
@@ -236,19 +241,30 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
         IndexOptionsEdgeWalk("edge", params).run(ctx, {})["summary"]
     """
 
-    _EXTRA_PARAMS = ("mio_document", "forecast_pins", "side_rule", "study_scope", "direction", "history_start",
+    _EXTRA_PARAMS = ("mio_document", "mio_documents", "forecast_pins", "side_rule", "study_scope", "direction", "history_start",
                      "protected_end_before")
     SIDE_RULES = ("best",)
     STUDY_SCOPES = ("window", "quarter")
     _DOMAIN = ("pipeline", "plan", "params", "study", "domain")
+    #: The bridge keys that follow a document's own quarter; every other bridge value must agree across documents.
+    _PER_QUARTER_BRIDGE = ("symbol", "fold", "start", "end_before", "protected_end_before")
 
     @classmethod
     def validate_params(cls, params):
         """Return the walk's problems plus the child's (shape only; the pins are checked at run)."""
         problems = super().validate_params(params)
-        doc = params.get("mio_document")
-        if not (isinstance(doc, dict) and set(doc) == {"path", "sha256"}):
+        one, many = params.get("mio_document"), params.get("mio_documents")
+        if (one is None) == (many is None):
+            problems.append("exactly one of mio_document (one document covers the window) and mio_documents "
+                            "(per decision quarter) is required")
+        def pinned(d):
+            return isinstance(d, dict) and set(d) == {"path", "sha256"}
+
+        if one is not None and not pinned(one):
             problems.append("mio_document must hold exactly path and sha256")
+        if many is not None and not (isinstance(many, dict) and many and all(
+                isinstance(q, str) and re.fullmatch(r"\d{4}Q[1-4]", q) and pinned(d) for q, d in many.items())):
+            problems.append("mio_documents must map each decision quarter (YYYYQn) to {path, sha256}")
         pins = params.get("forecast_pins")
         if not (isinstance(pins, dict) and pins and all(isinstance(v, dict) and set(v) == {"forecasts", "contexts"}
                                                          for v in pins.values())):
@@ -291,7 +307,7 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
         problems = self._direction_problems(p)
         if problems:
             raise EdgeCalibrationRefusal("direction_config_invalid", "; ".join(problems))
-        self._document()
+        self._documents()
         history = p["history_start"]
         if history >= p["window"]["start"]:
             raise EdgeCalibrationRefusal("history_start_invalid", f"history_start {history} is not before "
@@ -305,41 +321,84 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
         self._build_market()
         self._opened = True
 
-    def _document(self):
-        pin = self.params["mio_document"]
+    def _documents(self):
+        """Load and pin the MIO document of every decision quarter (one document may serve them all).
+
+        ``mio_documents`` maps each quarter to its own pinned document (the owner's layout: one document per quarter,
+        binding that year's chain file and that quarter's forecast files); ``mio_document`` is the single form. The
+        quote values, fee, multiplier and the rest of the bridge must be identical across documents
+        (``quote_params_differ`` / ``bridge_params_differ``). A symbol outside a quarter's universe is a counted drop.
+        """
+        p, quarters = self.params, self._quarters()
+        pins = p.get("mio_documents")
+        if pins is None:
+            pins = {q: p["mio_document"] for q in quarters}
+        missing = [q for q in quarters if q not in pins]
+        if missing:
+            raise EdgeCalibrationRefusal("mio_document_not_pinned", f"no document for decision quarter(s) {missing}")
+        loaded, self._docs = {}, {}
+        for quarter in quarters:
+            pin = pins[quarter]
+            key = pin["path"], pin["sha256"]
+            if key not in loaded:
+                loaded[key] = self._load_document(pin)
+            self._docs[quarter] = loaded[key]
+        first = self._docs[quarters[0]]
+        for quarter, doc in self._docs.items():
+            if doc["quote"] != first["quote"]:
+                raise EdgeCalibrationRefusal("quote_params_differ", f"{quarter}'s document quotes {doc['quote']} "
+                                             f"but {quarters[0]}'s {first['quote']}")
+            if doc["bridge"] != first["bridge"]:
+                raise EdgeCalibrationRefusal("bridge_params_differ", f"{quarter}'s bridge differs from "
+                                             f"{quarters[0]}'s beyond fold, window and protected_end_before")
+        self._domain, self._doc_sha, self._quote_values = first["domain"], first["sha"], first["quote"]
+        self._idle = {}
+        self._symbols = list(dict.fromkeys(s for q in quarters for s in self._docs[q]["symbols"]))
+        self._absent = {s: [q for q in quarters if s not in self._docs[q]["symbols"]] for s in self._symbols}
+        self._absent = {s: qs for s, qs in self._absent.items() if qs}
+        pairs = {}
+        for quarter in quarters:
+            for pair in self._docs[quarter]["domain"]["pairs"]:
+                if pairs.setdefault(pair["id"], pair) != pair:
+                    raise EdgeCalibrationRefusal("mio_document_invalid", f"pair {pair['id']!r} differs across documents")
+        self._pairs = list(pairs.values())
+        direction = p.get("direction")
+        if direction is not None and direction.get("multiplier") != self._quote_values["multiplier"]:
+            raise EdgeCalibrationRefusal("multiplier_mismatch", f"direction.multiplier {direction.get('multiplier')!r} "
+                                         f"is not the study's {self._quote_values['multiplier']}")
+
+    def _load_document(self, pin):
         try:
             raw = Path(pin["path"]).read_bytes()
         except OSError as exc:
             raise EdgeCalibrationRefusal("mio_document_not_pinned", f"cannot read {pin['path']}: {exc}") from exc
         if hashlib.sha256(raw).hexdigest() != pin["sha256"]:
-            raise EdgeCalibrationRefusal("mio_document_not_pinned", "the document's sha256 differs from its pin")
-        self._doc_sha = pin["sha256"]
+            raise EdgeCalibrationRefusal("mio_document_not_pinned", f"{pin['path']}: the sha256 differs from its pin")
         try:
             document = json.loads(raw)
             domain = document
             for part in self._DOMAIN:
                 domain = domain[part]
-            self._domain = domain
-            self._symbols = list(domain["params"]["symbols"])
             bridge = domain["params"]["bridge"]
-            self._quote_values = {**{k: bridge[k] for k in QUOTE_VALUES},
-                                  "fee_per_contract_usd": bridge["solver"]["fee_per_contract_usd"],
-                                  "multiplier": bridge["solver"]["multiplier"]}
+            quote = {**{k: bridge[k] for k in QUOTE_VALUES},
+                     "fee_per_contract_usd": bridge["solver"]["fee_per_contract_usd"],
+                     "multiplier": bridge["solver"]["multiplier"]}
             domain["pairs"], domain["sources"]["forecasts"]["pin"]["files"], domain["sources"]["contexts"]["pin"]["files"]
+            return {"sha": pin["sha256"], "path": pin["path"], "domain": domain, "quote": quote,
+                    "symbols": list(domain["params"]["symbols"]), "study": document["pipeline"]["plan"]["params"]["study"],
+                    "bridge": {k: v for k, v in bridge.items() if k not in self._PER_QUARTER_BRIDGE}}
         except (ValueError, KeyError, TypeError) as exc:
             raise EdgeCalibrationRefusal("mio_document_invalid", f"the document lacks {exc!r}") from exc
-        direction = self.params.get("direction")
-        if direction is not None and direction.get("multiplier") != self._quote_values["multiplier"]:
-            raise EdgeCalibrationRefusal("multiplier_mismatch", f"direction.multiplier {direction.get('multiplier')!r} "
-                                         f"is not the study's {self._quote_values['multiplier']}")
 
     def _guard_out_dir(self):
         out = Path(self.params["out_dir"]).resolve()
-        roots = [Path(self.params["mio_document"]["path"]).resolve().parent]
-        for binding in self._domain["sources"].values():
-            root = (binding.get("pin") or {}).get("root")
-            if root:
-                roots.append(Path(root).resolve())
+        roots = []
+        for doc in {id(d): d for d in self._docs.values()}.values():
+            roots.append(Path(doc["path"]).resolve().parent)
+            for binding in doc["domain"]["sources"].values():
+                root = (binding.get("pin") or {}).get("root")
+                if root:
+                    roots.append(Path(root).resolve())
         for root in roots:
             if out == root or root in out.parents:
                 raise EdgeCalibrationRefusal("out_dir_inside_inputs", f"{out} lies inside the input root {root}")
@@ -360,8 +419,8 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
 
     def _guard_pins(self):
         """Bind each quarter's config pin to the document's pin entry of THAT quarter's file, role by role."""
-        sources = self._domain["sources"]
         for quarter in self._quarters():
+            sources = self._docs[quarter]["domain"]["sources"]
             pin = self.params["forecast_pins"].get(quarter)
             if pin is None:
                 raise EdgeCalibrationRefusal("forecast_not_pinned", f"{quarter} has no forecast pin")
@@ -398,13 +457,12 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
         from .quarterly_forecasts import Quarter
 
         p = self.params
-        with open(p["mio_document"]["path"]) as fh:
-            base = json.load(fh)["pipeline"]["plan"]["params"]["study"]
-        base.setdefault("code", {})
-        base.setdefault("dependencies", {})
         tail = self._sealed
-        out = {}
+        out, self._idle = {}, {}
         for name in self._quarters():
+            base = self._docs[name]["study"]
+            base.setdefault("code", {})
+            base.setdefault("dependencies", {})
             try:
                 quarter = Quarter.parse(name)
             except ValueError as exc:
@@ -420,10 +478,7 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
                 binding = domain["sources"][role]
                 binding["files"] = {"shared": relative}
                 path = PinnedPayloadSource(binding["pin"]).file(relative, verify=True)
-                with open(path, "rb") as fh:
-                    if hashlib.sha256(fh.read()).hexdigest() != p["forecast_pins"][name][role]:
-                        raise EdgeCalibrationRefusal("forecast_not_pinned", f"the opened {relative} is not the "
-                                                     "pinned file")
+                self._check_opened_pin(name, role, relative, path)
                 if role == "forecasts":
                     import pyarrow.parquet as pq
 
@@ -439,9 +494,37 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
             bounded = MIOPacketInputs.read_bounded(study, bounds, span, quotes, root / "reuse")
             if not any(d["forecasts"] for d in bounded["inputs"].values()):
                 raise EdgeCalibrationRefusal("forecast_quarter_empty", f"{name} yielded no forecast row")
+            self._check_chain(name, bounded, span, tail)
             out[name] = bounded
         self._pass_cache = out
         return out
+
+    def _check_opened_pin(self, quarter, role, relative, path):
+        """Refuse unless the bytes about to be read hash to ``forecast_pins[quarter][role]`` (the per-file guard)."""
+        with open(path, "rb") as fh:
+            if hashlib.sha256(fh.read()).hexdigest() != self.params["forecast_pins"][quarter][role]:
+                raise EdgeCalibrationRefusal("forecast_not_pinned", f"the opened {relative} is not the pinned file")
+
+    def _check_chain(self, quarter, bounded, span, tail):
+        """Refuse ``chain_not_covered`` unless each forecast symbol's chain reaches its last fill session.
+
+        A symbol with no forecast row in the pass is noted by name in ``self._idle``.
+        """
+        sessions = bounded["clocks"]["sessions"]
+        for symbol, data in bounded["inputs"].items():
+            decided = sorted(r["quote_date"] for r in data["forecasts"])
+            if not decided:
+                self._idle.setdefault(symbol, []).append(quarter)
+                continue
+            at = bisect.bisect_right(sessions, decided[-1])
+            need = sessions[at] if at < len(sessions) else decided[-1]
+            with sqlite3.connect(f"file:{data['chain_index']['index']['path']}?mode=ro", uri=True) as conn:
+                count, last = conn.execute("SELECT COUNT(*), MAX(date) FROM rows").fetchone()
+            if not count or last < need:
+                raise EdgeCalibrationRefusal(
+                    "chain_not_covered", f"{quarter} {symbol}: the chain holds {count} selected row(s), last date "
+                    f"{last}, but the walk reads through {need} (decisions {decided[0]}..{decided[-1]}); bind a chain "
+                    "file that covers the quarter in that quarter's document")
 
     @staticmethod
     def _entry_end_of(p):
@@ -450,13 +533,35 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
     def _read_market(self, domain, tail):
         """Return ``{symbol: {"chain_index", "bars"}}`` (the seam; read-only) and note every quarter's index."""
         passes = self._passes()
-        first = next(iter(passes.values()))["inputs"]
-        self._indexes = {s: [b["inputs"][s]["chain_index"]["index"] for b in passes.values()] for s in first}
-        return {s: {"chain_index": d["chain_index"], "bars": d["bars"]} for s, d in first.items()}
+        self._indexes, market = {}, {}
+        for bounded in passes.values():
+            for symbol, data in bounded["inputs"].items():
+                self._indexes.setdefault(symbol, []).append(data["chain_index"]["index"])
+                if symbol not in market:
+                    market[symbol] = {"chain_index": {**data["chain_index"],
+                                                      "basis_factors": dict(data["chain_index"]["basis_factors"])},
+                                      "bars": [dict(b) for b in data["bars"]]}
+                    continue
+                # Later quarters add their own days (the chain files differ per document): union by date, the
+                # daily basis factors too; a day two documents disagree on refuses.
+                factors = market[symbol]["chain_index"]["basis_factors"]
+                for day, factor in data["chain_index"]["basis_factors"].items():
+                    if factors.setdefault(day, factor) != factor:
+                        raise EdgeCalibrationRefusal("mio_document_invalid", f"{symbol} {day}: the documents' chains "
+                                                     "carry different basis factors for one day")
+                held = {b["date"]: b for b in market[symbol]["bars"]}
+                for bar in data["bars"]:
+                    if bar["date"] not in held:
+                        market[symbol]["bars"].append(dict(bar))
+                    elif "basis_factor" not in held[bar["date"]] and "basis_factor" in bar:
+                        held[bar["date"]]["basis_factor"] = bar["basis_factor"]
+        for data in market.values():
+            data["bars"].sort(key=lambda b: b["date"])
+        return market
 
     def _read_sessions(self, domain, tail):
         """Return the session calendar of the pinned ``sessions`` source (``read_bounded``'s ``clocks.sessions``)."""
-        return next(iter(self._passes().values()))["clocks"]["sessions"]
+        return sorted({d for bounded in self._passes().values() for d in bounded["clocks"]["sessions"]})
 
     def _read_forecasts(self, domain, start, end_before):
         """Return ``{symbol: {"forecasts", "contexts"}}`` for decisions in ``[start, end_before)`` (the seam)."""
@@ -490,6 +595,12 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
                                          f"{sessions[0] if sessions else 'empty'}, after history_start {history}")
         self._sessions = sessions
         have, self._dropped = set(sessions), {}
+        limit = (date.fromisoformat(history) + timedelta(days=4)).isoformat()
+        for symbol, data in market.items():       # every symbol's lookback needs its own bars back to history_start
+            first_bar = min((b["date"] for b in data["bars"]), default="empty")
+            if first_bar > limit:
+                raise EdgeCalibrationRefusal("history_not_covered", f"{symbol}'s bars start {first_bar}, after "
+                                             f"history_start {history}")
         for symbol in list(market):
             dates = {b["date"] for b in market[symbol]["bars"]}
             market[symbol]["bars"] = [b for b in market[symbol]["bars"] if b["date"] in have]
@@ -533,7 +644,7 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
         bridge = {**domain["params"]["bridge"], "fold": self._fold_label, "start": start, "end_before": end_before,
                   "protected_end_before": self.params["protected_end_before"]}
         study_params = {**domain["params"], "bridge": bridge, "symbols": list(self._active),
-                        "selected_pairs": [x for x in domain["pairs"] if x["symbol"] in self._active],
+                        "selected_pairs": [x for x in self._pairs if x["symbol"] in self._active],
                         "clocks": clocks}
         inputs = {}
         for symbol in self._active:
@@ -664,8 +775,11 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
 
     def _input_pins(self):
         self._open()
-        pins = {"mio_document": self._doc_sha,
-                "symbol_list": hashlib.sha256(json.dumps(self._symbols).encode()).hexdigest()}
+        pins = {"symbol_list": hashlib.sha256(json.dumps(self._symbols).encode()).hexdigest()}
+        if "mio_documents" in self.params:
+            pins.update({f"mio_document:{q}": d["sha256"] for q, d in self.params["mio_documents"].items()})
+        else:
+            pins["mio_document"] = self._doc_sha
         for quarter in self._quarters():
             pins[f"forecast:{quarter}"] = self.params["forecast_pins"][quarter]["forecasts"]
             pins[f"contexts:{quarter}"] = self.params["forecast_pins"][quarter]["contexts"]
@@ -677,5 +791,7 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
         out["forecast_pins"] = {q: dict(self.params["forecast_pins"][q]) for q in self._quarters()}
         out["mio_quote_values"] = dict(self._quote_values)
         out["symbols_dropped"] = dict(self._dropped)
+        out["symbols_absent"] = {s: list(q) for s, q in self._absent.items()}       # outside the quarter's universe
+        out["symbols_no_forecast"] = {s: list(q) for s, q in self._idle.items()}    # in it, but no forecast row
         out["symbol_list_sha256"] = hashlib.sha256(json.dumps(self._symbols).encode()).hexdigest()
         return out
