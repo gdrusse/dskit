@@ -1372,7 +1372,7 @@ dskit/pipeline/
 │                      observation_tables (observation-tables: keyed onboarded tables attached onto a stream, exact or as-of, ADR-0226 amendment),
 │                      parquet_series (ParquetSeries: many day-named parquet files of one stream, a strictly-prior as-of read; stream-manifests node; ADR-0243),
 │                      vol_estimators (VolEstimatorFeatures: per-bar rms / EWMA / high-low variance with a gap rule, by import path, ADR-0244),
-│                      option_ledger (OptionStructureLedger: open a leg set at NBBO sides, mark at the mid, settle or exit by a declared rule, optional Black-76 delta hedge; refusals counted; by import path, ADR-0265),
+│                      option_ledger (OptionStructureLedger: open a leg set at NBBO sides, mark at the mid, settle or exit by a declared rule, optional Black-76 delta hedge or fixed forward hedge on child-supplied forwards (ADR-0312); refusals counted; by import path, ADR-0265),
 │                      array_panel, horizon_cdf, panel_score, panel_torch (the panel zoo: one memory-mapped panel, per-horizon CDF heads on one common grid, walk-forward lanes; by import path, ADR-0260)
 │                      binary_market_rows (BinaryMarketRows / QuoteBarRows / FeeScheduleRows over the observations seam, every
 │                      field name a param; FeeColumns over fee_mechanics; by import path, ADR-0256),
