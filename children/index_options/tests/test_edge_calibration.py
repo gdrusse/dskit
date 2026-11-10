@@ -18,7 +18,7 @@ from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL
 from dskit.pipeline.node import NodeContext
 from dskit.pipeline.option_exposure import DirectionEdge, ParityForward
 
-from edge_calibration_world import (STRIKES, WINDOW, World, close_of, inputs_of, sessions)
+from edge_calibration_world import (BARS_FROM, STRIKES, WINDOW, World, close_of, inputs_of, sessions)
 from index_options import edge_calibration as ec
 from index_options.contracts import usable_quote
 from index_options.edge_calibration import IndexOptionsEdgeWalk
@@ -46,6 +46,10 @@ class FxWalk(IndexOptionsEdgeWalk):
         self.reads.append(("market", tail))
         return inputs_of(self.world, **self.edit)[0]
 
+    def _read_sessions(self, domain, tail):
+        market = inputs_of(self.world, **self.edit)[0]
+        return sorted(set.intersection(*({b["date"] for b in d["bars"]} for d in market.values())))
+
     def _read_forecasts(self, domain, start, end_before):
         self.reads.append(("forecasts", start, end_before))
         return inputs_of(self.world, **self.edit)[1]
@@ -55,7 +59,7 @@ def params(world, root, out="out", direction=False, **over):
     p = {**world.files(Path(root) / "in"), "window": dict(world.window), "report_from": "2019-10-07",
          "sealed_from": "2021-07-01", "out_dir": str(Path(root) / out), "buckets": dict(EDGES),
          "regime": dict(REGIME), "pooling": dict(POOL), "name_adjust": dict(ADJUST), "checkpoint_every": 1,
-         "ram_gb_limit": 64, "side_rule": "best", "study_scope": "window", "direction_regressor": direction}
+         "ram_gb_limit": 64, "side_rule": "best", "history_start": BARS_FROM, "protected_end_before": "2024-01-01", "study_scope": "window", "direction_regressor": direction}
     if direction:
         p["direction"] = dict(DIRECTION)
     p.update(over)
@@ -305,7 +309,8 @@ def test_calendar_is_the_studys_and_next_session_is_its_next(walk, world):
 def test_walk_hooks_are_the_only_abstract_surface():
     assert not inspect.isabstract(IndexOptionsEdgeWalk)
     assert issubclass(IndexOptionsEdgeWalk, EdgeReliabilityWalk)
-    assert set(IndexOptionsEdgeWalk._EXTRA_PARAMS) == {"mio_document", "forecast_pins", "side_rule", "study_scope", "direction"}
+    assert set(IndexOptionsEdgeWalk._EXTRA_PARAMS) == {"mio_document", "forecast_pins", "side_rule", "study_scope", "direction", "history_start",
+                                                          "protected_end_before"}
 
 
 # ---- leakage end to end ------------------------------------------------------------------------------------------
@@ -431,9 +436,9 @@ def test_multiplier_mismatch_and_other_child_knobs(world, tmp_path):
         refusal(node, tmp_path, code)
 
 
-def test_a_window_the_calendar_does_not_cover_refuses_calendar_mismatch(world, tmp_path):
+def test_a_window_not_after_history_start_refuses(world, tmp_path):
     p = params(world, tmp_path, window={"start": "2019-06-01", "end": "2019-11-24"})
-    refusal(FxWalk("edge", p, world), tmp_path, "calendar_mismatch")
+    refusal(FxWalk("edge", p, world), tmp_path, "history_start_invalid")
 
 
 # ---- a full tiny walk -------------------------------------------------------------------------------------------------

@@ -46,6 +46,8 @@ __all__ = ["EdgeCalibrationRefusal", "EdgeItemFeatures", "IndexOptionsEdgeWalk",
            "usable_parity_rows"]
 
 #: The quote values of the MIO bridge a run reads and writes to its summary (ADR-0313 A9).
+#: Path A0003: nothing on or after this day is ever read.
+HARD_END = "2024-01-01"
 QUOTE_VALUES = ("max_relative_spread", "min_quote_size", "max_abs_z")
 
 
@@ -216,7 +218,11 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
         ``forecast_pins`` (per decision quarter ``{forecasts, contexts}`` sha256, each also among the document's
         forecast source pins), ``side_rule`` (``best``: the walk keeps the larger-``e`` side of an option),
         ``study_scope`` (``window``, or ``quarter``: one study per decision quarter, byte-identical output) and
-        ``direction`` (the :class:`DirectionEdge` params; required iff ``direction_regressor``).
+        ``direction`` (the :class:`DirectionEdge` params; required iff ``direction_regressor``), and the walk's own
+        clocks ``history_start`` (before ``window.start``; the bars must reach back to it) and ``protected_end_before``
+        (``sealed_from`` to 2024-01-01): a packet document's own values follow ITS packet and would refuse here.
+        The document's corporate-action source is NOT read: the walk holds no books, so no split conversion
+        applies; a split between decision and settlement is the counted ``basis_changed``.
 
     Raises
     ------
@@ -230,7 +236,8 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
         IndexOptionsEdgeWalk("edge", params).run(ctx, {})["summary"]
     """
 
-    _EXTRA_PARAMS = ("mio_document", "forecast_pins", "side_rule", "study_scope", "direction")
+    _EXTRA_PARAMS = ("mio_document", "forecast_pins", "side_rule", "study_scope", "direction", "history_start",
+                     "protected_end_before")
     SIDE_RULES = ("best",)
     STUDY_SCOPES = ("window", "quarter")
     _DOMAIN = ("pipeline", "plan", "params", "study", "domain")
@@ -251,6 +258,11 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
         if params.get("study_scope") not in cls.STUDY_SCOPES:
             problems.append(f"study_scope_invalid: must be one of {list(cls.STUDY_SCOPES)}")
         problems.extend(cls._direction_problems(params))
+        for key in ("history_start", "protected_end_before"):
+            try:
+                date.fromisoformat(params[key])
+            except (KeyError, TypeError, ValueError):
+                problems.append(f"{key} is required: an ISO date (the walk's own clock, never the packet document's)")
         return problems
 
     @staticmethod
@@ -274,14 +286,19 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
                                    ("study_scope", self.STUDY_SCOPES, "study_scope_invalid")):
             if p.get(key) not in allowed:
                 raise EdgeCalibrationRefusal(code, f"{key} must be one of {list(allowed)}, got {p.get(key)!r}")
+        # The walk's own _setup repeats this seal check; it is kept because _open runs first when called directly
+        # and must refuse before any pin or reader is touched.
         problems = self._direction_problems(p)
         if problems:
             raise EdgeCalibrationRefusal("direction_config_invalid", "; ".join(problems))
         self._document()
-        history = self._domain["history_start"]
-        if p["window"]["start"] <= history:
-            raise EdgeCalibrationRefusal("calendar_mismatch", f"window.start {p['window']['start']} has no history "
-                                         f"after history_start {history}")
+        history = p["history_start"]
+        if history >= p["window"]["start"]:
+            raise EdgeCalibrationRefusal("history_start_invalid", f"history_start {history} is not before "
+                                         f"window.start {p['window']['start']}")
+        if not self._sealed <= p["protected_end_before"] <= HARD_END:
+            raise EdgeCalibrationRefusal("protected_end_invalid", f"protected_end_before {p['protected_end_before']} "
+                                         f"must lie in [sealed_from {self._sealed}, {HARD_END}]")
         self._guard_out_dir()
         self._guard_pins()
         self._features = EdgeItemFeatures(p.get("direction"), self._param("edge_scale"))
@@ -308,7 +325,7 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
             self._quote_values = {**{k: bridge[k] for k in QUOTE_VALUES},
                                   "fee_per_contract_usd": bridge["solver"]["fee_per_contract_usd"],
                                   "multiplier": bridge["solver"]["multiplier"]}
-            domain["pairs"], domain["history_start"], domain["sources"]["forecasts"]["pin"]["files"]
+            domain["pairs"], domain["sources"]["forecasts"]["pin"]["files"], domain["sources"]["contexts"]["pin"]["files"]
         except (ValueError, KeyError, TypeError) as exc:
             raise EdgeCalibrationRefusal("mio_document_invalid", f"the document lacks {exc!r}") from exc
         direction = self.params.get("direction")
@@ -336,12 +353,22 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
             year, q = (year + 1, 1) if q == 4 else (year, q + 1)
         return out
 
+    @staticmethod
+    def _quarter_files(quarter):
+        """Return the pinned relative names of one quarter (``quarterly_forecasts.pin``'s layout)."""
+        return {"forecasts": f"{quarter}/forecasts.parquet", "contexts": f"{quarter}/contexts.parquet"}
+
     def _guard_pins(self):
-        pinned = set(self._domain["sources"]["forecasts"]["pin"]["files"].values())
+        """Bind each quarter's config pin to the document's pin entry of THAT quarter's file, role by role."""
+        sources = self._domain["sources"]
         for quarter in self._quarters():
             pin = self.params["forecast_pins"].get(quarter)
-            if pin is None or pin["forecasts"] not in pinned or pin["contexts"] not in pinned:
-                raise EdgeCalibrationRefusal("forecast_not_pinned", f"{quarter} has no pin matching the document's")
+            if pin is None:
+                raise EdgeCalibrationRefusal("forecast_not_pinned", f"{quarter} has no forecast pin")
+            for role, relative in self._quarter_files(quarter).items():
+                if sources[role]["pin"]["files"].get(relative) != pin[role]:
+                    raise EdgeCalibrationRefusal("forecast_not_pinned", f"{quarter} {role} pin differs from the "
+                                                 f"document's entry for {relative}")
 
     @staticmethod
     def _quarter_bounds(quarter):
@@ -352,31 +379,93 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
 
     # -- the reading seams ---------------------------------------------------------------------
 
-    def _bounded(self, tail):  # pragma: no cover - needs the real pinned sources; exercised by the stage 5 week
-        if getattr(self, "_bounded_cache", None) is None:
-            from .observations import MIOPacketInputs
+    def _passes(self):
+        """Read the window ONE QUARTER AT A TIME (the real layout: ``<q>/forecasts.parquet`` per quarter).
 
-            with open(self.params["mio_document"]["path"]) as fh:
-                study = json.load(fh)["pipeline"]["plan"]["params"]["study"]
-            p, hist = self.params, study["domain"]["history_start"]
-            end = min((date.fromisoformat(p["window"]["end"]) + timedelta(days=1)).isoformat(), tail)
-            span = {"start": p["window"]["start"], "end_before": end}
-            bounds = {"forecasts": span, "contexts": span, "chain": {"start": p["window"]["start"], "end_before": tail},
-                      "bars": {"start": hist, "end_before": tail}, "sessions": {"start": hist, "end_before": tail}}
-            root = Path(p["out_dir"]) / "inputs" / "mio-quotes"
-            root.mkdir(parents=True, exist_ok=True)
-            self._bounded_cache = MIOPacketInputs.read_bounded(study, bounds, span, root, None)
-        return self._bounded_cache["inputs"]
+        Each pass copies the document's study, points its forecast and context files at the quarter's, sets the
+        bridge fold (``Quarter.parse``), start and end to the quarter, hashes the file it is about to open against
+        ``forecast_pins`` and calls ``MIOPacketInputs.read_bounded``. A quarter with no forecast row refuses
+        ``forecast_quarter_empty``. The quote indexes live under ``out_dir/inputs`` and are rebuilt (or hit in the
+        content-addressed reuse cache) when a resumed run opens them again.
+        """
+        if getattr(self, "_pass_cache", None) is not None:
+            return self._pass_cache
+        import copy
+
+        from dskit.onboarding.artifacts import PinnedPayloadSource
+
+        from .observations import MIOPacketInputs
+        from .quarterly_forecasts import Quarter
+
+        p = self.params
+        with open(p["mio_document"]["path"]) as fh:
+            base = json.load(fh)["pipeline"]["plan"]["params"]["study"]
+        base.setdefault("code", {})
+        base.setdefault("dependencies", {})
+        tail = self._sealed
+        out = {}
+        for name in self._quarters():
+            try:
+                quarter = Quarter.parse(name)
+            except ValueError as exc:
+                raise EdgeCalibrationRefusal("forecast_quarter_unknown", str(exc)) from exc
+            start = max(quarter.start, p["window"]["start"])
+            end = min(quarter.end_before, self._entry_end_of(p))
+            study = copy.deepcopy(base)
+            domain = study["domain"]
+            domain["history_start"] = p["history_start"]
+            domain["params"]["bridge"].update(fold=quarter.fold, start=start, end_before=end,
+                                              protected_end_before=p["protected_end_before"])
+            for role, relative in self._quarter_files(name).items():
+                binding = domain["sources"][role]
+                binding["files"] = {"shared": relative}
+                path = PinnedPayloadSource(binding["pin"]).file(relative, verify=True)
+                with open(path, "rb") as fh:
+                    if hashlib.sha256(fh.read()).hexdigest() != p["forecast_pins"][name][role]:
+                        raise EdgeCalibrationRefusal("forecast_not_pinned", f"the opened {relative} is not the "
+                                                     "pinned file")
+                if role == "forecasts":
+                    import pyarrow.parquet as pq
+
+                    if pq.ParquetFile(path).metadata.num_rows == 0:        # the reader refuses an empty file obscurely
+                        raise EdgeCalibrationRefusal("forecast_quarter_empty", f"{relative} holds no forecast row")
+            span = {"start": start, "end_before": end}
+            bounds = {"forecasts": span, "contexts": span, "chain": {"start": start, "end_before": tail},
+                      "bars": {"start": p["history_start"], "end_before": tail},
+                      "sessions": {"start": p["history_start"], "end_before": tail}}
+            root = Path(p["out_dir"]) / "inputs"
+            quotes = root / name / "mio-quotes"
+            quotes.mkdir(parents=True, exist_ok=True)
+            bounded = MIOPacketInputs.read_bounded(study, bounds, span, quotes, root / "reuse")
+            if not any(d["forecasts"] for d in bounded["inputs"].values()):
+                raise EdgeCalibrationRefusal("forecast_quarter_empty", f"{name} yielded no forecast row")
+            out[name] = bounded
+        self._pass_cache = out
+        return out
+
+    @staticmethod
+    def _entry_end_of(p):
+        return min((date.fromisoformat(p["window"]["end"]) + timedelta(days=1)).isoformat(), p["sealed_from"])
 
     def _read_market(self, domain, tail):
-        """Return ``{symbol: {"chain" or "chain_index", "bars"}}`` bounded below ``tail`` (the seam; read-only)."""
-        data = self._bounded(tail)  # pragma: no cover
-        return {s: {k: v for k, v in d.items() if k in ("chain", "chain_index", "bars")} for s, d in data.items()}
+        """Return ``{symbol: {"chain_index", "bars"}}`` (the seam; read-only) and note every quarter's index."""
+        passes = self._passes()
+        first = next(iter(passes.values()))["inputs"]
+        self._indexes = {s: [b["inputs"][s]["chain_index"]["index"] for b in passes.values()] for s in first}
+        return {s: {"chain_index": d["chain_index"], "bars": d["bars"]} for s, d in first.items()}
+
+    def _read_sessions(self, domain, tail):
+        """Return the session calendar of the pinned ``sessions`` source (``read_bounded``'s ``clocks.sessions``)."""
+        return next(iter(self._passes().values()))["clocks"]["sessions"]
 
     def _read_forecasts(self, domain, start, end_before):
         """Return ``{symbol: {"forecasts", "contexts"}}`` for decisions in ``[start, end_before)`` (the seam)."""
-        data = self._bounded(self._sealed)  # pragma: no cover
-        return {s: {k: d[k] for k in ("forecasts", "contexts")} for s, d in data.items()}
+        out = {s: {"forecasts": [], "contexts": []} for s in self._symbols}
+        for bounded in self._passes().values():
+            for symbol, data in bounded["inputs"].items():
+                for key in ("forecasts", "contexts"):
+                    out[symbol][key].extend(r for r in data[key] if start <= r["quote_date"] < end_before)
+        return out
 
     def _refuse_sealed(self, rows, fields):
         for row in rows:
@@ -394,42 +483,107 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
         for data in market.values():
             self._refuse_sealed(data.get("chain", []), ("date", "expiration"))
             self._refuse_sealed(data["bars"], ("date",))
-        history = self._domain["history_start"]
-        sessions = sorted(set.intersection(*({b["date"] for b in d["bars"]} for d in market.values())))
-        self._sessions = [d for d in sessions if history <= d < tail]
+        history = p["history_start"]
+        sessions = [d for d in self._read_sessions(self._domain, tail) if history <= d < tail]
+        if not sessions or sessions[0] > (date.fromisoformat(history) + timedelta(days=4)).isoformat():
+            raise EdgeCalibrationRefusal("history_not_covered", f"the session source starts "
+                                         f"{sessions[0] if sessions else 'empty'}, after history_start {history}")
+        self._sessions = sessions
+        have, self._dropped = set(sessions), {}
+        for symbol in list(market):
+            dates = {b["date"] for b in market[symbol]["bars"]}
+            market[symbol]["bars"] = [b for b in market[symbol]["bars"] if b["date"] in have]
+            if have - dates:
+                self._dropped[symbol] = len(have - dates)       # a symbol missing a session cannot enter the study
+                del market[symbol]
+        if not market:
+            raise EdgeCalibrationRefusal("mio_document_invalid", "no symbol has a bar for every session")
+        self._active = [s for s in self._symbols if s in market]
         self._market = market
         self._entry_end = min((date.fromisoformat(p["window"]["end"]) + timedelta(days=1)).isoformat(), tail)
         self._stored, self._qkey, self._qstudy = {}, None, None
+        # MIO's node keeps ONE fold; every pass already kept only its own quarter's fold and band val, so the rows
+        # are relabelled to one constant (decision dates are unique across quarters, so no key can collide).
+        from .quarterly_forecasts import Quarter
+
+        self._fold_label = Quarter.parse(self._quarters()[0]).fold
         forecasts = self._forecasts(p["window"]["start"], self._entry_end)
         if p["study_scope"] == "window":
             self._market_study = self._study = self._build(p["window"]["start"], self._entry_end, forecasts)
         else:
-            empty = {s: {"forecasts": [], "contexts": []} for s in self._symbols}
+            empty = {s: {"forecasts": [], "contexts": []} for s in self._active}
             self._market_study = self._build(p["window"]["start"], self._entry_end, empty)
 
     def _forecasts(self, start, end_before):
         got = self._read_forecasts(self._domain, start, end_before)
         out = {}
-        for symbol in self._symbols:
+        for symbol in self._active:
             rows = got[symbol]
             self._refuse_sealed(rows["forecasts"] + rows["contexts"], ("quote_date", "expiry", "settlement_date"))
-            out[symbol] = {k: [r for r in rows[k] if start <= r["quote_date"] < end_before] for k in rows}
+            out[symbol] = {k: [{**r, "fold": self._fold_label} for r in rows[k] if start <= r["quote_date"] < end_before]
+                           for k in rows}
         return out
 
     def _build(self, start, end_before, forecasts):
         from .ledger_studies import WeeklyOptionPortfolioStudy
 
         domain = self._domain
-        clocks = {"sessions": self._sessions, "history_start": domain["history_start"], "entry_start": start,
+        clocks = {"sessions": self._sessions, "history_start": self.params["history_start"], "entry_start": start,
                   "entry_end_before": end_before, "tail_end_before": self._sealed}
-        study_params = {**domain["params"], "selected_pairs": domain["pairs"], "clocks": clocks}
+        bridge = {**domain["params"]["bridge"], "fold": self._fold_label, "start": start, "end_before": end_before,
+                  "protected_end_before": self.params["protected_end_before"]}
+        study_params = {**domain["params"], "bridge": bridge, "symbols": list(self._active),
+                        "selected_pairs": [x for x in domain["pairs"] if x["symbol"] in self._active],
+                        "clocks": clocks}
         inputs = {}
-        for symbol in self._symbols:
+        for symbol in self._active:
             data = dict(self._market[symbol])
             if "chain" in data:
                 data["chain"] = [r for r in data["chain"] if r["date"] >= start]
             inputs[symbol] = {**data, **forecasts[symbol]}
-        return WeeklyOptionPortfolioStudy(study_params, inputs)
+        study = WeeklyOptionPortfolioStudy(study_params, inputs)
+        for symbol, descriptors in getattr(self, "_indexes", {}).items():
+            if symbol in self._active and len(descriptors) > 1:
+                study._quotes[symbol] = self._union(descriptors, symbol)
+        return study
+
+    @staticmethod
+    def _union(descriptors, symbol):
+        """Return one quote view over the per-quarter indexes (a decision's fill may sit in the next quarter's)."""
+        from .ledger_studies import _SQLiteQuoteView
+
+        class Union(_SQLiteQuoteView):
+            def __init__(self):
+                self.views = []
+                for descriptor in descriptors:
+                    view = _SQLiteQuoteView(descriptor)
+                    view.symbol = symbol
+                    self.views.append(view)
+                self.symbol = symbol
+
+            def get(self, key, default=None):
+                for view in self.views:
+                    row = view.get(key)
+                    if row is not None:
+                        return row
+                return default
+
+            def iter_for(self, day, expiry):
+                for view in self.views:
+                    rows = list(view.iter_for(day, expiry))
+                    if rows:
+                        return iter(rows)
+                return iter(())
+
+            def verify_digest(self):
+                for view in self.views:
+                    view.verify_digest()
+
+            def close(self, verify=False):
+                for view in self.views:
+                    view.close(verify=verify)
+
+        return Union()
 
     def _study_for(self, t):
         """Return the study that decides ``t``: the window's, or the decision quarter's (one kept at a time)."""
@@ -522,5 +676,6 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
         out = super()._summary(weeks)
         out["forecast_pins"] = {q: dict(self.params["forecast_pins"][q]) for q in self._quarters()}
         out["mio_quote_values"] = dict(self._quote_values)
+        out["symbols_dropped"] = dict(self._dropped)
         out["symbol_list_sha256"] = hashlib.sha256(json.dumps(self._symbols).encode()).hexdigest()
         return out

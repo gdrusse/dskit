@@ -40,8 +40,8 @@ STUDY_PARAMS = {
                  "component_fraction": None}]}
 
 
-def sessions(end=LAST):
-    day, out = date.fromisoformat(BARS_FROM), []
+def sessions(end=LAST, start=BARS_FROM):
+    day, out = date.fromisoformat(start), []
     while day <= date.fromisoformat(end):
         if day.weekday() < 5:
             out.append(day.isoformat())
@@ -95,11 +95,13 @@ def cdf_row(shift):
 class World:
     """The synthetic inputs of one run and the files that pin them."""
 
-    def __init__(self, symbols=("AAA",), split=None, last=LAST, window=None):
+    def __init__(self, symbols=("AAA",), split=None, last=LAST, window=None, decision_days=None, bars_from=BARS_FROM,
+                 missing_bars=None):
         self.symbols, self.split, self.last = tuple(symbols), split, last
         self.window = dict(window or WINDOW)
-        self.cal = sessions(last)
-        self.decisions = weeks(self.cal, self.window["start"], self.window["end"])
+        self.bars_from, self.missing_bars = bars_from, missing_bars or {}
+        self.cal = sessions(last, bars_from)
+        self.decisions = list(decision_days) if decision_days else weeks(self.cal, self.window["start"], self.window["end"])
         self.market, self.forecasts = {}, {}
         for symbol in self.symbols:
             chain, bars, fs, cs = [], [], [], []
@@ -108,6 +110,7 @@ class World:
                 bars.append({"symbol": symbol, "date": day, "close": close_of(symbol, i, day, split),
                              "basis_factor": factor})
             closes = {b["date"]: b["close"] / b["basis_factor"] for b in bars}
+            bars = [b for b in bars if b["date"] != self.missing_bars.get(symbol)]
             for day in self.decisions:
                 for days in (8, 15):
                     expiry = friday_after(day, days)
@@ -147,10 +150,11 @@ class World:
         domain = {"params": {**copy.deepcopy(STUDY_PARAMS), "symbols": list(self.symbols)},
                   "pairs": [{"id": f"p{i}", "symbol": s, "dte_min": 1, "dte_max": 40}
                             for i, s in enumerate(self.symbols)],
-                  "history_start": BARS_FROM,
-                  "sources": {"forecasts": {"pin": {"files": {f"{quarter}/forecasts.parquet": forecast_sha,
-                                                              f"{quarter}/contexts.parquet": context_sha}},
-                                            "files": {"shared": f"{quarter}/forecasts.parquet"}}}}
+                  "history_start": "2019-11-22",
+                  "sources": {role: {"pin": {"files": {f"{quarter}/forecasts.parquet": forecast_sha,
+                                                       f"{quarter}/contexts.parquet": context_sha}},
+                                     "files": {"shared": f"{quarter}/{role}.parquet"}}
+                              for role in ("forecasts", "contexts")}}
         document = {"pipeline": {"plan": {"params": {"study": {"domain": domain}}}}}
         path = root / "mio-document.json"
         raw = (json.dumps(document, sort_keys=True) + "\n").encode()
@@ -196,3 +200,78 @@ def inputs_of(world, from_day=None, poison_from=None, delete_from=None, quote=No
             if bar and r["date"] in bar:
                 r["close"] = bar[r["date"]]
     return market, forecasts
+
+
+class DiskWorld(World):
+    """The same world written in the owner's real layout: one onboarding root, a forecast pin with
+    ``<q>/forecasts.parquet`` and ``<q>/contexts.parquet`` per quarter (``quarterly_forecasts.pin``), a market pin
+    with ``chain-<symbol>.parquet``, ``bars-<symbol>.parquet`` and ``sessions.parquet`` and a packet-style document
+    whose OWN clocks follow its packet (history_start after the walk's window.start, protected_end_before below
+    sealed_from)."""
+
+    def write(self, root, empty_quarters=(), extra_bar=None):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from dskit.onboarding import OnboardingRoot, run_acquisition
+        from dskit.onboarding.artifacts import payload_files
+        from index_options.quarterly_forecasts import Quarter
+
+        root = Path(root)
+        fc, mkt = root / "fc_files", root / "mkt_files"
+        by_quarter = {}
+        for symbol in self.symbols:
+            fs, cs = self.forecasts[symbol]["forecasts"], self.forecasts[symbol]["contexts"]
+            for f, c in zip(fs, cs):
+                q = f"{f['quote_date'][:4]}Q{(int(f['quote_date'][5:7]) - 1) // 3 + 1}"
+                fold = Quarter.parse(q).fold
+                by_quarter.setdefault(q, ([], []))
+                by_quarter[q][0].append({**f, "fold": fold})
+                by_quarter[q][1].append({**c, "fold": fold})
+        for q, (fs, cs) in by_quarter.items():
+            (fc / q).mkdir(parents=True, exist_ok=True)
+            for name, rows in (("forecasts", fs), ("contexts", cs)):
+                table = pa.Table.from_pylist(rows)
+                if q in empty_quarters:
+                    table = table.slice(0, 0)                    # the real schema, no row
+                pq.write_table(table, fc / q / f"{name}.parquet")
+        mkt.mkdir(parents=True, exist_ok=True)
+        for symbol in self.symbols:
+            pq.write_table(pa.Table.from_pylist(self.market[symbol]["chain"]), mkt / f"chain-{symbol}.parquet")
+            bars = [{"symbol": b["symbol"], "date": b["date"], "close": b["close"]} for b in self.market[symbol]["bars"]]
+            if extra_bar and symbol == self.symbols[0]:
+                bars.append({"symbol": symbol, "date": extra_bar, "close": 100.})
+            pq.write_table(pa.Table.from_pylist(bars), mkt / f"bars-{symbol}.parquet")
+        pq.write_table(pa.table({"date": self.cal}), mkt / "sessions.parquet")
+        ob = OnboardingRoot.create(str(root / "ob"))
+        sources = ob.registry()
+        pins = {}
+        for name, path in (("fc", fc), ("mkt", mkt)):
+            vid = sources.register("source_config", {"name": name, "catalog_source": "synthetic",
+                "connector": "localblobs", "config": {"path": str(path), "as_of": "2021-04-01T00:00:00+00:00"}},
+                origin="test")
+            sources.transition(vid, "active", origin="test")
+            run_acquisition(ob, sources, name, "files", "backfill")
+            got = payload_files(ob, name, "files")
+            pins[name] = {"root": ob.root, "source": name, "stream": "files", "snapshot": got["snapshot"],
+                          "manifest_sha256": got["manifest_sha256"], "files": got["sha256"]}
+        quarters = sorted(by_quarter)
+        domain = {"params": {**copy.deepcopy(STUDY_PARAMS), "symbols": list(self.symbols)},
+                  "pairs": [{"id": f"p{i}", "symbol": s, "dte_min": 1, "dte_max": 40}
+                            for i, s in enumerate(self.symbols)],
+                  "history_start": "2020-02-03",
+                  "sources": {
+                      "forecasts": {"pin": pins["fc"], "files": {"shared": f"{quarters[0]}/forecasts.parquet"}},
+                      "contexts": {"pin": pins["fc"], "files": {"shared": f"{quarters[0]}/contexts.parquet"}},
+                      "chain": {"pin": pins["mkt"], "files": {s: f"chain-{s}.parquet" for s in self.symbols}},
+                      "bars": {"pin": pins["mkt"], "files": {s: f"bars-{s}.parquet" for s in self.symbols}},
+                      "sessions": {"pin": pins["mkt"], "files": {"shared": "sessions.parquet"}}}}
+        domain["params"]["bridge"] = {**domain["params"]["bridge"], "protected_end_before": "2020-07-01"}
+        document = {"pipeline": {"plan": {"params": {"study": {"domain": domain}}}}}
+        path = root / "mio-document.json"
+        raw = (json.dumps(document, sort_keys=True) + "\n").encode()
+        path.write_bytes(raw)
+        files = pins["fc"]["files"]
+        return {"mio_document": {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest()},
+                "forecast_pins": {q: {"forecasts": files[f"{q}/forecasts.parquet"],
+                                      "contexts": files[f"{q}/contexts.parquet"]} for q in quarters}}

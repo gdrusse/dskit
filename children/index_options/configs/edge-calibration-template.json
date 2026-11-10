@@ -4,7 +4,7 @@
   "pipeline": {
     "edge": {
       "uses": "index_options.edge_calibration:IndexOptionsEdgeWalk",
-      "notes": "mio_document is the pinned MIO run document (its domain gives the study params, pairs, history_start and source pins; the quote filter values, multiplier and fee are READ from it, never restated here). forecast_pins must equal, per quarter, the sha256 pair among the document's forecast source pins (forecast_not_pinned otherwise). side_rule best keeps the larger-e side of each option. study_scope window builds one study; quarter builds one per decision quarter with identical output (the memory lever of stage 5). direction_regressor true needs the direction block (DirectionEdge: rate must be 0.0, multiplier must equal the study's; iv_source mid because the archive carries no vendor iv). buckets, regime, pooling and name_adjust are ADR-0311's B-1..B-4 defaults; edges are fixed numbers, never quantiles. edge_scale notional (spot x multiplier) is A-6(a); row_weight group_equal is A-7(a). out_dir must be new and outside the document's directory and every pin root.",
+      "notes": "mio_document is the pinned MIO run document (its domain gives the study params, pairs, history_start and source pins; the quote filter values, multiplier and fee are READ from it, never restated here). forecast_pins must equal, per quarter, the sha256 pair among the document's forecast source pins (forecast_not_pinned otherwise). side_rule best keeps the larger-e side of each option. study_scope window builds one study; quarter builds one per decision quarter with identical output (the memory lever of stage 5). direction_regressor true needs the direction block (DirectionEdge: rate must be 0.0, multiplier must equal the study's; iv_source mid because the archive carries no vendor iv). buckets, regime, pooling and name_adjust are ADR-0311's B-1..B-4 defaults; edges are fixed numbers, never quantiles. edge_scale notional (spot x multiplier) is A-6(a); row_weight group_equal is A-7(a). out_dir must be new and outside the document's directory and every pin root. history_start (2019-07-01 gives the 60-session beta lookback; confirm against the pinned bars) and protected_end_before are the WALK's clocks (a packet document's own values follow its packet and would refuse): history_start must precede window.start by enough sessions for the study's lookback and the pinned bars/sessions must reach back to it (history_not_covered otherwise); protected_end_before lies in [sealed_from, 2024-01-01] (A0003). The document's corporate-action source is not read (no held books). Forecasts are read one quarter at a time from <q>/forecasts.parquet and <q>/contexts.parquet under the document's forecast pin, each bound to forecast_pins[q].",
       "params": {
         "mio_document": {
           "path": "PLACEHOLDER/absolute/path/to/the/pinned/mio-run-document.json",
@@ -99,7 +99,9 @@
           "min_pairs": 2,
           "max_pair_spread_frac": 0.5,
           "forward_se_floor_frac": 0.001
-        }
+        },
+        "history_start": "2019-07-01",
+        "protected_end_before": "2024-01-01"
       }
     }
   }
