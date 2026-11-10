@@ -47,7 +47,8 @@ from dskit.pipeline.option_exposure import (
 from dskit.pipeline.option_structures import structure_max_loss
 from dskit.pipeline.records import number_ok
 
-__all__ = ["HedgeOverlay", "NullHedgeOverlay", "FixedDeltaForwardHedge", "KINDS", "REFUSALS"]
+__all__ = ["HedgeOverlay", "NullHedgeOverlay", "FixedDeltaForwardHedge", "KINDS", "REFUSALS", "forward_leg_rule",
+           "forward_leg_net_settle"]
 
 #: Where a method's hedge runs: over a saved selection, or inside the solve.
 MODES = ("replay", "program")
@@ -75,6 +76,21 @@ BOOKS_PREFIX = "books_"
 #: Item and book statuses beside the ``LegGreeks`` refusal codes.
 STATUS_OK, STATUS_HTB, STATUS_UNBOUNDED = HEDGE_OK_FORWARD, HEDGE_HTB, HEDGE_UNBOUNDED
 _MISSING_PREFIX = "missing required"
+
+
+def forward_leg_rule(record):
+    """Return the shared cost rule for a recorded forward leg's rates (forward borrow rate 0, owner Q9a)."""
+    return StaticDeltaHedge({**record["rates"], "hedge_borrow_rate": 0.0})
+
+
+def forward_leg_net_settle(record, level):
+    """Return a recorded forward leg's settled P&L net of trade costs: ``U (level - F_fill) - carry_costs``.
+
+    ``record`` carries ``units``, ``reference``, ``days`` and ``rates``; the one owner of the formula (the replay
+    hedge and the Greeks diagnostics both call it).
+    """
+    costs = forward_leg_rule(record).carry_costs(record["units"], record["reference"], level, record["days"])
+    return record["units"] * (level - record["reference"]) - costs["trade_costs"]
 
 
 def _coded(code, message):

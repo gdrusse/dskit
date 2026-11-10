@@ -1,0 +1,175 @@
+{
+  "name": "mio-integration-timing-check-arm-template",
+  "kind": "mio-integration-template/v1",
+  "notes": "The G5 timing check, ARM document: the combined arm alone. The control is the separate timing-check-control document (ADR-0313 section E: two documents per pre-registered week). The WHOLE quarter packet with ONE decision week in decision_weeks; every other week records week_not_selected and solves nothing. Run once per pre-registered week, each in an account that holds its deposits and no open book. Timing, solver status and peak RSS only: never evidence (`check_document_not_evidence`). Limits: median solved-week time at most 1.5x the control's, no week the control solved may time out. Template, not a run config: nothing here is approved to run. RE-ENTRY Do-not list obeyed: development seal 2021-07-01 (no decision, fill, quote, mark or settlement at or past it; 2021Q3 and later never), no 2024+ data, no run log read, agents report counts, hashes and verdict words only. Every arm is a research arm BESIDE the nine locked formulations (A0010) on NEW method ids w1_010_shock10_cal_hedge_lp; the base formulation is w1_010_shock10_lp, its spec copied verbatim; locked_method_ids is the nine of the queue config. PREREQUISITES in order: (1) diagnostics first, no solve: the ADR-0310 Greeks diagnostics on the saved selection-quarter runs, `PYTHONPATH=.:children/index_options python -m dskit.pipeline run <mio-greeks-<quarter>.json> --asof <date>`; (2) the arm is declared in docs/decisioning/attempts.jsonl BEFORE its first solve (family mio_integration). COMMANDS, repository root, one document at a time, NEVER edit this file or the output by hand: (a) `PYTHONPATH=.:children/index_options python children/index_options/tools/mio_instantiate.py children/index_options/docs/plans/mio-json/timing-check-arm.template.json --base <quarter-run-doc>.json --name <name> --output-root <new run root> --edge-maps-pin <pin>.json --decision-week <YYYY-MM-DD> --out <doc>.json` (the placeholders listed in `placeholders` are its arguments; it deep-merges study_overlay into the base run document's study and expands this pipeline; it refuses while any placeholder is unresolved); (b) `PYTHONPATH=.:children/index_options python -m dskit.pipeline validate <doc>.json`; (c) `PYTHONPATH=.:children/index_options python -m dskit.pipeline run <doc>.json --asof <quarter end>` (2021-06-30 for 2021Q2, then 2021-03-31 for 2021Q1, then 2020-03-31 for 2020Q1; exit 0 ran, 1 error or a refusal code, 3 halted). EVIDENCE: only the statuses `closed` or `insufficient` exist on the selection quarters (ADR-0313 section E); a quarter counts for a calibrated arm only with at least min_warm_weeks warm decision weeks; nothing here adopts an arm.",
+  "placeholders": [
+    {
+      "path": "--base",
+      "meaning": "the quarter's own resolved MIO run document (the one that ran the nine formulations): its plan node's study is the base the overlay is merged into"
+    },
+    {
+      "path": "--decision-week (study_overlay.domain.params.decision_weeks)",
+      "meaning": "exactly one pre-registered decision date of the quarter; the tool refuses without it"
+    },
+    {
+      "path": "--edge-maps-pin (study_overlay.domain.sources.edge_maps.pin)",
+      "meaning": "a JSON file with the onboarding pin of the published edge maps, acquired once after the walk's read words are PASS; never hand-written"
+    },
+    {
+      "path": "--name / --output-root",
+      "meaning": "the new document's name and a NEW run root"
+    }
+  ],
+  "development_seal": "2021-07-01",
+  "study_overlay": {
+    "notes": "Deep-merged by children/index_options/tools/mio_instantiate.py into the domain of the base quarter run document's study (dicts merge key by key; lists such as `methods` are replaced); `clocks` keeps every other key of the base and only pins tail_end_before.",
+    "domain": {
+      "params": {
+        "methods": [
+          {
+            "id": "w1_010_shock10_cal_hedge_lp",
+            "portfolio_fraction": 1.0,
+            "name_fraction": 1.0,
+            "component_fraction": null,
+            "short_notional_fraction": 0.2,
+            "rho": 0.1,
+            "shock": {
+              "moves": [
+                -0.1,
+                -0.05,
+                0.05,
+                0.1
+              ],
+              "loss_fraction": 0.1,
+              "beta_lookback": 60
+            },
+            "calibration": {
+              "source": "edge_maps",
+              "state": "expanding_fill",
+              "edge_scale": "notional",
+              "regressors": 2,
+              "line": "bucket",
+              "form": "slope",
+              "variant": "point",
+              "warmup": "no_trade",
+              "min_warm_weeks": 8
+            },
+            "hedge": {
+              "kind": "fixed_delta_forward",
+              "mode": "program",
+              "ratio": 1.0,
+              "delta_source": "black76_chain_forward",
+              "iv_source": "mid",
+              "rate": 0.0,
+              "margin_fraction": 0.15,
+              "round_units": true,
+              "condition": null,
+              "small_delta": 0.0,
+              "hedge_cost_source": "placeholder",
+              "htb_lookback": 20,
+              "htb_vol_threshold": 2.5,
+              "htb_jump_threshold": 0.75,
+              "hedge_fee_per_share": 0.005,
+              "hedge_half_spread_bps": 5.0,
+              "hedge_borrow_rate": 0.005
+            }
+          }
+        ],
+        "locked_method_ids": [
+          "w1_010_shock10_lp",
+          "w1_003_shock10_lp",
+          "w1_003_shock10_mad050_lp",
+          "nominal_lp",
+          "w1_010z_shock10_lp",
+          "w1_010_shock10_fine_lp",
+          "w1_010_component25_shock10_lp",
+          "w1_010_name25_shock10_lp",
+          "w1_010_shock05_book_lp"
+        ],
+        "clocks": {
+          "tail_end_before": "2021-07-01"
+        },
+        "hedge_parity": {
+          "parity_strikes": 5,
+          "min_pairs": 2,
+          "max_pair_spread_frac": 0.5
+        },
+        "decision_weeks": [
+          "2021-04-05"
+        ]
+      },
+      "sources": {
+        "edge_maps": {
+          "pin": "PLACEHOLDER: the onboarding pin of the published edge maps (never hand-written)",
+          "files": {
+            "shared": "edge-maps.json",
+            "summary": "summary.json"
+          }
+        }
+      }
+    }
+  },
+  "pipeline": {
+    "plan": {
+      "uses": "dskit.pipeline.study_protocol:StudyProtocolPlan",
+      "params": {
+        "study": "${study}"
+      }
+    },
+    "freeze_development": {
+      "uses": "dskit.pipeline.study_protocol:StudyProtocolControl",
+      "inputs": {
+        "plan": "$plan.plan"
+      },
+      "params": {
+        "action": "freeze",
+        "study": "${study}"
+      },
+      "notes": "The owner's explicit freeze of the quarter's packet (the same node the quarter run documents carry); its control port feeds open_packet."
+    },
+    "open_packet": {
+      "uses": "dskit.pipeline.study_protocol:StudyPacketOpen",
+      "inputs": {
+        "control": "$freeze_development.control"
+      },
+      "params": {
+        "study": "${study}"
+      }
+    },
+    "intake": {
+      "uses": "index_options.observations:MIOPacketInputs",
+      "inputs": {
+        "permit": "$open_packet.permit"
+      },
+      "params": {
+        "study": "${study}"
+      }
+    },
+    "study": {
+      "uses": "index_options.ledger_studies:MIOPacketStudy",
+      "inputs": {
+        "permit": "$open_packet.permit",
+        "bounded_inputs": "$intake.bounded_inputs",
+        "provenance": "$intake.provenance"
+      },
+      "params": {
+        "study": "${study}"
+      }
+    },
+    "close_packet": {
+      "uses": "dskit.pipeline.study_protocol:StudyPacketClose",
+      "inputs": {
+        "permit": "$open_packet.permit",
+        "results": "$study.results",
+        "audit": "$study.audit",
+        "provenance": "$intake.provenance"
+      },
+      "params": {
+        "study": "${study}"
+      }
+    }
+  },
+  "outputs": {
+    "run_root": "${output_root}"
+  }
+}

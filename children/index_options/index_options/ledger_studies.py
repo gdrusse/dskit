@@ -73,10 +73,11 @@ from fractions import Fraction
 from typing import NamedTuple
 
 from dskit.pipeline.driver import resolve_json_artifact
-from dskit.pipeline.hedge_overlay import BOOKS_PREFIX, MARK_CARRIED, HedgeOverlay
+from dskit.pipeline.hedge_overlay import (BOOKS_PREFIX, MARK_CARRIED, HedgeOverlay, forward_leg_net_settle,
+                                          forward_leg_rule)
 from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL, MethodBlocks
 from dskit.pipeline.option_exposure import (BookGreeks, ExposureLimits, ExposureSnapshot, HardToBorrowProxy, LegGreeks,
-                                            ParityForward, StaticDeltaHedge)
+                                            ParityForward)
 from dskit.pipeline.records import number_ok
 from dskit.pipeline.runs import NODES_DIR, RESULT_FILE, WALKFORWARD_FILE, walk_fold_dirs
 from dskit.pipeline.stats import lower_tail_mean, max_drawdown
@@ -1630,13 +1631,12 @@ class ReplayHedge:
     @staticmethod
     def _rule(record):
         """Return the shared cost rule for a book's recorded rates (forward borrow rate 0, owner Q9a)."""
-        return StaticDeltaHedge({**record["rates"], "hedge_borrow_rate": 0.0})
+        return forward_leg_rule(record)
 
     @classmethod
     def net_settle(cls, record, level):
         """Return the leg's settled P&L net of its trade costs at ``level``: ``U (level - F_fill) - carry_costs``."""
-        costs = cls._rule(record).carry_costs(record["units"], record["reference"], level, record["days"])
-        return record["units"] * (level - record["reference"]) - costs["trade_costs"]
+        return forward_leg_net_settle(record, level)
 
     @classmethod
     def mark(cls, record, forward):

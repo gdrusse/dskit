@@ -5842,6 +5842,27 @@ def test_a_held_book_outside_the_edges_adds_no_held_vega(monkeypatch):
     assert result["decisions"][1]["exposure"]["held_vega"] == [0.0]
 
 
+def test_a_held_book_exactly_on_a_bucket_edge_is_in_the_bucket_it_opens_and_out_of_the_one_it_closes(monkeypatch):
+    """Half-open ``[low, high)``: a book at ``dte == low`` is inside, at ``dte == high`` outside; a 1-day shift flips it."""
+    from datetime import date
+
+    params, inputs = _limit_world({"vega_fraction_per_pt": 0.01, "dte_edges": [20, 40]}, two_weeks=True)
+    _, result, _ = _run_limited(monkeypatch, params, inputs)
+    held = result["decisions"][0]["books"][0]
+    dte = (date.fromisoformat(held["expiry"]) - date.fromisoformat("2019-01-07")).days
+    _, vega, _ = _hand_greeks(inputs, "2019-01-07", _book_legs(held))
+    assert 20 < dte < 40 and abs(vega) > 1.0
+
+    def held_vega(edges):
+        params, inputs = _limit_world({"vega_fraction_per_pt": 0.01, "dte_edges": edges}, two_weeks=True)
+        return _run_limited(monkeypatch, params, inputs)[1]["decisions"][1]["exposure"]["held_vega"]
+
+    assert held_vega([dte, 40]) == [pytest.approx(vega)], "dte == low edge: inside"
+    assert held_vega([dte + 1, 41]) == [0.0], "one day below the low edge: outside"
+    assert held_vega([20, dte + 1]) == [pytest.approx(vega)], "one day inside the high edge: inside"
+    assert held_vega([20, dte]) == [0.0], "dte == high edge: outside"
+
+
 def test_a_held_vega_beyond_a_bucket_cap_alone_is_exposure_held_breach():
     # Week 1 trades under a 250 cap at 30 percent volatility; week 2 quotes 20 percent, where the same book's vega is
     # larger (hand: -294 against -211 for the free book), so the held vega alone breaches the bucket cap.
@@ -5879,3 +5900,33 @@ def test_a_held_book_whose_forward_or_beta_is_unreadable_is_exposure_risk_input(
                                                  "betas": {} if day == "2019-01-07" else real_betas(self, day, lookback)["betas"]})
     result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
     assert result["decisions"][0]["status"] == "selected" and result["decisions"][1]["status"] == "exposure_risk_input"
+
+
+def test_a_reversal_book_is_unbounded_unhedged_bounded_hedged_recorded_and_settled():
+    """ADR-0313 I7: a short call + long put (ratio 1) has no finite unhedged loss; its forward leg bounds it."""
+    import json
+    from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+
+    study, hedge, spots = _hedge_study(spot_at_expiry=92.)
+    book = _filled(study, [("call", -1, 100., 3), ("put", 1, 100., 3)])
+    assert math.isinf(book["max_loss"])
+    hedge.attach(book, "2019-01-16", None)
+    record, units, ref = book["hedge"], book["hedge"]["units"], book["hedge"]["reference"]
+    assert record["status"] == "ok" and record["unhedged_unbounded"] is True
+    assert record["option_reserve"] is None and record["unhedged_max_loss"] is None
+    assert units > 0 and math.isfinite(book["max_loss"]) and math.isfinite(book["reserve"])
+    assert units == 300 and ref == pytest.approx(105.105)       # 3 contracts each, hedge ratio 1, reference F_fill
+    assert book["max_loss"] == pytest.approx(23.92, abs=5e-3)    # hand numbers of the final review
+    assert book["reserve"] == pytest.approx(0.15 * units * ref, abs=1e-6) == pytest.approx(4729.72, abs=5e-3), \
+        "the margin floor on the forward leg, not the tiny hedged loss, sets the reserve"
+    json.dumps(record, allow_nan=False)                        # recorded: the saved record holds no infinity
+    account = FundedOptionAccount(10000., 1000., 14, "2019-01-02")
+    account.open[book["id"]] = book
+    settled = study._settlements(account, "2019-02-01")
+    leg = ledger_studies.ReplayHedge.net_settle(record, 92.)
+    options = book["credit"] + 100 * 3 * (-(max(92. - 100., 0.)) + max(100. - 92., 0.))
+    assert settled[book["id"]] == pytest.approx(options + leg)
+    account.advance("2019-02-01", settled)
+    ledger = study._ledger(account.closed, None, hedge)        # recorded then read back: the shared ledger's `unhedged_unbounded` branch
+    assert ledger["trades"][0]["max_loss_unbounded"] is True
+    assert ledger["trades"][0]["pnl_usd"] == pytest.approx(settled[book["id"]])

@@ -784,7 +784,7 @@ docs/explanations/README.md # glossary and worked synthetic payoff
                             # mio-glossary.md: plain-language MIO run-report terms (ADR-0283)
 docs/plans/README.md        # gated research stages
 docs/plans/mio-json/       # study.json + plan/run/compare.template.json (proposed; not executable)
-                           # + calibrated-arm / hedged-program-arm / combined-arm / timing-check .template.json (ADR-0313 I8: new method ids on w1_010_shock10_lp, seal 2021-07-01, placeholders marked; run line in each `notes`; tests/test_mio_integration_templates.py)
+                           # + calibrated-arm / hedged-program-arm / combined-arm / timing-check-arm / timing-check-control .template.json (ADR-0313 I8: new method ids on w1_010_shock10_lp, seal 2021-07-01; NOT run configs: `PYTHONPATH=.:children/index_options python children/index_options/tools/mio_instantiate.py <template> --base <quarter run doc> --name N --output-root DIR [--edge-maps-pin PIN.json] [--decision-week D] --out DOC.json`, then `validate`, then `run`; exact sequence in each `notes`; tests/test_mio_integration_templates.py). MIOGreeksDiagnostics reads a hedged arm: the recompute adds the recorded forward leg, the attribution columns are the OPTION legs, the leg is `hedge_pnl_usd` per book and `forward_hedge_pnl_usd` / `n_forward_hedged` in the summary
 docs/memos/README.md        # execution-evidence convention; 2026-09-24 real-data closeout
 docs/research/              # README.md, .gitkeep; distribution-modeling/, real-data-backtest/ notes
 tests/                     # conftest.py; test_contracts, observations, nodes,

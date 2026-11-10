@@ -68,7 +68,15 @@ def us(entries):
 
 def test_the_public_surface_is_exactly_the_declared_names():
     assert sorted(ho.__all__) == sorted(
-        ["HedgeOverlay", "NullHedgeOverlay", "FixedDeltaForwardHedge", "KINDS", "REFUSALS"])
+        ["HedgeOverlay", "NullHedgeOverlay", "FixedDeltaForwardHedge", "KINDS", "REFUSALS",
+         "forward_leg_rule", "forward_leg_net_settle"])
+
+
+def test_a_recorded_forward_leg_settles_net_of_its_trade_costs_by_hand():
+    record = {"units": 3.0, "reference": 453.0, "days": 10,
+              "rates": {"hedge_fee_per_share": 0.005, "hedge_half_spread_bps": 5.0}}
+    costs = 3.0 * (2 * 0.005 + (453.0 + 448.0) * 5.0 / 1e4)
+    assert ho.forward_leg_net_settle(record, 448.0) == pytest.approx(3.0 * (448.0 - 453.0) - costs)
 
 
 def test_the_abstract_base_cannot_be_instantiated_and_leaves_units_to_subclasses():

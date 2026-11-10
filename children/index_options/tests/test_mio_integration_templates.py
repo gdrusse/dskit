@@ -7,13 +7,24 @@ the nine ``locked_method_ids`` against the queue config, the development seal, t
 
 import copy
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+from dskit.onboarding import OnboardingRoot, run_acquisition
+from dskit.onboarding.artifacts import payload_files
+from dskit.pipeline.__main__ import cmd_validate
+from dskit.pipeline.hedge_overlay import DEFAULT_IV_DISAGREE_TOL, DEFAULT_MIN_YEARS, DEFAULT_VOL_FLOOR
 from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL
+from dskit.pipeline.study_protocol import StudyContract
 from index_options import ledger_studies
 from test_ledger_studies import FORMULATIONS, _program_world
+from test_mio_packets import study  # noqa: F401  (the synthetic packet fixture)
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+from mio_instantiate import instantiate  # noqa: E402
 
 CHILD = Path(__file__).resolve().parents[1]
 PLANS = CHILD / "docs/plans/mio-json"
@@ -25,9 +36,10 @@ def load(path):
     return json.loads(path.read_text())
 
 
-def test_the_four_templates_exist():
+def test_the_five_templates_exist():
     assert [p.name for p in TEMPLATES] == ["calibrated-arm.template.json", "combined-arm.template.json",
-                                           "hedged-program-arm.template.json", "timing-check.template.json"]
+                                           "hedged-program-arm.template.json", "timing-check-arm.template.json",
+                                           "timing-check-control.template.json"]
 
 
 def fixture_params(template):
@@ -41,6 +53,8 @@ def fixture_params(template):
     params["clocks"] = {**params["clocks"], **overlay["clocks"]}
     if any("hedge" in m for m in params["methods"]):
         params["hedge_parity"] = overlay["hedge_parity"]
+    else:
+        params.pop("hedge_parity", None)
     return params
 
 
@@ -73,16 +87,16 @@ def test_a_template_states_its_command_prerequisites_and_placeholders(path):
     notes = template["notes"]
     assert "python -m dskit.pipeline run <doc>.json --asof <quarter end>" in notes
     for phrase in ("diagnostics first", "attempts.jsonl", "`closed` or `insufficient`", "placeholders", "2021-07-01",
-                   "dskit.pipeline validate", "PYTHONPATH=.:children/index_options"):
+                   "dskit.pipeline validate", "PYTHONPATH=.:children/index_options", "tools/mio_instantiate.py",
+                   path.name):
         assert phrase in notes, phrase
     assert template["placeholders"] and all({"path", "meaning"} <= set(p) for p in template["placeholders"])
-    assert "PLACEHOLDER" in json.dumps(template["study_overlay"]) or "decision_weeks" in notes or "ratio" in json.dumps(template["placeholders"])
 
 
 def test_the_blocks_each_template_carries():
-    by = {p.name: load(p)["study_overlay"]["domain"]["params"]["methods"] for p in TEMPLATES}
-    cal, hedge, both, timing = (by["calibrated-arm.template.json"], by["hedged-program-arm.template.json"],
-                                by["combined-arm.template.json"], by["timing-check.template.json"])
+    by = {p.name: load(p)["study_overlay"]["domain"]["params"] for p in TEMPLATES}
+    cal, hedge, both = (by["calibrated-arm.template.json"]["methods"], by["hedged-program-arm.template.json"]["methods"],
+                        by["combined-arm.template.json"]["methods"])
     assert cal[0]["calibration"]["control"] is True and cal[0]["calibration"]["form"] == "identity"
     assert cal[1]["calibration"]["form"] == "slope" and "hedge" not in cal[1]
     assert "calibration" not in hedge[0] and "hedge" not in hedge[0] and hedge[1]["hedge"]["mode"] == "program"
@@ -90,6 +104,113 @@ def test_the_blocks_each_template_carries():
     twin_keys = {k: v for k, v in both[0]["calibration"].items() if k not in ("form", "control")}
     arm_keys = {k: v for k, v in both[1]["calibration"].items() if k not in ("form", "control")}
     assert twin_keys == {k: v for k, v in arm_keys.items() if k != "control"}, "the control differs from the arm in form and control only"
-    assert timing == both
-    one = load(PLANS / "timing-check.template.json")["study_overlay"]["domain"]["params"]["decision_weeks"]
-    assert len(one) == 1
+    # ADR-0313 section E: the timing check is two documents, the arm and its control, one listed week each
+    arm, control = by["timing-check-arm.template.json"], by["timing-check-control.template.json"]
+    assert arm["methods"] == [both[1]] and control["methods"] == [both[0]]
+    assert len(arm["decision_weeks"]) == len(control["decision_weeks"]) == 1
+    assert "hedge_parity" in arm and "hedge_parity" not in control, "the control is unhedged, so it takes no hedge_parity"
+
+
+# --- from template to a runnable document ---------------------------------------------------------------------------
+
+def walk_pin(tmp_path):
+    """An onboarded snapshot holding the two files an edge_maps source names (contents are not read by validation)."""
+    archive = tmp_path / "walk"
+    archive.mkdir()
+    for name in ("edge-maps.json", "summary.json"):
+        (archive / name).write_text("{}")
+    root = OnboardingRoot.create(str(tmp_path / "ob-walk"))
+    registry = root.registry()
+    vid = registry.register("source_config", {"name": "walk", "catalog_source": "synthetic", "connector": "localblobs",
+                                              "config": {"path": str(archive), "as_of": "2026-01-01T00:00:00+00:00"}}, origin="test")
+    registry.transition(vid, "active", origin="test")
+    run_acquisition(root, registry, "walk", "files", "backfill")
+    got = payload_files(root, "walk", "files")
+    return {"root": root.root, "source": "walk", "stream": "files", "snapshot": got["snapshot"],
+            "manifest_sha256": got["manifest_sha256"], "files": got["sha256"]}
+
+
+def base_document(study):  # noqa: F811
+    """The owner's quarter run document in miniature: a plan node whose study is the base."""
+    return {"name": "quarter", "pipeline": {"plan": {"uses": "dskit.pipeline.study_protocol:StudyProtocolPlan",
+                                                     "params": {"study": study}}}}
+
+
+@pytest.mark.parametrize("path", TEMPLATES, ids=lambda p: p.name)
+def test_a_template_instantiates_into_a_document_that_validates_and_resolves(path, study, tmp_path, capsys):  # noqa: F811
+    template = load(path)
+    document = instantiate(template, base_document(study), name="arm-doc", output_root=str(tmp_path / "runs"),
+                           edge_maps_pin=walk_pin(tmp_path), decision_week="2019-01-02")
+    assert not set(document) & {"kind", "placeholders", "study_overlay", "development_seal"}
+    assert list(document["pipeline"]) == ["plan", "freeze_development", "open_packet", "intake", "study", "close_packet"]
+    assert document["outputs"] == {"run_root": str(tmp_path / "runs")} and document["name"] == "arm-doc"
+    studies = {json.dumps(node["params"]["study"], sort_keys=True) for node in document["pipeline"].values()}
+    assert len(studies) == 1, "every node carries the one merged study"
+    merged = document["pipeline"]["plan"]["params"]["study"]
+    overlay = template["study_overlay"]["domain"]["params"]
+    assert merged["domain"]["params"]["methods"] == overlay["methods"] and "clocks" not in merged["domain"]["params"]
+    assert StudyContract.build(merged)["runnable"] is not None, "the contract resolves the merged study"
+    out = tmp_path / "doc.json"
+    out.write_text(json.dumps(document))
+    assert cmd_validate(str(out), []) == 0, capsys.readouterr().out
+
+
+def test_the_instantiator_refuses_what_it_cannot_resolve(study, tmp_path):  # noqa: F811
+    base = base_document(study)
+    calibrated, timing = load(PLANS / "calibrated-arm.template.json"), load(PLANS / "timing-check-arm.template.json")
+    with pytest.raises(ValueError, match="edge_maps_pin_missing"):
+        instantiate(calibrated, base, name="n", output_root="r")
+    with pytest.raises(ValueError, match="decision_week_missing"):
+        instantiate(timing, base, name="n", output_root="r", edge_maps_pin={})
+    late = copy.deepcopy(base)
+    late["pipeline"]["plan"]["params"]["study"]["packets"][0]["end_before"] = "2021-07-02"
+    with pytest.raises(ValueError, match="development_seal_exceeded"):
+        instantiate(calibrated, late, name="n", output_root="r", edge_maps_pin={})
+    twin = copy.deepcopy(base)
+    twin["pipeline"]["other"] = {"params": {"study": {"different": True}}}
+    with pytest.raises(ValueError, match="base_document_studies_differ"):
+        instantiate(calibrated, twin, name="n", output_root="r", edge_maps_pin={})
+
+
+def test_the_command_line_writes_the_same_document(study, tmp_path):  # noqa: F811
+    base, pin, out = tmp_path / "base.json", tmp_path / "pin.json", tmp_path / "out.json"
+    base.write_text(json.dumps(base_document(study)))
+    pin.write_text(json.dumps(walk_pin(tmp_path)))
+    template = PLANS / "timing-check-arm.template.json"
+    command = [sys.executable, str(CHILD / "tools/mio_instantiate.py"), str(template), "--base", str(base), "--name", "n",
+               "--output-root", str(tmp_path / "runs"), "--edge-maps-pin", str(pin), "--decision-week", "2019-01-02",
+               "--out", str(out)]
+    assert subprocess.run(command, capture_output=True, text=True).returncode == 0
+    expected = instantiate(load(template), base_document(study), name="n", output_root=str(tmp_path / "runs"),
+                           edge_maps_pin=json.loads(pin.read_text()), decision_week="2019-01-02")
+    assert json.loads(out.read_text()) == expected
+
+
+# --- the walk template feeds a combined arm -------------------------------------------------------------------------
+
+def test_the_walk_template_carries_the_direction_params_the_hedge_prices_with():
+    walk = json.loads((CHILD / "configs/edge-calibration-template.json").read_text())["pipeline"]["edge"]["params"]
+    direction = walk["direction"]
+    combined = load(PLANS / "combined-arm.template.json")["study_overlay"]["domain"]["params"]
+    hedge = combined["methods"][1]["hedge"]
+    assert direction["rate"] == hedge["rate"] and direction["iv_source"] == hedge["iv_source"] == "mid"
+    assert direction["iv_disagree_tol"] == DEFAULT_IV_DISAGREE_TOL
+    assert direction["min_years"] == DEFAULT_MIN_YEARS and direction["vol_floor"] == DEFAULT_VOL_FLOOR
+    assert {k: direction[k] for k in combined["hedge_parity"]} == combined["hedge_parity"]
+
+
+def test_a_combined_arm_from_the_template_agrees_with_a_walk_run_from_the_walk_template():
+    """The params-agree check itself, fed the walk template's direction block."""
+    walk = json.loads((CHILD / "configs/edge-calibration-template.json").read_text())["pipeline"]["edge"]["params"]
+    combined = load(PLANS / "combined-arm.template.json")["study_overlay"]["domain"]["params"]
+    method = combined["methods"][1]
+    direction = dict(walk["direction"])
+    checker = ledger_studies.CalibratedEdge.__new__(ledger_studies.CalibratedEdge)
+    checker.method = method
+    checker.study = type("S", (), {"params": {"hedge_parity": combined["hedge_parity"]}})()
+    needs = []
+    checker._need = lambda code, why: needs.append(code)
+    checker._check_agreement(direction)
+    assert needs == []
+    checker._check_agreement({**direction, "min_years": 0.002})
+    assert needs == ["block_params_disagree"]
