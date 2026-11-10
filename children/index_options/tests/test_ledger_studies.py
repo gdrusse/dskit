@@ -4853,3 +4853,19 @@ def test_decision_weeks_shape_is_refused_by_validate_configuration_too():
     params["decision_weeks"] = ["2019-01-02", "2019-01-07"]
     with pytest.raises(ValueError, match="decision_weeks_invalid"):
         ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+# --- ADR-0312 Amendment 1 S3.1: parity pin before the hedge wiring (no block: nothing moves, no hedge field) ----------
+
+#: The `_timeless_digest` of the weekly fixture's plain `nominal` method, pinned at 0189c04 BEFORE the S3 wiring.
+PLAIN_NOMINAL_DIGEST = "c2ebdcb1d6f54f739c9c7748e2c989c4dc0c35670da1d142ee5523b6162c1bcd"
+
+
+def test_a_method_without_a_hedge_block_is_byte_identical_and_carries_no_hedge_field():
+    import json
+
+    params, inputs = _weekly_portfolio_fixture()
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+    assert _timeless_digest(result) == PLAIN_NOMINAL_DIGEST
+    assert "hedge" not in json.dumps(result), "hedge fields are ABSENT, not null, without a block"
+    assert all("hedge" not in book for book in result["trades"] + result["rejected"])
