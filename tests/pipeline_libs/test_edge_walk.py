@@ -837,6 +837,7 @@ class TestStatesAndParams:
         ({"time_block_weeks": [4, 4]}, "time_block_invalid"),
         ({"time_block_weeks": [4, 1.5]}, "time_block_invalid"),
         ({"time_block_weeks": [0, 4]}, "time_block_invalid"),
+        ({"time_block_weeks": [2, 4]}, "time_block_no_quarter"),
         ({"pooling": {**POOL, "band": "three"}}, "band_invalid"),
         ({"pooling": {**POOL, "min_blocks": 1}}, "min_blocks_invalid"),
         ({"pooling": {**POOL, "ci_levels": [1.2]}}, "ci_levels_invalid"),
@@ -861,7 +862,7 @@ class TestStatesAndParams:
 
     @pytest.mark.parametrize("over", [
         {"direction_regressor": False}, {"edge_scale": "none"}, {"row_weight": "none"},
-        {"time_block_weeks": [4, 8]}, {"min_fill_rate": 0.8}, {"min_fill_sample": 10}, {"ci_level": 0.9},
+        {"time_block_weeks": [4, 13, 26]}, {"min_fill_rate": 0.8}, {"min_fill_sample": 10}, {"ci_level": 0.9},
         {"bh_q": 0.2}, {"bootstrap_draws": 500}, {"bootstrap_seed": 7}, {"tail_level_floor": 0.4},
         {"b0_floor": 0.4}, {"hac_lags": 3},
     ])
@@ -1290,6 +1291,7 @@ class TestFillSensitivity:
         for cut in (CAL[10], CAL[14]):
             with pytest.raises(RuntimeError):
                 run(make(tmp_path, out=f"cut{cut}", fail_at=cut, checkpoint_every=3), tmp_path)
+            assert list((tmp_path / f"cut{cut}" / "sensitivity").rglob("*.json"))     # a buffer is in flight at the cut
             run(make(tmp_path, out=f"cut{cut}", checkpoint_every=3), tmp_path)
             assert tree(tmp_path / "whole") == tree(tmp_path / f"cut{cut}")
 
@@ -1610,8 +1612,9 @@ class TestIntegrationAsks:
         for r in done[:400]:
             m = maps.setdefault(r["t"], json.loads((full_run["out"] / f"map-{r['t']}.json").read_text()))
             w = m["states"]["expanding_fill"]["buckets"][r["bucket"]]["w"]
-            assert r["cw"] == pytest.approx(w * r["e"] / r["scale"], rel=1e-12, abs=1e-15)
-        assert any(r["cw"] != 0 for r in done)
+            assert r["cw_bucket"] == pytest.approx(w * r["e"] / r["scale"], rel=1e-12, abs=1e-15)
+            assert "cw" not in r
+        assert any(r["cw_bucket"] != 0 for r in done)
 
     def test_x2_the_decision_line_is_the_stored_no_intercept_two_regressor_line(self, full_run):
         done = [r for r in reported_rows(full_run["out"]) if r["code"] is None]
@@ -1664,3 +1667,182 @@ class TestIntegrationAsks:
             run(make(tmp_path, out="cut", fail_at=CAL[17], checkpoint_every=4), tmp_path)
         run(make(tmp_path, out="cut", checkpoint_every=4), tmp_path)
         assert tree(tmp_path / "whole") == tree(tmp_path / "cut")
+
+
+# --------------------------------------------------------------------------- F3 fix round: verdicts where they occur
+
+
+class SignalWalk(SynthWalk):
+    """A world whose fill-session credit is ``beta x e + noise`` (settlement at the strike: no intrinsic value).
+
+    ``beta`` 1 is a real signal (read 1 PASS), ``beta`` 0 none (FAIL). ``miss(row)`` -> bool makes a row's fill quote
+    absent; ``mid_of(row, e)`` rewrites the decision mid (which prices the sensitivity imputation).
+    """
+
+    beta = 1.0
+    miss = None
+    mid_of = None
+
+    def _decision_rows(self, t):
+        rows = super()._decision_rows(t)
+        self._e = getattr(self, "_e", {})
+        for r in rows:
+            self._e[self._key(r, t)] = r["e"]
+            if self.mid_of is not None:
+                r["mid"] = self.mid_of(r, r["e"])
+        return rows
+
+    @staticmethod
+    def _key(r, t):
+        return (r["name"], t, r["expiry"], r["right"], r["strike"], r["sign"])
+
+    def _fill_credits(self, rows):
+        out = []
+        for r in rows:
+            key = self._key(r, r["decision_date"])
+            e = self._e[key]
+            if self.miss is not None and self.miss(r, e, key):
+                out.append("quote")
+                continue
+            noise = (u("noise", *key) - 0.5) * 0.2
+            out.append((self.beta * e + noise, 1.0 + u("mm", r["name"], r["expiry"], r["strike"])))
+        return out
+
+    def _settlement_levels(self, rows):
+        return [r["strike"] for r in rows]
+
+
+def signal(tmp_path, tag, beta=1.0, miss=None, mid_of=None, **over):
+    over.setdefault("report_from", CAL[2])
+    over.setdefault("window", {"start": CAL[0], "end": CAL[-1]})
+    node = SignalWalk("w", params(tmp_path / tag, **over), World())
+    node.beta, node.miss, node.mid_of = beta, miss, mid_of
+    return node, run(node, tmp_path)["summary"]
+
+
+@pytest.fixture(scope="module")
+def sig_pass(tmp_path_factory):
+    tmp = tmp_path_factory.mktemp("sigpass")
+    return signal(tmp, "o", 1.0)
+
+
+@pytest.fixture(scope="module")
+def sig_fail(tmp_path_factory):
+    tmp = tmp_path_factory.mktemp("sigfail")
+    return signal(tmp, "o", 0.0)
+
+
+def _skew_mid(r, e):
+    """A decision mid that makes an imputed credit track ``e`` (sells with a positive edge); others keep theirs."""
+    return 10.0 * e / r["multiplier"] if (r["sign"] < 0 and e > 0) else r["mid"]
+
+
+def _miss_skewed(r, e, key):
+    return r["sign"] < 0 and e > 0
+
+
+class TestVerdictsInASignalWorld:
+    def test_a_real_signal_passes_read_one_and_opens_the_gated_reads(self, sig_pass):
+        _, s = sig_pass
+        one = s["reads"]["read1"]
+        assert one["fill_ok"] and one["sensitivity_agrees"] and one["verdict"] == "PASS"
+        assert s["reads"]["read2"]["gated"] is False
+        ir = s["integration_reads"]
+        assert ir["read2w"]["gated"] is False and ir["read2b"]["gated"] is False and ir["affine_side"]["gated"] is False
+
+    def test_no_signal_fails_read_one_and_gates_every_follow_up_read(self, sig_fail):
+        _, s = sig_fail
+        assert s["reads"]["read1"]["verdict"] == "FAIL"
+        assert s["reads"]["read2"] == {"gated": True, "slope": None, "verdict": "UNRESOLVED"}
+        for key, rec in s["integration_reads"].items():
+            assert rec["gated"] is True and rec["verdict"] == "UNRESOLVED", key
+        assert s["integration_reads"]["affine_side"]["intercept"] is None
+        assert s["integration_reads"]["affine_side"]["sides_positive"] is False
+
+    def test_a_low_fill_rate_alone_makes_a_real_signal_unresolved(self, tmp_path):
+        # unfilled rows with no decision mid cannot be imputed, so the sensitivity state cannot disagree
+        node, s = signal(tmp_path, "lo", 1.0, miss=lambda r, e, k: u("m", *k) < 0.3, mid_of=lambda r, e: None)
+        one = s["reads"]["read1"]
+        assert one["fill_ok"] is False and one["sensitivity_agrees"] is True and one["verdict"] == "UNRESOLVED"
+        assert s["reads"]["read2"]["gated"] is True
+        assert all(v["gated"] for v in s["integration_reads"].values())
+        # the control: the same state with the fill check passed is a PASS, so the floor alone decided it
+        assert node._safe_read(node._states["reported_fill"], True)["verdict"] == "PASS"
+
+    def test_the_material_floors_decide_the_fail_verdict(self, tmp_path):
+        _, s = signal(tmp_path, "tiny", 0.0, b0_floor=1e-9, tail_level_floor=1e-9)
+        assert s["reads"]["read1"]["verdict"] == "UNRESOLVED"        # nothing is established below a floor of ~0
+
+    def test_sensitivity_disagreement_on_the_pass_side_is_unresolved(self, tmp_path):
+        node, s = signal(tmp_path, "dp", 1.0, miss=lambda r, e, k: u("m", *k) < 0.5, min_fill_rate=0.1)
+        one = s["reads"]["read1"]
+        assert one["fill_ok"] and one["sensitivity_agrees"] is False and one["verdict"] == "UNRESOLVED"
+        assert node._safe_read(node._states["reported_fill"], True)["verdict"] == "PASS"   # only the sensitivity blocks it
+        assert s["reads"]["read2"]["gated"] is True
+
+    def test_sensitivity_disagreement_on_the_fail_side_is_unresolved(self, tmp_path):
+        node, s = signal(tmp_path, "df", 0.0, miss=_miss_skewed, mid_of=_skew_mid, min_fill_rate=0.1)
+        one = s["reads"]["read1"]
+        assert one["fill_ok"] and one["sensitivity_agrees"] is False and one["verdict"] == "UNRESOLVED"
+        assert node._safe_read(node._states["reported_fill"], True)["verdict"] == "FAIL"
+        assert s["reads"]["read2"]["gated"] is True
+
+
+class TestImputationIsWiredToTheFrozenQ95:
+    def test_every_imputed_credit_is_booked_at_a_frozen_q95_and_some_are_positive(self, tmp_path, monkeypatch):
+        frozen, used = [], []
+        real_freeze, real_imp = EdgeReliabilityWalk._freeze_q95, EdgeReliabilityWalk._imputed_credit
+
+        def freeze(buckets, values, min_sample):
+            out = real_freeze(buckets, values, min_sample)
+            frozen.append({out["pool"], *out["b"].values()})
+            return out
+
+        def imp(sign, mid, q95, multiplier, fee):
+            used.append(q95)
+            return real_imp(sign, mid, q95, multiplier, fee)
+
+        monkeypatch.setattr(EdgeReliabilityWalk, "_freeze_q95", staticmethod(freeze))
+        monkeypatch.setattr(EdgeReliabilityWalk, "_imputed_credit", staticmethod(imp))
+        _, s = signal(tmp_path, "imp", 1.0, miss=lambda r, e, k: u("m", *k) < 0.3, min_fill_rate=0.1)
+        assert s["counts"]["fill_imputed"] == len(used) > 0
+        every = set().union(*frozen)
+        assert set(used) <= every
+        assert max(used) > 0.0                                  # a lookup replaced by 0.0 books every row at the mid
+
+
+class TestE4InputBeforeWarmUp:
+    def test_a_pool_that_is_not_warm_reports_no_shrunk_band(self, tmp_path):
+        _, s = signal(tmp_path, "cold", 1.0, pooling={**POOL, "min_clusters": 10_000})
+        e4 = s["direction"]["e4_input"]
+        assert e4["warm"] is False and e4["w_dir_shrunk"] is None
+        assert e4["w_dir"]["bands"]                     # the own-fit band is still an estimate
+
+    def test_a_warm_pool_reports_it(self, sig_pass):
+        e4 = sig_pass[1]["direction"]["e4_input"]
+        assert e4["warm"] is True and e4["w_dir_shrunk"]["bands"]
+
+
+class TestAffineSideIsPerSide:
+    def _stub(self, monkeypatch, node, intercept, gt0):
+        seen = []
+        stat = {"t": 1.0, "se": 1.0, "p_gt": 0.01, "p_lt": 0.9, "scheme": "webb", "draws": 99, "value": 0.5}
+
+        def icpt(state, unit=None):
+            seen.append(unit)
+            return {"p": 0.01, "reject": intercept[unit]}
+
+        monkeypatch.setattr(node, "_intercept_test", icpt)
+        monkeypatch.setattr(node, "_slope_tests", lambda state, unit=None: {**stat, "gt0": gt0[unit], "lt_floor": False})
+        return seen
+
+    def test_both_sides_need_their_own_intercept_and_their_own_positive_slope(self, sig_pass, monkeypatch):
+        node = sig_pass[0]
+        yes = {"buy": True, "sell": True, None: True}
+        seen = self._stub(monkeypatch, node, yes, {"buy": True, "sell": True, None: True})
+        assert node._integration_reads(False)["affine_side"]["verdict"] == "PASS" and set(seen) == {"buy", "sell"}
+        self._stub(monkeypatch, node, {"buy": True, "sell": False, None: True}, {"buy": True, "sell": True, None: True})
+        assert node._integration_reads(False)["affine_side"]["verdict"] == "UNRESOLVED"       # a pooled intercept is not enough
+        self._stub(monkeypatch, node, yes, {"buy": True, "sell": False, None: True})
+        side = node._integration_reads(False)["affine_side"]
+        assert side["sides_positive"] is False and side["verdict"] == "UNRESOLVED"            # a bare b > 0 is not a band

@@ -1127,11 +1127,12 @@ class LinearEdgeState:
         else:
             other, g_other, count_other = u.blocks[block], eff["g_eff_blocks"][block], u.blocks[block].count
             pairs = u.pairs[block]
-            pair = _sandwich_matrix(bread, _outer_from_vectors(lay, pairs.vectors(), theta),
-                                    kish_effective(u.tot[0], pairs.w2), n_eff, k)
         gn = u.names.count
         if gn < 2 or count_other < 2 or eff["g_eff_names"] <= 1.0 or g_other <= 1.0:
             return None
+        if pairs is not None:
+            pair = _sandwich_matrix(bread, _outer_from_vectors(lay, pairs.vectors(), theta),
+                                    kish_effective(u.tot[0], pairs.w2), n_eff, k)
         by_name = _sandwich_matrix(bread, _outer_from_vectors(lay, u.names.vectors(), theta),
                                    eff["g_eff_names"], n_eff, k)
         by_date = _sandwich_matrix(bread, _outer_from_vectors(lay, other.vectors(), theta), g_other, n_eff, k)

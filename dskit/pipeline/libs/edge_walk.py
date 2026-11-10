@@ -9,7 +9,10 @@ two-regressor map, R1 and R2 (reported rows only), R4 (the forward line), S1 and
 D1 (dollars), plus a common-cluster twin of S3 and the integration-owned forward lines (ADR-0313), (c) snapshots
 one frozen map per primary state, then (d) decides: the day's rows get their bucket, the snapshot's calibrated
 edge and their stored regressors and wait, keyed by settlement date, in an on-disk shard. The map at ``t`` is
-computed before a single row of ``t`` is read, so nothing dated at or after ``t`` can reach it.
+computed before a single row of ``t`` is read, so nothing dated at or after ``t`` can reach it. The one thing
+``map-<t>.json`` holds that is decided on day ``t`` is its ``regimes`` block: each name's volatility regime at
+``t`` comes from the decision-day ``v`` of that day's rows (allowed: ``v`` is a decision-session quantity and
+the regime's history is trailing); the coefficients and weights in the map read nothing of day ``t``.
 
 Cluster sums are formed with numpy (``np.add.at`` by bucket and side) and handed to ``add_cluster_sums``; the
 stdlib ``add_cluster`` twin is pinned equal to 1e-12. A ``quote`` or ``size`` row has no fill: it waits in a
@@ -267,7 +270,9 @@ class EdgeReliabilityWalk(Node):
         """Return, per settled row, its fill-session credit or why it has none.
 
         A credit in dollars, or one of ``session``, ``basis``, ``quote`` (the reason no usable fill
-        quote exists).
+        quote exists). A credit may come as the tuple ``(credit, mid)``: ``mid`` is the fill-session mid of
+        the option, which feeds the adverse-move sample behind the sensitivity's ``q95`` (a bare credit
+        feeds none, and its unfilled siblings are then imputed from the pooled or a zero ``q95``).
 
         Each row also carries ``decision_date``. Called once per settlement date, only for rows
         already admitted, so every fill quote it reads is dated before the decision week.
@@ -461,6 +466,9 @@ class EdgeReliabilityWalk(Node):
         if (not isinstance(weeks, list) or not weeks or not all(whole(w, 1) for w in weeks)
                 or any(b <= a for a, b in zip(weeks, weeks[1:]))):
             bad("time_block_invalid", f"time_block_weeks must be a strictly increasing list of integers >= 1, got {weeks!r}")
+        if 13 not in weeks:
+            bad("time_block_no_quarter", f"time_block_weeks must include 13, the quarter block every read and the "
+                f"e4 input are keyed on, got {weeks!r}")
         pool = p["pooling"]
         if "band" in pool and pool["band"] not in PartialPooling._BANDS:
             bad("band_invalid", f"pooling.band must be one of {list(PartialPooling._BANDS)}, got {pool['band']!r}")
@@ -1035,7 +1043,7 @@ class EdgeReliabilityWalk(Node):
                          "strike": r[_STRIKE], "sign": r[_SIGN], "bucket": r[_BUCKET], "e": r[_E],
                          "c": r[_CF][0], "r": rf, "r_dec": rd, "code": code, "scale": r[_SCALE], "w": r[_BASE],
                          "e_dir": r[_EDIR], "top": r[_TOP], "map_warmup": r[_WARM], "c_bucket": r[_CB][0],
-                         "c2": None if r[_C2] is None else r[_C2][0], "cw": r[_CW], "c2w": r[_C2W]})
+                         "c2": None if r[_C2] is None else r[_C2][0], "cw_bucket": r[_CW], "c2w": r[_C2W]})
                  for r, code, rf, rd, _, __ in keep]
         self._count("rows_reported", len(lines))
         self._write(f"rows/rows-{s}.jsonl", ("\n".join(lines) + "\n").encode())
@@ -1196,8 +1204,8 @@ class EdgeReliabilityWalk(Node):
     # -- reads and tables -------------------------------------------------------------------
 
     def _quarter_block(self):
-        """Return the index of the quarter (13-week) block length, else the last one."""
-        return self._blocks.index(13) if 13 in self._blocks else len(self._blocks) - 1
+        """Return the index of the quarter (13-week) block length (``time_block_weeks`` must hold 13, refused at start)."""
+        return self._blocks.index(13)
 
     def _safe_read(self, state, ok):
         """Run read 1 on a state; a statistic that cannot be formed leaves the read unresolved."""
@@ -1225,10 +1233,10 @@ class EdgeReliabilityWalk(Node):
 
     @staticmethod
     def _sandwich(state, b, theta, way, block=0):
-        """Return ``state.sandwich(...)``, or ``None`` where it divides by zero (a one-effective-pair table).
+        """Return ``state.sandwich(...)``, or ``None`` where it divides by zero (defensive).
 
-        An F1 defect, reported not fixed here: with a single populated ``(name, block)`` pair the pair table's
-        Kish count is 1 and ``_cr1`` divides by ``g_eff - 1 = 0`` instead of returning ``None``.
+        The single-pair division the F3 review found is fixed in ``LinearEdgeState.sandwich`` (the guard now
+        precedes the pair table); this wrapper stays as a belt for any other degenerate table.
         """
         try:
             return state.sandwich(b, theta, way, block=block)
@@ -1239,20 +1247,47 @@ class EdgeReliabilityWalk(Node):
     def _brief(stat):
         return None if stat is None else {k: stat[k] for k in ("t", "p_gt", "p_lt", "scheme")}
 
+    def _unit_ready(self, state, unit):
+        """Return ``state.fit(unit)`` when it can carry a quarter-block test, else ``None``."""
+        fit, q = state.fit(unit), self._quarter_block()
+        if fit["theta"] is None or fit["g_eff_blocks"][q] <= 1.0 or fit["n_eff"] <= 2.0:
+            return None
+        return fit
+
+    def _slope_tests(self, state, unit=None):
+        """Return the two one-sided tests of the slope of one unit (quarter blocks, floor), or ``None``."""
+        q = self._quarter_block()
+        try:
+            fit = self._unit_ready(state, unit)
+            if fit is None:
+                return None
+            return _statistic_tests(fit["b"], state.block_vectors(unit, q), fit["theta"], state.bread(unit), 1,
+                                    _cr1(fit["g_eff_blocks"][q], fit["n_eff"], 1), "ols", self._param("b0_floor"),
+                                    self._param("ci_level"), self._param("bootstrap_draws"),
+                                    self._param("bootstrap_seed"))
+        except ValueError:
+            return None
+
+    def _intercept_test(self, state, unit=None):
+        """Return ``{"p", "reject"}`` of the two-sided quarter-block test ``intercept = 0`` of one unit, or ``None``."""
+        q = self._quarter_block()
+        try:
+            fit = self._unit_ready(state, unit)
+            if fit is None:
+                return None
+            test = wild_cluster_test(state.block_vectors(unit, q), fit["theta"], state.bread(unit), 0, 0.0,
+                                     "two_sided", self._param("ci_level"), self._param("bootstrap_draws"),
+                                     self._param("bootstrap_seed"),
+                                     factor=_cr1(fit["g_eff_blocks"][q], fit["n_eff"], 1))
+        except ValueError:
+            return None
+        return {"p": test["p"], "reject": test["reject"]}
+
     def _slope_read(self, state):
         """Return ``{"slope", "verdict"}`` of the forward slope of ``r`` on a stored line (quarter blocks, floor)."""
-        out = {"slope": None, "verdict": "UNRESOLVED"}
-        q = self._quarter_block()
-        fit = state.fit(None)
-        try:
-            if fit["theta"] is None or fit["g_eff_blocks"][q] <= 1.0 or fit["n_eff"] <= 2.0:
-                return out
-            tests = _statistic_tests(fit["b"], state.block_vectors(None, q), fit["theta"], state.bread(None), 1,
-                                     _cr1(fit["g_eff_blocks"][q], fit["n_eff"], 1), "ols", self._param("b0_floor"),
-                                     self._param("ci_level"), self._param("bootstrap_draws"),
-                                     self._param("bootstrap_seed"))
-        except ValueError:
-            return out
+        tests = self._slope_tests(state)
+        if tests is None:
+            return {"slope": None, "verdict": "UNRESOLVED"}
         return {"slope": self._brief(tests), "verdict": three_way_verdict([tests["gt0"]], [tests["lt_floor"]])}
 
     def _read_two(self, gated):
@@ -1261,30 +1296,33 @@ class EdgeReliabilityWalk(Node):
             return {"gated": True, "slope": None, "verdict": "UNRESOLVED"}
         return {"gated": False, **self._slope_read(self._states["forward"])}
 
-    def _integration_reads(self):
-        """Integration-owned descriptive reads (ADR-0313 X2, X6); they add no confirmatory read."""
-        out = {"read2w": {"state": "forward_w", "line": "cw_bucket", "form": "slope",
-                          **self._slope_read(self._integ["forward_w"])}}
+    def _integration_reads(self, gated):
+        """Integration-owned descriptive reads (ADR-0313 X2, X6, G2); each is gated on read 1 PASS.
+
+        ``read2w`` and ``read2b`` apply read 2's rule to the stored origin-weight line and the two-regressor
+        line. ``affine_side`` fits the bucket line on ``buy`` and ``sell`` separately: PASS iff the intercept of
+        EACH side is established different from zero (two-sided quarter-block test at ``ci_level``) AND each
+        side's own slope has its lower band above 0 (read 2's one-sided test at the same level).
+        """
+        def read(state, line, form):
+            head = {"state": state, "line": line, "form": form, "gated": gated}
+            if gated:
+                return {**head, "slope": None, "verdict": "UNRESOLVED"}
+            return {**head, **self._slope_read(self._integ[state])}
+
+        out = {"read2w": read("forward_w", "cw_bucket", "slope")}
         if self._direction:
-            out["read2b"] = {"state": "forward_b2", "line": "c2w_bucket", "form": "no_intercept",
-                             **self._slope_read(self._integ["forward_b2"])}
-        st, q = self._states["forward"], self._quarter_block()
-        fit = st.fit(None)
-        side = {"state": "forward", "line": "c_bucket", "form": "affine", "intercept": None,
-                "sides_positive": False, "verdict": "UNRESOLVED"}
-        try:
-            if fit["theta"] is not None and fit["g_eff_blocks"][q] > 1.0 and fit["n_eff"] > 2.0:
-                test = wild_cluster_test(st.block_vectors(None, q), fit["theta"], st.bread(None), 0, 0.0,
-                                         "two_sided", self._param("ci_level"), self._param("bootstrap_draws"),
-                                         self._param("bootstrap_seed"),
-                                         factor=_cr1(fit["g_eff_blocks"][q], fit["n_eff"], 1))
-                side["intercept"] = {"p": test["p"], "reject": test["reject"]}
-        except ValueError:
-            pass
-        buy, sell = st.fit("buy"), st.fit("sell")
-        side["sides_positive"] = bool(buy["b"] is not None and sell["b"] is not None and buy["b"] > 0 and sell["b"] > 0)
-        if side["intercept"] and side["intercept"]["reject"] and side["sides_positive"]:
-            side["verdict"] = "PASS"
+            out["read2b"] = read("forward_b2", "c2w_bucket", "no_intercept")
+        side = {"state": "forward", "line": "c_bucket", "form": "affine", "gated": gated, "intercept": None,
+                "slopes": None, "sides_positive": False, "verdict": "UNRESOLVED"}
+        if not gated:
+            st = self._states["forward"]
+            side["intercept"] = {u: self._intercept_test(st, u) for u in ("buy", "sell")}
+            tests = {u: self._slope_tests(st, u) for u in ("buy", "sell")}
+            side["slopes"] = {u: None if t is None else self._brief(t) for u, t in tests.items()}
+            side["sides_positive"] = all(t is not None and t["gt0"] for t in tests.values())
+            if side["sides_positive"] and all(i is not None and i["reject"] for i in side["intercept"].values()):
+                side["verdict"] = "PASS"
         out["affine_side"] = side
         return out
 
@@ -1314,9 +1352,14 @@ class EdgeReliabilityWalk(Node):
         fit = st.fit(None)
         if fit["theta"] is None:
             return None
-        shrunk = self._pool.fit(st)["pooled"]["theta"][1]
-        out = {"g_eff_blocks_13": fit["g_eff_blocks"][q], "n_eff": fit["n_eff"], "levels": list(self._pool.ci_levels)}
-        for key, value in (("w_dir", fit["b_dir"]), ("w_dir_shrunk", shrunk)):
+        pooled = self._pool.fit(st)
+        warm = bool(pooled["warm"])
+        out = {"warm": warm, "g_eff_blocks_13": fit["g_eff_blocks"][q], "n_eff": fit["n_eff"],
+               "levels": list(self._pool.ci_levels)}
+        for key, value in (("w_dir", fit["b_dir"]), ("w_dir_shrunk", pooled["pooled"]["theta"][1] if warm else None)):
+            if value is None:                       # a pool that is not warm holds 0.0, which is no estimate
+                out[key] = None
+                continue
             theta = [fit["theta"][0], value, fit["theta"][2]]
             sw = self._sandwich(st, None, theta, "two_block", block=q)
             if sw is None:
@@ -1359,7 +1402,7 @@ class EdgeReliabilityWalk(Node):
         extras = {
             "reads": {"read1": {"b0": self._brief(one["b0"]), "ltop": self._brief(one["ltop"]), "fill_ok": fill_ok,
                                 "sensitivity_agrees": agrees, "verdict": one["verdict"]}, "read2": two},
-            "confirmatory_reads": 2, "integration_reads": self._integration_reads(), **self._bh(),
+            "confirmatory_reads": 2, "integration_reads": self._integration_reads(one["verdict"] != "PASS"), **self._bh(),
             "fill_rate": {"reported": overall, "reported_top": top, "min_fill_rate": self._param("min_fill_rate")},
         }
         if self._direction:

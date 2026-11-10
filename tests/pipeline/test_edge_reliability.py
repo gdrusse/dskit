@@ -3045,3 +3045,18 @@ class TestOriginTwo:
     def test_a_one_regressor_state_is_refused(self):
         with pytest.raises(ValueError, match="two-regressor"):
             er.origin_two(self._pool(), LinearEdgeState(3, None), True)
+
+
+class TestSandwichGuardPrecedesPairTable:
+    """F3 fix round: a one-name, one-block state returns None from every two-way route, never ZeroDivisionError."""
+
+    @pytest.mark.parametrize("way", ["two", "two_block"])
+    def test_one_name_in_one_block_returns_none(self, way):
+        st = LinearEdgeState(1, None, block_lengths=1)
+        for k in range(6):
+            settle = datetime.date(2020, 1, 3) + datetime.timedelta(days=7 * k)
+            t = _iso(settle + datetime.timedelta(days=1))
+            st.advance(t)
+            st.add_cluster(t, "AA", _iso(settle), _iso(settle - datetime.timedelta(days=3)), [0, 0, 0],
+                           [1.0, 2.0, 3.5 + k], [1.0, 0.5 * k, 2.0], blocks=[0])
+        assert st.sandwich(None, (0.1, 0.2), way, block=0) is None
