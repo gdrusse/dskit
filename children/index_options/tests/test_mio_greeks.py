@@ -186,12 +186,13 @@ PARAMS = {
     "methods": [METHOD], "window": {"start": "2021-04-01", "end": "2021-06-30"},
     "sealed_from": "2021-07-01", "rate": 0.0, "iv_source": "vendor", "multiplier": MULT,
     "min_years": 0.001, "vol_floor": 0.01, "parity_strikes": 3, "min_pairs": 2,
-    "max_pair_spread_frac": 0.5, "cell_by": ["symbol", "rank"], "min_total_usd": 1.0,
+    "max_pair_spread_frac": 0.5, "cell_by": ["symbol", "cadence", "rank"], "min_total_usd": 1.0,
     "dte_edges": [0, 7, 14, 28, 60], "top_k": 1, "exposure_days": "both",
     "beta_lookback": 3, "beta_min_pairs": 2, "chain_cache_days": 8,
     "hedge_fee_per_share": 0.005, "hedge_half_spread_bps": 5.0, "hedge_borrow_rate": 0.005,
     "hedge_cost_source": "placeholder", "min_books": 5, "htb_lookback": 20,
     "htb_vol_threshold": 2.5, "htb_jump_threshold": 0.75,
+    "quarter": "2021Q2", "dividends": "optional", "seal_crossing": "refuse",
 }
 
 
@@ -550,6 +551,13 @@ def test_monthly_rank_end_to_end(world):
     ({"methods": ["a", "a"]}, "methods"),
     ({"surprise": 1}, "unknown param"),
     ({"run_dir": ""}, "run_dir"),
+    ({"quarter": "2021Q5"}, "quarter"),
+    ({"quarter": "2021-Q2"}, "quarter"),
+    ({"quarter": 20212}, "quarter"),
+    ({"dividends": "maybe"}, "dividends"),
+    ({"seal_crossing": "drop"}, "seal_crossing"),
+    ({"cell_by": ["symbol", "rank"]}, "cell_by_incomplete"),
+    ({"cell_by": ["symbol", "cadence"]}, "cell_by_incomplete"),
     ({"out_dir": "/x/run/inside"}, "out_dir_inside_run_dir"),
 ])
 def test_config_problems(change, fragment):
@@ -1063,3 +1071,202 @@ def test_the_summary_is_written_last_and_replaces_the_old_one(world, monkeypatch
     run_node(run_dir, out_dir)
     assert order[-1] == "greeks-summary.json" and sorted(order) == sorted(mio_greeks.OUTPUT_FILES)
     assert json.loads((out_dir / "greeks-summary.json").read_text())["methods"]
+
+
+# ---- ADR-0310 A2 stage 1B: quarter, dividends census, seal crossing, cadence -----------------
+CHILD_KEYS = ("quarter", "dividends", "seal_crossing")
+POISON = "POISON"
+
+
+def _poison(trade):
+    """Make every economic field of a saved trade unusable (any arithmetic on it raises)."""
+    for field in ("pnl", "credit", "legs", "factor", "premium", "fees", "contracts"):
+        trade[field] = POISON
+
+
+def _cross(table, only=None, poison=False):
+    """Move the late-April MMM book's expiry past the seal (a settle in July)."""
+    for r in table["results"]:
+        if only is not None and r["id"] != only:
+            continue
+        r["result"]["trades"][2] = trade = copy.deepcopy(r["result"]["trades"][2])  # shared in the fixture
+        trade["expiry"] = trade["close_date"] = "2021-07-16"
+        if poison:
+            _poison(trade)
+
+
+def test_the_child_keys_are_declared_in_child_params_and_required():
+    for key in CHILD_KEYS:
+        assert key in MIOGreeksDiagnostics._CHILD_PARAMS
+        short = {k: v for k, v in PARAMS.items() if k != key}
+        problems = MIOGreeksDiagnostics.validate_params({**short, "run_dir": "/a", "out_dir": "/b"})
+        assert any(key in p for p in problems), key
+
+
+def test_quarter_bounds_are_the_calendar_quarter():
+    assert MIOGreeksDiagnostics._quarter_bounds("2021Q2") == ("2021-04-01", "2021-06-30")
+    assert MIOGreeksDiagnostics._quarter_bounds("2019Q4") == ("2019-10-01", "2019-12-31")
+    assert MIOGreeksDiagnostics._quarter_bounds("2020Q1") == ("2020-01-01", "2020-03-31")
+
+
+def test_the_quarter_is_echoed_in_the_run_summary(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)
+    assert out["summary"]["quarter"] == "2021Q2"
+    assert json.loads((out_dir / "greeks-summary.json").read_text())["quarter"] == "2021Q2"
+
+
+def test_a_decision_outside_the_quarter_refuses_quarter_mismatch_before_any_pnl(world):
+    def late(table):
+        for r in table["results"]:
+            r["result"]["trades"][0]["pnl"] += 1000.0     # would fail the recompute gate if read
+    run_dir, out_dir = world(mutate=late)
+    with pytest.raises(GreeksRefusal) as exc:
+        run_node(run_dir, out_dir, quarter="2021Q1", window={"start": "2021-01-01", "end": "2021-06-30"})
+    assert code_of(exc) == "quarter_mismatch"
+    assert "2021Q1" in str(exc.value) and "2021-04-05" in str(exc.value)
+    assert not out_dir.exists()
+
+
+def test_a_decision_in_the_quarter_that_settles_in_the_next_is_not_a_mismatch(world):
+    run_dir, out_dir = world(mutate=lambda t: _cross(t, poison=True))
+    out = run_node(run_dir, out_dir, seal_crossing="exclude")
+    assert out["summary"]["quarter"] == "2021Q2"
+
+
+def test_dividends_required_refuses_before_any_pnl_and_lists_every_symbol_without_the_column(world):
+    def bad_pnl(table):
+        for r in table["results"]:
+            r["result"]["trades"][0]["pnl"] += 1000.0
+    run_dir, out_dir = world(mutate=bad_pnl)
+    with pytest.raises(GreeksRefusal) as exc:
+        run_node(run_dir, out_dir, dividends="required")
+    assert code_of(exc) == "dividend_column_absent"
+    assert "BLK" in str(exc.value) and "MMM" in str(exc.value)
+    assert not out_dir.exists()
+
+
+def test_dividends_required_lists_only_the_symbols_that_lack_the_column(world):
+    run_dir, out_dir = world(dividends={"BLK": {}})
+    with pytest.raises(GreeksRefusal) as exc:
+        run_node(run_dir, out_dir, dividends="required")
+    assert code_of(exc) == "dividend_column_absent"
+    assert "MMM" in str(exc.value) and "BLK" not in str(exc.value)
+
+
+def test_dividends_required_with_the_column_runs_and_echoes_the_choice(world):
+    run_dir, out_dir = world(dividends={"BLK": {}, "MMM": {}})
+    out = run_node(run_dir, out_dir, dividends="required")
+    assert out["summary"]["dividends"] == "required"
+    assert {r["hedge_status"] for r in out["books"]} == {"ok"}
+
+
+def test_dividends_optional_proceeds_with_flags_without_the_column(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir, dividends="optional")
+    assert out["summary"]["dividends"] == "optional"
+    assert {r["hedge_status"] for r in out["books"]} == {"dividends_absent"}
+
+
+def test_seal_crossing_refuse_is_a_census_of_dates_only(world):
+    run_dir, out_dir = world(mutate=lambda t: _cross(t, poison=True),
+                             extra_methods=[{"id": "alt"}])
+    with pytest.raises(GreeksRefusal) as exc:
+        run_node(run_dir, out_dir, methods=[METHOD, "alt"])
+    assert code_of(exc) == "window_outside_data_rights"
+    text = str(exc.value)
+    assert "n_crossing" in text and "2" in text
+    assert METHOD in text and "alt" in text
+    assert "2021-04-12:MMM:2021-05-21" in text and "expiry" in text and "2021-07-16" in text
+    assert POISON not in text and not out_dir.exists()
+
+
+def test_seal_crossing_exclude_drops_the_books_before_any_economics_is_touched(world):
+    run_dir, out_dir = world(mutate=lambda t: _cross(t, poison=True))
+    out = run_node(run_dir, out_dir, seal_crossing="exclude")
+    summary = out["summary"]
+    assert {r["id"] for r in out["books"]} == {BLK_ID, f"{METHOD}|2021-04-05:MMM:2021-05-21"}
+    assert summary["seal_crossing_excluded"] == [{
+        "method": METHOD, "id": "2021-04-12:MMM:2021-05-21", "decision_date": LATER_DECISION,
+        "fill_date": LATER_FILL, "expiry": "2021-07-16"}]
+    assert summary["seal_crossing"] == "exclude"
+    assert summary["total_excludes_seal_crossing"] is True
+    assert summary["methods"][METHOD]["n_books_total"] == 3
+    assert summary["methods"][METHOD]["n_books_excluded"] == 1
+    assert POISON not in (out_dir / "books.csv").read_text()
+    assert json.loads((out_dir / "greeks-summary.json").read_text())["seal_crossing_excluded"]
+
+
+def test_seal_crossing_exclude_reports_unequal_method_sets_and_counts_shared_books_after(world):
+    run_dir, out_dir = world(mutate=lambda t: _cross(t, only="alt", poison=True),
+                             extra_methods=[{"id": "alt"}])
+    out = run_node(run_dir, out_dir, methods=[METHOD, "alt"], seal_crossing="exclude")
+    summary = out["summary"]
+    assert summary["unequal_method_sets"] is True
+    assert summary["total_excludes_seal_crossing"] is True
+    assert summary["methods"][METHOD]["n_books_excluded"] == 0
+    assert summary["methods"]["alt"]["n_books_excluded"] == 1
+    assert summary["methods_compared"] == [METHOD, "alt"]
+    assert summary["formulations_share_books"] is True
+    assert summary["shared_book_count"] == 2          # the excluded book is shared by no one now
+
+
+def test_shared_book_count_without_exclusion_counts_every_book_under_both_methods(world):
+    run_dir, out_dir = world(extra_methods=[{"id": "alt"}])
+    summary = run_node(run_dir, out_dir, methods=[METHOD, "alt"])["summary"]
+    assert summary["shared_book_count"] == 3
+    assert summary["unequal_method_sets"] is False
+    assert summary["total_excludes_seal_crossing"] is False
+    assert summary["seal_crossing_excluded"] == []
+
+
+def test_a_single_method_shares_no_book(world):
+    run_dir, out_dir = world()
+    assert run_node(run_dir, out_dir)["summary"]["shared_book_count"] == 0
+
+
+@pytest.mark.parametrize("field,value", [
+    ("expiry", "2024-03-15"), ("fill_date", "2024-01-02"), ("decision_date", "2021-03-30"),
+    ("fill_date", "2021-3-6")])
+def test_exclude_never_admits_a_protected_or_outside_window_or_bad_date(world, field, value):
+    def move(table):
+        for r in table["results"]:
+            r["result"]["trades"][0][field] = value
+    run_dir, out_dir = world(mutate=move)
+    with pytest.raises(GreeksRefusal) as exc:
+        run_node(run_dir, out_dir, seal_crossing="exclude")
+    assert code_of(exc) in ("window_outside_data_rights", "bad_date")
+    assert not out_dir.exists()
+
+
+def test_a_book_decided_after_the_seal_is_not_a_crossing_and_still_refuses(world):
+    def move(table):
+        for r in table["results"]:
+            r["result"]["trades"][0]["decision_date"] = "2021-07-02"
+    run_dir, out_dir = world(mutate=move)
+    with pytest.raises(GreeksRefusal) as exc:
+        run_node(run_dir, out_dir, seal_crossing="exclude")
+    assert code_of(exc) == "window_outside_data_rights"
+
+
+def test_cells_carry_the_cadence_of_their_names(world):
+    run_dir, out_dir = world()
+    cells = run_node(run_dir, out_dir)["cells"]
+    assert {c["symbol"]: c["cadence"] for c in cells} == {"BLK": "weekly", "MMM": "monthly"}
+    header = (out_dir / "cells.csv").read_text().splitlines()[0].split(",")
+    assert {"symbol", "cadence", "rank"} <= set(header)
+
+
+def test_the_template_carries_the_a2_child_keys_and_every_declared_param():
+    params = json.loads(TEMPLATE.read_text())["pipeline"]["greeks"]["params"]
+    assert set(MIOGreeksDiagnostics._CHILD_PARAMS) <= set(params) <= set(MIOGreeksDiagnostics._PARAMS)
+    assert params["cell_by"] == ["symbol", "cadence", "rank"]
+    assert params["dividends"] == "optional" and params["seal_crossing"] == "refuse"
+    assert params["window"]["end"] < params["sealed_from"] <= mio_greeks.DEVELOPMENT_SEAL
+    quarter = params["quarter"]
+    start, end = MIOGreeksDiagnostics._quarter_bounds(quarter)
+    assert params["window"]["start"] <= start and end <= params["window"]["end"]
+    assert MIOGreeksDiagnostics.validate_params(params) == []
+    notes = json.loads(TEMPLATE.read_text())["pipeline"]["greeks"]["notes"]
+    for word in ("quarter", "dividends", "seal_crossing", "cadence", "A1"):
+        assert word in notes, word
