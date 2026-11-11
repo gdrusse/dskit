@@ -84,6 +84,21 @@ def _bar_rows(binding, symbols, calendar):
     return bars
 
 
+def _verify_packet_receipt(config, run_pin, expected):
+    """Bind the exported result digest to the pinned run's own close receipt."""
+    from dskit.pipeline.document import PipelineDocument
+    from dskit.pipeline.driver import RunAttestation
+
+    document_hash = PipelineDocument.from_obj(config).hash
+    close_nodes = [key for key, node in config["pipeline"].items()
+                   if node.get("uses") == "dskit.pipeline.study_protocol:StudyPacketClose"]
+    if document_hash != run_pin["document_hash"] or len(close_nodes) != 1:
+        raise ValueError("original close receipt document identity differs")
+    manifest = RunAttestation(run_pin["run_dir"]).attested_output(close_nodes[0], "receipt", document_hash)
+    if not manifest or not expected == run_pin["sha256"] == manifest.get("sha256"):
+        raise ValueError("original close receipt digest differs from the replay export")
+
+
 def _packet_sessions(binding, history_start, tail):
     """Read and verify the original packet's bounded session spine."""
     source = PinnedPayloadSource(binding["pin"])
@@ -504,6 +519,9 @@ class FrozenMIOReplay:
         self.check_hedge_seal(self.hedge_spec, {**bounds, "end_before": tail}, cohort)
         result_path = original / "result.json"
         expected = entry["result_sha256"]
+        run_pin = pins["runs"][cohort]
+        if packet is not None:
+            _verify_packet_receipt(config, run_pin, expected)
         if _sha(result_path) != expected:
             raise ValueError("original result identity drift: " + cohort)
         self.original = _load_json(result_path)
@@ -526,7 +544,7 @@ class FrozenMIOReplay:
         if self.ranged and self.domain["params"]["bridge"].get("end_before") != bounds["end_before"]:
             raise ValueError("v5 end_before differs from the run document: " + cohort)
         self.bars = _bar_rows(self.domain["sources"]["bars"], self.symbols, history)
-        run_dir = Path(pins["runs"][cohort]["run_dir"])
+        run_dir = Path(run_pin["run_dir"])
         self.quotes, self.factors, self.index_descriptors = {}, {}, {}
         expected_indexes = document["cohorts"][cohort]["quote_index_sha256"]
         if set(expected_indexes) != set(self.symbols):
