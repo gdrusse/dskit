@@ -36654,3 +36654,18 @@ Scope against `0904b65b`: append this declaration, use an owner-approved status 
 - 2021Q1 and 2021Q2 remain pending. The Q2 cap and the other timing gates above continue to apply.
 
 WSL reproduction from the repository root: `PYTHONPATH=.:children/index_options ~/dskit/.venv/bin/python children/index_options/tools/hedge_evidence.py g5-status`. The command writes status-only JSON to stdout. This ADR records the dates and source identities.
+
+**ADR-0313 G5 prospective timing evidence projection (2026-11-11, proposed).**
+Extend the existing status reader with a separate timing entry point. An
+externally pinned manifest binds the declared date set and every matched
+replay-hedge, exact-search twin and no-search run to document bytes and
+identity, the attested close receipt and scheduler/usage evidence. Match
+source, clock, seal, host and build within each triplet. Require one selected
+week, a complete replay and settlement tail, the full audited decision
+calendar and no duplicate weeks or reused runs. Emit only status, typed
+solve/certification and timeout information, search counters and elapsed
+seconds, warm termination, certification gap availability, tail and timing
+metadata. Explored nodes remain unavailable. Buffer one canonical result
+until the full set verifies. Refuse with fixed diagnostics. ADR-0312
+Amendment 1 §7, ADR-0313 G5 and A0010 retain authority over execution and
+gate decisions. Synthetic verification only until independent Terra clearance.
