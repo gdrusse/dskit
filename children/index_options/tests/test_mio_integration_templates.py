@@ -164,12 +164,71 @@ def test_the_instantiator_refuses_what_it_cannot_resolve(study, tmp_path):  # no
         instantiate(timing, base, name="n", output_root="r", edge_maps_pin={})
     late = copy.deepcopy(base)
     late["pipeline"]["plan"]["params"]["study"]["packets"][0]["end_before"] = "2021-07-02"
-    with pytest.raises(ValueError, match="development_seal_exceeded"):
+    with pytest.raises(ValueError, match="development_seal_violation"):
         instantiate(calibrated, late, name="n", output_root="r", edge_maps_pin={})
     twin = copy.deepcopy(base)
     twin["pipeline"]["other"] = {"params": {"study": {"different": True}}}
     with pytest.raises(ValueError, match="base_document_studies_differ"):
         instantiate(calibrated, twin, name="n", output_root="r", edge_maps_pin={})
+
+
+def _refusal(template, base, code, **kw):
+    kw.setdefault("edge_maps_pin", {})
+    kw.setdefault("decision_week", "2019-01-02")
+    with pytest.raises(ValueError, match=code):
+        instantiate(template, base, name="n", output_root="r", **kw)
+
+
+@pytest.mark.parametrize("name", ["hedged-program-arm", "combined-arm", "timing-check-arm"])
+def test_the_instantiator_refuses_an_overlay_that_overrides_locked_content(name, study):  # noqa: F811
+    base, template = base_document(study), load(PLANS / f"{name}.template.json")
+    params = lambda t: t["study_overlay"]["domain"]["params"]  # noqa: E731
+    # (a) a different locked list
+    other = copy.deepcopy(template)
+    params(other)["locked_method_ids"] = ["something_else"]
+    _refusal(other, base, "locked_method_ids_changed")
+    dropped = copy.deepcopy(template)
+    del params(dropped)["locked_method_ids"]
+    _refusal(dropped, base, "locked_method_ids_changed")
+    # (b) an overlay method id that is locked, or already in the base
+    locked = copy.deepcopy(template)
+    params(locked)["methods"][0]["id"] = "w1_010_shock10_lp"
+    _refusal(locked, base, "locked_method_id_collision")
+    clash = copy.deepcopy(template)
+    taken = base["pipeline"]["plan"]["params"]["study"]["domain"]["params"]["methods"][0]["id"]
+    params(clash)["methods"][0]["id"] = taken
+    _refusal(clash, base, "locked_method_id_collision")
+    # (c) the seal is DEVELOPMENT_SEAL, not what the template says
+    for key in ("template", "clocks"):
+        late = copy.deepcopy(template)
+        if key == "template":
+            late["development_seal"] = "2030-01-01"
+        else:
+            params(late)["clocks"] = {"tail_end_before": "2030-01-01"}
+        _refusal(late, base, "development_seal_violation")
+    sealed = copy.deepcopy(template)
+    sealed["development_seal"] = "2020-01-01"      # an earlier seal is not the owner's either
+    _refusal(sealed, base, "development_seal_violation")
+
+
+def test_the_base_documents_own_locked_ids_are_the_pin(study):  # noqa: F811
+    base, template = base_document(study), load(PLANS / "hedged-program-arm.template.json")
+    base["pipeline"]["plan"]["params"]["study"]["domain"]["params"]["locked_method_ids"] = ["only_this"]
+    _refusal(template, base, "locked_method_ids_changed")
+
+
+def test_a_leftover_placeholder_of_any_shape_refuses(study):  # noqa: F811
+    base, template = base_document(study), load(PLANS / "hedged-program-arm.template.json")
+    for leftover in ("<onboarding pin>", "TODO: pin", "PLACEHOLDER: x", "root/${nowhere}"):
+        left = copy.deepcopy(template)
+        left["study_overlay"]["domain"].setdefault("sources", {})["corporate_actions"] = {"pin": leftover}
+        _refusal(left, base, "unreplaced_placeholder")
+
+
+def test_every_template_says_the_overlay_methods_replace_the_base_formulations():
+    for path in TEMPLATES:
+        assert "REPLACES the base's formulations" in load(path)["notes"], path.name
+    assert "REPLACES the base's" in (CHILD / "tools/mio_instantiate.py").read_text().replace("\n", " ")
 
 
 def test_the_command_line_writes_the_same_document(study, tmp_path):  # noqa: F811
@@ -214,3 +273,32 @@ def test_a_combined_arm_from_the_template_agrees_with_a_walk_run_from_the_walk_t
     assert needs == []
     checker._check_agreement({**direction, "min_years": 0.002})
     assert needs == ["block_params_disagree"]
+
+
+# --- a template runs end to end through the owner's entry point ------------------------------------------------------
+
+@pytest.mark.slow
+@pytest.mark.parametrize("study", ["long_history"], indirect=True)
+def test_an_instantiated_hedged_program_arm_runs_to_completion(study, tmp_path, monkeypatch, capsys):  # noqa: F811
+    """The registry the freeze needs is the quarter's own historical import, built here on the synthetic world."""
+    from dskit.pipeline.__main__ import cmd_run
+    from dskit.pipeline.study_protocol import ExposureRegistry
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache-home"))
+    ExposureRegistry(study["registry"]).initialize(
+        study["packets"], [{"start": "2019-01-01", "end_before": "2020-01-01", "evidence": "synthetic prior use"}], "2020-01-01")
+    document = instantiate(load(PLANS / "hedged-program-arm.template.json"), base_document(study), name="e2e-arm",
+                           output_root=str(tmp_path / "runs"))
+    path = tmp_path / "doc.json"
+    path.write_text(json.dumps(document))
+    assert cmd_run(str(path), "2019-02-09") == 0, capsys.readouterr().out
+    from dskit.pipeline.document import load_document
+    from dskit.pipeline.driver import RunAttestation, resolve_json_artifact
+
+    run_dir = max((d for d in (tmp_path / "runs").rglob("*") if (d / "carry.json").exists() or (d / "report.md").exists()),
+                  key=lambda d: len(d.parts))
+    receipt = resolve_json_artifact(run_dir, RunAttestation(run_dir).attested_output("close_packet", "receipt", load_document(str(path)).hash))
+    results = {r["method"] if "method" in r else r["id"]: r for r in receipt["results"]}
+    assert set(results) == {"w1_010_shock10_hedge_twin_lp", "w1_010_shock10_hedge_lp"}, results.keys()
+    assert all(r["status"] == "completed" for r in results.values())
+    assert "hedge" in results["w1_010_shock10_hedge_lp"]["result"] and "hedge" not in results["w1_010_shock10_hedge_twin_lp"]["result"]

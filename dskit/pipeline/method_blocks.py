@@ -38,12 +38,14 @@ DEVELOPMENT_SEAL = "2021-07-01"
 UNKNOWN_BLOCK, UNKNOWN_KEY, MISSING_KEY = "block_unknown", "block_unknown_key", "block_missing_key"
 BLOCK_TYPE, PARAM_VALUE = "block_type", "block_param_value"
 LOCKED, LOCKED_IDS_MISSING, SEAL = "block_on_locked_formulation", "locked_ids_missing", "integration_seal"
+LOCKED_CHANGED, LOCKED_COLLISION = "locked_method_ids_changed", "locked_method_id_collision"
+SEAL_VIOLATION = "development_seal_violation"
 IDENTITY_NOT_CONTROL = "calibration_identity_not_control"
 WITH_KELLY, WITH_SIZER = "calibration_with_kelly", "calibration_with_sizer"
 HEDGE_WITH_SIZER, LIMITS_WITH_KELLY = "hedge_with_sizer", "exposure_limits_with_kelly"
 DOUBLE_DISCOUNT, NEEDS_DIRECTION = "calibration_double_discount", "hedge_needs_direction_map"
 REFUSALS = (UNKNOWN_BLOCK, UNKNOWN_KEY, MISSING_KEY, BLOCK_TYPE, PARAM_VALUE, LOCKED, LOCKED_IDS_MISSING,
-            SEAL, IDENTITY_NOT_CONTROL, WITH_KELLY, WITH_SIZER, HEDGE_WITH_SIZER, LIMITS_WITH_KELLY,
+            LOCKED_CHANGED, LOCKED_COLLISION, SEAL_VIOLATION, SEAL, IDENTITY_NOT_CONTROL, WITH_KELLY, WITH_SIZER, HEDGE_WITH_SIZER, LIMITS_WITH_KELLY,
             DOUBLE_DISCOUNT, NEEDS_DIRECTION)
 #: Method keys the cross-block rules read (formulation keys of the child's method document).
 _KELLY, _SIZER, _RHO, _RISK_CHARGE = "kelly", "sizer", "rho", "risk_charge"
@@ -316,6 +318,30 @@ class MethodBlocks:
         if method.get("id") in locked:
             return [coded(LOCKED, f"method {method.get('id')!r} is a locked formulation and may carry no block")]
         return []
+
+    @staticmethod
+    def lock_problems(pinned, merged, new_ids, existing_ids=()):
+        """Return the problems of a derived document that changes the locked formulations.
+
+        ``pinned`` is the locked-id list of the document it derives from, ``merged`` the derived document's own;
+        ``new_ids`` are the method ids it adds and ``existing_ids`` those the source already carries. The ids may
+        not change (``locked_method_ids_changed``) and no new id may be locked or already used
+        (``locked_method_id_collision``).
+        """
+        problems = []
+        if not isinstance(merged, list) or sorted(merged) != sorted(pinned):
+            problems.append(coded(LOCKED_CHANGED, f"locked_method_ids must equal the source document's {sorted(pinned)}, "
+                                                  f"got {merged!r}"))
+        clash = sorted(set(new_ids) & (set(pinned) | set(existing_ids) | set(merged if isinstance(merged, list) else ())))
+        if clash:
+            problems.append(coded(LOCKED_COLLISION, f"method id(s) {clash} are locked or already used: a research arm takes a NEW id"))
+        return problems
+
+    @staticmethod
+    def seal_violations(ends):
+        """Return the ``development_seal_violation`` problems of the dates (ISO strings) a document reaches past the seal."""
+        late = sorted(e for e in ends if not isinstance(e, str) or e > DEVELOPMENT_SEAL)
+        return [coded(SEAL_VIOLATION, f"{late} is past the development seal {DEVELOPMENT_SEAL}")] if late else []
 
     @staticmethod
     def seal(clocks):

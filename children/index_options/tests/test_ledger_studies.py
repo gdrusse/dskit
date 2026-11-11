@@ -5916,8 +5916,8 @@ def test_a_reversal_book_is_unbounded_unhedged_bounded_hedged_recorded_and_settl
     assert record["option_reserve"] is None and record["unhedged_max_loss"] is None
     assert units > 0 and math.isfinite(book["max_loss"]) and math.isfinite(book["reserve"])
     assert units == 300 and ref == pytest.approx(105.105)       # 3 contracts each, hedge ratio 1, reference F_fill
-    assert book["max_loss"] == pytest.approx(23.92, abs=5e-3)    # hand numbers of the final review
-    assert book["reserve"] == pytest.approx(0.15 * units * ref, abs=1e-6) == pytest.approx(4729.72, abs=5e-3), \
+    assert book["max_loss"] == pytest.approx(23.918, abs=5e-4)    # hand numbers of the final review
+    assert book["reserve"] == pytest.approx(0.15 * units * ref, abs=1e-6) == pytest.approx(4729.725, abs=1e-6), \
         "the margin floor on the forward leg, not the tiny hedged loss, sets the reserve"
     json.dumps(record, allow_nan=False)                        # recorded: the saved record holds no infinity
     account = FundedOptionAccount(10000., 1000., 14, "2019-01-02")

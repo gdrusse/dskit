@@ -57,6 +57,18 @@ def study(tmp_path, request):
         data["X"]["contexts"] = data["X"]["contexts"][:1]
         data["X"]["chain"] = [r for r in data["X"]["chain"]
                               if not (r["date"] == "2019-02-01" and r["expiration"] == "2019-02-01")]
+    if getattr(request, "param", None) == "long_history":
+        # 62 weekday closes before the fixture's first session: enough prior history for a 60-session beta lookback.
+        from datetime import date, timedelta
+        day, early = date.fromisoformat(sessions["history_start"]), []
+        while len(early) < 62:
+            day -= timedelta(days=1)
+            if day.weekday() < 5:
+                early.append(day.isoformat())
+        early.reverse()
+        data["X"]["bars"] = [{**data["X"]["bars"][0], "date": d} for d in early] + data["X"]["bars"]
+        sessions["sessions"] = early + sessions["sessions"]
+        sessions["history_start"] = early[0]
     policy_integration = getattr(request, "param", None) == "policy_integration"
     if policy_integration:
         from datetime import date, timedelta

@@ -268,3 +268,19 @@ def test_all_and_purity():
     code = ("import sys\nfor m in ('numpy','pandas','scipy','pyomo','sklearn'): sys.modules[m]=None\n"
             "import dskit.pipeline.method_blocks")
     assert subprocess.run([sys.executable, "-c", code], capture_output=True).returncode == 0
+
+
+def test_a_derived_document_may_not_change_the_locked_ids_or_reuse_one():
+    owner = mb.MethodBlocks
+    nine = ["a", "b"]
+    assert owner.lock_problems(nine, ["b", "a"], ["new"], ["a"]) == []
+    assert owner.lock_problems(nine, ["a"], ["new"])[0].startswith("locked_method_ids_changed")
+    assert owner.lock_problems(nine, None, ["new"])[0].startswith("locked_method_ids_changed")
+    assert owner.lock_problems(nine, nine, ["a"])[0].startswith("locked_method_id_collision")
+    assert owner.lock_problems(nine, nine, ["old"], ["old"])[0].startswith("locked_method_id_collision")
+
+
+def test_a_date_past_the_development_seal_is_a_violation():
+    assert mb.MethodBlocks.seal_violations([mb.DEVELOPMENT_SEAL, "2019-01-01"]) == []
+    assert mb.MethodBlocks.seal_violations(["2030-01-01"])[0].startswith("development_seal_violation")
+    assert {"locked_method_ids_changed", "locked_method_id_collision", "development_seal_violation"} <= set(mb.REFUSALS)
