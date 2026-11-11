@@ -6606,3 +6606,38 @@ def test_value_adjust_accepts_numpy_scalars_and_still_refuses_bool():
     for bad in ([True, 1.], [np.bool_(True), 1.]):
         with pytest.raises(ValueError, match="invalid value_adjust"):
             solver._checked_value_adjust(bad, 2)
+
+def test_kelly_local_search_calibration_recentres_utility_screen_and_replay(monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportActionScore, TransportPortfolioSolve, tangent_utility
+
+    group = _bet_group(p=.75, capacity=12)
+    # Raw mean -25. The mean shift changes it to +35 and leaves the market deviations centered.
+    adjusted = {**group, "value_adjust": [60.]}
+    joint = [{"id": "down", "weight": .25, "terms": {"g": [-30.]}},
+             {"id": "quiet", "weight": .75, "terms": {"g": [10.]}}]
+    raw = _kelly_program([group], joint=joint)
+    program = _kelly_program([adjusted], joint=joint)
+    assert TransportPortfolioSolve._group_lp_bound(raw["groups"][0]) <= 0
+    assert TransportPortfolioSolve._group_lp_bound(program["groups"][0]) > 0
+    assert sum(row["weight"] * row["terms"]["g"][0] for row in joint) == 0
+    params = {**_kelly_params(), "group_screen": "lp", "utility_solve": "relax_fix",
+              "timeout_policy": "return",
+              "utility_search": {"iterations": 2, "neighbourhood": 1, "node_limit": 50, "seed": 7}}
+    monkeypatch.setattr(TransportPortfolioSolve, "UTILITY_SUPPORT_EPS", 1e9)
+    monkeypatch.setattr(TransportPortfolioSolve, "UTILITY_CERTIFY_ACTIONS", 0)
+    solver = TransportPortfolioSolve("kelly", params)
+    envelope = solver.run(None, program)["selection"]
+    selection = envelope["candidate"] if "timeout" in envelope else envelope
+    count = selection["quantities"][0][0]
+    assert count > 0
+    spread = _point_spread([.75, .25], [100., -400.])
+    oracle = 10000 * sum(row["weight"] * tangent_utility(
+        [10000 + (35 + row["terms"]["g"][0]) * count], 10000., 1.)[0][0] for row in joint)
+    oracle -= (spread * count) ** 2 / 20000
+    scored = TransportActionScore(program, {"parity_tolerance": params["parity_tolerance"]}).evaluate([[count]])
+    assert scored["utility"]["exact"] == pytest.approx(oracle)
+    assert selection["value"] == pytest.approx(scored["value"])
+    assert solver.last_search["value_after"] == pytest.approx(scored["value"])
+    saved = {k: v for k, v in envelope.items() if k != "certificates"}
+    certificates = [{k: v for k, v in record.items() if k != "binding"} for record in envelope["certificates"]]
+    assert solver._recorded(program, saved, certificates) == {**saved, "certificates": certificates}

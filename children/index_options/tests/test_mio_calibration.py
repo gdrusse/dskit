@@ -581,3 +581,43 @@ def test_regressors_two_with_a_decayed_state_is_unread(harness):
     with pytest.raises(ValueError, match="calibration_state_unread"):
         ledger_studies.CalibratedEdge(harness.study([harness.method(regressors=2, state="decayed_fill")]),
                                       harness.method(regressors=2, state="decayed_fill"))
+
+def test_kelly_point_map_changes_only_the_mean_program_of_its_warm_control(harness, monkeypatch):
+    from datetime import date, timedelta
+
+    from test_ledger_studies import TOP_FORMULATIONS, _for_kelly
+
+    base = TOP_FORMULATIONS["kelly025_top100_search_lp"]
+    params = _for_kelly(copy.deepcopy(harness.params))
+    inputs = copy.deepcopy(harness.inputs)
+    day = date.fromisoformat(params["clocks"]["history_start"])
+    earlier = []
+    while len(earlier) < 25:
+        day -= timedelta(days=1)
+        if day.weekday() < 5:
+            earlier.append(day.isoformat())
+    earlier.reverse()
+    params["clocks"]["history_start"] = earlier[0]
+    params["clocks"]["sessions"] = earlier + params["clocks"]["sessions"]
+    for rows in inputs.values():
+        first = rows["bars"][0]
+        rows["bars"][:0] = [{**first, "date": day, "close": first["close"] + (i % 3) * .1}
+                            for i, day in enumerate(earlier)]
+    options = {"solver": params["solver"], "clocks": params["clocks"], "decision_weeks": ["2019-11-18"],
+               "inputs": inputs}
+    control = {"id": "kelly025_top100_search_cal_control_lp", **base,
+               "calibration": {**CAL, "form": "identity", "control": True}}
+    arm = {"id": "kelly025_top100_search_cal_lp", **base, "calibration": dict(CAL)}
+    warm = reweighted(harness.maps, .5, warm=True)
+    control_study = harness.study([control], maps=warm, **options)
+    arm_study = harness.study([arm], maps=warm, **options)
+    c_result, c_programs = programs_of(monkeypatch, control_study, control)
+    a_result, a_programs = programs_of(monkeypatch, arm_study, arm)
+    assert len(c_programs) == len(a_programs) == 1
+    assert any(any(group["value_adjust"]) for group in a_programs[0]["groups"])
+    for raw, adjusted in zip(c_programs[0]["groups"], a_programs[0]["groups"], strict=True):
+        assert not any(raw.pop("value_adjust"))
+        adjusted.pop("value_adjust")
+    assert c_programs == a_programs
+    assert control_study._method(control, None, recorded=c_result) == c_result
+    assert arm_study._method(arm, None, recorded=a_result) == a_result

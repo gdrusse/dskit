@@ -6409,3 +6409,21 @@ def test_exact_search_hedge_reuses_the_solver_and_replays_the_settled_forward(mo
     assert trade["close_date"] == "2019-02-01"
     assert study._method(arm, None, recorded=hedged) == hedged
     assert len(calls) == 2
+
+def test_only_exact_search_calibration_point_arm_and_identity_twin_validate():
+    params, _ = _kelly_fixture()
+    params["locked_method_ids"] = list(FORMULATIONS)
+    baseline = TOP_FORMULATIONS["kelly025_top100_search_lp"]
+    validate = ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration
+    for method_id, block in (
+            ("kelly025_top100_search_cal_lp", dict(_CAL)),
+            ("kelly025_top100_search_cal_control_lp", {**_CAL, "form": "identity", "control": True})):
+        method = {"id": method_id, **baseline, "calibration": block}
+        params["methods"] = [method]
+        validate(params, tail_end_before="2021-07-01")
+        for bad in ({**method, "id": "other_kelly"},
+                    {**method, "kelly": {**method["kelly"], "fraction": .5}},
+                    {**method, "calibration": {**block, "variant": "lcb"}}):
+            params["methods"] = [bad]
+            with pytest.raises(ValueError, match="calibration_with_kelly"):
+                validate(params, tail_end_before="2021-07-01")

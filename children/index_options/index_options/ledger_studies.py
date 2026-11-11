@@ -2235,6 +2235,19 @@ def _is_exact_kelly_search(method, block):
     return MethodBlocks.spec_hash(base) == _KELLY_SEARCH_BASE_SHA256
 
 
+class _WeeklyMethodBlocks(MethodBlocks):
+    """Enable the reviewed point-mean research pair in the weekly utility program."""
+
+    def allows_kelly_calibration(self, method):
+        calibration = method["calibration"]
+        form = {"kelly025_top100_search_cal_lp": "slope",
+                "kelly025_top100_search_cal_control_lp": "identity"}.get(method["id"])
+        return (form is not None and calibration["form"] == form
+                and calibration["variant"] == "point" and calibration["regressors"] == 1
+                and calibration["line"] == "bucket" and calibration["state"] == CalibratedEdge.SCORED_STATE
+                and _is_exact_kelly_search(method, "calibration"))
+
+
 class WeeklyOptionPortfolioStudy:
     """Replay fixed portfolio methods on a bounded archive and weekly clock.
 
@@ -2371,7 +2384,7 @@ class WeeklyOptionPortfolioStudy:
     _METHOD_KEYS = {"id", "rho", "portfolio_fraction", "name_fraction", "component_fraction"}
     #: ADR-0313 D: the one owner of the per-method optional blocks (``calibration``, ``hedge``, ``exposure_limits``);
     #: it validates them and names their keys, so no other code here handles a block key.
-    _BLOCKS = MethodBlocks.standard(hedge=HedgeOverlay)
+    _BLOCKS = _WeeklyMethodBlocks.standard(hedge=HedgeOverlay)
     _PLAIN_OPTIONAL_METHOD_KEYS = frozenset({"reserve_per_contract", "short_notional_fraction", "shock", "risk_charge",
                                              "radius_scale", "kelly", "sizer"})
     _OPTIONAL_METHOD_KEYS = _PLAIN_OPTIONAL_METHOD_KEYS | frozenset(_BLOCKS.keys())

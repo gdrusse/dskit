@@ -385,12 +385,16 @@ class MethodBlocks:
             return []
         return [coded(SEAL, f"a document with a block must declare clocks.tail_end_before <= {DEVELOPMENT_SEAL}, got {end!r}")]
 
+    def allows_kelly_calibration(self, method):
+        """Return whether the enclosing study supports this Kelly/calibration pairing."""
+        return False
+
     def cross_checks(self, method):
         """Return the pairwise refusals between a method's blocks and its formulation keys."""
         problems = []
         has = lambda key: key in method and key in self._specs  # noqa: E731
         cal, hedge = method.get("calibration"), method.get("hedge")
-        if has("calibration") and _KELLY in method:
+        if has("calibration") and _KELLY in method and not self.allows_kelly_calibration(method):
             problems.append(coded(WITH_KELLY, "a calibration block cannot combine with kelly"))
         if has("calibration") and _SIZER in method:
             problems.append(coded(WITH_SIZER, "a calibration block cannot combine with sizer until the sizer mean lands"))
