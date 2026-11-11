@@ -36646,3 +36646,11 @@ The source root is `/home/russell/data/index_options/full-span-rerun-20261105/ad
 - 2021Q1 and 2021Q2 pending attested status sources. Record their pins before projecting either source. Every derived Q2 timing arm and matched twin requires the exclusive 2021-07-01 settlement cap. The list supplies status-based candidates for G5 only. Existing prerequisite gates, warm-map requirements and single-week document checks govern timing eligibility. No solves are authorized here.
 
 Scope against `0904b65b`: append this declaration, use an owner-approved status reader and focused synthetic tests, then record the resulting dates or explicit refusal. The pinned A0010 formulations and Path remain owner-controlled. RED covers the union, no-solve cash, malformed and duplicate rows, source and document mismatch, incomplete receipt, and poisoned excluded values.
+
+**ADR-0313 G5 status-only declaration receipt (2026-11-11).** The extractor at `b18ebef0` applied the rule and verified both document and close artifact pins above. Each quarter had at least three jointly solved decisions. The declared dates below were recorded before any prospective G5 timing runs.
+
+- 2019Q4 stitched, close SHA-256 `3a0540a3ff5188c9530a2033dd6812dc8de948edfd8b5cc65f09fd5659a2fdbe`. Jointly solved selections `2019-10-01`, `2019-10-07`, `2019-10-14`. No timeout dates in the union.
+- 2020Q1 restart1, close SHA-256 `014c103e57aa19444fb46486efecf60cc02d9e8974e119c7135809106fd67ba7`. Jointly solved selections `2020-01-02`, `2020-01-06`, `2020-01-13`. Timeout union `2020-03-09`, `2020-03-23`, `2020-03-30`. The previously observed March 9 timing remains retrospective.
+- 2021Q1 and 2021Q2 remain pending. The Q2 cap and the other timing gates above continue to apply.
+
+WSL reproduction from the repository root: `PYTHONPATH=.:children/index_options ~/dskit/.venv/bin/python children/index_options/tools/hedge_evidence.py g5-status`. The command writes status-only JSON to stdout. This ADR records the dates and source identities.
