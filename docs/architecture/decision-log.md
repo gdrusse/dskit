@@ -36700,3 +36700,16 @@ A caller-supplied evidence pin establishes integrity. The repository's
 pair establishes approval of the scripts, checkout and interpreter
 bound into those bytes. Production starts with an empty allowlist.
 Add the pair only after independent clearance of the frozen bundle.
+
+**G5 timing bundle approval pins (2026-11-11).** Terra cleared these
+exact matrix and scheduler job pairs. The clean March 9 retry is a
+separate retrospective triplet under `retrospective_clean_retry`.
+The reader emits no prospective week for it. The prospective v2
+pair covers the eight previously declared dates and excludes both
+March 9 attempts. Its existing clean-trio and resource gates apply.
+
+- Clean March 9 matrix `a899ca8acee1ca39caf23dd952ede595603a71edaf35e7529db71b75c44d1b3d`, jobs `4bc58ea32d983b6b4826a226770bf7c2192159cbc53f3496c3ef008f9346f150`.
+- Prospective v2 matrix `e11d5905bac92b903085e0e481278afcd9307cfc7096207596c344335e8dd1a3`, jobs `0928521cb3499fd04c6b69397d80cfbaba45dfd969d2d535b94c23aa5d203794`.
+
+The approval has no CLI override. This change authorizes projection
+from the completed status-only bundles within the existing gates.
