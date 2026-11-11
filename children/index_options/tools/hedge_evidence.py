@@ -695,6 +695,16 @@ def _main_g5_status(argv):
     return 0
 
 
+# ADR-0313's status-only declaration receipt is the prospective matrix authority.
+_G5_TIMING_WEEKS = {
+    "2019Q4": dict.fromkeys(("2019-10-01", "2019-10-07", "2019-10-14"), "jointly_solved"),
+    "2020Q1": {
+        **dict.fromkeys(("2020-01-02", "2020-01-06", "2020-01-13"), "jointly_solved"),
+        **dict.fromkeys(("2020-03-23", "2020-03-30"), "timeout_union"),
+        "2020-03-09": "retrospective_timeout",
+    },
+}
+
 _G5_TIMING_ROLES = {
     "replay-hedge": "kelly025_top100_search_replay_hedge_lp",
     "exact-search": "kelly025_top100_search_timing_twin_lp",
@@ -784,7 +794,7 @@ def _g5_number(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
 
 
-def _g5_timing_close(receipt, quarter, week, method, expected_tail, capped):
+def _g5_timing_close(receipt, quarter, week, method, expected_tail, capped, expected_calendar):
     if receipt.get("complete") is not True:
         raise _G5TimingRefusal("g5_timing_incomplete")
     entry, = receipt["results"]
@@ -799,9 +809,7 @@ def _g5_timing_close(receipt, quarter, week, method, expected_tail, capped):
     if result["decision_weeks"] != [week]:
         raise _G5TimingRefusal("g5_timing_week")
     calendar = audit["calendar"]
-    if (not isinstance(calendar, list) or not calendar
-            or any(date.fromisoformat(day).isoformat() != day or day >= expected_tail for day in calendar)
-            or calendar != sorted(set(calendar))):
+    if calendar != expected_calendar or not calendar:
         raise _G5TimingRefusal("g5_timing_tail")
     decisions = result["decisions"]
     dates = [row["date"] for row in decisions]
@@ -823,7 +831,7 @@ def _g5_timing_close(receipt, quarter, week, method, expected_tail, capped):
             **_g5_timing_strategy(selected, method["kelly"])}
 
 
-def _g5_timing_document(root, cell, role, week):
+def _g5_timing_document(root, cell, role, week, checkout_path):
     from copy import deepcopy
 
     from dskit.pipeline.document import PipelineDocument
@@ -840,10 +848,15 @@ def _g5_timing_document(root, cell, role, week):
     if (close_node["uses"] != "dskit.pipeline.study_protocol:StudyPacketClose"
             or close_node["params"]["study"] != study
             or study["registry"]["path"] != cell["registry"]
+            or raw["outputs"]["run_root"] != cell["paths"]["run"]["root"]
             or any(node["params"]["study"] != study for node in pipeline.values()
                    if "study" in node.get("params", {}))
             or pipeline.get("study", {}).get("params", {}).get("recorded") is not None):
         raise _G5TimingRefusal("g5_timing_document")
+    code = study["code"]
+    if not code or any(not Path(path).is_absolute() or not Path(path).resolve().is_relative_to(checkout_path)
+                       for path in code):
+        raise _G5TimingRefusal("g5_timing_build")
     domain = study["domain"]
     params = domain["params"]
     method, = params["methods"]
@@ -878,9 +891,43 @@ def _g5_timing_document(root, cell, role, week):
     return pin, study, method, tail, capped, (base, base_method, cell["asof"], raw.get("clock"), raw.get("schedule"))
 
 
-def _g5_timing_usage(root, matrix_root, jobs, cell_key, cell, run_id, run_pin, matrix_sha):
+def _g5_timing_calendar(study, tail):
+    from index_options.mio_contract import MIOStudyContract
+    from index_options.mio_execution_stress import _packet_sessions
+
+    domain = study["domain"]
+    packet = MIOStudyContract.packet(study)
+    days = _packet_sessions(domain["sources"]["sessions"], domain["history_start"], tail)
+    return [day for day in days if packet["start"] <= day < tail]
+
+
+def _g5_timing_command(matrix, root, matrix_sha):
+    from shlex import join
+
+    scripts = matrix["scripts"]
+    mount, interpreter = matrix["bundle_mount"], matrix["interpreter"]
+    checkout_path = Path(matrix["checkout_path"])
+    if not all(Path(path).is_absolute() for path in (mount["path"], interpreter, checkout_path)):
+        raise _G5TimingRefusal("g5_timing_command")
+    command = join(["findmnt", "--mountpoint", mount["path"], "-n", "-o", "UUID"])
+    command += " | " + join(["grep", "-qx", mount["uuid"]])
+    for role in ("preflight", "matrix"):
+        pin = scripts[role]
+        script = Path(pin["path"])
+        if not script.is_absolute() or script.parent.resolve() != (root / "ops").resolve() or script.name != f"{role}.py":
+            raise _G5TimingRefusal("g5_timing_command")
+        _g5_pinned_bytes(root, pin, "g5_timing_script_pin")
+        command += " && " + join(["printf", "%s\\n", f"{pin['sha256']}  {script}"])
+        command += " | sha256sum --status -c -"
+    invoke = [interpreter, "-B", scripts["preflight"]["path"]]
+    hashes = {"checkout": matrix["checkout"], "manifest": matrix_sha,
+              **{role: scripts[role]["sha256"] for role in ("preflight", "matrix")}}
+    return checkout_path.resolve(), command, invoke, hashes
+
+
+def _g5_timing_usage(root, matrix_root, jobs, cell_key, cell, run_id, run_pin, invocation):
     import re
-    import shlex
+    from shlex import join
     from hashlib import sha256
 
     job_id = cell["job_ids"]["run"]
@@ -902,9 +949,22 @@ def _g5_timing_usage(root, matrix_root, jobs, cell_key, cell, run_id, run_pin, m
     usage = (root / run_pin["usage"]["path"]).resolve()
     if (run.parent != declared_root or usage != (matrix_root / paths["usage"]).resolve()):
         raise _G5TimingRefusal("g5_timing_path")
-    args = shlex.split(command)
-    if args[-3:] != [cell_key, "run", matrix_sha]:
+    checkout_path, prechecks, invoke, common_hashes = invocation
+    expected = prechecks + " && " + join([*invoke, cell_key, "run", common_hashes["manifest"]])
+    if hashes != {**common_hashes, "document": cell["files"]["run"]["sha256"]}:
+        raise _G5TimingRefusal("g5_timing_scheduler_pins")
+    env = {"PYTHONPATH": f"{checkout_path}:{checkout_path}/children/index_options",
+           "PYTHONDONTWRITEBYTECODE": "1", "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
+           "MKL_NUM_THREADS": "1", "LC_ALL": "C"}
+    if command != expected or Path(job["cwd"]).resolve() != checkout_path or job["env"] != env:
         raise _G5TimingRefusal("g5_timing_command")
+    usage_path = paths["usage"]
+    if job["output_files"] != [usage_path]:
+        raise _G5TimingRefusal("g5_timing_scheduler_usage")
+    last = receipt["history"][-1]
+    if (any(last.get(key) != receipt[key] for key in ("host", "status", "attempt", "exit_code", "elapsed_s"))
+            or last["output_hashes"] != {usage_path: run_pin["usage"]["sha256"]}):
+        raise _G5TimingRefusal("g5_timing_scheduler_usage")
     data = _g5_pinned_bytes(root, run_pin["usage"], "g5_timing_usage_pin")
     match = re.fullmatch(rb"peak_rss_kib=([1-9][0-9]*) wall_s=([0-9]+\.[0-9]{2})\n", data)
     if match is None:
@@ -930,16 +990,15 @@ def _g5_timing_read(root, evidence):
     run_id = jobs_manifest["run_id"]
     if code != matrix["checkout"] or run_id != matrix["scheduler_run_id"]:
         raise _G5TimingRefusal("g5_timing_build")
-    declared = {(quarter, week) for quarter, weeks in matrix["weeks"].items()
-                for week, designation in weeks.items()
-                if designation in ("jointly_solved", "timeout_union")}
-    if any(designation not in ("jointly_solved", "timeout_union", "retrospective_timeout")
-           for weeks in matrix["weeks"].values() for designation in weeks.values()):
-        raise _G5TimingRefusal("g5_timing_matrix")
+    if matrix["weeks"] != _G5_TIMING_WEEKS:
+        raise _G5TimingRefusal("g5_timing_declaration")
+    declared = {(quarter, week) for quarter, weeks in _G5_TIMING_WEEKS.items()
+                for week, designation in weeks.items() if designation != "retrospective_timeout"}
     jobs = {job["id"]: job for job in jobs_manifest["jobs"]}
     if len(jobs) != len(jobs_manifest["jobs"]):
         raise _G5TimingRefusal("g5_timing_duplicate_job")
     matrix_root = (root / evidence["matrix"]["path"]).parent
+    invocation = _g5_timing_command(matrix, matrix_root, evidence["matrix"]["sha256"])
     cells, runs = matrix["cells"], evidence["runs"]
     if not cells or cells.keys() != runs.keys():
         raise _G5TimingRefusal("g5_timing_matrix")
@@ -952,10 +1011,9 @@ def _g5_timing_read(root, evidence):
         rows = grouped.setdefault((quarter, week), {})
         if role in rows:
             raise _G5TimingRefusal("g5_timing_duplicate_cell")
-        document, study, method, tail, capped, base = _g5_timing_document(matrix_root, cell, role, week)
+        document, study, method, tail, capped, base = _g5_timing_document(matrix_root, cell, role, week, invocation[0])
         pin = runs[cell_key]
-        run, usage = _g5_timing_usage(root, matrix_root, jobs, cell_key, cell, run_id, pin,
-                                      evidence["matrix"]["sha256"])
+        run, usage = _g5_timing_usage(root, matrix_root, jobs, cell_key, cell, run_id, pin, invocation)
         registry = (matrix_root / cell["registry"]).resolve()
         if run in used_runs or usage["job_id"] in used_jobs or registry in used_registries:
             raise _G5TimingRefusal("g5_timing_duplicate_run")
@@ -976,7 +1034,8 @@ def _g5_timing_read(root, evidence):
         if not isinstance(close, dict) or close.get("sha256") != pin["close_sha256"]:
             raise _G5TimingRefusal("g5_timing_attestation")
         receipt = resolve_json_artifact(run, close)
-        row = _g5_timing_close(receipt, quarter, week, method, tail, capped)
+        row = _g5_timing_close(receipt, quarter, week, method, tail, capped,
+                               _g5_timing_calendar(study, tail))
         if attestation.attested_output("close_packet", "receipt", document["identity"]) != close:
             raise _G5TimingRefusal("g5_timing_unstable")
         audit, provenance, plan = (receipt[key] for key in ("audit", "provenance", "plan"))

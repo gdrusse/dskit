@@ -651,15 +651,22 @@ _G5_TIMING_METHODS = {
     ("scheduler", "g5_timing_scheduler"),
     ("source", "g5_timing_unmatched"),
     ("missing_week", "g5_timing_missing_week"),
+    ("wrong_designation", "g5_timing_declaration"),
+    ("wrong_command", "g5_timing_command"),
+    ("truncated_tail", "g5_timing_tail"),
+    ("usage_unbound", "g5_timing_scheduler_usage"),
+    ("checkout_unbound", "g5_timing_scheduler_pins"),
 ])
 def test_g5_timing_projects_pinned_triplets_or_refuses_all(tmp_path, capsys, monkeypatch, damage, expected):
     from hashlib import sha256
 
     from copy import deepcopy
+    from shlex import join
 
-    from dskit.pipeline.base import value_hash
+    from dskit.pipeline.base import OutputsConfig, value_hash
     from dskit.pipeline.driver import RunAttestation
     from dskit.pipeline.document import NodeSpec, PipelineDocument
+    from index_options import mio_execution_stress
     from index_options.ledger_studies import LOCKED_FORMULATION_HASHES
     from test_ledger_studies import TOP_FORMULATIONS
 
@@ -683,6 +690,16 @@ def test_g5_timing_projects_pinned_triplets_or_refuses_all(tmp_path, capsys, mon
     week = "2020-01-06"
     other_day = "2020-01-13"
     checkout = "c" * 40
+    checkout_path = tmp_path / "checkout"
+    interpreter = str(tmp_path / "python")
+    mount = {"path": str(tmp_path), "uuid": "synthetic"}
+    scripts = {role: {**pin(f"ops/{role}.py", b"pass\n"), "path": str(tmp_path / f"ops/{role}.py")}
+               for role in ("preflight", "matrix")}
+    env = {"PYTHONPATH": f"{checkout_path}:{checkout_path}/children/index_options",
+           "PYTHONDONTWRITEBYTECODE": "1", "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
+           "MKL_NUM_THREADS": "1", "LC_ALL": "C"}
+    monkeypatch.setattr(mio_execution_stress, "_packet_sessions",
+                        lambda binding, start, tail: [week, other_day, "2020-04-30"])
     cells, runs = {}, {}
     for role, method_id in _G5_TIMING_METHODS.items():
         altered = damage if role == "no-search" else None
@@ -699,9 +716,10 @@ def test_g5_timing_projects_pinned_triplets_or_refuses_all(tmp_path, capsys, mon
                   "locked_method_ids": list(LOCKED_FORMULATION_HASHES)}
         packet = {"id": "p", "purpose": "development", "start": "2020-01-01", "end_before": "2020-04-01"}
         study = {"registry": {"path": role}, "packets": [packet], "selected_packet": "p",
-                 "domain": {"params": params, "sources": {"test": "same"},
+                 "code": {str(checkout_path / "synthetic.py"): "1" * 64},
+                 "domain": {"params": params, "sources": {"sessions": {}}, "history_start": "2019-12-20",
                             "pairs": [{"dte_max": 30}], "tail_padding_days": 0}}
-        doc = PipelineDocument(name=role, pipeline={
+        doc = PipelineDocument(name=role, outputs=OutputsConfig(run_root=run_root), pipeline={
             "plan": NodeSpec(uses="synthetic", params={"study": study}),
             "close_packet": NodeSpec(uses="dskit.pipeline.study_protocol:StudyPacketClose", params={"study": study}),
         })
@@ -709,7 +727,7 @@ def test_g5_timing_projects_pinned_triplets_or_refuses_all(tmp_path, capsys, mon
         job_id = f"{key}_run"
         cells[key] = {"quarter": "2020Q1", "week": week, "role": role, "method": method_id,
                       "asof": "2020-03-31", "tail_end_before": "2020-05-01", "registry": role,
-                      "designation": "jointly_solved",
+                      "designation": "timeout_union" if damage == "wrong_designation" else "jointly_solved",
                       "job_ids": {"run": job_id}, "files": {"run": doc_pin},
                       "paths": {"run": {"root": run_root, "usage": usage}}}
         row = {"date": week, "status": "timeout_skipped" if altered == "status" else "cash",
@@ -743,8 +761,9 @@ def test_g5_timing_projects_pinned_triplets_or_refuses_all(tmp_path, capsys, mon
                 "sha256": "d" * 64}
         provenance = {"inputs_sha256": inputs_sha, "read_bounds": bounds,
                       "source_pins_sha256": value_hash(sources), "plan_sha256": plan["sha256"]}
+        calendar = days if damage == "truncated_tail" else [*days, "2020-04-30"]
         close = {"complete": altered != "incomplete", "provenance": provenance, "plan": plan,
-                 "audit": {"method_ids": [method_id], "calendar": [*days, "2020-04-30"],
+                 "audit": {"method_ids": [method_id], "calendar": calendar,
                            "decision_dates": days, "inputs_sha256": inputs_sha},
                  "results": [{"id": "wrong" if altered == "role" else method_id,
                               "status": "completed", "replay_parity": True,
@@ -766,19 +785,36 @@ def test_g5_timing_projects_pinned_triplets_or_refuses_all(tmp_path, capsys, mon
         pin(f"{run}/carry.json", {"close_packet": {"receipt": manifest}})
         runs[key] = {"run_dir": run, "close_sha256": "0" * 64 if altered == "close" else digest,
                      "usage": pin(usage, b"POISON\n" if altered == "usage" else b"peak_rss_kib=2048 wall_s=2.34\n")}
-    declared = {week: "jointly_solved", "2020-03-09": "retrospective_timeout"}
+    declared = {week: "timeout_union" if damage == "wrong_designation" else "jointly_solved",
+                "2020-03-09": "retrospective_timeout"}
     if damage == "missing_week":
         declared[other_day] = "timeout_union"
+    authorized = {**declared, week: "jointly_solved"}
+    monkeypatch.setattr(he, "_G5_TIMING_WEEKS", {"2020Q1": authorized})
     matrix = pin("matrix.json", {"cells": cells, "checkout": checkout, "scheduler_run_id": "synthetic",
-                                 "weeks": {"2020Q1": declared}})
+                                 "weeks": {"2020Q1": declared}, "bundle_mount": mount,
+                                 "checkout_path": str(checkout_path), "interpreter": interpreter, "scripts": scripts})
     jobs = []
     for key, cell in cells.items():
         job_id = cell["job_ids"]["run"]
-        command = f"python preflight.py {key} run {matrix['sha256']}"
-        jobs.append({"id": job_id, "command": command, "allowed_hosts": ["wsl"]})
+        usage_path = cell["paths"]["run"]["usage"]
+        command = join(["findmnt", "--mountpoint", mount["path"], "-n", "-o", "UUID"])
+        command += " | grep -qx synthetic"
+        for script in scripts.values():
+            command += " && " + join(["printf", "%s\\n", f"{script['sha256']}  {script['path']}"])
+            command += " | sha256sum --status -c -"
+        python = "wrong-python" if damage == "wrong_command" else interpreter
+        command += " && " + join([python, "-B", scripts["preflight"]["path"], key, "run", matrix["sha256"]])
+        hashes = {"checkout": "e" * 40 if damage == "checkout_unbound" else checkout,
+                  "manifest": matrix["sha256"], "document": cell["files"]["run"]["sha256"],
+                  **{role: script["sha256"] for role, script in scripts.items()}}
+        jobs.append({"id": job_id, "command": command, "allowed_hosts": ["wsl"], "cwd": str(checkout_path),
+                     "output_files": [usage_path], "env": env, "hashes": hashes})
+        terminal = {"status": "failed" if damage == "scheduler" and cell["role"] == "no-search" else "done",
+                    "exit_code": 0, "host": "wsl", "elapsed_s": 3.0, "attempt": 1}
         receipt = {"run_id": "synthetic", "job_id": job_id, "command_sha256": sha256((command + "\0").encode()).hexdigest(),
-                   "status": "failed" if damage == "scheduler" and cell["role"] == "no-search" else "done",
-                   "exit_code": 0, "host": "wsl", "hashes": {}, "elapsed_s": 3.0}
+                   "hashes": hashes, **terminal, "history": [{**terminal, "output_hashes": {
+                       usage_path: "e" * 64 if damage == "usage_unbound" else runs[key]["usage"]["sha256"]}}]}
         runs[key]["receipt"] = pin(f"receipts/{job_id}.json", receipt)
     job_spec = pin("jobs.json", {"run_id": "synthetic", "jobs": jobs})
     evidence = pin("evidence.json", {"matrix": matrix, "jobs": job_spec, "code_commit": checkout, "runs": runs})
@@ -809,3 +845,26 @@ def test_g5_timing_projects_pinned_triplets_or_refuses_all(tmp_path, capsys, mon
             assert exact["warm_termination"] == "optimal"
         assert he.main(argv) == 0
         assert capsys.readouterr().out == output.out
+
+
+
+def test_g5_timing_week_authority_matches_adr_receipt():
+    import re
+
+    path = Path(he.__file__).resolve().parents[3] / "docs/architecture/decision-log.md"
+    declaration, receipt = path.read_text().split("**ADR-0313 G5 status-only declaration receipt", 1)
+    prospective = declaration.split("**ADR-0313 G5 status-only week selection declaration", 1)[1]
+    receipt = receipt.split("WSL reproduction", 1)[0]
+    expected = {}
+    for quarter in ("2019Q4", "2020Q1"):
+        line, = [line for line in receipt.splitlines() if line.startswith(f"- {quarter} ")]
+        solved, _, tail = line.split("Jointly solved selections ", 1)[1].partition(". ")
+        dates = re.findall(r"\d{4}-\d{2}-\d{2}", solved)
+        expected[quarter] = dict.fromkeys(dates, "jointly_solved")
+        if tail.startswith("Timeout union"):
+            union, _, _ = tail.partition(". ")
+            dates = re.findall(r"\d{4}-\d{2}-\d{2}", union)
+            expected[quarter].update(dict.fromkeys(dates, "timeout_union"))
+            day, = re.findall(r"already-observed (\d{4}-\d{2}-\d{2}) timing run", prospective)
+            expected[quarter][day] = "retrospective_timeout"
+    assert he._G5_TIMING_WEEKS == expected
