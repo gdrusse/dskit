@@ -657,6 +657,9 @@ _G5_TIMING_METHODS = {
     ("usage_unbound", "g5_timing_scheduler_usage"),
     ("checkout_unbound", "g5_timing_scheduler_pins"),
     ("self_pinned_bundle", "g5_timing_bundle_approval"),
+    ("clean_retry", None),
+    ("clean_retry_wrong_designation", "g5_timing_declaration"),
+    ("swapped_bundle_jobs", "g5_timing_bundle_approval"),
 ])
 def test_g5_timing_projects_pinned_triplets_or_refuses_all(tmp_path, capsys, monkeypatch, damage, expected):
     from hashlib import sha256
@@ -688,8 +691,14 @@ def test_g5_timing_projects_pinned_triplets_or_refuses_all(tmp_path, capsys, mon
         target.write_bytes(content)
         return {"path": path, "sha256": sha256(content).hexdigest()}
 
-    week = "2020-01-06"
-    other_day = "2020-01-13"
+    clean_retry = damage in {"clean_retry", "clean_retry_wrong_designation"}
+    week = "2020-03-09" if clean_retry else "2020-01-06"
+    other_day = "2020-03-23" if clean_retry else "2020-01-13"
+    designation = "jointly_solved"
+    if damage == "wrong_designation":
+        designation = "timeout_union"
+    if damage == "clean_retry":
+        designation = "retrospective_clean_rerun"
     checkout = "c" * 40
     checkout_path = tmp_path / "checkout"
     interpreter = str(tmp_path / "python")
@@ -728,7 +737,7 @@ def test_g5_timing_projects_pinned_triplets_or_refuses_all(tmp_path, capsys, mon
         job_id = f"{key}_run"
         cells[key] = {"quarter": "2020Q1", "week": week, "role": role, "method": method_id,
                       "asof": "2020-03-31", "tail_end_before": "2020-05-01", "registry": role,
-                      "designation": "timeout_union" if damage == "wrong_designation" else "jointly_solved",
+                      "designation": designation,
                       "job_ids": {"run": job_id}, "files": {"run": doc_pin},
                       "paths": {"run": {"root": run_root, "usage": usage}}}
         row = {"date": week, "status": "timeout_skipped" if altered == "status" else "cash",
@@ -786,8 +795,9 @@ def test_g5_timing_projects_pinned_triplets_or_refuses_all(tmp_path, capsys, mon
         pin(f"{run}/carry.json", {"close_packet": {"receipt": manifest}})
         runs[key] = {"run_dir": run, "close_sha256": "0" * 64 if altered == "close" else digest,
                      "usage": pin(usage, b"POISON\n" if altered == "usage" else b"peak_rss_kib=2048 wall_s=2.34\n")}
-    declared = {week: "timeout_union" if damage == "wrong_designation" else "jointly_solved",
-                "2020-03-09": "retrospective_timeout"}
+    declared = {week: designation}
+    if not clean_retry:
+        declared["2020-03-09"] = "retrospective_timeout"
     if damage == "missing_week":
         declared[other_day] = "timeout_union"
     authorized = {**declared, week: "jointly_solved"}
@@ -818,8 +828,14 @@ def test_g5_timing_projects_pinned_triplets_or_refuses_all(tmp_path, capsys, mon
                        usage_path: "e" * 64 if damage == "usage_unbound" else runs[key]["usage"]["sha256"]}}]}
         runs[key]["receipt"] = pin(f"receipts/{job_id}.json", receipt)
     job_spec = pin("jobs.json", {"run_id": "synthetic", "jobs": jobs})
-    if damage != "self_pinned_bundle":
-        monkeypatch.setattr(he, "_G5_APPROVED_BUNDLES", frozenset({(matrix["sha256"], job_spec["sha256"])}))
+    bundle = (matrix["sha256"], job_spec["sha256"])
+    if damage == "swapped_bundle_jobs":
+        monkeypatch.setattr(he, "_G5_APPROVED_BUNDLES",
+                            frozenset({(bundle[0], "0" * 64), ("1" * 64, bundle[1])}))
+    elif damage != "self_pinned_bundle":
+        monkeypatch.setattr(he, "_G5_APPROVED_BUNDLES", frozenset({bundle}))
+    if clean_retry:
+        monkeypatch.setattr(he, "_G5_CLEAN_RETRY_BUNDLE", bundle)
     evidence = pin("evidence.json", {"matrix": matrix, "jobs": job_spec, "code_commit": checkout, "runs": runs})
     argv = ["g5-timing", str(tmp_path / evidence["path"]), "--sha256", evidence["sha256"]]
     assert he.main(argv) == int(expected is not None)
@@ -829,7 +845,12 @@ def test_g5_timing_projects_pinned_triplets_or_refuses_all(tmp_path, capsys, mon
     else:
         assert "POISON" not in output.out and output.err == ""
         report = json.loads(output.out)
-        decision, = report["weeks"]
+        if clean_retry:
+            assert report["weeks"] == []
+            decision = report["retrospective_clean_retry"]
+        else:
+            assert "retrospective_clean_retry" not in report
+            decision, = report["weeks"]
         assert decision["decision_week"] == week
         exact = decision["roles"]["exact-search"]
         assert exact["search"] == {"iterations": 2, "failed": 1, "seconds": 0.3}
@@ -871,3 +892,18 @@ def test_g5_timing_week_authority_matches_adr_receipt():
             day, = re.findall(r"already-observed (\d{4}-\d{2}-\d{2}) timing run", prospective)
             expected[quarter][day] = "retrospective_timeout"
     assert he._G5_TIMING_WEEKS == expected
+
+
+
+def test_g5_approved_timing_bundles_match_exact_adr_pins():
+    import re
+
+    path = Path(he.__file__).resolve().parents[3] / "docs/architecture/decision-log.md"
+    pins = path.read_text().split("**G5 timing bundle approval pins", 1)[1]
+    clean = next(line for line in pins.splitlines() if line.startswith("- Clean March 9"))
+    prospective = next(line for line in pins.splitlines() if line.startswith("- Prospective v2"))
+    pattern = r"`([0-9a-f]{64})`"
+    clean_pair = tuple(re.findall(pattern, clean))
+    prospective_pair = tuple(re.findall(pattern, prospective))
+    assert he._G5_CLEAN_RETRY_BUNDLE == clean_pair
+    assert he._G5_APPROVED_BUNDLES == frozenset({clean_pair, prospective_pair})

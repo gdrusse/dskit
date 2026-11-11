@@ -696,7 +696,16 @@ def _main_g5_status(argv):
 
 
 # ADR-0313 requires independent clearance of the exact operational bundle.
-_G5_APPROVED_BUNDLES: frozenset[tuple[str, str]] = frozenset()
+_G5_CLEAN_RETRY_BUNDLE = (
+    "a899ca8acee1ca39caf23dd952ede595603a71edaf35e7529db71b75c44d1b3d",
+    "4bc58ea32d983b6b4826a226770bf7c2192159cbc53f3496c3ef008f9346f150",
+)
+_G5_PROSPECTIVE_BUNDLE = (
+    "e11d5905bac92b903085e0e481278afcd9307cfc7096207596c344335e8dd1a3",
+    "0928521cb3499fd04c6b69397d80cfbaba45dfd969d2d535b94c23aa5d203794",
+)
+_G5_APPROVED_BUNDLES = frozenset({_G5_CLEAN_RETRY_BUNDLE, _G5_PROSPECTIVE_BUNDLE})
+_G5_CLEAN_RETRY_WEEKS = {"2020Q1": {"2020-03-09": "retrospective_clean_rerun"}}
 
 # ADR-0313's status-only declaration receipt is the prospective matrix authority.
 _G5_TIMING_WEEKS = {
@@ -986,7 +995,8 @@ def _g5_timing_read(root, evidence):
     from dskit.pipeline.driver import RunAttestation, resolve_json_artifact
 
     matrix_pin, jobs_pin = evidence["matrix"], evidence["jobs"]
-    if (matrix_pin["sha256"], jobs_pin["sha256"]) not in _G5_APPROVED_BUNDLES:
+    bundle = matrix_pin["sha256"], jobs_pin["sha256"]
+    if bundle not in _G5_APPROVED_BUNDLES:
         raise _G5TimingRefusal("g5_timing_bundle_approval")
     matrix = _g5_timing_json(_g5_pinned_bytes(root, matrix_pin, "g5_timing_matrix_pin"))
     jobs_manifest = _g5_timing_json(_g5_pinned_bytes(root, jobs_pin, "g5_timing_jobs_pin"))
@@ -996,9 +1006,11 @@ def _g5_timing_read(root, evidence):
     run_id = jobs_manifest["run_id"]
     if code != matrix["checkout"] or run_id != matrix["scheduler_run_id"]:
         raise _G5TimingRefusal("g5_timing_build")
-    if matrix["weeks"] != _G5_TIMING_WEEKS:
+    clean_retry = bundle == _G5_CLEAN_RETRY_BUNDLE
+    declaration = _G5_CLEAN_RETRY_WEEKS if clean_retry else _G5_TIMING_WEEKS
+    if matrix["weeks"] != declaration:
         raise _G5TimingRefusal("g5_timing_declaration")
-    declared = {(quarter, week) for quarter, weeks in _G5_TIMING_WEEKS.items()
+    declared = {(quarter, week) for quarter, weeks in declaration.items()
                 for week, designation in weeks.items() if designation != "retrospective_timeout"}
     jobs = {job["id"]: job for job in jobs_manifest["jobs"]}
     if len(jobs) != len(jobs_manifest["jobs"]):
@@ -1078,7 +1090,11 @@ def _g5_timing_read(root, evidence):
             raise _G5TimingRefusal("g5_timing_unmatched")
         projected.append({"quarter": quarter, "decision_week": week, "match_sha256": value_hash(identity),
                           "roles": {role: row for role, (_, row) in roles.items()}})
-    return {"code_commit": code, "scheduler_run_id": run_id, "weeks": projected}
+    report = {"code_commit": code, "scheduler_run_id": run_id, "weeks": projected}
+    if clean_retry:
+        retry, = projected
+        report.update(weeks=[], retrospective_clean_retry=retry)
+    return report
 
 
 def _main_g5_timing(argv):
