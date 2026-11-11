@@ -2226,11 +2226,12 @@ LOCKED_FORMULATION_HASHES = MappingProxyType({
 
 _KELLY_SEARCH_BASE = "kelly025_top100_search_lp"
 _KELLY_SEARCH_REPLAY_HEDGE = "kelly025_top100_search_replay_hedge_lp"
+_KELLY_SEARCH_CAL_REPLAY_HEDGE = "kelly025_top100_search_cal_replay_hedge_lp"
 _KELLY_SEARCH_BASE_SHA256 = "0b8092056012cc4d1b2cb0d3746230153172267eaf7e6d3c16c472080d5371a9"
 
 
-def _is_exact_kelly_search(method, block):
-    base = {key: value for key, value in method.items() if key != block}
+def _is_exact_kelly_search(method, *blocks):
+    base = {key: value for key, value in method.items() if key not in blocks}
     base["id"] = _KELLY_SEARCH_BASE
     return MethodBlocks.spec_hash(base) == _KELLY_SEARCH_BASE_SHA256
 
@@ -2240,12 +2241,16 @@ class _WeeklyMethodBlocks(MethodBlocks):
 
     def allows_kelly_calibration(self, method):
         calibration = method["calibration"]
+        combined = method["id"] == _KELLY_SEARCH_CAL_REPLAY_HEDGE
         form = {"kelly025_top100_search_cal_lp": "slope",
-                "kelly025_top100_search_cal_control_lp": "identity"}.get(method["id"])
+                "kelly025_top100_search_cal_control_lp": "identity",
+                _KELLY_SEARCH_CAL_REPLAY_HEDGE: "slope"}.get(method["id"])
+        blocks = ("calibration", "hedge") if combined else ("calibration",)
         return (form is not None and calibration["form"] == form
+                and (not combined or method.get("hedge", {}).get("mode") == "replay")
                 and calibration["variant"] == "point" and calibration["regressors"] == 1
                 and calibration["line"] == "bucket" and calibration["state"] == CalibratedEdge.SCORED_STATE
-                and _is_exact_kelly_search(method, "calibration"))
+                and _is_exact_kelly_search(method, *blocks))
 
 
 class WeeklyOptionPortfolioStudy:
@@ -2739,9 +2744,12 @@ class WeeklyOptionPortfolioStudy:
         for method in p["methods"]:
             hedge = method.get("hedge")
             strategy = any(key in method.get("kelly", {}) for key in cls._KELLY_STRATEGY_KEYS)
-            if method["id"] == _KELLY_SEARCH_REPLAY_HEDGE or (hedge is not None and strategy):
-                if (method["id"] != _KELLY_SEARCH_REPLAY_HEDGE or not hedge or hedge["mode"] != "replay"
-                        or not _is_exact_kelly_search(method, "hedge")):
+            combined = method["id"] == _KELLY_SEARCH_CAL_REPLAY_HEDGE
+            if method["id"] == _KELLY_SEARCH_REPLAY_HEDGE or combined or (hedge is not None and strategy):
+                blocks = ("hedge", "calibration") if combined else ("hedge",)
+                if (method["id"] not in (_KELLY_SEARCH_REPLAY_HEDGE, _KELLY_SEARCH_CAL_REPLAY_HEDGE)
+                        or not hedge or hedge["mode"] != "replay" or (combined and "calibration" not in method)
+                        or not _is_exact_kelly_search(method, *blocks)):
                     raise ValueError("kelly_search_hedge_formulation: use the exact search replay-hedge research method")
         hedged = any("hedge" in m for m in p["methods"])
         if "hedge_parity" in p and not hedged:

@@ -582,12 +582,11 @@ def test_regressors_two_with_a_decayed_state_is_unread(harness):
         ledger_studies.CalibratedEdge(harness.study([harness.method(regressors=2, state="decayed_fill")]),
                                       harness.method(regressors=2, state="decayed_fill"))
 
-def test_kelly_point_map_changes_only_the_mean_program_of_its_warm_control(harness, monkeypatch):
+def _kelly_walk_inputs(harness):
     from datetime import date, timedelta
 
-    from test_ledger_studies import TOP_FORMULATIONS, _for_kelly
+    from test_ledger_studies import _for_kelly
 
-    base = TOP_FORMULATIONS["kelly025_top100_search_lp"]
     params = _for_kelly(copy.deepcopy(harness.params))
     inputs = copy.deepcopy(harness.inputs)
     day = date.fromisoformat(params["clocks"]["history_start"])
@@ -603,6 +602,14 @@ def test_kelly_point_map_changes_only_the_mean_program_of_its_warm_control(harne
         first = rows["bars"][0]
         rows["bars"][:0] = [{**first, "date": day, "close": first["close"] + (i % 3) * .1}
                             for i, day in enumerate(earlier)]
+    return params, inputs
+
+
+def test_kelly_point_map_changes_only_the_mean_program_of_its_warm_control(harness, monkeypatch):
+    from test_ledger_studies import TOP_FORMULATIONS
+
+    base = TOP_FORMULATIONS["kelly025_top100_search_lp"]
+    params, inputs = _kelly_walk_inputs(harness)
     options = {"solver": params["solver"], "clocks": params["clocks"], "decision_weeks": ["2019-11-18"],
                "inputs": inputs}
     control = {"id": "kelly025_top100_search_cal_control_lp", **base,
@@ -621,3 +628,66 @@ def test_kelly_point_map_changes_only_the_mean_program_of_its_warm_control(harne
     assert c_programs == a_programs
     assert control_study._method(control, None, recorded=c_result) == c_result
     assert arm_study._method(arm, None, recorded=a_result) == a_result
+
+def test_combined_kelly_replays_its_adjusted_orders_and_carries_hedge_funding(harness, monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+    from test_ledger_studies import TOP_FORMULATIONS, _PARITY, _REPLAY_BLOCK
+
+    params, inputs = _kelly_walk_inputs(harness)
+    weeks = ["2019-11-18", "2019-11-25"]
+    warm = reweighted(harness.maps, .8, warm=False)
+    for week in weeks:
+        warm[week]["states"][CAL["state"]]["warm"] = True
+    for data in inputs.values():
+        strikes = {}
+        for row in data["contexts"]:
+            if row["quote_date"] in weeks:
+                expiry, spot = row["expiry"], row["spot"]
+                options = {quote["strike_raw"] for quote in data["chain"] if quote["expiration"] == expiry}
+                strikes.setdefault(expiry, min(options, key=lambda strike: (abs(strike - spot), strike)))
+        for quote in data["chain"]:
+            if quote["expiration"] in strikes and quote["strike_raw"] == strikes[quote["expiration"]]:
+                quote.update(iv=.3, bid=.15, ask=.16)
+        data["chain"] = [quote for quote in data["chain"] if quote["type"] == "call"
+                         and quote["strike_raw"] == strikes.get(quote["expiration"])]
+    base = TOP_FORMULATIONS["kelly025_top100_search_lp"]
+    control = {"id": "kelly025_top100_search_cal_lp", **base, "calibration": dict(CAL)}
+    arm = {**control, "id": "kelly025_top100_search_cal_replay_hedge_lp",
+           "hedge": {**_REPLAY_BLOCK, "ratio": .25}}
+    options = {"solver": params["solver"], "clocks": params["clocks"], "inputs": inputs}
+    twin = harness.study([control], maps=warm, **options)
+    combined = harness.study([arm], maps=warm, hedge_parity=dict(_PARITY), **options)
+    c_result, c_programs = programs_of(monkeypatch, twin, control)
+    a_result, a_programs = programs_of(monkeypatch, combined, arm)
+    assert len(c_programs) == len(a_programs) == 2
+    assert c_programs[0] == a_programs[0]
+    assert any(any(group["value_adjust"]) for group in a_programs[0]["groups"])
+    decisions = lambda result: [d for d in result["decisions"] if d["date"] in weeks]  # noqa: E731
+    c_decisions, a_decisions = decisions(c_result), decisions(a_result)
+    first = a_decisions[0]["selection"]
+    first = first.get("candidate", first)
+    scorer = TransportActionScore(a_programs[0], {"parity_tolerance": params["solver"]["parity_tolerance"]})
+    assert scorer.evaluate(first["quantities"])["value"] == pytest.approx(first["value"])
+    assert c_decisions[0]["books"] == a_decisions[0]["books"] and a_decisions[0]["books"]
+    trade = next(t for t in a_result["trades"] if t["decision_date"] == weeks[0])
+    assert trade["hedge"]["status"] == "ok" and trade["hedge"]["units"] != 0
+    assert trade["close_date"] > weeks[1]
+    unhedged = next(t for t in c_result["trades"] if t["decision_date"] == weeks[0]
+                    and t["expiry"] == trade["expiry"])
+    hedge = trade["hedge"]
+    level = next(row["close"] / row["basis_factor"] for row in inputs[trade["symbol"]]["bars"]
+                 if row["date"] == trade["close_date"])
+    cost = abs(hedge["units"]) * (2 * hedge["rates"]["hedge_fee_per_share"]
+                                  + (hedge["reference"] + level) * hedge["rates"]["hedge_half_spread_bps"] / 1e4)
+    forward = hedge["units"] * (level - hedge["reference"]) - cost
+    assert forward != 0 and trade["pnl"] == pytest.approx(unhedged["pnl"] + forward)
+    reserve_delta = a_decisions[1]["open_reserve"] - c_decisions[1]["open_reserve"]
+    assert reserve_delta != 0
+    assert a_decisions[1]["funding"] == c_decisions[1]["funding"]
+    assert a_programs[1]["utility"]["w0"] - c_programs[1]["utility"]["w0"] == pytest.approx(-reserve_delta)
+
+    def unexpected_solve(*args, **kwargs):
+        pytest.fail("recorded replay must not solve again")
+
+    monkeypatch.setattr(TransportPortfolioSolve, "run", unexpected_solve)
+    assert combined._method(arm, None, recorded=a_result) == a_result

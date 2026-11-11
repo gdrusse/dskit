@@ -6427,3 +6427,29 @@ def test_only_exact_search_calibration_point_arm_and_identity_twin_validate():
             params["methods"] = [bad]
             with pytest.raises(ValueError, match="calibration_with_kelly"):
                 validate(params, tail_end_before="2021-07-01")
+
+def test_combined_search_pair_refuses_other_strategies_and_program_blocks():
+    import copy
+
+    params, _ = _kelly_fixture()
+    params.update(locked_method_ids=list(FORMULATIONS), hedge_parity=dict(_PARITY))
+    baseline = TOP_FORMULATIONS["kelly025_top100_search_lp"]
+    method = {"id": "kelly025_top100_search_cal_replay_hedge_lp", **baseline,
+              "calibration": dict(_CAL), "hedge": dict(_REPLAY_BLOCK)}
+    validate = ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration
+    params["methods"] = [method]
+    validate(params, tail_end_before="2021-07-01")
+    for bad, message in (
+            ({**method, "hedge": {**method["hedge"], "mode": "program"}}, "calibration_with_kelly"),
+            ({**method, "exposure_limits": dict(_WIDE)}, "exposure_limits_with_kelly"),
+            ({**method, "id": "other_kelly"}, "calibration_with_kelly"),
+            ({key: value for key, value in method.items() if key != "calibration"}, "kelly_search_hedge_formulation"),
+            ({key: value for key, value in method.items() if key != "hedge"}, "calibration_with_kelly")):
+        params["methods"] = [bad]
+        with pytest.raises(ValueError, match=message):
+            validate(params, tail_end_before="2021-07-01")
+    altered = copy.deepcopy(method)
+    altered["kelly"]["search"]["iterations"] -= 1
+    params["methods"] = [altered]
+    with pytest.raises(ValueError, match="calibration_with_kelly"):
+        validate(params, tail_end_before="2021-07-01")
