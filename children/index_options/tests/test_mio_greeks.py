@@ -1777,3 +1777,23 @@ def test_a_standalone_greeks_hook_neither_raises_attribute_error_nor_guesses_par
     with pytest.raises(GreeksRefusal) as info:
         node._parity_rows({"factor": 1.0}, "2021-04-06", [])
     assert code_of(info) == "quote_params_missing"
+
+def test_greeks_runs_and_attests_through_the_pipeline_driver(world, tmp_path):
+    from dskit.pipeline.document import PipelineDocument
+    from dskit.pipeline.driver import RunAttestation, run_document
+
+    run_dir, out_dir = world()
+    document = PipelineDocument.from_obj({
+        "name": "greeks-driver-fixture",
+        "pipeline": {"greeks": {
+            "uses": "index_options.mio_greeks:MIOGreeksDiagnostics",
+            "params": {**PARAMS, "run_dir": str(run_dir), "out_dir": str(out_dir)},
+        }},
+        "outputs": {"run_root": str(tmp_path / "pipeline-runs")},
+    })
+    result = run_document(document, asof="2021-06-30", journal=False)
+    assert result.exit_code == 0
+    assert RunAttestation(result.run_dir).node_output_for_document("greeks", document.hash)
+    summary = json.loads((Path(result.run_dir) / "carry.json").read_bytes())["greeks"]["summary"]
+    assert summary == json.loads((out_dir / "greeks-summary.json").read_bytes())
+    assert summary["methods"][METHOD]["books"] == 3
