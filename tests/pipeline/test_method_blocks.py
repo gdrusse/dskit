@@ -273,11 +273,15 @@ def test_all_and_purity():
 def test_a_derived_document_may_not_change_the_locked_ids_or_reuse_one():
     owner = mb.MethodBlocks
     nine = ["a", "b"]
-    assert owner.lock_problems(nine, ["b", "a"], ["new"], ["a"]) == []
+    assert owner.lock_problems(nine, nine, ["new"], ["a"]) == []
+    assert owner.lock_problems(nine, ["b", "a"], ["new"], ["a"])[0].startswith("locked_method_ids_changed")
     assert owner.lock_problems(nine, ["a"], ["new"])[0].startswith("locked_method_ids_changed")
     assert owner.lock_problems(nine, None, ["new"])[0].startswith("locked_method_ids_changed")
     assert owner.lock_problems(nine, nine, ["a"])[0].startswith("locked_method_id_collision")
     assert owner.lock_problems(nine, nine, ["old"], ["old"])[0].startswith("locked_method_id_collision")
+    for alias in (" A ", "A", "a "):
+        assert owner.lock_problems(nine, nine, [alias])[0].startswith("locked_method_id_collision")
+    assert owner.lock_problems(nine, nine, [" OLD "], ["old"])[0].startswith("locked_method_id_collision")
 
 
 def test_a_date_past_the_development_seal_is_a_violation():

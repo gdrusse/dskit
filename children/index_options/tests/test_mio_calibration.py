@@ -22,14 +22,16 @@ def test_no_block_means_no_calibration_key_in_any_program_or_record(monkeypatch)
 
     for name, method in FORMULATIONS.items():
         params, inputs = _weekly_portfolio_fixture()
-        params["methods"][0].update(method, id=name)
+        params["methods"] = [{"id": name, **method}]
+        study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+        synthetic = params["methods"][0]
         if "shock" in method:
-            params["methods"][0]["shock"] = {**method["shock"], "beta_lookback": 2}
+            # The original short synthetic history exercises the program with a two-session beta.
+            synthetic = {**synthetic, "shock": {**method["shock"], "beta_lookback": 2}}
         seen, run = [], TransportPortfolioSolve.run
         monkeypatch.setattr(TransportPortfolioSolve, "run",
                             lambda self, ctx, inp, run=run, seen=seen: (seen.append(inp), run(self, ctx, inp))[1])
-        study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
-        result = study._method(params["methods"][0], None)
+        result = study._method(synthetic, None)
         monkeypatch.setattr(TransportPortfolioSolve, "run", run)
         assert seen and all("value_adjust" not in g for program in seen for g in program["groups"]), name
         text = json.dumps(result)
@@ -213,7 +215,7 @@ class Harness:
         bridge = {**domain["params"]["bridge"], "fold": self.node._fold_label, "start": START,
                   "end_before": self.end, "protected_end_before": p["protected_end_before"]}
         self.params = {**domain["params"], "bridge": bridge, "symbols": list(self.node._active),
-                       "selected_pairs": list(self.node._pairs), "clocks": clocks, "locked_method_ids": ["nominal"]}
+                       "selected_pairs": list(self.node._pairs), "clocks": clocks, "locked_method_ids": list(FORMULATIONS)}
         forecasts = self.node._forecasts(START, self.end)
         self.inputs = {s: {**self.node._market[s], "chain": [r for r in self.node._market[s]["chain"] if r["date"] >= START],
                            **forecasts[s]} for s in self.node._active}

@@ -70,6 +70,7 @@ from abc import ABC, abstractmethod
 from collections import Counter
 from datetime import date
 from fractions import Fraction
+from types import MappingProxyType
 from typing import NamedTuple
 
 from dskit.pipeline.driver import resolve_json_artifact
@@ -99,7 +100,7 @@ from .nodes import (
 from dskit.pipeline.node import JsonArtifact
 from dskit.pipeline.study_protocol import StudyNode
 
-__all__ = ["MIOPacketPlan", "MIOPacketStudy", "MIOPacketCompare", "ACCOUNT_COLUMNS", "BACKTEST_NODE", "CAPITAL_LEVELS", "COLUMNS", "CVAR_ALPHA",
+__all__ = ["LOCKED_FORMULATION_HASHES", "MIOPacketPlan", "MIOPacketStudy", "MIOPacketCompare", "ACCOUNT_COLUMNS", "BACKTEST_NODE", "CAPITAL_LEVELS", "COLUMNS", "CVAR_ALPHA",
            "EVIDENCE_ARTIFACT", "NOMINAL_ARM", "SELECT_STAGE", "SETTLE_STAGE", "UNCAPPED",
            "REJECTION_REASONS", "STUDIES", "AccountRow", "AccountStudy", "AdmissionCaps",
            "AllocationStudy", "EnteredCell", "HedgeStudy", "LedgerStudy", "AccountOrder", "ReplayHedge", "SavedReplay",
@@ -2208,6 +2209,21 @@ class CalibratedEdge:
                 "counts_as_evidence": weeks.get("warm", 0) >= self.block["min_warm_weeks"]}
 
 
+#: A0010's ordered formulation ids and whole-spec digests (ADR-0297/0313).
+#: The queue example and each research template are pinned to this authority by tests.
+LOCKED_FORMULATION_HASHES = MappingProxyType({
+    "w1_010_shock10_lp": "5df0260c24382f5687cca7a0a79c5c7dd31f18026c40565b7dd6280ba01444d2",
+    "w1_003_shock10_lp": "f039c1052a70e03e1677c3a221645cf866bd63aeb542de6e78c61f27f7607dce",
+    "w1_003_shock10_mad050_lp": "4cb355a1430cd91ca057ea6de25d1f1b6c38db1c229d8cfdf70a2b6e8b7db027",
+    "nominal_lp": "2aafa98563258583cba3ba132e00f99f94a654aa0cdaf93d8b91456e5f02d77f",
+    "w1_010z_shock10_lp": "117f2a065186e0cc05b22dce4023e9979bd2e66f168c681cc0436bf5975098b3",
+    "w1_010_shock10_fine_lp": "cbd34f09cec9d5bb8dc80b4481f58d503dfd247985a852138875eb7b9874e925",
+    "w1_010_component25_shock10_lp": "6971f606c5e65db85b7c00a713a22a009a5e63a8211178e4c1dd10d2fa74d50c",
+    "w1_010_name25_shock10_lp": "5147dcca687ef5a3da75948e4835271d7bb6118258a632fe989277ee85aaab0d",
+    "w1_010_shock05_book_lp": "d63a2e649f4cf133b3f94b44e796efe20533e6cd7d734bba44ee68f982b0840c",
+})
+
+
 class WeeklyOptionPortfolioStudy:
     """Replay fixed portfolio methods on a bounded archive and weekly clock.
 
@@ -2555,10 +2571,10 @@ class WeeklyOptionPortfolioStudy:
         p = params
         if "fill_sizing" in p and p["fill_sizing"] not in cls._FILL_SIZINGS:
             raise ValueError("unsupported fill sizing")
-        if "locked_method_ids" in p and not (
-                isinstance(p["locked_method_ids"], list) and len(set(p["locked_method_ids"])) == len(p["locked_method_ids"])
-                and all(isinstance(i, str) and i for i in p["locked_method_ids"])):
-            raise ValueError("locked_method_ids must be a list of distinct nonempty method ids")
+        if "locked_method_ids" in p:
+            defects = MethodBlocks.lock_problems(LOCKED_FORMULATION_HASHES, p["locked_method_ids"], ())
+            if defects:
+                raise ValueError("; ".join(defects))
         if "decision_weeks" in p:
             cls._decision_week(p["decision_weeks"])
         defects = TransportPortfolioSolve.validate_params(p["solver"])
@@ -2607,6 +2623,9 @@ class WeeklyOptionPortfolioStudy:
                    "clocks": p.get("clocks") or ({"tail_end_before": tail_end_before} if tail_end_before else None)}
         for method in p["methods"]:
             cls._BLOCKS.validate(method, context)
+        defects = MethodBlocks.locked_spec_problems(LOCKED_FORMULATION_HASHES, p["methods"])
+        if defects:
+            raise ValueError("; ".join(defects))
         cls._hedge_configuration(p)
         cls._exposure_configuration(p)
         for method in p["methods"]:

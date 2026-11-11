@@ -73,8 +73,9 @@ def test_a_template_keeps_the_nine_locked_new_ids_and_the_base_spec(path):
     template = load(path)
     overlay = template["study_overlay"]["domain"]["params"]
     queue = json.loads((CHILD / "docs/plans/mio-parallel/queue.example.json").read_text())
-    assert overlay["locked_method_ids"] == queue["selection_formulations"] == list(FORMULATIONS)
+    assert overlay["locked_method_ids"] == queue["selection_formulations"] == list(FORMULATIONS) == list(ledger_studies.LOCKED_FORMULATION_HASHES)
     ids = [m["id"] for m in overlay["methods"]]
+    assert queue["selection_formulation_hashes"] == ledger_studies.LOCKED_FORMULATION_HASHES
     assert len(ids) == len(set(ids)) and not set(ids) & set(FORMULATIONS)
     blocks = {"calibration", "hedge", "exposure_limits"}
     for method in overlay["methods"]:
@@ -211,10 +212,50 @@ def test_the_instantiator_refuses_an_overlay_that_overrides_locked_content(name,
     _refusal(sealed, base, "development_seal_violation")
 
 
-def test_the_base_documents_own_locked_ids_are_the_pin(study):  # noqa: F811
+def test_the_base_declaration_must_match_the_pin(study):  # noqa: F811
     base, template = base_document(study), load(PLANS / "hedged-program-arm.template.json")
     base["pipeline"]["plan"]["params"]["study"]["domain"]["params"]["locked_method_ids"] = ["only_this"]
     _refusal(template, base, "locked_method_ids_changed")
+
+
+@pytest.mark.parametrize("declaration", [[], list(reversed(FORMULATIONS)), list(FORMULATIONS)[1:],
+                                         [*FORMULATIONS, "extra"]])
+def test_base_and_overlay_cannot_agree_to_change_locked_ids(study, declaration):  # noqa: F811
+    base, template = base_document(study), load(PLANS / "hedged-program-arm.template.json")
+    study["domain"]["params"]["locked_method_ids"] = declaration
+    template["study_overlay"]["domain"]["params"]["locked_method_ids"] = declaration
+    _refusal(template, base, "locked_method_ids_changed")
+
+
+def test_the_instantiator_refuses_an_empty_queue_lock_declaration(study, tmp_path):  # noqa: F811
+    base, template = base_document(study), load(PLANS / "hedged-program-arm.template.json")
+    template["study_overlay"]["domain"]["params"]["locked_method_ids"] = []
+    queue = tmp_path / "queue.json"
+    queue.write_text(json.dumps({"selection_formulations": []}))
+    _refusal(template, base, "locked_method_ids_changed", queue_config=queue)
+
+
+@pytest.mark.parametrize("alias", ["NOMINAL_LP", " nominal_lp ", " NOMINAL "])
+def test_an_overlay_method_cannot_alias_a_locked_or_base_id(study, alias):  # noqa: F811
+    base, template = base_document(study), load(PLANS / "hedged-program-arm.template.json")
+    template["study_overlay"]["domain"]["params"]["methods"][0]["id"] = alias
+    _refusal(template, base, "locked_method_id_collision")
+
+
+def test_an_overlay_cannot_inherit_the_base_methods(study):  # noqa: F811
+    base, template = base_document(study), load(PLANS / "hedged-program-arm.template.json")
+    study["domain"]["params"]["methods"] = [{"id": "nominal_lp", **FORMULATIONS["nominal_lp"]}]
+    del template["study_overlay"]["domain"]["params"]["methods"]
+    _refusal(template, base, "locked_method_id_collision")
+
+
+def test_an_instantiator_base_must_keep_the_pinned_spec_for_a_locked_id(study):  # noqa: F811
+    base, template = base_document(study), load(PLANS / "hedged-program-arm.template.json")
+    method = {"id": "nominal_lp", **FORMULATIONS["nominal_lp"]}
+    study["domain"]["params"]["methods"] = [method]
+    instantiate(template, base, name="n", output_root="r")
+    method["rho"] = .5
+    _refusal(template, base, "locked_formulation_spec_changed")
 
 
 def test_a_leftover_placeholder_of_any_shape_refuses(study):  # noqa: F811
@@ -223,6 +264,13 @@ def test_a_leftover_placeholder_of_any_shape_refuses(study):  # noqa: F811
         left = copy.deepcopy(template)
         left["study_overlay"]["domain"].setdefault("sources", {})["corporate_actions"] = {"pin": leftover}
         _refusal(left, base, "unreplaced_placeholder")
+
+
+@pytest.mark.parametrize("key", ["<pin>", "TODO: pin", "PLACEHOLDER: x", "root/${nowhere}"])
+def test_a_leftover_placeholder_mapping_key_refuses(study, key):  # noqa: F811
+    base, template = base_document(study), load(PLANS / "hedged-program-arm.template.json")
+    template["study_overlay"]["domain"].setdefault("sources", {})[key] = {}
+    _refusal(template, base, "unreplaced_placeholder")
 
 
 def test_every_template_says_the_overlay_methods_replace_the_base_formulations():
@@ -278,7 +326,7 @@ def test_a_combined_arm_from_the_template_agrees_with_a_walk_run_from_the_walk_t
 # --- a template runs end to end through the owner's entry point ------------------------------------------------------
 
 @pytest.mark.slow
-@pytest.mark.parametrize("study", ["long_history"], indirect=True)
+@pytest.mark.parametrize("study", ["hedged_program"], indirect=True)
 def test_an_instantiated_hedged_program_arm_runs_to_completion(study, tmp_path, monkeypatch, capsys):  # noqa: F811
     """The registry the freeze needs is the quarter's own historical import, built here on the synthetic world."""
     from dskit.pipeline.__main__ import cmd_run
@@ -300,5 +348,32 @@ def test_an_instantiated_hedged_program_arm_runs_to_completion(study, tmp_path, 
     receipt = resolve_json_artifact(run_dir, RunAttestation(run_dir).attested_output("close_packet", "receipt", load_document(str(path)).hash))
     results = {r["method"] if "method" in r else r["id"]: r for r in receipt["results"]}
     assert set(results) == {"w1_010_shock10_hedge_twin_lp", "w1_010_shock10_hedge_lp"}, results.keys()
-    assert all(r["status"] == "completed" for r in results.values())
+    assert all(r["status"] == "completed" and r["replay_parity"] for r in results.values()), results
     assert "hedge" in results["w1_010_shock10_hedge_lp"]["result"] and "hedge" not in results["w1_010_shock10_hedge_twin_lp"]["result"]
+
+    from dskit.pipeline.option_structures import structure_payoff
+
+    arm = results["w1_010_shock10_hedge_lp"]["result"]
+    twin = results["w1_010_shock10_hedge_twin_lp"]["result"]
+    assert len(arm["trades"]) == len(twin["trades"]) == 1
+    book, = arm["decisions"][0]["books"]
+    trade, = arm["trades"]
+    assert book["id"] == trade["id"] and book["program_hedge"]["units_raw"]
+    assert trade["fill_date"] == "2019-01-03" and trade["close_date"] == "2019-02-01"
+    assert all(leg["fill_price"] > 0 for leg in trade["legs"])
+    hedge = trade["hedge"]
+    assert hedge["status"] == "ok" and hedge["units"] != 0
+    settlement = 111.0  # the synthetic spot rises by 0.5 per weekday
+    positions = [(leg["right"], leg["sign"] * leg["quantity"]) for leg in trade["legs"]]
+    strikes = [leg["strike"] for leg in trade["legs"]]
+    option_pnl = trade["credit"] + 100 * structure_payoff(positions, settlement, strikes)
+    fees = hedge["rates"]["hedge_fee_per_share"]
+    spread = hedge["rates"]["hedge_half_spread_bps"] / 1e4
+    hedge_pnl = (hedge["units"] * (settlement - hedge["reference"])
+                 - abs(hedge["units"]) * (2 * fees + spread * (settlement + hedge["reference"])))
+    assert hedge_pnl != 0
+    assert trade["pnl"] == pytest.approx(option_pnl + hedge_pnl, abs=.005)
+    assert arm["pnl"] == pytest.approx(trade["pnl"], abs=.005)
+    totals = arm["ledger_summary"]["totals"]
+    assert totals["closed_trades"] == 1
+    assert totals["pnl_usd"] == pytest.approx(trade["pnl"], abs=.005)

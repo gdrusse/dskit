@@ -9,10 +9,11 @@ node) is the base, and this tool deep-merges the overlay into that study's ``dom
 the arm document holds only its new method ids).
 
 It refuses what would override locked content, each with a stable code (the rules live in
-``dskit.pipeline.method_blocks.MethodBlocks``, the one owner of the locked ids and the seal): ``locked_method_ids_changed``
-(the merged list is not the base document's, or the queue config's nine when the base carries none),
-``locked_method_id_collision`` (an overlay method id is locked or already in the base), ``development_seal_violation``
-(a base or overlay clock, or the template's own ``development_seal``, is past ``DEVELOPMENT_SEAL``) and
+``dskit.pipeline.method_blocks.MethodBlocks``): ``locked_method_ids_changed`` (the base, queue or merged
+declaration differs from the ordered A0010 ids), ``locked_method_id_collision`` (an overlay id matches a locked
+or existing base id after normalization), ``locked_formulation_spec_changed`` (a base spec or queue digest
+differs from its pin), ``development_seal_violation`` (a base or overlay clock, or the template's own
+``development_seal``, violates ``DEVELOPMENT_SEAL``) and
 ``unreplaced_placeholder`` (a leftover marker, see :func:`is_placeholder`).
 
 Run it from the repository root::
@@ -34,6 +35,7 @@ from pathlib import Path
 
 from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL, MethodBlocks
 from dskit.pipeline.workflow import expand
+from index_options.ledger_studies import LOCKED_FORMULATION_HASHES
 
 __all__ = ["deep_merge", "instantiate", "is_placeholder", "main"]
 
@@ -42,7 +44,7 @@ TEMPLATE_ONLY = ("kind", "placeholders", "development_seal", "study_overlay")
 #: The ONE placeholder convention: a string that starts ``PLACEHOLDER``, is a lone ``<marker>``, starts ``TODO``/``TBD``,
 #: or still holds a ``${...}`` reference. Anything the tool fills is replaced; any survivor refuses.
 _PLACEHOLDER = re.compile(r"^\s*(PLACEHOLDER|TODO|TBD)\b|^\s*<[^<>]+>\s*$|\$\{")
-#: The queue config that owns the nine locked ids when the base document carries no ``locked_method_ids``.
+#: The checked-in queue declaration, which must agree with the study lock.
 QUEUE_CONFIG = Path(__file__).resolve().parents[1] / "docs/plans/mio-parallel/queue.example.json"
 
 
@@ -74,18 +76,19 @@ def _base_study(base):
 
 
 def _leftovers(value, path=""):
-    """Every string of ``value`` that is still a template placeholder, with its path."""
+    """Find the paths of placeholder keys or values in the expanded document."""
     if isinstance(value, str):
         return [path] if is_placeholder(value) else []
     items = value.items() if isinstance(value, dict) else enumerate(value) if isinstance(value, list) else ()
-    return [hit for key, item in items if key != "notes" for hit in _leftovers(item, f"{path}/{key}")]
-
-
-def _pinned_locked(params, queue_config):
-    """Return the locked ids a derived document must keep: the base's own, else the queue config's nine."""
-    if "locked_method_ids" in params:
-        return list(params["locked_method_ids"])
-    return list(json.loads(Path(queue_config).read_text())["selection_formulations"])
+    hits = []
+    for key, item in items:
+        if key == "notes" and isinstance(item, str):
+            continue
+        field = f"{path}/{key}"
+        if is_placeholder(key):
+            hits.append(field)
+        hits.extend(_leftovers(item, field))
+    return hits
 
 
 def _refuse(problems):
@@ -115,11 +118,18 @@ def instantiate(template, base, *, name, output_root, edge_maps_pin=None, decisi
     _refuse(MethodBlocks.seal_violations(ends + claimed) + (
         [] if claimed[0] == DEVELOPMENT_SEAL else
         [f"development_seal_violation: the template's development_seal {claimed[0]!r} differs from {DEVELOPMENT_SEAL}"]))
-    new_ids = [m["id"] for m in domain["params"].get("methods", [])]
+    pinned = LOCKED_FORMULATION_HASHES
+    queue = json.loads(Path(queue_config).read_text())
+    _refuse(MethodBlocks.lock_problems(pinned, queue.get("selection_formulations"), ()))
+    if queue.get("selection_formulation_hashes") != pinned:
+        raise ValueError("locked_formulation_spec_changed: queue formulation digests differ from the A0010 pins")
+    if "locked_method_ids" in params:
+        _refuse(MethodBlocks.lock_problems(pinned, params["locked_method_ids"], ()))
+    _refuse(MethodBlocks.locked_spec_problems(pinned, params["methods"]))
     study["domain"] = deep_merge(study["domain"], domain)
-    merged = study["domain"]["params"].get("locked_method_ids")
-    _refuse(MethodBlocks.lock_problems(_pinned_locked(params, queue_config), merged, new_ids,
-                                       [m["id"] for m in params["methods"]]))
+    merged = study["domain"]["params"]
+    _refuse(MethodBlocks.lock_problems(pinned, merged.get("locked_method_ids"),
+                                       [m["id"] for m in merged["methods"]], [m["id"] for m in params["methods"]]))
     body = {key: value for key, value in template.items() if key not in TEMPLATE_ONLY}
     document = expand(body, {"study": study, "output_root": str(output_root)})
     document["name"] = name

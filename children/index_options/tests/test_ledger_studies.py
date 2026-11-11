@@ -4654,13 +4654,16 @@ def test_the_nine_formulations_are_byte_identical_to_main_before_the_wiring(monk
     assert set(NINE_PINS) == set(FORMULATIONS)
     for name, method in FORMULATIONS.items():
         params, inputs = _weekly_portfolio_fixture()
-        params["methods"][0].update(method, id=name)
+        params["methods"] = [{"id": name, **method}]
+        study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+        synthetic = params["methods"][0]
         if "shock" in method:
-            params["methods"][0]["shock"] = {**method["shock"], "beta_lookback": 2}
+            # Preserve the historical two-session fixture and its pins at the internal solve seam.
+            synthetic = {**synthetic, "shock": {**method["shock"], "beta_lookback": 2}}
         seen, run = [], TransportPortfolioSolve.run
         monkeypatch.setattr(TransportPortfolioSolve, "run",
                             lambda self, ctx, inp, run=run, seen=seen: (seen.append(inp), run(self, ctx, inp))[1])
-        result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(params["methods"][0], None)
+        result = study._method(synthetic, None)
         monkeypatch.setattr(TransportPortfolioSolve, "run", run)
         tolerance = params["solver"]["parity_tolerance"]
         identities = [TransportActionScore(p, {"parity_tolerance": tolerance}).program_identity for p in seen]
@@ -4755,6 +4758,35 @@ def test_locked_method_ids_is_an_optional_list_of_ids():
             ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
     params, _ = _weekly_portfolio_fixture()
     ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)  # absent: fine, the nine need none
+
+
+@pytest.mark.parametrize("declaration", [[], list(reversed(FORMULATIONS)), list(FORMULATIONS)[1:],
+                                         [*FORMULATIONS, "extra"]])
+def test_the_weekly_study_refuses_noncanonical_locked_declarations(declaration):
+    params, _ = _block_doc({"calibration": dict(_CAL)})
+    params["locked_method_ids"] = declaration
+    with pytest.raises(ValueError, match="locked_method_ids_changed"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+@pytest.mark.parametrize("declaration", [False, True])
+def test_plain_weekly_study_requires_exact_locked_specs(declaration):
+    params, _ = _weekly_portfolio_fixture()
+    if declaration:
+        params["locked_method_ids"] = list(FORMULATIONS)
+    params["methods"] = [{"id": "nominal_lp", **FORMULATIONS["nominal_lp"]}]
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    params["methods"][0]["rho"] = .5
+    with pytest.raises(ValueError, match="locked_formulation_spec_changed"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+@pytest.mark.parametrize("alias", ["NOMINAL_LP", " nominal_lp ", "nominal_lp "])
+def test_weekly_study_refuses_locked_id_aliases(alias):
+    params, _ = _weekly_portfolio_fixture()
+    params["methods"] = [{"id": alias, **FORMULATIONS["nominal_lp"]}]
+    with pytest.raises(ValueError, match="locked_method_id_collision"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
 
 
 def test_the_owner_is_always_given_method_keys_and_locked_method_ids(monkeypatch):
