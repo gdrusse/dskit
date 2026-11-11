@@ -475,15 +475,6 @@ class FrozenMIOReplay:
         bounds = _range_bounds(entry, v6=v6) if self.ranged else _LEGACY_BOUNDS
         original = self._result_dir(document, cohort)
         self.original_dir = original
-        result_path = original / "result.json"
-        expected = entry["result_sha256"]
-        if _sha(result_path) != expected:
-            raise ValueError("original result identity drift: " + cohort)
-        self.original = _load_json(result_path)
-        self._verify_original_csvs(pins)
-        if (not self.original["complete"]
-                or len(self.original["results"]) != bounds["methods"]):
-            raise ValueError("incomplete original method packet")
         config_path = self._run_document(document, cohort)
         key = entry["config"] if self.ranged else config_path.name
         pinned = pins["original_configs"].get(key)
@@ -494,10 +485,11 @@ class FrozenMIOReplay:
         study = config["pipeline"]["plan"]["params"]["study"]
         self.domain = study["domain"]
         self.hedge_spec = document.get("hedge") if v6 else None
+        if v6 and not isinstance(self.hedge_spec, dict):
+            raise ValueError("v6 hedge must be a mapping")
         self._sizing_schema(self.domain["params"], document["schema"])
-        self.calendar = self.original["audit"]["calendar"]
         self.symbols = self.domain["params"]["symbols"]
-        tail, history = bounds["end_before"], self.calendar
+        tail, packet = bounds["end_before"], None
         if v6 and study.get("contract") == "index_options.mio_contract:MIOStudyContract":
             from index_options.mio_contract import MIOStudyContract
 
@@ -509,15 +501,25 @@ class FrozenMIOReplay:
             if "corporate_actions" in self.domain["sources"]:
                 raise ValueError("hedge_split_unsupported: a hedged replay takes no split adjustment")
             tail, _ = MIOStudyContract.settlement_tail(study)
-            self.check_hedge_seal(self.hedge_spec, {**bounds, "end_before": tail}, cohort)
+        self.check_hedge_seal(self.hedge_spec, {**bounds, "end_before": tail}, cohort)
+        result_path = original / "result.json"
+        expected = entry["result_sha256"]
+        if _sha(result_path) != expected:
+            raise ValueError("original result identity drift: " + cohort)
+        self.original = _load_json(result_path)
+        self._verify_original_csvs(pins)
+        if (not self.original["complete"]
+                or len(self.original["results"]) != bounds["methods"]):
+            raise ValueError("incomplete original method packet")
+        self.calendar = self.original["audit"]["calendar"]
+        history = self.calendar
+        if packet is not None:
             history = _packet_sessions(self.domain["sources"]["sessions"], self.domain["history_start"], tail)
             if self.calendar != [day for day in history if day >= packet["start"]]:
                 raise ValueError("saved account calendar differs from the pinned packet sessions")
             if any(not packet["start"] <= decision["date"] < packet["end_before"]
                    for result in self.original["results"] for decision in result["result"]["decisions"]):
                 raise ValueError("saved decision outside the packet entry window")
-        else:
-            self.check_hedge_seal(self.hedge_spec, bounds, cohort)
         if (not self.calendar or len(self.calendar) != bounds["sessions"] or max(self.calendar) >= tail
                 or (bounds["latest_expiry"] is not None and bounds["latest_expiry"] >= tail)):
             raise ValueError("protected account calendar")

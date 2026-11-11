@@ -1447,6 +1447,18 @@ def test_v6_packet_replays_a_post_entry_settlement_with_pinned_history(tmp_path,
     study['domain']['tail_padding_days'] = 400
     pin_config()
     verified.clear()
+    sha, load = stress._sha, stress._load_json
+
+    def metadata_only(read):
+        def wrapped(path):
+            assert not Path(path).is_relative_to(result_dir), "result or CSV was accessed before seal refusal"
+            return read(path)
+        return wrapped
+
+    monkeypatch.setattr(stress, '_sha', metadata_only(sha))
+    monkeypatch.setattr(stress, '_load_json', metadata_only(load))
+    monkeypatch.setattr(stress.FrozenMIOReplay, '_verify_original_csvs',
+                        lambda *args: pytest.fail("CSV reads before seal refusal"))
     with pytest.raises(ValueError, match='hedge_seal'):
         stress.FrozenMIOReplay(Q1_COHORT, document, pins)
     assert verified == []
