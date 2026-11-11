@@ -614,3 +614,198 @@ def test_g5_main_refusal_prints_no_partial_rows(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "2020Q1: g5_close_attestation\n"
+
+
+
+def test_g5_timing_rejects_unpinned_manifest_without_partial_output(tmp_path, capsys):
+    path = tmp_path / "timing.json"
+    path.write_text('{"secret":"POISON"}')
+    assert he.main(["g5-timing", str(path), "--sha256", "0" * 64]) == 1
+    result = capsys.readouterr()
+    assert result.out == ""
+    assert result.err == "g5_timing_manifest_pin\n"
+
+
+_G5_TIMING_METHODS = {
+    "replay-hedge": "kelly025_top100_search_replay_hedge_lp",
+    "exact-search": "kelly025_top100_search_timing_twin_lp",
+    "no-search": "kelly025_top100_nosearch_timing_control_lp",
+}
+
+
+@pytest.mark.parametrize("damage, expected", [
+    (None, None),
+    ("native_timeout", None),
+    ("accepted_decline", None),
+    ("warm_certified", None),
+    ("close", "g5_timing_attestation"),
+    ("wrong_node", "g5_timing_attestation"),
+    ("clock", "g5_timing_clock"),
+    ("unstable", "g5_timing_unstable"),
+    ("incomplete", "g5_timing_incomplete"),
+    ("role", "g5_timing_role"),
+    ("wrong_week", "g5_timing_week"),
+    ("duplicate", "g5_timing_week"),
+    ("status", "g5_timing_timeout"),
+    ("usage", "g5_timing_usage"),
+    ("scheduler", "g5_timing_scheduler"),
+    ("source", "g5_timing_unmatched"),
+    ("missing_week", "g5_timing_missing_week"),
+])
+def test_g5_timing_projects_pinned_triplets_or_refuses_all(tmp_path, capsys, monkeypatch, damage, expected):
+    from hashlib import sha256
+
+    from copy import deepcopy
+
+    from dskit.pipeline.base import value_hash
+    from dskit.pipeline.driver import RunAttestation
+    from dskit.pipeline.document import NodeSpec, PipelineDocument
+    from index_options.ledger_studies import LOCKED_FORMULATION_HASHES
+    from test_ledger_studies import TOP_FORMULATIONS
+
+    if damage == "unstable":
+        original = RunAttestation.attested_output
+        calls = {}
+
+        def drift(attestation, node, output, doc_hash):
+            calls[doc_hash] = calls.get(doc_hash, 0) + 1
+            return None if calls[doc_hash] == 2 else original(attestation, node, output, doc_hash)
+
+        monkeypatch.setattr(RunAttestation, "attested_output", drift)
+
+    def pin(path, obj):
+        content = obj if isinstance(obj, bytes) else json.dumps(obj).encode()
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        return {"path": path, "sha256": sha256(content).hexdigest()}
+
+    week = "2020-01-06"
+    other_day = "2020-01-13"
+    checkout = "c" * 40
+    cells, runs = {}, {}
+    for role, method_id in _G5_TIMING_METHODS.items():
+        altered = damage if role == "no-search" else None
+        key = f"2020Q1_{week}_{role}"
+        run_root = f"{role}/run"
+        usage = f"{role}/run-resource-use.txt"
+        method = {"id": method_id, **deepcopy(TOP_FORMULATIONS["kelly025_top100_search_lp"])}
+        if role == "replay-hedge":
+            method["hedge"] = {"mode": "replay"}
+        elif role == "no-search":
+            del method["kelly"]["search"], method["kelly"]["warm_start"]
+        params = {"methods": [method], "decision_weeks": [week],
+                  "bridge": {"protected_end_before": "2021-07-01"},
+                  "locked_method_ids": list(LOCKED_FORMULATION_HASHES)}
+        packet = {"id": "p", "purpose": "development", "start": "2020-01-01", "end_before": "2020-04-01"}
+        study = {"registry": {"path": role}, "packets": [packet], "selected_packet": "p",
+                 "domain": {"params": params, "sources": {"test": "same"},
+                            "pairs": [{"dte_max": 30}], "tail_padding_days": 0}}
+        doc = PipelineDocument(name=role, pipeline={
+            "plan": NodeSpec(uses="synthetic", params={"study": study}),
+            "close_packet": NodeSpec(uses="dskit.pipeline.study_protocol:StudyPacketClose", params={"study": study}),
+        })
+        doc_pin = {**pin(f"{role}/document.json", doc.to_obj()), "identity": doc.hash}
+        job_id = f"{key}_run"
+        cells[key] = {"quarter": "2020Q1", "week": week, "role": role, "method": method_id,
+                      "asof": "2020-03-31", "tail_end_before": "2020-05-01", "registry": role,
+                      "designation": "jointly_solved",
+                      "job_ids": {"run": job_id}, "files": {"run": doc_pin},
+                      "paths": {"run": {"root": run_root, "usage": usage}}}
+        row = {"date": week, "status": "timeout_skipped" if altered == "status" else "cash",
+               "selection": {"value": "POISON"}, "certificates": [
+                   {"strategy_outcome": "relaxation_certified", "termination": "optimal",
+                    "gap": 0, "objective": "POISON"}], "kelly": {"cash": "POISON"}}
+        if role != "no-search":
+            row["kelly"].update(search={"iterations": 2, "failed": 1, "seconds": 0.3,
+                                        "value_after": "POISON"}, warm_start=None)
+        if altered == "native_timeout":
+            row["status"] = "timeout_skipped"
+            row["selection"].update(timeout="no_incumbent", candidate=None)
+            row["certificates"][0].update(strategy_outcome="relaxation_failed",
+                                           termination="maxTimeLimit", gap=None)
+        if altered == "accepted_decline":
+            row["selection"].update(timeout="gap", candidate={"value": "POISON"})
+            row["certificates"][0].update(strategy_outcome="declined", termination="maxTimeLimit", gap=0.5)
+            row["kelly"]["uncertified"] = {"outcome": "declined", "value": "POISON"}
+        if damage == "warm_certified" and role == "exact-search":
+            row["certificates"][0]["strategy_outcome"] = "certified"
+            row["kelly"]["warm_start"] = {"termination": "optimal", "value_after": "POISON"}
+        days = [week, other_day]
+        decisions = [row, {"date": other_day, "status": "week_not_selected"}]
+        if altered == "duplicate":
+            decisions.append(row)
+        inputs_sha = sha256(role.encode()).hexdigest()
+        sources = {"test": "different" if altered == "source" else "same"}
+        bounds = {key: {"start": "2020-01-02", "end_before": "2020-05-01"}
+                  for key in ("bars", "chain", "sessions")}
+        plan = {"study": study, "runnable": True, "source_pins": sources, "read_bounds": bounds,
+                "sha256": "d" * 64}
+        provenance = {"inputs_sha256": inputs_sha, "read_bounds": bounds,
+                      "source_pins_sha256": value_hash(sources), "plan_sha256": plan["sha256"]}
+        close = {"complete": altered != "incomplete", "provenance": provenance, "plan": plan,
+                 "audit": {"method_ids": [method_id], "calendar": [*days, "2020-04-30"],
+                           "decision_dates": days, "inputs_sha256": inputs_sha},
+                 "results": [{"id": "wrong" if altered == "role" else method_id,
+                              "status": "completed", "replay_parity": True,
+                              "result": {"method": method, "unbounded_books": 0, "decisions": decisions,
+                                         "decision_weeks": [other_day if altered == "wrong_week" else week]}}]}
+        run = f"{run_root}/attested"
+        content = json.dumps(close).encode()
+        digest = sha256(content).hexdigest()
+        relative = f"artifacts/json/{digest}.json"
+        pin(f"{run}/{relative}", content)
+        manifest = {"path": relative, "sha256": digest, "bytes": len(content), "media_type": "application/json"}
+        pin(f"{run}/config.json", doc.to_obj())
+        sidecar = {"run_hash": "e" * 64, "asof": "2020-03-31", "prev_run": ""}
+        pin(f"{run}/result.json", {"state": "ran", "exit_code": 0, "document_hash": doc.hash, **sidecar})
+        pin(f"{run}/resolved.json", {"document_hash": doc.hash, **sidecar,
+                                    "asof": "2020-03-30" if altered == "clock" else sidecar["asof"]})
+        pin(f"{run}/nodes/01-close_packet.json", {"node": "wrong" if altered == "wrong_node" else "close_packet", "status": "ok",
+            "document_hash": doc.hash, "outputs": {"receipt": manifest}})
+        pin(f"{run}/carry.json", {"close_packet": {"receipt": manifest}})
+        runs[key] = {"run_dir": run, "close_sha256": "0" * 64 if altered == "close" else digest,
+                     "usage": pin(usage, b"POISON\n" if altered == "usage" else b"peak_rss_kib=2048 wall_s=2.34\n")}
+    declared = {week: "jointly_solved", "2020-03-09": "retrospective_timeout"}
+    if damage == "missing_week":
+        declared[other_day] = "timeout_union"
+    matrix = pin("matrix.json", {"cells": cells, "checkout": checkout, "scheduler_run_id": "synthetic",
+                                 "weeks": {"2020Q1": declared}})
+    jobs = []
+    for key, cell in cells.items():
+        job_id = cell["job_ids"]["run"]
+        command = f"python preflight.py {key} run {matrix['sha256']}"
+        jobs.append({"id": job_id, "command": command, "allowed_hosts": ["wsl"]})
+        receipt = {"run_id": "synthetic", "job_id": job_id, "command_sha256": sha256((command + "\0").encode()).hexdigest(),
+                   "status": "failed" if damage == "scheduler" and cell["role"] == "no-search" else "done",
+                   "exit_code": 0, "host": "wsl", "hashes": {}, "elapsed_s": 3.0}
+        runs[key]["receipt"] = pin(f"receipts/{job_id}.json", receipt)
+    job_spec = pin("jobs.json", {"run_id": "synthetic", "jobs": jobs})
+    evidence = pin("evidence.json", {"matrix": matrix, "jobs": job_spec, "code_commit": checkout, "runs": runs})
+    argv = ["g5-timing", str(tmp_path / evidence["path"]), "--sha256", evidence["sha256"]]
+    assert he.main(argv) == int(expected is not None)
+    output = capsys.readouterr()
+    if expected:
+        assert output.out == "" and output.err == expected + "\n"
+    else:
+        assert "POISON" not in output.out and output.err == ""
+        report = json.loads(output.out)
+        decision, = report["weeks"]
+        assert decision["decision_week"] == week
+        exact = decision["roles"]["exact-search"]
+        assert exact["search"] == {"iterations": 2, "failed": 1, "seconds": 0.3}
+        assert exact["peak_rss_kib"] == 2048 and exact["wall_s"] == 2.34
+        assert exact["search_node_cap"] == 500 and exact["warm_cert_node_cap"] == 1000
+        assert exact["certification_gap_available"] and exact["settlement_tail_complete"]
+        control = decision["roles"]["no-search"]
+        assert control["search"] is None
+        if damage == "native_timeout":
+            assert control["status"] == "timeout_skipped" and control["timeout"] == "no_incumbent"
+            assert control["solve_present"] and control["certificate_present"]
+            assert not control["certification_gap_available"]
+        if damage == "accepted_decline":
+            assert control["status"] == "cash" and control["uncertified_accepted"]
+        if damage == "warm_certified":
+            assert exact["warm_termination"] == "optimal"
+        assert he.main(argv) == 0
+        assert capsys.readouterr().out == output.out

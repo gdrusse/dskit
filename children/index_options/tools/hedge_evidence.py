@@ -695,12 +695,356 @@ def _main_g5_status(argv):
     return 0
 
 
+_G5_TIMING_ROLES = {
+    "replay-hedge": "kelly025_top100_search_replay_hedge_lp",
+    "exact-search": "kelly025_top100_search_timing_twin_lp",
+    "no-search": "kelly025_top100_nosearch_timing_control_lp",
+}
+_G5_TIMEOUT_REASONS = ("gap", "missing_bound", "no_incumbent")
+_G5_UTILITY_OUTCOMES = ("relaxation_certified", "certified", "declined", "relaxation_failed")
+
+
+class _G5TimingRefusal(ValueError):
+    """A fixed diagnostic from the timing evidence reader."""
+
+
+def _g5_pinned_bytes(root, pin, refusal):
+    from hashlib import sha256
+
+    try:
+        content = (root / pin["path"]).read_bytes()
+        if sha256(content).hexdigest() == pin["sha256"]:
+            return content
+    except (OSError, TypeError, KeyError, ValueError):
+        pass
+    raise _G5TimingRefusal(refusal)
+
+
+def _g5_timing_json(content):
+    def unique(pairs):
+        obj = dict(pairs)
+        if len(obj) != len(pairs):
+            raise _G5TimingRefusal("g5_timing_duplicate_key")
+        return obj
+
+    return json.loads(content, object_pairs_hook=unique)
+
+
+def _g5_timing_strategy(decision, kelly):
+    selection, certificates = decision.get("selection"), decision.get("certificates")
+    if selection is None and certificates is None and decision["status"] == "cash":
+        return {"solve_present": False, "certificate_present": False, "timeout": None,
+                "certification_outcome": None, "certification_gap_available": False, "uncertified_accepted": False,
+                "search": None, "warm_termination": None, "explored_nodes": None}
+    if (not isinstance(selection, dict) or not isinstance(certificates, list)
+            or len(certificates) != 1 or not isinstance(certificates[0], dict)):
+        raise _G5TimingRefusal("g5_timing_solve")
+    certificate, = certificates
+    outcome, gap = certificate["strategy_outcome"], certificate["gap"]
+    if outcome not in _G5_UTILITY_OUTCOMES or (gap is not None and not _g5_number(gap)):
+        raise _G5TimingRefusal("g5_timing_certificate")
+    timeout = selection.get("timeout")
+    strategy = decision["kelly"]
+    uncertified = strategy.get("uncertified")
+    accepted = (kelly.get("accept_uncertified") is True and timeout == "gap" and outcome == "declined"
+                and isinstance(selection.get("candidate"), dict)
+                and isinstance(uncertified, dict) and uncertified.get("outcome") == "declined")
+    if ("timeout" in selection and timeout not in _G5_TIMEOUT_REASONS
+            or (decision["status"] == "timeout_skipped") != (timeout is not None and not accepted)
+            or timeout is not None and certificate["termination"] != "maxTimeLimit"
+            or uncertified is not None and not accepted):
+        raise _G5TimingRefusal("g5_timing_timeout")
+    search, warm = strategy.get("search"), strategy.get("warm_start")
+    if "search" in kelly:
+        if ("search" not in strategy or "warm_start" not in strategy
+                or (search is None) != (outcome == "relaxation_failed")
+                or outcome == "certified" and warm is None
+                or outcome in ("relaxation_certified", "relaxation_failed") and warm is not None):
+            raise _G5TimingRefusal("g5_timing_strategy")
+    elif "search" in strategy or "warm_start" in strategy:
+        raise _G5TimingRefusal("g5_timing_strategy")
+    if search is not None:
+        iterations, failed, seconds = (search[key] for key in ("iterations", "failed", "seconds"))
+        if (type(iterations) is not int or type(failed) is not int
+                or not 0 <= failed <= iterations <= kelly["search"]["iterations"] or not _g5_number(seconds)):
+            raise _G5TimingRefusal("g5_timing_search")
+        search = {"iterations": iterations, "failed": failed, "seconds": seconds}
+    termination = None if warm is None else warm["termination"]
+    if warm is not None and termination not in (
+            "optimal", "maxIterations", "maxTimeLimit", "infeasible", "infeasibleOrUnbounded",
+            "unbounded", "objectiveLimit", "minStepLength", "interrupted", "error", "unknown"):
+        raise _G5TimingRefusal("g5_timing_warm")
+    return {"solve_present": True, "certificate_present": True, "timeout": timeout,
+            "certification_outcome": outcome, "certification_gap_available": gap is not None,
+            "uncertified_accepted": accepted,
+            "search": search, "warm_termination": termination, "explored_nodes": None}
+
+
+def _g5_number(value):
+    return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+
+def _g5_timing_close(receipt, quarter, week, method, expected_tail, capped):
+    if receipt.get("complete") is not True:
+        raise _G5TimingRefusal("g5_timing_incomplete")
+    entry, = receipt["results"]
+    result, audit = entry["result"], receipt["audit"]
+    if (entry["id"] != method["id"] or audit["method_ids"] != [method["id"]]
+            or result["method"] != method):
+        raise _G5TimingRefusal("g5_timing_role")
+    if (entry["status"] != "completed" or entry["replay_parity"] is not True
+            or type(result["unbounded_books"]) is not int or result["unbounded_books"] != 0
+            or audit.get("tail_capped_at") != (expected_tail if capped else None)):
+        raise _G5TimingRefusal("g5_timing_incomplete")
+    if result["decision_weeks"] != [week]:
+        raise _G5TimingRefusal("g5_timing_week")
+    calendar = audit["calendar"]
+    if (not isinstance(calendar, list) or not calendar
+            or any(date.fromisoformat(day).isoformat() != day or day >= expected_tail for day in calendar)
+            or calendar != sorted(set(calendar))):
+        raise _G5TimingRefusal("g5_timing_tail")
+    decisions = result["decisions"]
+    dates = [row["date"] for row in decisions]
+    if (not dates or dates != audit["decision_dates"] or dates != sorted(set(dates))
+            or not set(dates) <= set(calendar) or week not in dates
+            or any(f"{day[:4]}Q{(int(day[5:7]) - 1) // 3 + 1}" != quarter for day in dates)):
+        raise _G5TimingRefusal("g5_timing_week")
+    selected = None
+    for row in decisions:
+        if row["date"] == week:
+            selected = row
+        elif (row["status"] != "week_not_selected" or row.get("selection") is not None
+              or row.get("certificates") is not None):
+            raise _G5TimingRefusal("g5_timing_week")
+    if selected["status"] not in (*_G5_SOLVED, _G5_TIMEOUT):
+        raise _G5TimingRefusal("g5_timing_status")
+    return {"status": selected["status"], "settlement_tail_complete": True,
+            "tail_end_before": expected_tail, "tail_last_session": calendar[-1],
+            **_g5_timing_strategy(selected, method["kelly"])}
+
+
+def _g5_timing_document(root, cell, role, week):
+    from copy import deepcopy
+
+    from dskit.pipeline.document import PipelineDocument
+    from index_options.ledger_studies import _is_exact_kelly_search
+    from index_options.mio_contract import MIOStudyContract
+
+    pin = cell["files"]["run"]
+    raw = _g5_timing_json(_g5_pinned_bytes(root, pin, "g5_timing_document_pin"))
+    if PipelineDocument.from_obj(raw).hash != pin["identity"]:
+        raise _G5TimingRefusal("g5_timing_document_pin")
+    pipeline = raw["pipeline"]
+    study = pipeline["plan"]["params"]["study"]
+    close_node = pipeline["close_packet"]
+    if (close_node["uses"] != "dskit.pipeline.study_protocol:StudyPacketClose"
+            or close_node["params"]["study"] != study
+            or study["registry"]["path"] != cell["registry"]
+            or any(node["params"]["study"] != study for node in pipeline.values()
+                   if "study" in node.get("params", {}))
+            or pipeline.get("study", {}).get("params", {}).get("recorded") is not None):
+        raise _G5TimingRefusal("g5_timing_document")
+    domain = study["domain"]
+    params = domain["params"]
+    method, = params["methods"]
+    if (method["id"] != _G5_TIMING_ROLES[role] or cell["method"] != method["id"]
+            or params["decision_weeks"] != [week]):
+        raise _G5TimingRefusal("g5_timing_role")
+    if params["bridge"]["protected_end_before"] != DEVELOPMENT_SEAL:
+        raise _G5TimingRefusal("g5_timing_seal")
+    tail, capped = MIOStudyContract.settlement_tail(study)
+    if tail != cell["tail_end_before"] or tail > DEVELOPMENT_SEAL:
+        raise _G5TimingRefusal("g5_timing_tail")
+    kelly = method["kelly"]
+    if role == "replay-hedge":
+        if method["hedge"]["mode"] != "replay" or not _is_exact_kelly_search(method, "hedge"):
+            raise _G5TimingRefusal("g5_timing_role")
+    elif "hedge" in method or "hedge_parity" in params:
+        raise _G5TimingRefusal("g5_timing_role")
+    elif role == "exact-search":
+        if not _is_exact_kelly_search(method):
+            raise _G5TimingRefusal("g5_timing_role")
+    elif "search" in kelly or "warm_start" in kelly:
+        raise _G5TimingRefusal("g5_timing_role")
+    base = deepcopy(study)
+    base.pop("registry")  # Fresh timing arms have separate registries.
+    base_params = base["domain"]["params"]
+    base_params.pop("hedge_parity", None)
+    base_method, = base_params.pop("methods")
+    base_method.pop("id")
+    base_method.pop("hedge", None)
+    base_method["kelly"].pop("search", None)
+    base_method["kelly"].pop("warm_start", None)
+    return pin, study, method, tail, capped, (base, base_method, cell["asof"], raw.get("clock"), raw.get("schedule"))
+
+
+def _g5_timing_usage(root, matrix_root, jobs, cell_key, cell, run_id, run_pin, matrix_sha):
+    import re
+    import shlex
+    from hashlib import sha256
+
+    job_id = cell["job_ids"]["run"]
+    job = jobs[job_id]
+    receipt = _g5_timing_json(_g5_pinned_bytes(root, run_pin["receipt"], "g5_timing_scheduler_pin"))
+    command = job["command"]
+    command_sha256 = sha256((command + "\0" + str(job.get("mac_command", ""))).encode()).hexdigest()
+    hashes = job.get("hashes", {})
+    elapsed = receipt["elapsed_s"]
+    if (receipt["job_id"] != job_id or receipt["run_id"] != run_id
+            or receipt["command_sha256"] != command_sha256 or receipt["hashes"] != hashes
+            or receipt["host"] != "wsl" or receipt["status"] != "done"
+            or type(receipt["exit_code"]) is not int or receipt["exit_code"] != 0
+            or not _g5_number(elapsed) or elapsed == 0 or job["allowed_hosts"] != ["wsl"]):
+        raise _G5TimingRefusal("g5_timing_scheduler")
+    paths = cell["paths"]["run"]
+    run = (root / run_pin["run_dir"]).resolve()
+    declared_root = (matrix_root / paths["root"]).resolve()
+    usage = (root / run_pin["usage"]["path"]).resolve()
+    if (run.parent != declared_root or usage != (matrix_root / paths["usage"]).resolve()):
+        raise _G5TimingRefusal("g5_timing_path")
+    args = shlex.split(command)
+    if args[-3:] != [cell_key, "run", matrix_sha]:
+        raise _G5TimingRefusal("g5_timing_command")
+    data = _g5_pinned_bytes(root, run_pin["usage"], "g5_timing_usage_pin")
+    match = re.fullmatch(rb"peak_rss_kib=([1-9][0-9]*) wall_s=([0-9]+\.[0-9]{2})\n", data)
+    if match is None:
+        raise _G5TimingRefusal("g5_timing_usage")
+    peak_rss_kib, wall_seconds = int(match[1]), float(match[2])
+    if not _g5_number(wall_seconds) or wall_seconds > elapsed + 0.01:
+        raise _G5TimingRefusal("g5_timing_usage")
+    return run, {"host": "wsl", "job_id": job_id, "command_sha256": command_sha256,
+                 "scheduler_elapsed_s": elapsed, "wall_s": wall_seconds, "peak_rss_kib": peak_rss_kib}
+
+
+def _g5_timing_read(root, evidence):
+    import re
+
+    from dskit.pipeline.base import value_hash
+    from dskit.pipeline.driver import RunAttestation, resolve_json_artifact
+
+    matrix = _g5_timing_json(_g5_pinned_bytes(root, evidence["matrix"], "g5_timing_matrix_pin"))
+    jobs_manifest = _g5_timing_json(_g5_pinned_bytes(root, evidence["jobs"], "g5_timing_jobs_pin"))
+    code = evidence["code_commit"]
+    if re.fullmatch(r"[0-9a-f]{40}", code) is None:
+        raise _G5TimingRefusal("g5_timing_build")
+    run_id = jobs_manifest["run_id"]
+    if code != matrix["checkout"] or run_id != matrix["scheduler_run_id"]:
+        raise _G5TimingRefusal("g5_timing_build")
+    declared = {(quarter, week) for quarter, weeks in matrix["weeks"].items()
+                for week, designation in weeks.items()
+                if designation in ("jointly_solved", "timeout_union")}
+    if any(designation not in ("jointly_solved", "timeout_union", "retrospective_timeout")
+           for weeks in matrix["weeks"].values() for designation in weeks.values()):
+        raise _G5TimingRefusal("g5_timing_matrix")
+    jobs = {job["id"]: job for job in jobs_manifest["jobs"]}
+    if len(jobs) != len(jobs_manifest["jobs"]):
+        raise _G5TimingRefusal("g5_timing_duplicate_job")
+    matrix_root = (root / evidence["matrix"]["path"]).parent
+    cells, runs = matrix["cells"], evidence["runs"]
+    if not cells or cells.keys() != runs.keys():
+        raise _G5TimingRefusal("g5_timing_matrix")
+    grouped, used_runs, used_jobs, used_registries = {}, set(), set(), set()
+    for cell_key, cell in sorted(cells.items()):
+        quarter, week, role = (cell[key] for key in ("quarter", "week", "role"))
+        if (quarter not in _G5_QUARTERS or role not in _G5_TIMING_ROLES
+                or (quarter, week) not in declared or cell["designation"] != matrix["weeks"][quarter][week]):
+            raise _G5TimingRefusal("g5_timing_role")
+        rows = grouped.setdefault((quarter, week), {})
+        if role in rows:
+            raise _G5TimingRefusal("g5_timing_duplicate_cell")
+        document, study, method, tail, capped, base = _g5_timing_document(matrix_root, cell, role, week)
+        pin = runs[cell_key]
+        run, usage = _g5_timing_usage(root, matrix_root, jobs, cell_key, cell, run_id, pin,
+                                      evidence["matrix"]["sha256"])
+        registry = (matrix_root / cell["registry"]).resolve()
+        if run in used_runs or usage["job_id"] in used_jobs or registry in used_registries:
+            raise _G5TimingRefusal("g5_timing_duplicate_run")
+        used_runs.add(run)
+        used_jobs.add(usage["job_id"])
+        used_registries.add(registry)
+        resolved = _g5_timing_json((run / "resolved.json").read_bytes())
+        result = _g5_timing_json((run / "result.json").read_bytes())
+        if (result["asof"] != cell["asof"] or resolved["asof"] != cell["asof"]
+                or result["run_hash"] != resolved["run_hash"]
+                or re.fullmatch(r"[0-9a-f]{64}", resolved["run_hash"]) is None
+                or result["document_hash"] != document["identity"]
+                or type(result["exit_code"]) is not int or result["exit_code"] != 0
+                or result["prev_run"] or resolved["prev_run"]):
+            raise _G5TimingRefusal("g5_timing_clock")
+        attestation = RunAttestation(run)
+        close = attestation.attested_output("close_packet", "receipt", document["identity"])
+        if not isinstance(close, dict) or close.get("sha256") != pin["close_sha256"]:
+            raise _G5TimingRefusal("g5_timing_attestation")
+        receipt = resolve_json_artifact(run, close)
+        row = _g5_timing_close(receipt, quarter, week, method, tail, capped)
+        if attestation.attested_output("close_packet", "receipt", document["identity"]) != close:
+            raise _G5TimingRefusal("g5_timing_unstable")
+        audit, provenance, plan = (receipt[key] for key in ("audit", "provenance", "plan"))
+        inputs_sha = audit["inputs_sha256"]
+        source_sha = value_hash(plan["source_pins"])
+        bounds = plan["read_bounds"]
+        if (plan["study"] != study or plan["runnable"] is not True
+                or plan["sha256"] != provenance["plan_sha256"] or bounds != provenance["read_bounds"]
+                or source_sha != provenance["source_pins_sha256"]
+                or any(bounds[key]["end_before"] != tail for key in ("chain", "bars", "sessions"))
+                or re.fullmatch(r"[0-9a-f]{64}", inputs_sha) is None or inputs_sha != provenance["inputs_sha256"]
+                or audit.get("adjustments_sha256") != provenance.get("adjustments_sha256")
+                or "recorded_from" in audit):
+            raise _G5TimingRefusal("g5_timing_inputs")
+        # inputs_sha256 includes local quote-index paths, so match the immutable source pins and bounds.
+        identity = (base, audit["calendar"], audit["decision_dates"], source_sha, bounds,
+                    audit.get("adjustments_sha256"))
+        kelly = method["kelly"]
+        rows[role] = identity, {
+            **row, **usage, "method_id": method["id"], "document_sha256": document["sha256"],
+            "document_identity": document["identity"], "close_sha256": pin["close_sha256"],
+            "source_pins_sha256": source_sha, "inputs_sha256": inputs_sha,
+            "search_node_cap": kelly.get("search", {}).get("node_limit"),
+            "warm_cert_node_cap": kelly.get("warm_start", {}).get("node_limit"),
+        }
+    if grouped.keys() != declared:
+        raise _G5TimingRefusal("g5_timing_missing_week")
+    projected = []
+    for (quarter, week), roles in sorted(grouped.items()):
+        if roles.keys() != _G5_TIMING_ROLES.keys():
+            raise _G5TimingRefusal("g5_timing_incomplete_triplet")
+        identity = roles["exact-search"][0]
+        if any(match != identity for match, _ in roles.values()):
+            raise _G5TimingRefusal("g5_timing_unmatched")
+        projected.append({"quarter": quarter, "decision_week": week, "match_sha256": value_hash(identity),
+                          "roles": {role: row for role, (_, row) in roles.items()}})
+    return {"code_commit": code, "scheduler_run_id": run_id, "weeks": projected}
+
+
+def _main_g5_timing(argv):
+    parser = argparse.ArgumentParser(prog="hedge_evidence.py g5-timing")
+    parser.add_argument("manifest", type=Path)
+    parser.add_argument("--sha256", required=True)
+    args = parser.parse_args(argv)
+    manifest = args.manifest.resolve()
+    try:
+        frozen = _g5_pinned_bytes(manifest.parent, {"path": manifest.name, "sha256": args.sha256},
+                                  "g5_timing_manifest_pin")
+        result = _g5_timing_read(manifest.parent, _g5_timing_json(frozen))
+        output = json.dumps(result, sort_keys=True, allow_nan=False)
+    except _G5TimingRefusal as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 1
+    except (ValueError, OSError, KeyError, IndexError, TypeError, AttributeError, OverflowError):
+        sys.stderr.write("g5_timing_invalid\n")
+        return 1
+    print(output)
+    return 0
+
+
 def main(argv=None):
     """Write the verdict JSON: ``hedge_evidence.py ROOT FORMULATION COHORT=QUARTER... --registry R --out V``.
 
     ``hedge_evidence.py program FORMULATION --controls ... --programs ... --registry R --out V`` reads the program twin.
     """
     argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "g5-timing":
+        return _main_g5_timing(argv[1:])
     if argv and argv[0] == "g5-status":
         return _main_g5_status(argv[1:])
     if argv and argv[0] == "program":

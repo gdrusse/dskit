@@ -36655,7 +36655,7 @@ Scope against `0904b65b`: append this declaration, use an owner-approved status 
 
 WSL reproduction from the repository root: `PYTHONPATH=.:children/index_options ~/dskit/.venv/bin/python children/index_options/tools/hedge_evidence.py g5-status`. The command writes status-only JSON to stdout. This ADR records the dates and source identities.
 
-**ADR-0313 G5 prospective timing evidence projection (2026-11-11, proposed).**
+**ADR-0313 G5 prospective timing evidence projection (2026-11-11, authorized for synthetic implementation).**
 Extend the existing status reader with a separate timing entry point. An
 externally pinned manifest binds the declared date set and every matched
 replay-hedge, exact-search twin and no-search run to document bytes and
@@ -36669,3 +36669,15 @@ metadata. Explored nodes remain unavailable. Buffer one canonical result
 until the full set verifies. Refuse with fixed diagnostics. ADR-0312
 Amendment 1 §7, ADR-0313 G5 and A0010 retain authority over execution and
 gate decisions. Synthetic verification only until independent Terra clearance.
+
+Reproduce with `hedge_evidence.py g5-timing EVIDENCE.json --sha256 SHA256`.
+The externally pinned evidence JSON has `matrix`, `jobs`, `code_commit`
+and `runs`. Each matrix cell must have a `runs` record with `run_dir`,
+`close_sha256`, `receipt` and `usage`. File pins for the matrix, jobs,
+scheduler receipt and usage are objects with `path` and `sha256`.
+Usage is the GNU time record `peak_rss_kib=%M wall_s=%e`. Relative paths
+resolve from the file that declares them. The scheduler command binds
+the cell key, run phase and matrix digest. Input hashes bind each close
+to its own audit. The cross-role match uses source-pin and read-bound
+identity because local quote-index paths differ by run. March 9
+retrospective entries are outside the prospective result.
