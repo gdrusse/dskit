@@ -617,7 +617,7 @@ class TestResources:
 
 
 def test_public_surface_and_hooks():
-    assert ew.__all__ == ["NODE_KINDS", "EdgeReliabilityWalk"]
+    assert sorted(ew.__all__) == sorted(["NODE_KINDS", "EdgeReliabilityWalk", "prefers", "books_fill"])
     assert ew.NODE_KINDS == ()
     assert EdgeReliabilityWalk._BASE_PARAMS == (
         "window", "report_from", "sealed_from", "out_dir", "half_life_weeks", "buckets", "regime", "pooling",

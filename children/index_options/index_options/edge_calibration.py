@@ -45,7 +45,7 @@ from dskit.pipeline.option_exposure import DirectionEdge
 
 from .contracts import usable_parity_rows, usable_quote
 
-__all__ = ["EdgeCalibrationRefusal", "EdgeItemFeatures", "IndexOptionsEdgeWalk", "settlement_level",
+__all__ = ["EdgeCalibrationRefusal", "EdgeItemFeatures", "EdgeMapStream", "IndexOptionsEdgeWalk", "settlement_level",
            "usable_parity_rows"]
 
 #: The quote values of the MIO bridge a run reads and writes to its summary (ADR-0313 A9).
@@ -89,6 +89,66 @@ def settlement_level(bars, factors, day, factor):
     if not math.isclose(factors.get(day, math.nan), factor, rel_tol=1e-9):
         return "basis_changed"
     return bars[day] / factor
+
+
+class EdgeMapStream:
+    """The walk's decision-day maps as ONE published file, and the rules that read it back (ADR-0313 A9).
+
+    The stream is a JSON object ``{"maps": {<t>: <map-t.json body>}}``: the walk writes ``map-<t>.json`` for every
+    decision week, :meth:`assemble` joins them for publication through onboarding (the ``edge_maps`` source role
+    binds this file as ``shared`` and the walk's ``summary.json`` as ``summary``). :meth:`parse` refuses a key that is
+    not an ISO date or a body whose own ``t`` differs from its key (``calibration_map_date``), and :meth:`bounded`
+    is the read bound: only maps whose decision date lies in ``[start, end_before)`` reach a packet.
+
+    Examples
+    --------
+    Publish, then read back inside a packet's entry window::
+
+        raw = EdgeMapStream.assemble(walk_out_dir)
+        maps = EdgeMapStream.bounded(EdgeMapStream.parse(raw), "2020-01-01", "2020-04-01")
+    """
+
+    @staticmethod
+    def assemble(out_dir):
+        """Return the canonical bytes of the stream for the ``map-<t>.json`` files under ``out_dir``."""
+        maps = {}
+        for path in sorted(Path(out_dir).glob("map-*.json")):
+            body = json.loads(path.read_text())
+            maps[path.name[len("map-"):-len(".json")]] = body
+        return (json.dumps({"maps": maps}, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+    @classmethod
+    def publish(cls, out_dir, dest_dir):
+        """Write ``edge-maps.json`` and a copy of the walk's ``summary.json`` into ``dest_dir`` (the files to onboard)."""
+        dest = Path(dest_dir)
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "edge-maps.json").write_bytes(cls.assemble(out_dir))
+        (dest / "summary.json").write_bytes((Path(out_dir) / "summary.json").read_bytes())
+        return dest
+
+    @staticmethod
+    def parse(raw):
+        """Return ``{t: body}`` from the stream's bytes (or text); refuse any other shape."""
+        try:
+            blob = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise EdgeCalibrationRefusal("calibration_map_malformed", f"the map stream is not JSON: {exc}") from exc
+        if not isinstance(blob, dict) or set(blob) != {"maps"} or not isinstance(blob["maps"], dict):
+            raise EdgeCalibrationRefusal("calibration_map_malformed", "the map stream must be {'maps': {t: body}}")
+        for t, body in blob["maps"].items():
+            try:
+                ok = date.fromisoformat(t).isoformat() == t
+            except (TypeError, ValueError):
+                ok = False
+            if not ok or not isinstance(body, dict) or body.get("t") != t:
+                raise EdgeCalibrationRefusal("calibration_map_date", f"map key {t!r} is not the decision date of its "
+                                             f"body ({body.get('t') if isinstance(body, dict) else body!r})")
+        return blob["maps"]
+
+    @staticmethod
+    def bounded(maps, start, end_before):
+        """Return the maps dated in ``[start, end_before)``; every other map is dropped, never passed on."""
+        return {t: body for t, body in maps.items() if start <= t < end_before}
 
 
 class EdgeItemFeatures:
@@ -793,5 +853,7 @@ class IndexOptionsEdgeWalk(EdgeReliabilityWalk):
         out["symbols_dropped"] = dict(self._dropped)
         out["symbols_absent"] = {s: list(q) for s, q in self._absent.items()}       # outside the quarter's universe
         out["symbols_no_forecast"] = {s: list(q) for s, q in self._idle.items()}    # in it, but no forecast row
+        if self.params.get("direction") is not None:
+            out["direction_params"] = dict(self.params["direction"])        # the study rebuilds e_dir with the SAME params
         out["symbol_list_sha256"] = hashlib.sha256(json.dumps(self._symbols).encode()).hexdigest()
         return out

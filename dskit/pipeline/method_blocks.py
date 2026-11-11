@@ -25,7 +25,7 @@ Import cost: stdlib only.
 from abc import ABC
 from datetime import date
 
-from dskit.pipeline.base import ConfigError
+from dskit.pipeline.base import ConfigError, value_hash
 from dskit.pipeline.records import number_ok
 
 __all__ = ["MethodBlocks", "BlockSpec", "DelegatedBlockSpec", "NullBlock", "CalibrationBlock",
@@ -38,13 +38,16 @@ DEVELOPMENT_SEAL = "2021-07-01"
 UNKNOWN_BLOCK, UNKNOWN_KEY, MISSING_KEY = "block_unknown", "block_unknown_key", "block_missing_key"
 BLOCK_TYPE, PARAM_VALUE = "block_type", "block_param_value"
 LOCKED, LOCKED_IDS_MISSING, SEAL = "block_on_locked_formulation", "locked_ids_missing", "integration_seal"
+LOCKED_CHANGED, LOCKED_COLLISION = "locked_method_ids_changed", "locked_method_id_collision"
+LOCKED_SPEC_CHANGED = "locked_formulation_spec_changed"
+SEAL_VIOLATION = "development_seal_violation"
 IDENTITY_NOT_CONTROL = "calibration_identity_not_control"
 WITH_KELLY, WITH_SIZER = "calibration_with_kelly", "calibration_with_sizer"
 HEDGE_WITH_SIZER, LIMITS_WITH_KELLY = "hedge_with_sizer", "exposure_limits_with_kelly"
 DOUBLE_DISCOUNT, NEEDS_DIRECTION = "calibration_double_discount", "hedge_needs_direction_map"
 REFUSALS = (UNKNOWN_BLOCK, UNKNOWN_KEY, MISSING_KEY, BLOCK_TYPE, PARAM_VALUE, LOCKED, LOCKED_IDS_MISSING,
-            SEAL, IDENTITY_NOT_CONTROL, WITH_KELLY, WITH_SIZER, HEDGE_WITH_SIZER, LIMITS_WITH_KELLY,
-            DOUBLE_DISCOUNT, NEEDS_DIRECTION)
+            LOCKED_CHANGED, LOCKED_COLLISION, LOCKED_SPEC_CHANGED, SEAL_VIOLATION, SEAL, IDENTITY_NOT_CONTROL,
+            WITH_KELLY, WITH_SIZER, HEDGE_WITH_SIZER, LIMITS_WITH_KELLY, DOUBLE_DISCOUNT, NEEDS_DIRECTION)
 #: Method keys the cross-block rules read (formulation keys of the child's method document).
 _KELLY, _SIZER, _RHO, _RISK_CHARGE = "kelly", "sizer", "rho", "risk_charge"
 
@@ -313,9 +316,62 @@ class MethodBlocks:
         """Return the locked-formulation problems of a method that carries a block."""
         if not isinstance(locked, (list, tuple)):
             return [coded(LOCKED_IDS_MISSING, "a document with a block must carry locked_method_ids (a list)")]
-        if method.get("id") in locked:
+        if self._id_key(method.get("id")) in {self._id_key(i) for i in locked}:
             return [coded(LOCKED, f"method {method.get('id')!r} is a locked formulation and may carry no block")]
         return []
+
+    @staticmethod
+    def _id_key(method_id):
+        return method_id.strip().casefold() if isinstance(method_id, str) else None
+
+    @classmethod
+    def lock_problems(cls, pinned, merged, new_ids, existing_ids=()):
+        """Check the ordered locked declaration and refuse new ids that alias locked or source ids."""
+        problems = []
+        ordered = list(pinned)
+        if not isinstance(merged, list) or merged != ordered:
+            problems.append(coded(LOCKED_CHANGED, f"locked_method_ids must equal the ordered declaration {ordered}, "
+                                                  f"got {merged!r}"))
+        reserved = {cls._id_key(i) for i in (*ordered, *existing_ids)}
+        clash = sorted({i for i in new_ids if cls._id_key(i) in reserved})
+        if clash:
+            problems.append(coded(LOCKED_COLLISION, f"method id(s) {clash} are locked or already used: a research arm takes a NEW id"))
+        return problems
+
+    @classmethod
+    def spec_hash(cls, method):
+        """Hash the whole method spec, with JSON integers and equivalent floats treated alike."""
+        return value_hash(cls._spec_numbers(method))
+
+    @classmethod
+    def _spec_numbers(cls, value):
+        if isinstance(value, dict):
+            return {k: cls._spec_numbers(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls._spec_numbers(v) for v in value]
+        return float(value) if type(value) is int else value
+
+    @classmethod
+    def locked_spec_problems(cls, pinned, methods):
+        """Check present locked specs against their pins and refuse aliases of their ids."""
+        canonical = {cls._id_key(i): i for i in pinned}
+        problems = []
+        for method in methods:
+            method_id = method["id"]
+            locked = canonical.get(cls._id_key(method_id))
+            if locked is None:
+                continue
+            if method_id != locked:
+                problems.append(coded(LOCKED_COLLISION, f"method {method_id!r} aliases locked formulation {locked!r}"))
+            elif cls.spec_hash(method) != pinned[locked]:
+                problems.append(coded(LOCKED_SPEC_CHANGED, f"formulation {locked!r} differs from its pinned spec"))
+        return problems
+
+    @staticmethod
+    def seal_violations(ends):
+        """Return the ``development_seal_violation`` problems of the dates (ISO strings) a document reaches past the seal."""
+        late = sorted(e for e in ends if not isinstance(e, str) or e > DEVELOPMENT_SEAL)
+        return [coded(SEAL_VIOLATION, f"{late} is past the development seal {DEVELOPMENT_SEAL}")] if late else []
 
     @staticmethod
     def seal(clocks):

@@ -3378,3 +3378,23 @@ class TestCalibratedObjectiveOnTheRealWalk:
         for t in walk_maps["cal"]:
             m = walk_maps["maps"][t]
             assert arm.warm(m, 0) == twin.warm(m, 0)
+
+
+class TestCalibratedObjectiveMapWarm:
+    """ADR-0313 I5: the week-level warm answer (a cold or missing map solves nothing)."""
+
+    def test_map_warm_is_the_week_flag_and_none_is_cold(self):
+        obj = er.CalibratedObjective(_block())
+        assert obj.map_warm(_map(warm=True)) is True and obj.map_warm(_map(warm=False)) is False
+        assert obj.map_warm(None) is False
+
+    def test_two_regressors_need_the_line_and_the_origin_warm(self):
+        obj = er.CalibratedObjective(_block(regressors=2))
+        assert obj.map_warm(_map(two=[(0.5, 0.5)], dir_warm=True)) is True
+        body = _map(two=[(0.5, 0.5)], dir_warm=True)
+        body["origin_two"]["warm"] = False
+        assert obj.map_warm(body) is False
+
+    def test_a_present_map_without_the_block_is_malformed(self):
+        with pytest.raises(er._Refusal, match="calibration_map_malformed"):
+            er.CalibratedObjective(_block()).map_warm({"t": "x"})

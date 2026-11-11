@@ -70,12 +70,15 @@ from abc import ABC, abstractmethod
 from collections import Counter
 from datetime import date
 from fractions import Fraction
+from types import MappingProxyType
 from typing import NamedTuple
 
 from dskit.pipeline.driver import resolve_json_artifact
-from dskit.pipeline.hedge_overlay import BOOKS_PREFIX, MARK_CARRIED, HedgeOverlay
+from dskit.pipeline.hedge_overlay import (BOOKS_PREFIX, MARK_CARRIED, HedgeOverlay, forward_leg_net_settle,
+                                          forward_leg_rule)
 from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL, MethodBlocks
-from dskit.pipeline.option_exposure import HardToBorrowProxy, ParityForward, StaticDeltaHedge
+from dskit.pipeline.option_exposure import (BookGreeks, ExposureLimits, ExposureSnapshot, HardToBorrowProxy, LegGreeks,
+                                            ParityForward)
 from dskit.pipeline.records import number_ok
 from dskit.pipeline.runs import NODES_DIR, RESULT_FILE, WALKFORWARD_FILE, walk_fold_dirs
 from dskit.pipeline.stats import lower_tail_mean, max_drawdown
@@ -97,7 +100,7 @@ from .nodes import (
 from dskit.pipeline.node import JsonArtifact
 from dskit.pipeline.study_protocol import StudyNode
 
-__all__ = ["MIOPacketPlan", "MIOPacketStudy", "MIOPacketCompare", "ACCOUNT_COLUMNS", "BACKTEST_NODE", "CAPITAL_LEVELS", "COLUMNS", "CVAR_ALPHA",
+__all__ = ["LOCKED_FORMULATION_HASHES", "MIOPacketPlan", "MIOPacketStudy", "MIOPacketCompare", "ACCOUNT_COLUMNS", "BACKTEST_NODE", "CAPITAL_LEVELS", "COLUMNS", "CVAR_ALPHA",
            "EVIDENCE_ARTIFACT", "NOMINAL_ARM", "SELECT_STAGE", "SETTLE_STAGE", "UNCAPPED",
            "REJECTION_REASONS", "STUDIES", "AccountRow", "AccountStudy", "AdmissionCaps",
            "AllocationStudy", "EnteredCell", "HedgeStudy", "LedgerStudy", "AccountOrder", "ReplayHedge", "SavedReplay",
@@ -1293,6 +1296,72 @@ class _SQLiteQuoteView:
             raise QuoteIndexIntegrityError(str(exc)) from exc
 
 
+class ParityForwards:
+    """The study's one owner of a day's usable chain rows, its spot and its parity forward (hedge and exposure share it).
+
+    Every parity forward goes through the one filter and owner, ``usable_parity_rows`` then
+    ``ParityForward.from_chain(rows, spot, exclude_strikes)``.
+
+    Parameters
+    ----------
+    study : WeeklyOptionPortfolioStudy
+        Supplies ``_quotes``, ``_bars``, ``_by_day`` and ``params``.
+    parity : dict
+        ``ParityForward`` params (``parity_strikes``, ``min_pairs``, ``max_pair_spread_frac``).
+    """
+
+    def __init__(self, study, parity):
+        self.study = study
+        self.parity = ParityForward(dict(parity))
+        self._rows = {}
+
+    def chain(self, symbol, day, expiry):
+        """Return one expiry's rows on ``day`` in the Greeks tool's shape (``right``, ``strike``, sizes, ``basis_factor``)."""
+        key = (symbol, day, expiry)
+        if key not in self._rows:
+            quotes = self.study._quotes[symbol]
+            if hasattr(quotes, "iter_for"):
+                raw = list(quotes.iter_for(day, expiry))
+            elif symbol in getattr(self.study, "_by_day", {}):
+                raw = [r for k, r in self.study._by_day[symbol].get(day, {}).items() if k[1] == expiry]
+            else:
+                raw = [r for k, r in quotes.items() if k[0] == day and k[1] == expiry]
+            self._rows[key] = [{"right": r["type"], "strike": float(r["strike_raw"]), "bid": r.get("bid"),
+                                "ask": r.get("ask"), "iv": r.get("iv"), "bid_size": r.get("bid_size"),
+                                "ask_size": r.get("ask_size"), "basis_factor": r.get("basis_factor")} for r in raw]
+        return self._rows[key]
+
+    def spot(self, symbol, day, factor):
+        """Return the underlying on ``day`` on the book's basis, or ``None``."""
+        close = self.study._bars[symbol].get(day)
+        return close / factor if number_ok(close) and close > 0 else None
+
+    def forward(self, symbol, day, expiry, factor, exclude=()):
+        """Return ``(forward, source)``: the parity forward of the usable rows, ``(spot, "spot")`` without a pair.
+
+        ``(None, code)`` when the day has no spot (``no_spot``) or its chain quotes a contract twice
+        (``duplicate_quote``).
+        """
+        spot = self.spot(symbol, day, factor)
+        if spot is None:
+            return None, "no_spot"
+        bridge = self.study.params["bridge"]
+        rows = usable_parity_rows(self.chain(symbol, day, expiry), factor, bridge["min_quote_size"],
+                                  bridge["max_relative_spread"], rescale=True)
+        try:
+            return self.parity.from_chain(rows, spot, exclude)
+        except ValueError:
+            return None, ParityForward.DUPLICATE_QUOTE
+
+    def quote(self, symbol, day, expiry, factor, right, strike):
+        """Return the contract's ``{bid, ask, iv}`` on ``day`` on the book's basis, or ``None`` (no row, no usable bid/ask)."""
+        row = next((r for r in self.chain(symbol, day, expiry) if r["right"] == right
+                    and math.isclose(r["strike"], strike, rel_tol=1e-9)), None)
+        if row is None or not (number_ok(row["bid"]) and number_ok(row["ask"])):
+            return None
+        return {"bid": row["bid"] / factor, "ask": row["ask"] / factor, "iv": row["iv"]}
+
+
 class ReplayHedge:
     """ADR-0312 Amendment 1 S3: the hedge of a saved selection, attached to a study's fills and settlements.
 
@@ -1332,9 +1401,9 @@ class ReplayHedge:
 
     @classmethod
     def validate_block(cls, block, parity):
-        """Refuse a block this stage cannot attach (program mode, a condition), a bad block or bad parity params."""
-        if not isinstance(block, dict) or block.get("mode") != "replay":
-            raise ValueError("block_unattached: only a replay-mode hedge is attached; program mode lands in ADR-0312 S4")
+        """Refuse a block this stage cannot attach (a condition), a bad block or bad parity params."""
+        if not isinstance(block, dict) or block.get("mode") not in ("replay", "program"):
+            raise ValueError("block_unattached: only a replay- or program-mode hedge is attached")
         if block.get("condition") is not None:
             raise ValueError("hedge_condition_unattached: the replay attaches the unconditional hedge only")
         HedgeOverlay.from_method({"hedge": block})
@@ -1349,9 +1418,9 @@ class ReplayHedge:
         self.study, self.block, self.mark_rule = study, dict(block), mark_rule
         self.missing = set()                                # (book id, day) marks on a carried-forward level
         self.overlay = HedgeOverlay.from_method({"hedge": self.block})
-        self.parity = ParityForward(dict(parity))
+        self.forwards = ParityForwards(study, parity)
+        self.parity = self.forwards.parity
         self._htb = HardToBorrowProxy({k: block[k] for k in HardToBorrowProxy._PARAMS})
-        self._rows = {}
 
     @property
     def counts(self):
@@ -1359,51 +1428,20 @@ class ReplayHedge:
         return self.overlay.counts
 
     def _chain(self, symbol, day, expiry):
-        """Return one expiry's rows on ``day`` in the Greeks tool's shape (``right``, ``strike``, sizes, ``basis_factor``)."""
-        key = (symbol, day, expiry)
-        if key not in self._rows:
-            quotes = self.study._quotes[symbol]
-            if hasattr(quotes, "iter_for"):
-                raw = list(quotes.iter_for(day, expiry))
-            elif symbol in getattr(self.study, "_by_day", {}):
-                raw = [r for k, r in self.study._by_day[symbol].get(day, {}).items() if k[1] == expiry]
-            else:
-                raw = [r for k, r in quotes.items() if k[0] == day and k[1] == expiry]
-            self._rows[key] = [{"right": r["type"], "strike": float(r["strike_raw"]), "bid": r.get("bid"),
-                                "ask": r.get("ask"), "iv": r.get("iv"), "bid_size": r.get("bid_size"),
-                                "ask_size": r.get("ask_size"), "basis_factor": r.get("basis_factor")} for r in raw]
-        return self._rows[key]
+        """Return one expiry's rows on ``day`` (the shared :class:`ParityForwards` owner's)."""
+        return self.forwards.chain(symbol, day, expiry)
 
     def _spot(self, symbol, day, factor):
         """Return the underlying on ``day`` on the book's basis, or ``None``."""
-        close = self.study._bars[symbol].get(day)
-        return close / factor if number_ok(close) and close > 0 else None
+        return self.forwards.spot(symbol, day, factor)
 
     def forward(self, symbol, day, expiry, factor, exclude=()):
-        """Return ``(forward, source)``: the parity forward of the usable rows, ``(spot, "spot")`` without a pair.
+        """Return ``(forward, source)`` (see :meth:`ParityForwards.forward`)."""
+        return self.forwards.forward(symbol, day, expiry, factor, exclude)
 
-        ``(None, code)`` when the day has no spot (``no_spot``) or its chain quotes a contract twice
-        (``duplicate_quote``).
-        """
-        spot = self._spot(symbol, day, factor)
-        if spot is None:
-            return None, "no_spot"
-        bridge = self.study.params["bridge"]
-        rows = usable_parity_rows(self._chain(symbol, day, expiry), factor, bridge["min_quote_size"],
-                                  bridge["max_relative_spread"], rescale=True)
-        try:
-            return self.parity.from_chain(rows, spot, exclude)
-        except ValueError:
-            return None, ParityForward.DUPLICATE_QUOTE
-
-    def _decision_book(self, book, legs):
-        """Return ``(book units, None)`` from the decision session's forward delta, else ``(None, code)``."""
-        symbol, expiry, factor = book["symbol"], book["expiry"], book["factor"]
-        decision, mult = book["decision_date"], self.study.params["bridge"]["solver"]["multiplier"]
-        forward, source = self.forward(symbol, decision, expiry, factor)
-        if forward is None:
-            return None, source
-        self.counts["forward_spot"] += source != ParityForward.SOURCE_PARITY
+    def _entries(self, symbol, expiry, factor, decision, forward, legs):
+        """Return the overlay's per-item entries for one-contract ``legs`` (``right``, ``strike``, ``sign``) on the decision session."""
+        mult = self.study.params["bridge"]["solver"]["multiplier"]
         rows = self._chain(symbol, decision, expiry)
         items = []
         for leg in legs:
@@ -1420,8 +1458,129 @@ class ReplayHedge:
             self.counts["htb_unreadable"] += 1
         else:
             context["closes"] = closes
-        entries = self.overlay.units(items, context)
-        return self.overlay.book_units(entries, [leg["quantity"] for leg in legs]), None
+        return self.overlay.units(items, context)
+
+    def _decision_book(self, book, legs):
+        """Return ``(book units, None)`` from the decision session's forward delta, else ``(None, code)``."""
+        symbol, expiry, factor = book["symbol"], book["expiry"], book["factor"]
+        decision = book["decision_date"]
+        forward, source = self.forward(symbol, decision, expiry, factor)
+        if forward is None:
+            return None, source
+        self.counts["forward_spot"] += source != ParityForward.SOURCE_PARITY
+        entries = self._entries(symbol, expiry, factor, decision, forward, legs)
+        hedged = self.overlay.book_units(entries, [leg["quantity"] for leg in legs])
+        # What the program charged: every item's own units, not their net (ADR-0312 A1 section 5).
+        hedged["gross"] = math.fsum(abs(e["units"] * leg["quantity"]) for e, leg in zip(entries, legs, strict=True))
+        hedged["decision_forward"] = forward
+        return hedged, None
+
+    @property
+    def is_program(self):
+        """Whether the block is program mode: the hedge is part of the solve, not only of the replay."""
+        return self.block["mode"] == "program"
+
+    @staticmethod
+    def _exclusion_code(status):
+        """Return the counter name of a candidate item excluded for ``status``."""
+        return ("hard_to_borrow" if status == "hedge_hard_to_borrow" else status) + "_excluded"
+
+    def candidates(self, groups, metadata, mult):
+        """Return ``(groups, metadata, refusals, week)`` with the hedged candidate set and the hedge rewrite (program mode).
+
+        An item with no positive finite iv (no delta), or a short hedge on a hard-to-borrow name, is REMOVED from its
+        group (:meth:`restrict`; the solver takes no zero capacity) and counted (``leg_no_iv_excluded``, ``hard_to_borrow_excluded``); a group left empty is
+        refused (``insufficient_eligible_legs``). The rest of each group is rewritten by :meth:`rewrite`. At ratio 0
+        the hedge is inert: nothing is excluded and nothing is rewritten. The input lists are never mutated (the
+        prepared groups are cached across methods).
+        """
+        week = Counter()
+        if self.block["ratio"] == 0:
+            return groups, metadata, [], week
+        kept_groups, kept_meta, refusals, names, htb_groups = [], [], [], set(), set()
+        for group, meta in zip(groups, metadata, strict=True):
+            symbol, decision, expiry, factor = meta["symbol"], meta["decision_date"], meta["expiry"], meta["factor"]
+            forward, source = self.forward(symbol, decision, expiry, factor)
+            if forward is None:
+                refusals.append({"symbol": symbol, "expiry": expiry, "reason": "hedge_" + source})
+                week["hedge_forward_unavailable"] += 1
+                continue
+            self.counts["forward_spot"] += source != ParityForward.SOURCE_PARITY
+            legs = [{"right": i["right"], "strike": i["strike"], "sign": i["sign"]} for i in meta["items"]]
+            entries = self._entries(symbol, expiry, factor, decision, forward, legs)
+            keep = []
+            for index, entry in enumerate(entries):
+                if entry["status"] == "ok":
+                    keep.append(index)
+                    continue
+                week[self._exclusion_code(entry["status"])] += 1
+                if entry["status"] == "hedge_hard_to_borrow":
+                    htb_groups.add(group["id"])
+                    names.add(symbol)
+            if not keep:
+                refusals.append({"symbol": symbol, "expiry": expiry, "reason": "insufficient_eligible_legs"})
+                continue
+            group, meta, entries = self.restrict(group, meta, entries, keep)
+            group, meta = self.rewrite(group, meta, entries, forward, mult)
+            kept_groups.append(group)
+            kept_meta.append(meta)
+        week["htb_excluded_names"], week["htb_excluded_groups"] = len(names), len(htb_groups)
+        week = Counter({k: v for k, v in week.items() if v})
+        self.counts.update(week)
+        return kept_groups, kept_meta, refusals, week
+
+    @staticmethod
+    def restrict(group, meta, entries, keep):
+        """Return ``(group, meta, entries)`` with only the items at positions ``keep`` (the solver takes no zero capacity).
+
+        Every per-item column of the group is cut (``credit``, ``capacity``, each loss, reserve and linear row) and the
+        exclusive pairs are re-indexed, a pair losing a member being dropped. Nothing is cut when ``keep`` is every item.
+        """
+        if len(keep) == len(group["capacity"]):
+            return group, meta, entries
+        new = {old: position for position, old in enumerate(keep)}
+        cut = lambda row: [row[k] for k in keep]                                    # noqa: E731
+        out = {**group, "credit": cut(group["credit"]), "capacity": cut(group["capacity"]),
+               "losses": [cut(row) for row in group["losses"]],
+               "exclusive": [[new[k] for k in pair] for pair in group["exclusive"] if all(k in new for k in pair)],
+               "reserve_rows": [cut(row) for row in group["reserve_rows"]],
+               "linear_rows": [{**row, "coefficients": cut(row["coefficients"])} for row in group["linear_rows"]]}
+        return out, {**meta, "items": cut(meta["items"])}, cut(entries)
+
+    def rewrite(self, group, meta, entries, reference, mult):
+        """Return the hedged ``(group, meta)``: losses, reserve rows, slope row, netted floor rows and credit net of costs.
+
+        ``entries`` carry each item's held-share ``units`` (0.0 for an excluded item); ``reference`` is the decision
+        forward ``F_0``. The loss rows go through the study's one ``_loss_row`` with the hedge, the slope row reads
+        ``-s_i [call_i] - u_i / mult <= 0`` (which excludes the unhedgeable classes), the margin floor is the overlay's
+        two NETTED rows, and the per-item cost is the shared rule on ``|u_i|`` at ``F_0`` for both legs.
+        """
+        import numpy as np
+
+        units = [e["units"] for e in entries]
+        if not any(units):
+            return group, meta
+        ov, items, loss_row = self.overlay, meta["items"], self.study._loss_row
+        hedge = (units, reference)
+        costs = [ov.costs([{"units": u, "reference": reference}], reference, meta["dte"])["trade_costs"]
+                 for u in units]
+        credit = np.asarray(group["credit"]) - np.asarray(costs)
+        reserves = [(np.asarray(loss_row(items, s, mult, hedge)) - credit).tolist()
+                    for s in [0., *sorted({i["strike"] for i in items})]]
+        reserves.append((-credit).tolist())
+        plus, minus = ov.floor_rows(items, entries, reference)
+        slope = [(-i["sign"] if i["right"] == "call" else 0.) - u / mult for i, u in zip(items, units, strict=True)]
+        rewritten = {**group, "credit": credit.tolist(),
+                     "losses": [loss_row(items, s, mult, hedge) for s in group["grid"]],
+                     "reserve_rows": reserves + [plus, minus],
+                     "linear_rows": [{"coefficients": slope, "upper": 0.}]}
+        # The item's EFFECTIVE ratio h_i = -u_i / delta_f_sh,i (0 for an item the small_delta cut left unhedged): the
+        # calibration values the hedged direction part with it (ADR-0313 B1), never with the block's ratio.
+        ratios = [min(1.0, max(0.0, -u / e["delta_f_sh"])) if u and e.get("delta_f_sh") else 0.0
+                  for u, e in zip(units, entries, strict=True)]
+        return rewritten, {**meta, "program_hedge": {"units": units, "reference": reference, "costs": costs,
+                                                   "ratios": ratios,
+                                                   "margin_fraction": ov.params["margin_fraction"]}}
 
     def attach(self, book, day, charge=None):
         """Hedge a filled ``book`` (filled on ``day``) or record why not; sets ``book["hedge"]``.
@@ -1459,18 +1618,26 @@ class ReplayHedge:
                       rates={k: ov.params[k] for k in ("hedge_fee_per_share", "hedge_half_spread_bps")},
                       closing_cost_allowance=allowance, option_reserve=book["reserve"],
                       unhedged_max_loss=book["max_loss"])
+        if math.isinf(book["max_loss"]):
+            # A book the forward leg alone makes bounded (a sold call it covers): JSON has no infinity, so the
+            # option legs' reserve and loss are recorded as null with the flag (ADR-0313 I7; the replay needs it).
+            record.update(option_reserve=None, unhedged_max_loss=None, unhedged_unbounded=True)
+        if self.is_program:
+            # What the program charged (every item on its own units at F_0) beside the replay's netted cost, settled later.
+            record.update(program_gross_units=hedged["gross"], decision_forward=hedged["decision_forward"],
+                          program_cost_usd=self._rule(record).carry_costs(
+                              hedged["gross"], hedged["decision_forward"], hedged["decision_forward"], days)["trade_costs"])
         book.update(reserve=max(reserve + allowance, ov.book_floor(units, reference)), max_loss=loss)
 
     @staticmethod
     def _rule(record):
         """Return the shared cost rule for a book's recorded rates (forward borrow rate 0, owner Q9a)."""
-        return StaticDeltaHedge({**record["rates"], "hedge_borrow_rate": 0.0})
+        return forward_leg_rule(record)
 
     @classmethod
     def net_settle(cls, record, level):
         """Return the leg's settled P&L net of its trade costs at ``level``: ``U (level - F_fill) - carry_costs``."""
-        costs = cls._rule(record).carry_costs(record["units"], record["reference"], level, record["days"])
-        return record["units"] * (level - record["reference"]) - costs["trade_costs"]
+        return forward_leg_net_settle(record, level)
 
     @classmethod
     def mark(cls, record, forward):
@@ -1478,6 +1645,31 @@ class ReplayHedge:
         entry = cls._rule(record).carry_costs(record["units"], record["reference"], record["reference"],
                                                record["days"])["trade_costs"] / 2.0
         return record["units"] * (forward - record["reference"]) - entry
+
+    def cost_excess(self, books):
+        """Return the program mode's cost against the replay's, signed, over the hedged ``books`` (settled).
+
+        ``program_cost_excess_usd = program_cost - replay_cost`` per ADR-0312 A1 section 5: the program charges every
+        item on ``|u_i| q_i`` at ``F_0`` for both legs, the replay charges the netted ``|U_b|`` at ``F_fill`` and the
+        settlement level. The units effect is ``(gross - |U_b|)`` at the program's prices, the price effect
+        ``|U_b| (2 F_0 - F_fill - S_settle)`` in half-spread terms; they sum to the excess.
+        """
+        total, units_effect, price_effect = [], [], []
+        for book in books:
+            record = book.get("hedge", {})
+            if not record.get("units") or "program_cost_usd" not in record:
+                continue
+            level = self.study._bars[book["symbol"]][book["expiry"]] / book["factor"]
+            rule = self._rule(record)
+            replay = rule.carry_costs(record["units"], record["reference"], level, record["days"])["trade_costs"]
+            net = abs(record["units"])
+            per_unit = rule.carry_costs(1, record["decision_forward"], record["decision_forward"],
+                                        record["days"])["trade_costs"]
+            units_effect.append((record["program_gross_units"] - net) * per_unit)
+            price_effect.append(net * per_unit - replay)          # |U_b| at the program's prices less the replay's
+            total.append(record["program_cost_usd"] - replay)
+        return {"program_cost_excess_usd": math.fsum(total), "program_cost_units_effect_usd": math.fsum(units_effect),
+                "program_cost_price_effect_usd": math.fsum(price_effect), "program_cost_books": len(total)}
 
     def path(self, book):
         """Return ``{day: (forward, carried)}`` for each session from the fill through the day before expiry.
@@ -1526,6 +1718,510 @@ class ReplayHedge:
             out["counts"]["hedge_forward_missing"] = len(self.missing)
         return out
 
+
+
+class GreeksExposure:
+    """ADR-0313 I6 (child): the account's beta-delta and vega limit rows, from the decision session's Greeks.
+
+    The CHILD side of the core :class:`~dskit.pipeline.option_exposure.ExposureLimits` (which computes no Greek): it
+    prices every candidate item's one-contract forward delta and vega through ``LegGreeks`` on the decision session's
+    parity forward (the hedge's one :class:`ParityForwards`), removes an item that cannot be priced (counted as
+    ``<code>_excluded``; a group left empty is refused ``insufficient_eligible_legs``), and builds the joint rows the
+    solver adds. The held side is read at the SAME decision-day Greeks over ALL open books: ``held_delta_usd`` counts
+    every book (beta x (forward delta + hedge units) x forward, a book outside ``dte_edges`` included, because
+    candidates outside the edges add to the delta row), the vega buckets count the in-edge books.
+
+    Parameters
+    ----------
+    study : WeeklyOptionPortfolioStudy
+        Supplies ``_betas``, ``_active_position`` and ``params``.
+    block : dict
+        The method's ``exposure_limits`` block.
+    greeks : dict
+        The document's ``exposure_greeks``: ``leg`` (``LegGreeks`` params but the multiplier, which is the
+        bridge's) and ``parity`` (``ParityForward`` params).
+    hedge : ReplayHedge or None
+        The method's hedge: its parity forwards are shared, and a program-mode hedge's units enter the coefficients.
+    """
+
+    def __init__(self, study, block, greeks, hedge=None):
+        self.study, self.limits = study, ExposureLimits(dict(block))
+        self.greeks = LegGreeks({**greeks["leg"], "multiplier": study.params["bridge"]["solver"]["multiplier"]})
+        self.forwards = hedge.forwards if hedge is not None else ParityForwards(study, greeks["parity"])
+        self.program = hedge is not None and hedge.is_program
+        self.counts, self.last = Counter(), {}
+
+    @staticmethod
+    def _risk(what):
+        return ValueError(f"{ExposureLimits.RISK_INPUT}: {what}")
+
+    def candidates(self, day, groups, metadata, adjusts=None):
+        """Return ``(groups, metadata, refusals, week, adjusts)`` with the items that can be priced.
+
+        ``adjusts`` (a calibration's per-item lists) are cut with the items. The per-item Greeks are kept for
+        :meth:`rows`. An item cut from a group a program-mode hedge already rewrote means the two blocks priced
+        differently (``block_params_disagree``).
+        """
+        self.last, week, refusals, kept_groups, kept_meta = {}, Counter(), [], [], []
+        cut = None if adjusts is None else {}
+        for group, meta in zip(groups, metadata, strict=True):
+            symbol, expiry, factor = meta["symbol"], meta["expiry"], meta["factor"]
+            forward, source = self.forwards.forward(symbol, day, expiry, factor)
+            if forward is None:
+                refusals.append({"symbol": symbol, "expiry": expiry, "reason": "exposure_" + source})
+                week["exposure_forward_unavailable"] += 1
+                continue
+            spot = self.forwards.spot(symbol, day, factor)
+            keep, rows = [], []
+            for index, item in enumerate(meta["items"]):
+                row, code = self.greeks.of({"right": item["right"], "strike": item["strike"], "sign": item["sign"],
+                                            "quantity": 1, "expiry": expiry},
+                                           self.forwards.quote(symbol, day, expiry, factor, item["right"], item["strike"]),
+                                           forward, spot, day)
+                if code is not None:
+                    week[ReplayHedge._exclusion_code(code)] += 1
+                    continue
+                keep.append(index)
+                rows.append({"delta_f_sh": row["delta_f_sh"], "vega_usd_per_pt": row["vega_usd_per_pt"]})
+            if not keep:
+                refusals.append({"symbol": symbol, "expiry": expiry, "reason": "insufficient_eligible_legs"})
+                continue
+            if len(keep) != len(meta["items"]) and "program_hedge" in meta:
+                raise ValueError("block_params_disagree: the exposure Greeks priced an item the hedge kept differently")
+            group, meta, _ = ReplayHedge.restrict(group, meta, [None] * len(meta["items"]), keep)
+            kept_groups.append(group)
+            kept_meta.append(meta)
+            self.last[group["id"]] = {"forward": forward, "items": rows}
+            if cut is not None:
+                cut[group["id"]] = [adjusts[group["id"]][i] for i in keep]
+        week = Counter({k: v for k, v in week.items() if v})
+        self.counts.update(week)
+        return kept_groups, kept_meta, refusals, week, cut
+
+    def _held(self, day, books, betas):
+        """Return ``(held, held_delta_usd, detail)`` of the open ``books`` at the decision day's Greeks.
+
+        Raises ``exposure_risk_input`` for a book whose forward, spot or a leg's Greeks cannot be read.
+        """
+        total, rows = 0.0, []
+        for book in books:
+            legs, factor = self.study._active_position(book)
+            symbol, expiry = book["symbol"], book["expiry"]
+            forward, _ = self.forwards.forward(symbol, day, expiry, factor)
+            spot = self.forwards.spot(symbol, day, factor)
+            if forward is None or spot is None or symbol not in betas:
+                raise self._risk(f"book {book['id']!r} has no forward or beta on {day}")
+            sums = Counter()
+            for leg in legs:
+                if not leg["quantity"]:
+                    continue
+                row, code = self.greeks.of({**{k: leg[k] for k in ("right", "strike", "sign", "quantity")},
+                                            "expiry": expiry},
+                                           self.forwards.quote(symbol, day, expiry, factor, leg["right"], leg["strike"]),
+                                           forward, spot, day)
+                if code is not None:
+                    raise self._risk(f"book {book['id']!r} leg {leg['right']} {leg['strike']}: {code}")
+                for key in ("delta_sh", "delta_f_sh", "gamma_sh", "vega_usd_per_pt"):
+                    sums[key] += row[key]
+            units = book.get("hedge", {}).get("units", 0) if self.program else 0
+            total += betas[symbol] * (sums["delta_f_sh"] + units) * forward
+            rows.append({"symbol": symbol, "dte": (date.fromisoformat(expiry) - date.fromisoformat(day)).days,
+                         "spot": spot, "delta_sh": sums["delta_sh"], "gamma_sh": sums["gamma_sh"],
+                         "vega_usd_per_pt": sums["vega_usd_per_pt"], "status": BookGreeks.OK})
+        snapshot = ExposureSnapshot({"dte_edges": self.limits.params["dte_edges"], "top_k": 1}).of(betas, rows)
+        held = {"beta_delta_usd": snapshot["total"]["beta_delta_usd"],
+                "vega_usd_per_pt": [b["vega_usd_per_pt"] for b in snapshot["buckets"]]}
+        return held, total, {"held_ids": [b["id"] for b in books], "held_vega": held["vega_usd_per_pt"],
+                             "held_delta_usd": total}
+
+    def rows(self, day, groups, metadata, funding, books):
+        """Return ``(joint rows, detail)`` for the kept candidates beside the open ``books``.
+
+        Raises
+        ------
+        ValueError
+            ``exposure_risk_input`` (a Greek, forward or beta cannot be read) or ``exposure_held_breach`` (the
+            held exposure already exceeds a limit).
+        """
+        betas = self.study._betas(day, self.limits.params["beta_lookback"])["betas"]
+        held, held_delta, detail = self._held(day, books, betas)
+        items, units = [], {}
+        for group, meta in zip(groups, metadata, strict=True):
+            info = self.last[group["id"]]
+            hedge_units = (meta.get("program_hedge") or {}).get("units") if self.program else None
+            items.append({"id": group["id"], "symbol": meta["symbol"], "dte": meta["dte"], "forward": info["forward"],
+                          "items": [{**it, **({} if hedge_units is None else {"units": hedge_units[i]})}
+                                    for i, it in enumerate(info["items"])]})
+            if hedge_units is not None:
+                units[group["id"]] = list(hedge_units)
+        rows = self.limits.rows(items, betas, funding, held, held_delta)
+        return rows, {**detail, **({"units": units} if self.program else {})}
+
+
+class CalibratedEdge:
+    """ADR-0313 section A, child side: one method's calibrated-edge objective term from the walk's maps.
+
+    Built once per calibrated method by the study (never by ``_prepare``, which stays feature-free and cached across
+    methods). It owns, in order: the summary refusals (:meth:`_check_walk`, the walk's pins, reads and calendar),
+    the exact-key map lookup (:meth:`map_for`: the decision at ``t`` reads ``maps[t]`` and nothing else), the item
+    features (the SAME ``EdgeItemFeatures`` rows the walk decided on, the same side rule and the same bucket), and
+    the per-item ``value_adjust`` (:meth:`candidates`): the map on the side of an option with the larger edge, its
+    mirror side ``-adj``, an item with no walk row EXCLUDED and counted (``calibration_no_row_excluded``), never
+    left at its raw edge. ``credit``, ``losses``, reserves and caps are never touched.
+
+    Parameters
+    ----------
+    study : WeeklyOptionPortfolioStudy
+        Supplies ``method_inputs`` (``edge_maps`` and ``edge_walk_summary``), ``weeks``, ``params`` and ``clocks``.
+    method : dict
+        The method document carrying the ``calibration`` block.
+
+    Raises
+    ------
+    ValueError
+        Starting with the refusal code: ``calibration_summary_incomplete``, ``calibration_walk_unsealed``,
+        ``calibration_weight_cap``, ``calibration_state_unread``, ``calibration_unread``,
+        ``calibration_seed_quarter``, ``calibration_walk_mismatch``, ``calibration_map_date``,
+        ``calibration_affine_unread``, ``calibration_double_discount``, ``calibration_split_unsupported``.
+
+    Examples
+    --------
+    Per decision week (the study does this)::
+
+        cal = CalibratedEdge(study, method)
+        if cal.week_warm(day):
+            groups, metadata, excluded, week, adjusts = cal.candidates(day, groups, metadata)
+    """
+
+    #: Summary keys every calibrated method reads (``direction_params`` too with two regressors).
+    SUMMARY_KEYS = ("sealed_from", "report_from", "edge_scale", "pooling", "buckets", "forecast_pins",
+                    "mio_quote_values", "symbol_list_sha256", "walk_decision_dates", "reads", "integration_reads")
+    #: The walk's fixed scored state: every gated forward read scores the expanding fill state.
+    SCORED_STATE = "expanding_fill"
+    #: Per (form, regressors): the integration read the form needs, its walk state, line and form words.
+    READS = {("slope", 1): ("read2w", "forward_w", "cw_bucket", "slope"),
+             ("slope", 2): ("read2b", "forward_b2", "c2w_bucket", "no_intercept")}
+    NO_ROW = "calibration_no_row_excluded"
+
+    def __init__(self, study, method):
+        import hashlib
+        from dskit.pipeline.edge_reliability import CalibratedObjective, ReliabilityBuckets, _Refusal
+
+        self.study, self.method, self.block = study, method, dict(method["calibration"])
+        inputs = study.method_inputs
+        self.maps, self.summary = inputs["edge_maps"], inputs["edge_walk_summary"]
+        self._refuse = _Refusal
+        try:
+            self._check_walk(hashlib, CalibratedObjective, ReliabilityBuckets)
+        except _Refusal as exc:
+            raise ValueError(str(exc)) from exc
+        absent = [d for d in study.weeks if study._week_selected(d) and d not in self.maps]
+        if absent:
+            # ADR-0313 A9: a truncated or gappy stream must not read as warm-up (a cold map is PRESENT, a missing one is not).
+            raise ValueError(f"calibration_map_missing: no map for decision week(s) {absent}")
+        self._rows_cache = (None, None)
+        self._best = {}
+        #: ``(group, right, strike)`` -> the walk-row equivalent of the LAST :meth:`candidates` call (bucket, e, side, c).
+        self.last = {}
+
+    # -- the refusals -------------------------------------------------------------------------------------------
+
+    def _need(self, code, detail):
+        raise self._refuse(code, detail)
+
+    def _check_walk(self, hashlib, CalibratedObjective, ReliabilityBuckets):
+        """Run every walk refusal (ADR-0313 A9) and build the objective, the bucket rule and the item-feature seam."""
+        from .edge_calibration import EdgeItemFeatures
+
+        study, block, summary = self.study, self.block, self.summary
+        regressors = block["regressors"]
+        keys = (*self.SUMMARY_KEYS, *(("direction_params",) if regressors == 2 else ()))
+        missing = [k for k in keys if k not in summary]
+        if missing:
+            self._need("calibration_summary_incomplete", f"the walk's summary lacks {missing}")
+        if study.adjustments:
+            self._need("calibration_split_unsupported", "a calibrated run takes no split adjustment (the walk books none)")
+        sealed = summary["sealed_from"]
+        if not isinstance(sealed, str) or sealed > DEVELOPMENT_SEAL:
+            self._need("calibration_walk_unsealed", f"the walk's sealed_from {sealed!r} is above {DEVELOPMENT_SEAL}")
+        pooling = summary["pooling"]
+        if not isinstance(pooling, dict) or "weight_cap" not in pooling:
+            self._need("calibration_summary_incomplete", "the walk's summary has no pooling.weight_cap")
+        CalibratedObjective.check_weight_cap(pooling["weight_cap"])
+        control = block.get("control", False)
+        side = summary["integration_reads"].get("affine_side", {}) if isinstance(summary["integration_reads"], dict) else {}
+        self.objective = CalibratedObjective(block, affine_read=side.get("verdict") == "PASS")
+        self.objective.check_discount(self.method["rho"], "risk_charge" in self.method)
+        if not control:
+            self._check_reads(summary)
+        if block["edge_scale"] != summary["edge_scale"]:
+            self._need("calibration_state_unread", f"the block's edge_scale {block['edge_scale']!r} is not the walk's "
+                       f"{summary['edge_scale']!r}")
+        weeks = [d for d in study.weeks if study._week_selected(d)]
+        early = [d for d in weeks if d < summary["report_from"]]
+        if early:
+            self._need("calibration_seed_quarter", f"decision weeks {early[:3]} lie before the walk's report_from "
+                       f"{summary['report_from']} (its seed): a calibrated arm would be cash there")
+        self._check_calendar(hashlib, weeks, sealed)
+        for t, body in self.maps.items():
+            if t not in study.weeks or not isinstance(body, dict) or body.get("t") != t:
+                self._need("calibration_map_date", f"map {t!r} is not a decision week of the study or not its own date")
+        self.buckets = ReliabilityBuckets(summary["buckets"])
+        direction = summary.get("direction_params") if regressors == 2 else None
+        if direction is not None:
+            self._check_agreement(direction)
+        self.features = EdgeItemFeatures(direction, summary["edge_scale"])
+
+    #: The ``LegGreeks`` keys the direction part, the hedge and the exposure rows all price with.
+    _LEG_KEYS = ("rate", "iv_source", "min_years", "vol_floor")
+
+    def _check_agreement(self, direction):
+        """Refuse a method whose hedge or exposure block prices the Greeks differently from the walk's direction part.
+
+        ``block_params_disagree`` (ADR-0313 D): the walk's ``direction_params`` (the ``LegGreeks`` and
+        ``ParityForward`` params its ``e_dir`` was priced with) must equal the hedge block's rate, iv source and the
+        overlay's floors, with the document's ``hedge_parity``, and the document's ``exposure_greeks``.
+        """
+        from dskit.pipeline.hedge_overlay import DEFAULT_IV_DISAGREE_TOL, DEFAULT_MIN_YEARS, DEFAULT_VOL_FLOOR
+
+        params = self.study.params
+        mine = {k: direction.get(k) for k in self._LEG_KEYS}
+        parity = {k: direction.get(k) for k in ParityForward._PARAMS}
+        if direction.get("iv_source") == "mid":
+            mine["iv_disagree_tol"] = direction.get("iv_disagree_tol")
+        hedge, greeks = self.method.get("hedge"), params.get("exposure_greeks")
+        other = []
+        if hedge is not None:
+            theirs = {"rate": hedge["rate"], "iv_source": hedge["iv_source"], "min_years": DEFAULT_MIN_YEARS,
+                      "vol_floor": DEFAULT_VOL_FLOOR}
+            if hedge["iv_source"] == "mid":
+                theirs["iv_disagree_tol"] = DEFAULT_IV_DISAGREE_TOL
+            other.append(("hedge", theirs, params.get("hedge_parity")))
+        if greeks is not None and "exposure_limits" in self.method:
+            other.append(("exposure_greeks", {k: v for k, v in greeks["leg"].items()}, greeks["parity"]))
+        for name, leg, par in other:
+            if leg != mine or par != parity:
+                self._need("block_params_disagree", f"the walk priced its direction part with {mine} / {parity}, the "
+                           f"method's {name} with {leg} / {par}")
+
+    def _check_reads(self, summary):
+        """Refuse an arm whose pinned walk did not score THIS line forward and pass (G2): state and read words."""
+        block = self.block
+        form, regressors = block["form"], block["regressors"]
+        if block["state"] != self.SCORED_STATE:
+            self._need("calibration_state_unread", f"state {block['state']!r}: the walk scores only {self.SCORED_STATE!r}")
+        reads, integration = summary["reads"], summary["integration_reads"]
+        if not isinstance(reads, dict) or not isinstance(integration, dict):
+            self._need("calibration_summary_incomplete", "the walk's reads are not objects")
+        scored = []
+        if form == "affine":
+            if regressors != 1 or block["line"] != "bucket":
+                self._need("calibration_state_unread", "the affine form is scored for the one-regressor bucket line only")
+            scored = [reads.get("read2", {})]
+        else:
+            if (form, regressors) not in self.READS:
+                self._need("calibration_state_unread", f"form {form!r} with {regressors} regressor(s) is not scored")
+            name, state, line, word = self.READS[form, regressors]
+            read = integration.get(name, {})
+            if (read.get("state"), read.get("line"), read.get("form")) != (state, line, word):
+                self._need("calibration_state_unread", f"the walk's {name} scored {read.get('state')!r}/"
+                           f"{read.get('line')!r}/{read.get('form')!r}, not {state!r}/{line!r}/{word!r}")
+            scored = [read]
+        verdicts = [reads.get("read1", {}).get("verdict"), reads.get("read2", {}).get("verdict"),
+                    *(r.get("verdict") for r in scored)]
+        if any(v != "PASS" for v in verdicts):
+            self._need("calibration_unread", f"the pinned walk's gated reads are {verdicts} (read 1, read 2, and the "
+                       f"form's own read): all must be PASS before an arm trades")
+
+    def _check_calendar(self, hashlib, weeks, sealed):
+        """The study's document must be the one the walk was run on (per quarter), else ``calibration_walk_mismatch``."""
+        import json as json_
+
+        study, summary = self.study, self.summary
+        bridge = study.params["bridge"]
+        quote = {**{k: bridge[k] for k in ("max_relative_spread", "min_quote_size", "max_abs_z")},
+                 "fee_per_contract_usd": bridge["solver"]["fee_per_contract_usd"],
+                 "multiplier": bridge["solver"]["multiplier"]}
+        if summary["mio_quote_values"] != quote:
+            self._need("calibration_walk_mismatch", f"the walk read quote values {summary['mio_quote_values']}, "
+                       f"the study's are {quote}")
+        symbols = hashlib.sha256(json_.dumps(study.params["symbols"]).encode()).hexdigest()
+        if summary["symbol_list_sha256"] != symbols:
+            self._need("calibration_walk_mismatch", "the walk's symbol list is not the study's")
+        outside = [d for d in weeks if d not in set(summary["walk_decision_dates"])]
+        if outside:
+            self._need("calibration_walk_mismatch", f"decision weeks {outside[:3]} are not in the walk's calendar")
+        tail = study.clocks["tail_end_before"] if study.clocks else None
+        if tail is None or tail > sealed:
+            self._need("calibration_walk_mismatch", f"the study's tail {tail!r} reaches past the walk's seal {sealed!r}")
+
+    @classmethod
+    def check_pins(cls, summary, domain, packet):
+        """Refuse a walk whose forecast pins for the packet's quarter are not the document's own (``calibration_walk_mismatch``).
+
+        ``domain`` is the study document's domain (its ``forecasts`` and ``contexts`` source bindings carry the pins);
+        ``packet`` its selected packet. Called where the document is visible, at the packet's intake.
+        """
+        start = packet["start"]
+        quarter = f"{start[:4]}Q{(int(start[5:7]) - 1) // 3 + 1}"
+        pins = summary.get("forecast_pins")
+        if not isinstance(pins, dict) or quarter not in pins:
+            raise ValueError(f"calibration_summary_incomplete: the walk's summary has no forecast_pins for {quarter}")
+        found = {}
+        for role in ("forecasts", "contexts"):
+            binding = domain["sources"][role]
+            found[role] = binding["pin"]["files"][binding["files"]["shared"]]
+        if pins[quarter] != found:
+            raise ValueError(f"calibration_walk_mismatch: the walk's forecast pins for {quarter} are not the document's")
+
+    # -- the week -----------------------------------------------------------------------------------------------
+
+    def map_for(self, day):
+        """Return the map of decision session ``day`` BY EXACT KEY, or ``None``: no other map is ever consulted."""
+        return self.maps.get(day)
+
+    def week_warm(self, day):
+        """Say whether ``day`` has a warm map; a missing or cold one is a ``calibration_warmup`` week (cash)."""
+        try:
+            return self.objective.map_warm(self.map_for(day))
+        except self._refuse as exc:
+            raise ValueError(str(exc)) from exc
+
+    def _rows(self, day):
+        """Return the day's decision rows keyed ``(group, right, strike, sign)``, from the walk's own row builder."""
+        if self._rows_cache[0] != day:
+            rows = {(r["group"], r["right"], r["strike"], r["sign"]): r for r in self.features.rows(self.study, day)}
+            self._rows_cache = (day, rows)
+        return self._rows_cache[1]
+
+    def _adjust(self, row, emap, h_i=0.0):
+        """Return ``adj`` for the walk's row of one option, or ``(None, reason)``: no row, no regime, warm-up.
+
+        ``h_i`` is the item's effective hedge ratio (two regressors only; the hedged direction part is valued at
+        ``(1 - h_i) w_dir e_dir``).
+        """
+        from dskit.pipeline.libs.edge_walk import books_fill
+
+        if not books_fill(row):
+            return None, "no_fill_session"
+        regime = emap.get("regimes", {}).get(row["name"])
+        if regime is None:
+            return None, "no_regime"
+        bucket = self.buckets.of(row["dte"], row["abs_z"], row["spread"], regime[0])
+        two = self.block["regressors"] == 2
+        try:
+            adj = self.objective.adjust(emap, bucket, row["name"], row["e"], row.get("e_dir") if two else None,
+                                        row.get("scale"), h_i)
+        except self._refuse as exc:
+            raise ValueError(str(exc)) from exc
+        self.last[row["group"], row["right"], row["strike"]] = {
+            "bucket": bucket, "e": row["e"], "sign": row["sign"], "c": None if adj is None else row["e"] + adj,
+            "h": h_i}
+        return (adj, None) if adj is not None else (None, "not_warm_bucket" if row.get("e_dir", 0.0) is not None
+                                                    else "no_direction_edge")
+
+    def _best_sides(self, meta, rows):
+        """Return ``{(right, strike): sign}``: the side of each option the map is applied to (the walk's side rule)."""
+        from dskit.pipeline.libs.edge_walk import prefers
+
+        options = {}
+        for item in meta["items"]:
+            options.setdefault((item["right"], item["strike"]), []).append(item["sign"])
+        best = {}
+        for key, signs in options.items():
+            top = signs[0]
+            for sign in signs[1:]:
+                if prefers(rows[meta["id"], *key, sign], rows[meta["id"], *key, top]):
+                    top = sign
+            best[key] = top
+        return best
+
+    def exclude(self, day, groups, metadata):
+        """Return ``(groups, metadata, refusals, week)`` without the options the walk gave no row (B2 step 2).
+
+        An option with no walk row (no fill session, no regime, no bucket, no direction edge) has BOTH items removed
+        from their group and counted; a group left empty is refused (``insufficient_eligible_legs``). The side of each
+        kept option the map will be applied to is fixed here, on the pair as the walk saw it, and remembered for
+        :meth:`adjust`, so a later exclusion of one side (the hedge's, the limits') cannot move the pairing.
+        """
+        emap, rows = self.map_for(day), self._rows(day)
+        self.last = {}
+        week, refusals, kept_groups, kept_meta = Counter(), [], [], []
+        self._best = {}
+        for group, meta in zip(groups, metadata, strict=True):
+            best = self._best_sides(meta, rows)
+            missing = {}
+            for key, sign in best.items():
+                value, reason = self._adjust(rows[meta["id"], *key, sign], emap)
+                missing[key] = reason if value is None else None
+                if value is None:
+                    week[reason] += 1
+            keep = [i for i, it in enumerate(meta["items"]) if missing[it["right"], it["strike"]] is None]
+            week[self.NO_ROW] += len(meta["items"]) - len(keep)
+            if not keep:
+                refusals.append({"symbol": meta["symbol"], "expiry": meta["expiry"],
+                                 "reason": "insufficient_eligible_legs"})
+                continue
+            new_group, new_meta, _ = ReplayHedge.restrict(group, meta, [None] * len(meta["items"]), keep)
+            kept_groups.append(new_group)
+            kept_meta.append(new_meta)
+            self._best[meta["id"]] = best
+        return kept_groups, kept_meta, refusals, Counter({k: v for k, v in week.items() if v})
+
+    @staticmethod
+    def ratios(meta):
+        """Return the items' effective hedge ratios of a program-hedged ``meta``, else zeros."""
+        return (meta.get("program_hedge") or {}).get("ratios") or [0.0] * len(meta["items"])
+
+    def adjust(self, day, groups, metadata):
+        """Return ``{group id: [adj per kept item]}`` against each group AS CONFIGURED (B2 step 5).
+
+        Each item's option takes the map on the side fixed by :meth:`exclude`, at the item's own effective hedge
+        ratio ``h_i`` (the group's ``program_hedge`` ratios; 0 when unhedged), its other side ``-adj``. ``adj`` is
+        against the hedged nominal because the walk's ``e`` and ``e_dir`` are the unhedged ones the map was fitted on.
+        """
+        emap, rows = self.map_for(day), self._rows(day)
+        adjusts = {}
+        for group, meta in zip(groups, metadata, strict=True):
+            best, ratios, out = self._best[meta["id"]], self.ratios(meta), []
+            for item, h in zip(meta["items"], ratios, strict=True):
+                key = (item["right"], item["strike"])
+                value, reason = self._adjust(rows[meta["id"], *key, best[key]], emap, h)
+                if value is None:
+                    raise ValueError(f"calibration_no_row: an option kept by exclude has no row ({reason})")
+                out.append(value if item["sign"] == best[key] else self.objective.mirror(value))
+            adjusts[meta["id"]] = out
+        return adjusts
+
+    def candidates(self, day, groups, metadata):
+        """Return ``(groups, metadata, refusals, week, adjusts)`` for a warm week: :meth:`exclude` then :meth:`adjust`.
+
+        The calibration-only path (no hedge rewrite between the two steps). ``adjusts`` maps a group id to its
+        per-item list, in the kept order.
+        """
+        groups, metadata, refusals, week = self.exclude(day, groups, metadata)
+        return groups, metadata, refusals, week, self.adjust(day, groups, metadata)
+
+    def record(self, weeks):
+        """Return the result's calibration field: the resolved block, its control flag and the week counts."""
+        return {"block": self.objective.params, "control": bool(self.block.get("control", False)),
+                "weeks": dict(weeks), "min_warm_weeks": self.block["min_warm_weeks"],
+                "counts_as_evidence": weeks.get("warm", 0) >= self.block["min_warm_weeks"]}
+
+
+#: A0010's ordered formulation ids and whole-spec digests (ADR-0297/0313).
+#: The queue example and each research template are pinned to this authority by tests.
+LOCKED_FORMULATION_HASHES = MappingProxyType({
+    "w1_010_shock10_lp": "5df0260c24382f5687cca7a0a79c5c7dd31f18026c40565b7dd6280ba01444d2",
+    "w1_003_shock10_lp": "f039c1052a70e03e1677c3a221645cf866bd63aeb542de6e78c61f27f7607dce",
+    "w1_003_shock10_mad050_lp": "4cb355a1430cd91ca057ea6de25d1f1b6c38db1c229d8cfdf70a2b6e8b7db027",
+    "nominal_lp": "2aafa98563258583cba3ba132e00f99f94a654aa0cdaf93d8b91456e5f02d77f",
+    "w1_010z_shock10_lp": "117f2a065186e0cc05b22dce4023e9979bd2e66f168c681cc0436bf5975098b3",
+    "w1_010_shock10_fine_lp": "cbd34f09cec9d5bb8dc80b4481f58d503dfd247985a852138875eb7b9874e925",
+    "w1_010_component25_shock10_lp": "6971f606c5e65db85b7c00a713a22a009a5e63a8211178e4c1dd10d2fa74d50c",
+    "w1_010_name25_shock10_lp": "5147dcca687ef5a3da75948e4835271d7bb6118258a632fe989277ee85aaab0d",
+    "w1_010_shock05_book_lp": "d63a2e649f4cf133b3f94b44e796efe20533e6cd7d734bba44ee68f982b0840c",
+})
 
 
 class WeeklyOptionPortfolioStudy:
@@ -1721,18 +2417,26 @@ class WeeklyOptionPortfolioStudy:
     #: ``decision_weeks`` (ADR-0313 M1/G5): exactly one decision date; every other week is ``week_not_selected``.
     #: ``hedge_parity`` (ADR-0312 A1 section 6): the child's ``ParityForward`` params for the hedge's decision, fill and mark
     #: forwards (the overlay block carries none); required exactly when a method carries a ``hedge`` block.
-    _OPTIONAL_PARAMS = ("fill_sizing", "locked_method_ids", "decision_weeks", "hedge_parity")
+    #: ``exposure_greeks`` (ADR-0313 I6): ``{"leg": LegGreeks params but the multiplier, "parity": ParityForward params}``, required
+    #: exactly when a method carries ``exposure_limits``; a hedged method must price the same (``block_params_disagree``).
+    _OPTIONAL_PARAMS = ("fill_sizing", "locked_method_ids", "decision_weeks", "hedge_parity", "exposure_greeks")
     _WEEK_NOT_SELECTED = "week_not_selected"
     _FILL_SIZINGS = ("all_or_none", "available_size")
     _AVAILABLE_SIZE = "available_size"
 
-    def __init__(self, params, inputs, *, adjustments=None):
+    def __init__(self, params, inputs, *, adjustments=None, method_inputs=None):
         import copy
         from datetime import date
         from dskit.pipeline.libs.option_ledger import StandardSplitAdjustment
 
         self.validate_configuration(params)
         self.params = copy.deepcopy(params)
+        self.method_inputs = copy.deepcopy(method_inputs)
+        declared = any("calibration" in m for m in self.params["methods"])
+        if declared and not self.method_inputs:
+            raise ValueError("edge_maps_unbound: a calibrated method needs the walk's maps (method_inputs)")
+        if self.method_inputs and not declared:
+            raise ValueError("edge_maps_unused: method_inputs given but no method declares a calibration block")
         p, symbols = self.params, self.params["symbols"]
         self.adjustments = StandardSplitAdjustment.parse(adjustments, p["bridge"]["solver"]["multiplier"])
         if (set(self.adjustments)-set(symbols)
@@ -1867,10 +2571,10 @@ class WeeklyOptionPortfolioStudy:
         p = params
         if "fill_sizing" in p and p["fill_sizing"] not in cls._FILL_SIZINGS:
             raise ValueError("unsupported fill sizing")
-        if "locked_method_ids" in p and not (
-                isinstance(p["locked_method_ids"], list) and len(set(p["locked_method_ids"])) == len(p["locked_method_ids"])
-                and all(isinstance(i, str) and i for i in p["locked_method_ids"])):
-            raise ValueError("locked_method_ids must be a list of distinct nonempty method ids")
+        if "locked_method_ids" in p:
+            defects = MethodBlocks.lock_problems(LOCKED_FORMULATION_HASHES, p["locked_method_ids"], ())
+            if defects:
+                raise ValueError("; ".join(defects))
         if "decision_weeks" in p:
             cls._decision_week(p["decision_weeks"])
         defects = TransportPortfolioSolve.validate_params(p["solver"])
@@ -1919,7 +2623,11 @@ class WeeklyOptionPortfolioStudy:
                    "clocks": p.get("clocks") or ({"tail_end_before": tail_end_before} if tail_end_before else None)}
         for method in p["methods"]:
             cls._BLOCKS.validate(method, context)
+        defects = MethodBlocks.locked_spec_problems(LOCKED_FORMULATION_HASHES, p["methods"])
+        if defects:
+            raise ValueError("; ".join(defects))
         cls._hedge_configuration(p)
+        cls._exposure_configuration(p)
         for method in p["methods"]:
             if "sizer" in method and method["sizer"]["beta_lookback"] < p["correlation_min_pairs"]:
                 # Fewer sessions in the loadings' window than the study needs to estimate would hold every week.
@@ -1943,6 +2651,53 @@ class WeeklyOptionPortfolioStudy:
                 raise ValueError("; ".join(problems))
         FundedOptionAccount(p["initial"], p["deposit"], p["deposit_every_days"], p["bridge"]["start"])
 
+    #: The ``leg`` keys of ``exposure_greeks`` (``iv_disagree_tol`` too under ``iv_source`` ``mid``); the hedge shares them.
+    _GREEKS_LEG_KEYS = frozenset({"rate", "iv_source", "min_years", "vol_floor"})
+
+    @classmethod
+    def _exposure_configuration(cls, p):
+        """Refuse a document whose ``exposure_greeks`` is not there exactly when a method carries ``exposure_limits``.
+
+        Codes: ``exposure_limits_with_kelly`` (the core's), ``exposure_greeks_unused`` / ``_missing`` / ``_invalid``,
+        and ``block_params_disagree`` when a method with both a hedge and limits prices its Greeks differently
+        (rate, iv source, the hedge's floors, or the parity params).
+        """
+        from dskit.pipeline.hedge_overlay import DEFAULT_IV_DISAGREE_TOL, DEFAULT_MIN_YEARS, DEFAULT_VOL_FLOOR
+
+        limited = [m for m in p["methods"] if "exposure_limits" in m]
+        for method in limited:
+            ExposureLimits.check_method(method)
+        if "exposure_greeks" in p and not limited:
+            raise ValueError("exposure_greeks_unused: exposure_greeks is for a document with an exposure_limits method")
+        if not limited:
+            return
+        greeks = p.get("exposure_greeks")
+        if not isinstance(greeks, dict):
+            raise ValueError("exposure_greeks_missing: a method with exposure_limits needs the document's "
+                             "exposure_greeks ({'leg': LegGreeks params, 'parity': ParityForward params})")
+        leg, parity = greeks.get("leg"), greeks.get("parity")
+        if set(greeks) != {"leg", "parity"} or not isinstance(leg, dict) or not isinstance(parity, dict):
+            raise ValueError("exposure_greeks_invalid: exposure_greeks is exactly {'leg', 'parity'}, each a mapping")
+        problems = [] if set(leg) - {"iv_disagree_tol"} == cls._GREEKS_LEG_KEYS else ["leg keys differ"]
+        problems += LegGreeks.validate_params({**leg, "multiplier": p["bridge"]["solver"]["multiplier"]})
+        problems += ParityForward.validate_params(parity)
+        if problems:
+            raise ValueError("exposure_greeks_invalid: " + "; ".join(map(str, problems)))
+        for method in limited:
+            hedge = method.get("hedge")
+            if hedge is None:
+                continue
+            mine = {"rate": leg["rate"], "iv_source": leg["iv_source"], "min_years": leg["min_years"],
+                    "vol_floor": leg["vol_floor"]}
+            theirs = {"rate": hedge["rate"], "iv_source": hedge["iv_source"], "min_years": DEFAULT_MIN_YEARS,
+                      "vol_floor": DEFAULT_VOL_FLOOR}
+            if leg["iv_source"] == "mid":
+                mine["iv_disagree_tol"], theirs["iv_disagree_tol"] = leg.get("iv_disagree_tol"), DEFAULT_IV_DISAGREE_TOL
+            if mine != theirs or parity != p.get("hedge_parity"):
+                raise ValueError(f"block_params_disagree: method {method['id']!r} prices its exposure Greeks "
+                                 f"differently from its hedge ({mine} / {parity} against {theirs} / "
+                                 f"{p.get('hedge_parity')})")
+
     @staticmethod
     def _hedge_configuration(p):
         """Refuse a hedged document that is not sealed (``hedge_seal``) or lacks its parity params (``hedge_parity_*``)."""
@@ -1951,6 +2706,10 @@ class WeeklyOptionPortfolioStudy:
             raise ValueError("hedge_parity_unused: hedge_parity is for a document with a hedged method")
         if not hedged:
             return
+        for method in p["methods"]:
+            if method.get("hedge", {}).get("mode") == "program" and "kelly" in method:
+                raise ValueError("hedge_with_sizer: a program-mode hedge cannot combine with kelly "
+                                 "(the growth sampler and its scenarios are wired in a second step)")
         if p["bridge"]["end_before"] > DEVELOPMENT_SEAL:
             raise ValueError(f"hedge_seal: a hedged document must end before {DEVELOPMENT_SEAL}, "
                              f"got bridge.end_before {p['bridge']['end_before']!r}")
@@ -2184,10 +2943,19 @@ class WeeklyOptionPortfolioStudy:
         return spec if spec is not None and spec["price"] > 0 else None
 
     @staticmethod
-    def _loss_row(items, spot, mult):
-        """Return each item's per-contract terminal loss at an underlying price."""
-        return [-i["sign"]*mult*max((i["strike"]-spot if i["right"] == "put"
-                                     else spot-i["strike"]), 0.) for i in items]
+    def _loss_row(items, spot, mult, hedge=None):
+        """Return each item's per-contract terminal loss at an underlying price.
+
+        ``hedge`` is ``None`` (today's row, bit for bit) or ``(units, reference)``: the held-share forward units per
+        item and the level they settle against (ADR-0312 program mode). The hedged loss is
+        ``l_i(S) - u_i (S - F_ref)``; an item with ``u_i == 0`` keeps its unhedged value exactly.
+        """
+        row = [-i["sign"]*mult*max((i["strike"]-spot if i["right"] == "put"
+                                    else spot-i["strike"]), 0.) for i in items]
+        if hedge is None:
+            return row
+        units, reference = hedge
+        return [loss-u*(spot-reference) if u else loss for loss, u in zip(row, units, strict=True)]
 
     @classmethod
     def _filled_scope(cls, shock):
@@ -2207,6 +2975,12 @@ class WeeklyOptionPortfolioStudy:
                  "upper": upper if held is None else max(0., upper-held[str(move)])}
                 for move in shock["moves"]]
 
+    @staticmethod
+    def _program_hedge(meta):
+        """Return a candidate's ``(units, reference)`` hedge when program mode rewrote it, else ``None``."""
+        hedge = meta.get("program_hedge")
+        return None if hedge is None else (hedge["units"], hedge["reference"])
+
     @classmethod
     def _move_terms(cls, moves, betas, metadata, groups, mult):
         """Return, per move, each candidate's terminal loss net of premium per contract at the shocked price.
@@ -2217,7 +2991,8 @@ class WeeklyOptionPortfolioStudy:
         import numpy as np
 
         return {move: {meta["id"]: (np.asarray(cls._loss_row(
-                           meta["items"], max(0., meta["spot"]*(1.+betas[meta["symbol"]]*move)), mult))
+                           meta["items"], max(0., meta["spot"]*(1.+betas[meta["symbol"]]*move)), mult,
+                           cls._program_hedge(meta)))
                                     - np.asarray(group["credit"])).tolist()
                        for group, meta in zip(groups, metadata)}
                 for move in moves}
@@ -2369,14 +3144,15 @@ class WeeklyOptionPortfolioStudy:
                 book["active_factor"] = event.basis_after
                 book["applied_adjustments"] = [event.record()]
 
-    def _account_shock(self, books, day, shock):
+    def _account_shock(self, books, day, shock, hedged=False):
         """Return the betas and each move's net terminal loss of books at the day's close.
 
         Each book loses its fee-adjusted credit plus multiplier times its
         payoff at max(0, close x (1 + beta x move)), the close in the book's
         basis and beta from strictly earlier sessions. The losses are None when
         a required input is missing or nonfinite, or the day's observed basis
-        is not the book's, so the caller fails closed.
+        is not the book's, so the caller fails closed. ``hedged`` (a program-mode hedge) adds each hedged book's
+        forward leg, net of its trade costs, at the shocked level: the gate sees the hedged risk.
         """
         from dskit.pipeline.option_structures import structure_payoff
 
@@ -2396,16 +3172,18 @@ class WeeklyOptionPortfolioStudy:
             for move in shock["moves"]:
                 spot = max(0., close/factor*(1.+estimate["betas"][symbol]*move))
                 losses[str(move)] -= book["credit"]+mult*structure_payoff(legs, spot, strikes)
+                if hedged and book.get("hedge", {}).get("units"):
+                    losses[str(move)] -= ReplayHedge.net_settle(book["hedge"], spot)
         if not all(math.isfinite(v) for v in losses.values()):
             return estimate, None
         return estimate, losses
 
-    def _postfill_shock(self, account, day, shock, survivors, refusals):
+    def _postfill_shock(self, account, day, shock, survivors, refusals, hedged=False):
         """Recompute the account's terminal loss with the surviving fills before admission."""
         limit = shock["loss_fraction"]*max(0., account.funding)
         tolerance = self.params["solver"]["parity_tolerance"]
-        estimate, held = self._account_shock(list(account.open.values()), day, shock)
-        _, losses = self._account_shock([*account.open.values(), *survivors], day, shock)
+        estimate, held = self._account_shock(list(account.open.values()), day, shock, hedged)
+        _, losses = self._account_shock([*account.open.values(), *survivors], day, shock, hedged)
         existing = None if held is None else any(v > limit+tolerance for v in held.values())
         if held is None or losses is None:
             status = "shock_risk_input"
@@ -2660,11 +3438,25 @@ class WeeklyOptionPortfolioStudy:
             fee = self.params["bridge"]["solver"]["fee_per_contract_usd"]
             count = sum(leg["quantity"] for leg in legs)
             credit = sum(-leg["sign"]*leg["price"]*mult*leg["quantity"] for leg in legs)-fee*count
-            loss = structure_max_loss(signed, strikes, credit, mult)
-            reserve = self._floor(max(0., loss, -credit), charge or self._charge({}), legs, mult)
+            program = meta.get("program_hedge")
+            if program is None:
+                loss = structure_max_loss(signed, strikes, credit, mult)
+                reserve = self._floor(max(0., loss, -credit), charge or self._charge({}), legs, mult)
+            else:
+                # ADR-0312 program mode: the program's own book, hedged by the UNTRUNCATED net units and charged the
+                # per-item costs, so the physical reserve is the solver's row for row; the fill truncates (once).
+                held = selection["quantities"][i]
+                raw = math.fsum(u*q for u, q in zip(program["units"], held, strict=True))
+                cost = math.fsum(k*q for k, q in zip(program["costs"], held, strict=True))
+                loss = structure_max_loss(signed, strikes, credit-cost, mult, hedge=(raw, program["reference"]))
+                reserve = max(self._floor(max(0., loss, -(credit-cost)), charge or self._charge({}), legs, mult),
+                              program["margin_fraction"]*program["reference"]*abs(raw))
             if not math.isfinite(reserve) or abs(reserve-selection["reserves"][i]) > .001:
                 raise ValueError("selected physical-domain reserve parity failed")
-            books.append({k: v for k, v in meta.items() if k not in ("items", "projection", "cdf_noise_raised")})
+            books.append({k: v for k, v in meta.items()
+                          if k not in ("items", "projection", "cdf_noise_raised", "program_hedge")})
+            if program is not None:
+                books[-1]["program_hedge"] = {"units_raw": raw, "reference": program["reference"], "cost_usd": cost}
             books[-1].update(legs=legs, credit=credit, reserve=reserve, max_loss=loss,
                             contracts=count, expected=selection["group_values"][i],
                             strategy=classify_option_strategy(signed, strikes),
@@ -2673,6 +3465,25 @@ class WeeklyOptionPortfolioStudy:
                 # expected stays the uncharged robust value; the charge is its own field.
                 books[-1]["risk_charge"] = selection["risk_charges"][i]
         return books
+
+    def _calibration_fields(self, books, program, selection, metadata, adjusts):
+        """Add ``calibration_adjust``, ``expected_raw`` and ``radius_premium`` to each selected book (ADR-0313 A5).
+
+        ``expected`` is the solver's value, the adjust included; ``expected_raw`` is the same book at its raw edge
+        (``expected - calibration_adjust``) and ``radius_premium`` the W1 deduction ``worst - nominal`` of the same
+        quantities, so the two discounts stay visible separately.
+        """
+        from dskit.pipeline.libs.pyomo import TransportActionScore
+
+        quantities = selection["quantities"]
+        components = TransportActionScore(program, {"parity_tolerance": self.params["solver"]["parity_tolerance"]}
+                                          ).value(quantities)
+        index = {m["id"]: i for i, m in enumerate(metadata)}
+        for book in books:
+            i = index[book["id"]]
+            adjust = math.fsum(a*q for a, q in zip(adjusts[book["id"]], quantities[i], strict=True))
+            book.update(calibration_adjust=adjust, expected_raw=book["expected"]-adjust,
+                        radius_premium=components["uncertainty_deductions"][i])
 
     def _sizer_inputs(self, day, method, account):
         """Return the sizer's week record with its risk-input status, before any solve (ADR-0300).
@@ -3118,6 +3929,12 @@ class WeeklyOptionPortfolioStudy:
         for book, row in zip(trades, ledger["trades"]):
             if row["status"] != "closed" or abs(row["pnl_usd"]-book["pnl"]) > 1e-6:
                 raise ValueError("shared ledger/chronological account PnL mismatch")
+            if hedge and row["max_loss_unbounded"]:
+                # ADR-0313 I7: a hedged book may be unbounded WITHOUT its forward leg (a sold call the hedge covers);
+                # the ledger prices the option legs alone, so the reserve check is on the book recording that.
+                if not book["hedge"].get("unhedged_unbounded") or not math.isfinite(book["max_loss"]):
+                    raise ValueError("shared ledger/chronological reserve mismatch")
+                continue
             expected = self._floor(max(0., row["max_loss_usd"], -row["credit_usd"]),
                                    charge or self._charge({}), book["legs"],
                                    self.params["bridge"]["solver"]["multiplier"])
@@ -3245,18 +4062,22 @@ class WeeklyOptionPortfolioStudy:
         defects = TransportPortfolioSolve.validate_params(p["solver"])
         if defects:
             raise ValueError("; ".join(defects))
-        hedge = None
+        hedge = calibrated = limited = None
+        warm_weeks = Counter()
         present = self._BLOCKS.present(method)
         if present:
             if derived is not None or policy:
                 raise ValueError("block_not_derived: a method with a block is solved locally, never derived or policy-scored")
-            # ADR-0313 I2 registers and validates the blocks only; each feature lands in its own stage (I5, I6, I7,
-            # ADR-0312 S3 for the replay-mode hedge). Until then a block must not be silently ignored by a run.
-            if set(present) != {"hedge"}:
-                raise ValueError("block_unattached: a method with a block cannot run until its feature is attached")
-            if self.adjustments:
-                raise ValueError("hedge_split_unsupported: a hedged run takes no split adjustment")
-            hedge = ReplayHedge(self, method["hedge"], p["hedge_parity"])
+            # ADR-0313: each feature attaches in its own stage (I5 calibration, I6 limits, I7 the hedge with calibration,
+            # ADR-0312 S3 for the hedge). A block combination no stage attaches yet must not be silently ignored.
+            if "hedge" in present:
+                if self.adjustments:
+                    raise ValueError("hedge_split_unsupported: a hedged run takes no split adjustment")
+                hedge = ReplayHedge(self, method["hedge"], p["hedge_parity"])
+            if "calibration" in present:
+                calibrated = CalibratedEdge(self, method)
+            if "exposure_limits" in present:
+                limited = GreeksExposure(self, method["exposure_limits"], p["exposure_greeks"], hedge)
         if recorded is not None and derived is not None:
             raise ValueError("recorded replay and derived actions are exclusive")
         if (derived is not None or policy) and self._sizer(method) is not None:
@@ -3305,7 +4126,8 @@ class WeeklyOptionPortfolioStudy:
                         survivors.append(filled)
                 shock = self._shock(method)
                 if self._filled_scope(shock):
-                    admission = self._postfill_shock(account, day, shock, survivors, refusals)
+                    admission = self._postfill_shock(account, day, shock, survivors, refusals,
+                                                     hedge is not None and hedge.is_program)
                     pending["record"]["shock_admission"] = admission
                     if admission["status"] != "admissible":
                         rejected.extend({**b, "status": "unfilled", "reason": admission["status"]}
@@ -3324,6 +4146,28 @@ class WeeklyOptionPortfolioStudy:
                               "status": self._WEEK_NOT_SELECTED}
                 else:
                     groups, metadata, refusals = self._prepare(day)
+                    week_cal = adjusts = None
+                    if calibrated is not None:
+                        warm = calibrated.week_warm(day)
+                        warm_weeks["warm" if warm else "warmup"] += 1
+                        if warm:
+                            # ADR-0313 B2 steps 1-2: the item features and the walk-row exclusions (the adjust is step 5).
+                            groups, metadata, excluded, week_cal = calibrated.exclude(day, groups, metadata)
+                            refusals = [*refusals, *excluded]
+                    week_hedge = None
+                    if hedge is not None and hedge.is_program:
+                        # ADR-0313 B2 steps 2-3: the hedged candidate set, then the hedge rewrite (per method, never in _prepare).
+                        groups, metadata, excluded, week_hedge = hedge.candidates(
+                            groups, metadata, p["bridge"]["solver"]["multiplier"])
+                        refusals = [*refusals, *excluded]
+                    week_limits = None
+                    if limited is not None:
+                        # ADR-0313 I6: the candidates whose Greeks can be priced, after the hedge rewrite (its units enter k).
+                        groups, metadata, excluded, week_limits, _ = limited.candidates(day, groups, metadata)
+                        refusals = [*refusals, *excluded]
+                    if week_cal is not None:
+                        # B2 step 5: the adjust against the group AS CONFIGURED (hedged nominal), after every exclusion.
+                        adjusts = calibrated.adjust(day, groups, metadata)
                     components = self._components(day) if method["component_fraction"] is not None else {"groups": []}
                     limits = self._limits(account, method, components)
                     record = {"date": day, "candidate_books": len(groups),
@@ -3331,6 +4175,25 @@ class WeeklyOptionPortfolioStudy:
                               "eligible_by_symbol": dict(Counter(m["symbol"] for m in metadata)),
                               "refusals": refusals, "components": components, "funding": account.funding,
                               "open_reserve": sum(b["reserve"] for b in account.open.values())}
+                    if week_hedge is not None:
+                        record["hedge"] = {"mode": "program", "excluded": dict(week_hedge)}
+                    if calibrated is not None:
+                        record["calibration"] = {"warm": week_cal is not None, "map": calibrated.map_for(day) is not None,
+                                                 "excluded": dict(week_cal or {})}
+                    exposure_rows = None
+                    if limited is not None:
+                        record["exposure"] = {"status": "within", "excluded": dict(week_limits)}
+                        if groups:
+                            try:
+                                exposure_rows, detail = limited.rows(day, groups, metadata, account.funding,
+                                                                     list(account.open.values()))
+                            except ValueError as exc:
+                                code = str(exc).split(":", 1)[0]
+                                if code not in (ExposureLimits.RISK_INPUT, ExposureLimits.HELD_BREACH):
+                                    raise
+                                record["exposure"]["status"] = code
+                            else:
+                                record["exposure"].update(detail)
                     repaired = {m["id"]: m["cdf_noise_raised"] for m in metadata if "cdf_noise_raised" in m}
                     if repaired:
                         # Only a repaired week carries the key, so a monotone forecast's record is unchanged.
@@ -3343,7 +4206,8 @@ class WeeklyOptionPortfolioStudy:
                     shock = self._shock(method)
                     held = None
                     if self._filled_scope(shock):
-                        estimate, held = self._account_shock(list(account.open.values()), day, shock)
+                        estimate, held = self._account_shock(list(account.open.values()), day, shock,
+                                                             hedge is not None and hedge.is_program)
                         limit = shock["loss_fraction"]*max(0., account.funding)
                         tolerance = p["solver"]["parity_tolerance"]
                         record["shock"] = {
@@ -3391,8 +4255,13 @@ class WeeklyOptionPortfolioStudy:
                     elif (self.clocks and (day == self.calendar[-1]
                           or self.calendar[self.calendar.index(day)+1] >= self.clocks["entry_end_before"])):
                         record["status"] = "no_entry_fill_session"
+                    elif calibrated is not None and week_cal is None:
+                        # ADR-0313 A8: no map, a cold map: nothing is solved and the raw edge is never traded instead.
+                        record["status"] = "calibration_warmup"
                     elif "shock" in record and record["shock"]["status"] != "within":
                         record["status"] = ("shock_risk_input" if held is None else "shock_held_breach")
+                    elif "exposure" in record and record["exposure"]["status"] != "within":
+                        record["status"] = record["exposure"]["status"]
                     elif "kelly" in record and record["kelly"]["status"] != "estimated":
                         record["status"] = self._KELLY_RISK_INPUT
                     elif "sizer" in record and record["sizer"]["status"] != "estimated":
@@ -3405,7 +4274,8 @@ class WeeklyOptionPortfolioStudy:
                         configured = [{**g, "radius": method["rho"], "scale": self._group_scale(method, g, meta),
                                        "reserve_rows": g["reserve_rows"]
                                        + self._charge_coefficients(charge, meta["items"], mult),
-                                       **({} if risk is None else {"risk_charge": dict(risk)})}
+                                       **({} if risk is None else {"risk_charge": dict(risk)}),
+                                       **({} if adjusts is None else {"value_adjust": adjusts[g["id"]]})}
                                       for g, meta in zip(groups, metadata)]
                         solver_params = p["solver"]
                         if kelly is not None and "max_groups" in kelly:
@@ -3419,6 +4289,8 @@ class WeeklyOptionPortfolioStudy:
                             rows = self._shock_rows(shock, estimate["betas"], metadata, configured,
                                                     mult, account.funding, held)
                             program["joint_rows"] = rows
+                        if exposure_rows:
+                            program["joint_rows"] = [*program.get("joint_rows", []), *exposure_rows]
                         if kelly is not None:
                             # The shock's move terms become joint wealth scenarios: each scenario's profit is the move's
                             # terminal loss against the no-move loss (the credit cancels), beside the expected profit the
@@ -3489,6 +4361,8 @@ class WeeklyOptionPortfolioStudy:
                         else:
                             candidate = selection
                         books = [] if timed_out else self._books(candidate, metadata, charge)
+                        if calibrated is not None and books:
+                            self._calibration_fields(books, program, candidate, metadata, adjusts)
                         status = "timeout_skipped" if timed_out else "selected" if books else "cash"
                         certificates = [{k: v for k, v in c.items() if k != "binding"}
                                         for c in selection.get("certificates", [])]
@@ -3586,8 +4460,15 @@ class WeeklyOptionPortfolioStudy:
         if derived_decisions is not None and set(derived_decisions) != consumed:
             raise ValueError("derived actions for an ineligible week")
         result = self._finish(method, account, decisions, rejected, snapshots, hedge)
+        if calibrated is not None:
+            result["calibration"] = calibrated.record(warm_weeks)
+        if limited is not None:
+            result["exposure"] = {"block": dict(limited.limits.params), "greeks": copy.deepcopy(p["exposure_greeks"]),
+                                  "counts": dict(limited.counts)}
         if hedge is not None:
             result["hedge"] = hedge.record()
+            if hedge.is_program:
+                result["hedge"].update(hedge.cost_excess(account.closed))
         if events is not None:
             for point in result["curve"]:
                 events({"type": "marked_equity_point", "method": method["id"], "date": point["date"],
@@ -3785,6 +4666,16 @@ class MIOPacketStudy(StudyNode):
         if "corporate_actions" not in domain["sources"] and (
                 "adjustments" in bounded_inputs or "adjustments_sha256" in provenance):
             raise ValueError("unbound split event intake")
+        if "edge_maps" in domain["sources"] and (
+                provenance.get("method_inputs_sha256") != value_hash(bounded_inputs.get("method_inputs"))
+                or not bounded_inputs.get("method_inputs")):
+            raise ValueError("unverified calibration map intake")
+        if "edge_maps" not in domain["sources"] and (
+                "method_inputs" in bounded_inputs or "method_inputs_sha256" in provenance):
+            raise ValueError("unbound calibration map intake")
+        if "edge_maps" in domain["sources"]:
+            CalibratedEdge.check_pins(bounded_inputs["method_inputs"]["edge_walk_summary"], domain,
+                                      MIOStudyContract.packet(study))
         MIOPacketStudy.validate_indexed_inputs(
             study, bounded_inputs, plan, artifact_root)
         params = {**domain["params"], "selected_pairs": domain["pairs"],
@@ -3853,8 +4744,8 @@ class MIOPacketStudy(StudyNode):
 
         plan, registry, permit, bounded, provenance, params = self.validate_intake(ctx, inputs)
         d = self.params["study"]["domain"]
-        study = WeeklyOptionPortfolioStudy(params, bounded["inputs"],
-                                          adjustments=bounded.get("adjustments"))
+        study = WeeklyOptionPortfolioStudy(params, bounded["inputs"], adjustments=bounded.get("adjustments"),
+                                          method_inputs=bounded.get("method_inputs"))
         results = []
         packet_id = permit.get("packet_id", permit.get("id"))
         def event(payload):
@@ -3878,7 +4769,8 @@ class MIOPacketStudy(StudyNode):
 
                 def replayed(result):
                     replay_study = WeeklyOptionPortfolioStudy(params, bounded["inputs"],
-                                                             adjustments=bounded.get("adjustments"))
+                                                             adjustments=bounded.get("adjustments"),
+                                                             method_inputs=bounded.get("method_inputs"))
                     try:
                         replay = replay_study._method(method, None, recorded=result)
                         replay_study.close_quote_indexes(verify=True)
@@ -3940,6 +4832,8 @@ class MIOPacketStudy(StudyNode):
                  "research_only": True, "american_assignment_unmodeled": True}
         if "corporate_actions" in d["sources"]:
             audit["adjustments_sha256"] = provenance["adjustments_sha256"]
+        if "edge_maps" in d["sources"]:
+            audit["method_inputs_sha256"] = provenance["method_inputs_sha256"]
         from .mio_contract import MIOStudyContract
         tail, capped = MIOStudyContract.settlement_tail(self.params["study"])
         if capped:

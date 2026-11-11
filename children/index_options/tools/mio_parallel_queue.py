@@ -49,6 +49,7 @@ import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 
+from dskit.pipeline.method_blocks import MethodBlocks
 from dskit.pipeline.node import atomic_write
 from index_options.mio_worker import BLINDED_POLICY, STAMP_FORMAT, THREAD_VARIABLES, PayloadCapError, stamp
 
@@ -325,18 +326,8 @@ class Phases:
 
     @staticmethod
     def spec_hash(method):
-        """The hash that pins one formulation: ``value_hash`` of its whole method spec (id included), numbers normalised (``1`` is ``1.0``)."""
-        from dskit.pipeline.base import value_hash
-        return value_hash(Phases._numbers(method))
-
-    @staticmethod
-    def _numbers(value):
-        """The same tree with every integer written as a float, so ``1`` and ``1.0`` (a config may write either) hash alike."""
-        if isinstance(value, dict):
-            return {k: Phases._numbers(v) for k, v in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [Phases._numbers(v) for v in value]
-        return float(value) if type(value) is int else value
+        """Hash one formulation with equivalent JSON numbers normalized."""
+        return MethodBlocks.spec_hash(method)
 
     @classmethod
     def from_config(cls, config):

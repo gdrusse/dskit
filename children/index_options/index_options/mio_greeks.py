@@ -48,6 +48,7 @@ from pathlib import Path
 
 from dskit.onboarding.artifacts import PinnedPayloadSource
 from dskit.pipeline.node import atomic_write, check_int_param
+from dskit.pipeline.hedge_overlay import forward_leg_net_settle
 from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL
 from dskit.pipeline.option_exposure import (
     STOCK_HEDGE_NOTE, BookGreeksReport, ParityForward, StaticDeltaHedge)
@@ -444,13 +445,21 @@ class MIOGreeksDiagnostics(BookGreeksReport):
                 "end_factor": float(t.get("active_factor", t["factor"])),
                 "legs": [{"right": leg["right"], "strike": float(leg["strike"]),
                           "sign": leg["sign"], "quantity": leg["quantity"]} for leg in t["legs"]],
-                "tags": {"method": raw["method"]}, "credit": t["credit"]})
+                "tags": {"method": raw["method"]}, "credit": t["credit"],
+                "forward_leg": t.get("hedge") if (t.get("hedge") or {}).get("units") else None})
+        self._forward_pnl = {}
         for book in books:
             self._recompute(book, raw["bars"], raw["multiplier"])
-        return [{k: v for k, v in b.items() if k != "credit"} for b in books]
+        return [{k: v for k, v in b.items() if k not in ("credit", "forward_leg")} for b in books]
 
     def _recompute(self, book, bars, multiplier):
-        """Refuse a saved P&L that its credit and the bar settlement do not reproduce."""
+        """Refuse a saved P&L that its credit and the bar settlement do not reproduce.
+
+        A hedged arm's saved P&L also holds its recorded forward leg (``hedge_overlay.forward_leg_net_settle`` of the trade's
+        ``hedge`` record at the settlement level). The recompute adds it, then hands the core the OPTION legs'
+        P&L alone and keeps the leg in :attr:`_forward_pnl` for its own column; a trade with no ``hedge`` units
+        takes the unchanged path.
+        """
         close = bars.get(book["symbol"], {}).get(book["expiry"])
         if close is None or book["factor"] != book["end_factor"]:
             return                          # the core lists these under their own codes
@@ -458,11 +467,18 @@ class MIOGreeksDiagnostics(BookGreeksReport):
                                    for leg in book["legs"]], close / book["factor"],
                                   [leg["strike"] for leg in book["legs"]])
         expected = book["credit"] + multiplier * payoff
+        leg_pnl = 0.0
+        if book["forward_leg"] is not None:
+            leg_pnl = forward_leg_net_settle(book["forward_leg"], close / book["factor"])
+            expected += leg_pnl
         pnl = book["pnl"]
         if not (isinstance(pnl, (int, float)) and not isinstance(pnl, bool)
                 and abs(pnl - expected) < PNL_GATE_USD):
             raise GreeksRefusal(self.PNL_MISMATCH, f"{book['key']}: saved pnl {book['pnl']!r}, "
                                                     f"credit + payoff gives {expected!r}")
+        if book["forward_leg"] is not None:
+            self._forward_pnl[book["key"]] = leg_pnl
+            book["pnl"] = pnl - leg_pnl
 
     def _load_quotes(self, raw):
         """Return the :class:`ChainQuotes` view itself."""
@@ -778,6 +794,7 @@ class MIOGreeksDiagnostics(BookGreeksReport):
             out["summary"]["parity_rows"] = self.PARITY_ROWS
             out["summary"]["parity_filter"] = {k: self._parity_counts[k] for k in _PARITY_COUNTS}
             out["cells"] = [c for c in out["cells"] if c["rank"] is not None]
+            self._forward_hedge_columns(out)
             ranked = [r for r in out["books"] if "rank_reason" in r]
             out["summary"]["rank_reasons"] = dict(sorted(Counter(r["rank_reason"] for r in ranked).items()))
             out["summary"]["rank_null_pnl_usd"] = self._null_rank_pnl(ranked)
@@ -795,6 +812,16 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         result = {**merged, "summary": summary}
         self._write(out_dir, result)
         return result
+
+    def _forward_hedge_columns(self, out):
+        """Add the recorded forward leg beside the option-leg attribution (nothing when no book carries one)."""
+        if not self._forward_pnl:
+            return
+        for row in out["books"]:
+            if row["id"] in self._forward_pnl:
+                row["hedge_pnl_usd"] = self._forward_pnl[row["id"]]
+        out["summary"]["forward_hedge_pnl_usd"] = math.fsum(self._forward_pnl.values())
+        out["summary"]["n_forward_hedged"] = len(self._forward_pnl)
 
     def _direction_read(self, method, rows, summary):
         """Return the method x quarter block ADR-0312 reads (ADR-0310 A2.1.3).
@@ -860,6 +887,9 @@ class MIOGreeksDiagnostics(BookGreeksReport):
             "parity_rows": self.PARITY_ROWS,
             "parity_filter": {k: sum(s["parity_filter"][k] for s in summaries.values())
                               for k in _PARITY_COUNTS},
+            **({"forward_hedge_pnl_usd": math.fsum(s["forward_hedge_pnl_usd"] for s in summaries.values()
+                                                  if "forward_hedge_pnl_usd" in s)}
+               if any("forward_hedge_pnl_usd" in s for s in summaries.values()) else {}),
             "hedged_pnl_usd": math.fsum(hedged) if hedged else None,
             "n_stock_hedged": sum(s["n_stock_hedged"] for s in summaries.values()),
             "hedge_cost_source": self.params["hedge_cost_source"],

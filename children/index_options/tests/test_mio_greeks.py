@@ -679,6 +679,52 @@ def test_a_non_finite_or_non_numeric_saved_pnl_refuses_the_recompute_gate(world,
     assert not out_dir.exists()
 
 
+# ---- a hedged arm: the recorded forward leg is in the recompute, the attribution stays on the option legs ----------
+FORWARD_LEG = {"units": 3.0, "reference": 453.0, "days": 10, "status": "ok",
+               "rates": {"hedge_fee_per_share": 0.005, "hedge_half_spread_bps": 5.0}}
+
+
+def _forward_pnl():
+    from index_options.ledger_studies import ReplayHedge
+    return ReplayHedge.net_settle(FORWARD_LEG, BLK_SETTLE)
+
+
+def _hedge_blk(table, saved_includes_leg=True):
+    for r in table["results"]:
+        trade = r["result"]["trades"][0]
+        trade["hedge"] = copy.deepcopy(FORWARD_LEG)
+        if saved_includes_leg:
+            trade["pnl"] += _forward_pnl()
+
+
+def test_a_hedged_book_recomputes_with_its_forward_leg_and_reports_the_leg_apart(world):
+    leg = _forward_pnl()
+    assert leg == pytest.approx(3.0 * (448.0 - 453.0) - 3.0 * (2 * 0.005 + (453.0 + 448.0) * 5.0 / 1e4))   # -16.3815
+    run_dir, out_dir = world(mutate=_hedge_blk)
+    out = run_node(run_dir, out_dir)
+    row = rows_by(out)[BLK_ID]
+    assert row["pnl"] == pytest.approx(-938.90), "the attribution columns describe the option legs"
+    assert row["hedge_pnl_usd"] == pytest.approx(leg)
+    summary = out["summary"]["methods"][METHOD]
+    assert summary["forward_hedge_pnl_usd"] == pytest.approx(leg) and summary["n_forward_hedged"] == 1
+    assert out["summary"]["forward_hedge_pnl_usd"] == pytest.approx(leg)
+    assert "hedge_pnl_usd" not in rows_by(out)[f"{METHOD}|2021-04-05:MMM:2021-05-21"]
+
+
+def test_a_hedged_book_whose_saved_pnl_leaves_the_leg_out_still_refuses(world):
+    run_dir, out_dir = world(mutate=lambda t: _hedge_blk(t, saved_includes_leg=False))
+    with pytest.raises(GreeksRefusal) as exc:
+        run_node(run_dir, out_dir)
+    assert code_of(exc) == "pnl_recompute_mismatch"
+
+
+def test_an_unhedged_run_carries_no_forward_hedge_keys(world):
+    run_dir, out_dir = world()
+    out = run_node(run_dir, out_dir)
+    assert "forward_hedge_pnl_usd" not in out["summary"] and "n_forward_hedged" not in out["summary"]["methods"][METHOD]
+    assert all("hedge_pnl_usd" not in r for r in out["books"])
+
+
 def test_pnl_recompute_gate_is_half_a_cent(world):
     def drift(delta):
         def fn(table):

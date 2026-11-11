@@ -18,7 +18,7 @@ from dskit.pipeline.workflow import path_hash
 from index_options.observations import MIOPacketInputs
 from index_options.mio_contract import MIOModelZooSelection, OptionPolicyStudyContract
 from index_options.ledger_studies import MIOPacketStudy, WeeklyOptionPortfolioStudy
-from test_ledger_studies import _packet_clock_fixture
+from test_ledger_studies import _packet_clock_fixture, _program_world
 
 
 def _implementation_pins(*objects):
@@ -43,7 +43,14 @@ def study(tmp_path, request):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    params, data = _packet_clock_fixture()
+    variant = getattr(request, "param", None)
+    params, data = _program_world() if variant == "hedged_program" else _packet_clock_fixture()
+    if variant == "hedged_program":
+        # Discount both sides of the same strike without changing put-call parity.
+        for row in data["X"]["chain"]:
+            if row["date"] in ("2019-01-02", "2019-01-03") and row["strike"] == 100:
+                row["bid"] -= 2
+                row["ask"] -= 2
     archive = tmp_path/"origin"
     archive.mkdir()
     sessions = params.pop("clocks")
@@ -57,6 +64,18 @@ def study(tmp_path, request):
         data["X"]["contexts"] = data["X"]["contexts"][:1]
         data["X"]["chain"] = [r for r in data["X"]["chain"]
                               if not (r["date"] == "2019-02-01" and r["expiration"] == "2019-02-01")]
+    if variant == "hedged_program":
+        # 62 weekday closes before the fixture's first session: enough prior history for a 60-session beta lookback.
+        from datetime import date, timedelta
+        day, early = date.fromisoformat(sessions["history_start"]), []
+        while len(early) < 62:
+            day -= timedelta(days=1)
+            if day.weekday() < 5:
+                early.append(day.isoformat())
+        early.reverse()
+        data["X"]["bars"] = [{**data["X"]["bars"][0], "date": d} for d in early] + data["X"]["bars"]
+        sessions["sessions"] = early + sessions["sessions"]
+        sessions["history_start"] = early[0]
     policy_integration = getattr(request, "param", None) == "policy_integration"
     if policy_integration:
         from datetime import date, timedelta

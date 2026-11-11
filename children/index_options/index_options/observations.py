@@ -760,6 +760,8 @@ class MIOPacketInputs(StudyNode):
                       "counts": {s: {k: len(v) for k, v in rows.items()} for s, rows in data.items()}}
         if adjustments is not None:
             provenance["adjustments_sha256"] = value_hash(adjustments)
+        if bounded.get("method_inputs") is not None:
+            provenance["method_inputs_sha256"] = value_hash(bounded["method_inputs"])
         registry.bind(plan, permit, "inputs", provenance)
         return {"bounded_inputs": bounded, "provenance": provenance}
 
@@ -913,6 +915,27 @@ class MIOPacketInputs(StudyNode):
                            or event.effective.isoformat() not in calendar for event in events.values())):
                 raise ValueError("split source is empty, outside the packet, or names another symbol")
             adjustments = [event.record() for event in events.values()]
+        method_inputs = None
+        if "edge_maps" in d["sources"]:
+            # ADR-0313 A9: the walk's maps (a map is dated by its own decision session) and its summary, both pinned
+            # and both hashed; a map outside the entry window never reaches the packet.
+            from .edge_calibration import EdgeMapStream
+
+            binding = d["sources"]["edge_maps"]
+            source = PinnedPayloadSource(binding["pin"])
+            raw = {}
+            for key in ("shared", "summary"):
+                path = source.file(binding["files"][key], verify=True)
+                checked[path] = (source, binding["files"][key])
+                with open(path, "rb") as handle:
+                    raw[key] = handle.read()
+            summary = json.loads(raw["summary"])
+            if not isinstance(summary, dict):
+                raise ValueError("calibration_summary_incomplete: the walk's summary is not an object")
+            window = bounds["edge_maps"]
+            method_inputs = {"edge_maps": EdgeMapStream.bounded(EdgeMapStream.parse(raw["shared"]),
+                                                                window["start"], window["end_before"]),
+                             "edge_walk_summary": summary}
         data = {}
         for symbol in symbols:
             fs = [r for r in forecasts if r["symbol"] == symbol]
@@ -979,4 +1002,6 @@ class MIOPacketInputs(StudyNode):
             "entry_end_before": packet["end_before"], "tail_end_before": tail}}
         if adjustments is not None:
             bounded["adjustments"] = adjustments
+        if method_inputs is not None:
+            bounded["method_inputs"] = method_inputs
         return bounded

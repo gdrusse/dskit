@@ -19,6 +19,15 @@ Fixed before any read (the amendment's section 2; the owner may change the numbe
   it must also clear ``attempts.max_bar`` on the session-level depth gap ``d_t = D^u_t - D^h_t`` AND on the same
   gaps pre-aggregated to one block per ``(account, ISO week)``: ``t >= pass_mark``, ``adj_p <= alpha``,
   ``mean > 0``, ``lower > 0``;
+* program mode (amendment section 3) has its OWN read, identical in form to E2: ``program_quarter_read`` /
+  ``program_verdict`` read the program twin against its unhedged twin with the same ``B_q``, the same numbers and
+  the same bar; the books differ by design (the program re-chooses), so only ``mark_sensitive`` stops a quarter
+  counting. Beside it, information only, ``contracts_ratio`` and ``peak_reserve_ratio`` (hedged over unhedged); a
+  quarter whose drawdown is not cut (``dDD <= 0``) while contracts rose is ``re_levered`` and the twin FAILS whatever
+  its P&L. ``timing_check`` (M7) evaluates, from two runs' ``decision_weeks`` check documents, the median solved-week
+  slowdown limit (1.5x) and "no week that solved unhedged may time out hedged";
+* ``control_block_mismatch`` (a control twin whose blocks differ from its arm's) belongs to ADR-0313's read tool and
+  is deferred there, not checked here;
 * E1 reads ADR-0310's ``direction_read`` per decision quarter; E1b is information only; E3 and E4 are reported
   as ``not_run`` / ``not available`` unless their inputs exist.
 
@@ -37,7 +46,8 @@ from dskit.pipeline.attempts import AttemptRegistry, max_bar, session_totals
 from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL
 
 __all__ = ["B_MEDIAN", "B_MEDIAN_REST", "RUIN", "FAMILY", "contribution_free", "depths", "quarter_read",
-           "e2_verdict", "bar_reads", "e1_read", "e1b_rho2", "e4_ratio", "register_attempts", "main"]
+           "e2_verdict", "bar_reads", "e1_read", "e1b_rho2", "e4_ratio", "register_attempts", "program_quarter_read",
+           "program_verdict", "register_program_attempt", "timing_check", "read_program", "main"]
 
 #: The pre-registered E2 numbers (dollars).
 B_MEDIAN, B_MEDIAN_REST, RUIN = 2000.0, 1000.0, -4000.0
@@ -143,6 +153,45 @@ def quarter_read(quarter, control, hedged, carry=None):
         out["mark_sensitive"] = ((c_dd > 0) != (d_dd > 0) and not (c_dd == d_dd == 0)) or \
             abs(c_dd - d_dd) > max(MARK_FRACTION * abs(b), MARK_FLOOR)
     out["counts"] = not (out["mark_sensitive"] or out["books_differ"] or out["under_half_hedgeable"])
+    return out
+
+
+def _ratio(numerator, denominator):
+    """Return ``numerator / denominator``, ``None`` when the denominator is missing or zero."""
+    return None if not denominator or numerator is None else numerator / denominator
+
+
+def program_quarter_read(quarter, control, program, carry=None):
+    """Return one account's program-mode read: the E2 numbers plus the re-levering reads.
+
+    The program twin chooses its own books, so ``books_differ`` is reported and does not stop a quarter counting; a
+    quarter counts unless ``mark_sensitive``. ``contracts_ratio`` and ``peak_reserve_ratio`` are the result's
+    ``contracts`` and ``peak_reserve`` hedged over unhedged (information only); ``re_levered`` is the amendment's
+    fail condition: the drawdown is not cut (``dDD <= 0``) while contracts rose, read on COUNTING quarters only (a
+    ``mark_sensitive`` quarter is uncounted and never fails the verdict).
+
+    Known conservative bias (review of d864c39): program mode charges a self-hedged book's forward leg on GROSS
+    shares per item (``program_gross_units``), not the net units the replay trades, so ``program_cost_excess_usd``
+    is positive (3,605 gross against 42 net shares in the review's run, +392 dollars); the program twin's cost is
+    overstated, never understated.
+    """
+    out = quarter_read(quarter, control, program, carry)
+    out["contracts_ratio"] = _ratio(program.get("contracts"), control.get("contracts"))
+    out["peak_reserve_ratio"] = _ratio(program.get("peak_reserve"), control.get("peak_reserve"))
+    rose = program.get("contracts") is not None and control.get("contracts") is not None \
+        and program["contracts"] > control["contracts"]
+    out["counts"] = not out["mark_sensitive"]
+    out["re_levered"] = bool(out["counts"] and out["dDD"] <= 0 and rose)     # a COUNTING quarter only: a mark-sensitive one is not read
+    return out
+
+
+def program_verdict(reads):
+    """Return the program twin's verdict: the E2 rule over the reads, forced to ``fail`` by any re-levered quarter."""
+    out = e2_verdict(reads)
+    levered = [r["quarter"] for r in reads if r.get("re_levered")]
+    if levered:
+        out["reasons"].append(f"re_levered: drawdown not cut while contracts rose in {levered}")
+        out["verdict"] = "fail"
     return out
 
 
@@ -343,6 +392,82 @@ def register_attempts(path, formulation, ratios=RATIOS):
     return registry.count(family=FAMILY, formulation=formulation)
 
 
+def register_program_attempt(path, formulation, ratio=None):
+    """Record the program twin's attempt at ``ratio`` (``None``: the one :func:`register_attempts` declared) and count the family."""
+    registry = AttemptRegistry(path)
+    registry.record({"family": FAMILY, "formulation": formulation, "kind": "program_twin", "mode": "program",
+                     "ratio": ratio, "condition": "none", "read": "E2"})
+    return registry.count(family=FAMILY, formulation=formulation)
+
+
+TIMING_SLOWDOWN, SOLVED_STATUSES = 1.5, ("selected", "cash")
+TIMEOUT_STATUS = "timeout_skipped"
+
+
+def _week_timing(result):
+    """Return ``(status, seconds)`` of the one solved week of a ``decision_weeks`` check document."""
+    if "decision_weeks" not in result:
+        raise ValueError("timing_needs_check_documents: a timing pair is two decision_weeks check documents")
+    week = result["decision_weeks"][0]
+    decision = next(d for d in result["decisions"] if d["date"] == week)
+    seconds = math.fsum(c["seconds"] for c in decision.get("certificates", []) if c.get("seconds") is not None)
+    return decision["status"], seconds if decision.get("certificates") else None
+
+
+def timing_check(pairs, limit=TIMING_SLOWDOWN):
+    """Return the M7 timing check over ``pairs`` of ``{week, unhedged, hedged}`` one-week check documents.
+
+    PASS when the median solved-week time of the hedged twin is at most ``limit`` times the unhedged twin's (weeks
+    solved by BOTH) and no week that solved unhedged timed out hedged; ``insufficient`` without a week solved by both.
+    No real run is made here: the pairs come from the pre-registered set run through the ADR-0297 ``--check`` route.
+    """
+    solved, new_timeouts = [], []
+    for pair in pairs:
+        (u_status, u_s), (h_status, h_s) = _week_timing(pair["unhedged"]), _week_timing(pair["hedged"])
+        if u_status in SOLVED_STATUSES and h_status == TIMEOUT_STATUS:
+            new_timeouts.append(pair["week"])
+        if u_status in SOLVED_STATUSES and h_status in SOLVED_STATUSES and u_s is not None and h_s is not None:
+            solved.append((u_s, h_s))
+    out = {"weeks": len(pairs), "solved_by_both": len(solved), "new_timeouts": new_timeouts, "limit": limit,
+           "median_unhedged_s": None, "median_hedged_s": None, "slowdown": None}
+    if not solved:
+        out["verdict"] = "fail" if new_timeouts else "insufficient"
+        return out
+    out["median_unhedged_s"] = statistics.median(u for u, _ in solved)
+    out["median_hedged_s"] = statistics.median(h for _, h in solved)
+    out["slowdown"] = _ratio(out["median_hedged_s"], out["median_unhedged_s"])
+    out["verdict"] = "pass" if not new_timeouts and out["slowdown"] is not None and out["slowdown"] <= limit else "fail"
+    return out
+
+
+def read_program(controls, programs, formulation, registry_path, carries=None, others=None, timing=None, n_boot=10000):
+    """Return the program twin's verdict document: ``B_q`` per quarter, the re-levering reads, the bar and the timing check.
+
+    Parameters
+    ----------
+    controls, programs : dict
+        ``{YYYYQn: method result}`` of the unhedged twin and the program-mode twin (same account, same clocks).
+    carries : dict, optional
+        ``{YYYYQn: program twin with every mark on the carry ratio}`` for the ``mark_sensitive`` read.
+    others : dict, optional
+        ``{attempt name: {account: [(date, d_t)]}}`` of the other declared attempts that were read, so the bar's
+        max statistic spans them; the program twin's cell is ``program_twin``.
+    timing : list, optional
+        ``timing_check`` pairs.
+    """
+    k_declared = register_program_attempt(registry_path, formulation)       # declared before anything is read
+    reads = [program_quarter_read(q, controls[q], programs[q], (carries or {}).get(q)) for q in sorted(programs)]
+    out = {"formulation": formulation, "family": FAMILY, "mode": "program", "k_declared": k_declared,
+           "development_evidence_only": True, "one_program_ratio_only": True,
+           "reads": [{k: v for k, v in r.items() if k != "d_t"} for r in reads], "program": program_verdict(reads)}
+    series = {"program_twin": {r["quarter"]: r["d_t"] for r in reads}, **(others or {})}
+    out["bar"] = bar_reads(series, "program_twin", k_declared, n_boot=n_boot)
+    out["adopted"] = bool(out["program"]["verdict"] == "pass" and out["bar"]["passed"])
+    if timing is not None:
+        out["timing"] = timing_check(timing)
+    return out
+
+
 def _load(path):
     document = json.loads(Path(path).read_text())
     _refuse_check_week(document)
@@ -403,8 +528,56 @@ def read(stress_root, formulation, quarters, registry_path, greeks=None, books=N
     return out
 
 
+def _result_of(path):
+    """Return the ``result`` of a method document file (the shape ``read`` takes), refusing a check-week document."""
+    document = _load(path)
+    if document.get("result") is None:
+        raise ValueError(f"scenario_failed: {path} carries no result ({document.get('error') or document.get('status')})")
+    return document["result"]
+
+
+def _pairs(items):
+    """Parse ``KEY=path`` words into a dict."""
+    return dict(item.split("=", 1) for item in items)
+
+
+def main_program(argv):
+    """Write the program twin's verdict JSON (``hedge_evidence.py program FORMULATION --controls Q=path ... --out V``)."""
+    parser = argparse.ArgumentParser(prog="hedge_evidence.py program", description=read_program.__doc__)
+    parser.add_argument("formulation")
+    parser.add_argument("--controls", nargs="+", required=True, help="YYYYQn=path to the unhedged twin's method document")
+    parser.add_argument("--programs", nargs="+", required=True, help="YYYYQn=path to the program-mode twin's document")
+    parser.add_argument("--carries", nargs="*", default=[], help="YYYYQn=path to the program twin on the carry-ratio marks")
+    parser.add_argument("--timing", nargs="*", default=[], help="WEEK=unhedged_path,hedged_path (decision_weeks check documents)")
+    parser.add_argument("--registry", required=True)
+    parser.add_argument("--out", required=True)
+    args = parser.parse_args(argv)
+    out = Path(args.out)
+    if out.exists():
+        sys.stderr.write("verdict file exists: a fresh path is required\n")
+        return 1
+    controls = {q: _result_of(p) for q, p in _pairs(args.controls).items()}
+    programs = {q: _result_of(p) for q, p in _pairs(args.programs).items()}
+    if set(controls) != set(programs):
+        sys.stderr.write("controls and programs must name the same quarters\n")
+        return 1
+    timing = [{"week": week, "unhedged": _result_of(u), "hedged": _result_of(h)}
+              for week, both in _pairs(args.timing).items() for u, h in [both.split(",", 1)]]
+    verdict = read_program(controls, programs, args.formulation, args.registry,
+                           carries={q: _result_of(p) for q, p in _pairs(args.carries).items()} or None,
+                           timing=timing or None)
+    out.write_text(json.dumps(verdict, indent=2, sort_keys=True, allow_nan=False, default=str) + "\n")
+    return 0
+
+
 def main(argv=None):
-    """Write the verdict JSON: ``hedge_evidence.py ROOT FORMULATION COHORT=QUARTER... --registry R --out V``."""
+    """Write the verdict JSON: ``hedge_evidence.py ROOT FORMULATION COHORT=QUARTER... --registry R --out V``.
+
+    ``hedge_evidence.py program FORMULATION --controls ... --programs ... --registry R --out V`` reads the program twin.
+    """
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "program":
+        return main_program(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("stress_root")
     parser.add_argument("formulation")
