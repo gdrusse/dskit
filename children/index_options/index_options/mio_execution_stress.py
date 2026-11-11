@@ -19,11 +19,12 @@ import re
 import sqlite3
 import subprocess
 from collections import Counter
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from dskit.onboarding.artifacts import PinnedPayloadSource
 from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+from dskit.pipeline.libs.parquet import DateBoundedParquet
 from dskit.pipeline.option_structures import quote_defect, structure_max_loss
 from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL
 from index_options.ledger_studies import (
@@ -62,24 +63,40 @@ def _write_json(path, data):
 
 
 def _bar_rows(binding, symbols, calendar):
-    import pyarrow.parquet as pq
-
     source = PinnedPayloadSource(binding["pin"])
     wanted = set(calendar)
+    bounds = {"date": {"start": min(wanted),
+                       "end_before": (date.fromisoformat(max(wanted)) + timedelta(days=1)).isoformat()}}
     bars = {}
     for symbol in symbols:
         path = source.file(binding["files"][symbol], verify=True)
         selected = {}
-        for row in pq.read_table(path, columns=["date", "close"]).to_pylist():
-            day = row["date"]
-            if day in wanted:
-                if day in selected or not isinstance(row["close"], (int, float)) or not math.isfinite(row["close"]):
-                    raise ValueError("duplicate or invalid bar: " + symbol + ":" + day)
-                selected[day] = float(row["close"])
+        for batch in DateBoundedParquet(path, ["date", "close"], bounds).batches():
+            for row in batch.to_pylist():
+                day = row["date"].isoformat() if isinstance(row["date"], date) else row["date"]
+                if day in wanted:
+                    if day in selected or not isinstance(row["close"], (int, float)) or not math.isfinite(row["close"]):
+                        raise ValueError("duplicate or invalid bar: " + symbol + ":" + day)
+                    selected[day] = float(row["close"])
         if set(selected) != wanted:
             raise ValueError("missing account-session bar: " + symbol)
         bars[symbol] = selected
     return bars
+
+
+def _packet_sessions(binding, history_start, tail):
+    """Read and verify the original packet's bounded session spine."""
+    source = PinnedPayloadSource(binding["pin"])
+    relative = binding["files"]["shared"]
+    path = source.file(relative, verify=True)
+    bounds = {"date": {"start": history_start, "end_before": tail}}
+    days = [day.isoformat() if isinstance(day, date) else day
+            for batch in DateBoundedParquet(path, ["date"], bounds).batches()
+            for day in batch.column(0).to_pylist()]
+    if not days or days != sorted(set(days)):
+        raise ValueError("session source must be unique and ordered")
+    source.file(relative, verify=True)
+    return days
 
 
 def _index_view(path, symbol, expected_sha):
@@ -164,7 +181,7 @@ def _iso_day(value, field):
     raise ValueError("v5 " + field + " must be a YYYY-MM-DD date")
 
 
-def _range_bounds(entry):
+def _range_bounds(entry, *, v6=False):
     """Validate one v5 cohort's pinned bounds; refuse the protected window."""
     bounds = {}
     for field in ("methods", "sessions"):
@@ -175,7 +192,7 @@ def _range_bounds(entry):
     bounds["latest_expiry"] = _iso_day(entry["latest_expiry"], "latest_expiry")
     if max(bounds["end_before"], bounds["latest_expiry"]) >= _PROTECTED_FROM:
         raise ValueError("v5 bounds reach the protected window from " + _PROTECTED_FROM)
-    if bounds["latest_expiry"] >= bounds["end_before"]:
+    if not v6 and bounds["latest_expiry"] >= bounds["end_before"]:
         raise ValueError("v5 latest_expiry must precede end_before")
     pins = entry["csv_sha256"]
     if not isinstance(pins, dict) or set(pins) != set(_CONTROL_CSVS):
@@ -200,7 +217,7 @@ def _cohort_order(document):
             raise ValueError("v5 cohort name must be lower-case [a-z0-9_]: " + name)
         if not isinstance(entry, dict) or set(entry) != _RANGE_ENTRY:
             raise ValueError("v5 cohort fields differ from the contract: " + name)
-        _range_bounds(entry)
+        _range_bounds(entry, v6=document["schema"] == _HEDGE_SCHEMA)
     return tuple(cohorts)
 
 
@@ -454,7 +471,8 @@ class FrozenMIOReplay:
         self.pins = pins
         self.ranged = document["schema"] in _RANGE_SCHEMAS
         entry = document["cohorts"][cohort]
-        bounds = _range_bounds(entry) if self.ranged else _LEGACY_BOUNDS
+        v6 = document["schema"] == _HEDGE_SCHEMA
+        bounds = _range_bounds(entry, v6=v6) if self.ranged else _LEGACY_BOUNDS
         original = self._result_dir(document, cohort)
         self.original_dir = original
         result_path = original / "result.json"
@@ -473,17 +491,39 @@ class FrozenMIOReplay:
             raise ValueError("original run document drift")
         self.config = {"name": key, "sha256": pinned["sha256"]}
         config = _load_json(config_path)
-        self.domain = config["pipeline"]["plan"]["params"]["study"]["domain"]
+        study = config["pipeline"]["plan"]["params"]["study"]
+        self.domain = study["domain"]
+        self.hedge_spec = document.get("hedge") if v6 else None
         self._sizing_schema(self.domain["params"], document["schema"])
         self.calendar = self.original["audit"]["calendar"]
         self.symbols = self.domain["params"]["symbols"]
-        if (len(self.calendar) != bounds["sessions"]
-                or max(self.calendar) >= bounds["end_before"]):
+        tail, history = bounds["end_before"], self.calendar
+        if v6 and study.get("contract") == "index_options.mio_contract:MIOStudyContract":
+            from index_options.mio_contract import MIOStudyContract
+
+            packet = MIOStudyContract.packet(study)
+            if (packet["end_before"] != bounds["end_before"]
+                    or any(self.domain["params"]["bridge"][key] != packet[key]
+                           for key in ("start", "end_before"))):
+                raise ValueError("v6 entry window differs from the packet")
+            if "corporate_actions" in self.domain["sources"]:
+                raise ValueError("hedge_split_unsupported: a hedged replay takes no split adjustment")
+            tail, _ = MIOStudyContract.settlement_tail(study)
+            self.check_hedge_seal(self.hedge_spec, {**bounds, "end_before": tail}, cohort)
+            history = _packet_sessions(self.domain["sources"]["sessions"], self.domain["history_start"], tail)
+            if self.calendar != [day for day in history if day >= packet["start"]]:
+                raise ValueError("saved account calendar differs from the pinned packet sessions")
+            if any(not packet["start"] <= decision["date"] < packet["end_before"]
+                   for result in self.original["results"] for decision in result["result"]["decisions"]):
+                raise ValueError("saved decision outside the packet entry window")
+        else:
+            self.check_hedge_seal(self.hedge_spec, bounds, cohort)
+        if (not self.calendar or len(self.calendar) != bounds["sessions"] or max(self.calendar) >= tail
+                or (bounds["latest_expiry"] is not None and bounds["latest_expiry"] >= tail)):
             raise ValueError("protected account calendar")
-        if (self.ranged and self.domain["params"]["bridge"].get("end_before")
-                != bounds["end_before"]):
+        if self.ranged and self.domain["params"]["bridge"].get("end_before") != bounds["end_before"]:
             raise ValueError("v5 end_before differs from the run document: " + cohort)
-        self.bars = _bar_rows(self.domain["sources"]["bars"], self.symbols, self.calendar)
+        self.bars = _bar_rows(self.domain["sources"]["bars"], self.symbols, history)
         run_dir = Path(pins["runs"][cohort]["run_dir"])
         self.quotes, self.factors, self.index_descriptors = {}, {}, {}
         expected_indexes = document["cohorts"][cohort]["quote_index_sha256"]
@@ -501,7 +541,7 @@ class FrozenMIOReplay:
                 for book in decision.get("books", []):
                     needed.setdefault(book["symbol"], set()).add(book["expiry"])
         latest = bounds["latest_expiry"]
-        if any(day not in self.calendar or day >= bounds["end_before"]
+        if any(day not in self.calendar or day >= tail
                or (latest is not None and day > latest)
                for days in needed.values() for day in days):
             raise ValueError("selected expiry outside the document bounds" if self.ranged
@@ -509,8 +549,6 @@ class FrozenMIOReplay:
         _missing_expiry_factors(self.domain["sources"]["chain"], self.symbols,
                                 needed, self.factors)
         self.params = {**self.domain["params"], "selected_pairs": self.domain["pairs"]}
-        self.hedge_spec = document.get("hedge") if document["schema"] == _HEDGE_SCHEMA else None
-        self.check_hedge_seal(self.hedge_spec, bounds, cohort)
 
     @staticmethod
     def check_hedge_seal(spec, bounds, cohort):
@@ -672,6 +710,7 @@ class FrozenMIOReplay:
         study._quotes = self.quotes
         study._factors = self.factors
         study._bars = copy.deepcopy(self.bars)
+        study.adjustments = {}
         study._nodes = {symbol: _AllQuotedOptionContext(
             "prepare", {**self.params["bridge"], "symbol": symbol})
             for symbol in self.symbols}
@@ -1358,7 +1397,7 @@ def execute(document_path):
         manifest["original_run_documents"] = run_documents
     if period is not None:
         manifest["period_label"] = period
-        manifest["cohort_bounds"] = {cohort: _range_bounds(document["cohorts"][cohort])
+        manifest["cohort_bounds"] = {cohort: _range_bounds(document["cohorts"][cohort], v6=document["schema"] == _HEDGE_SCHEMA)
                                      for cohort in cohorts}
     _write_json(output / "pins.json", manifest)
     return output
