@@ -47,7 +47,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from dskit.onboarding.artifacts import PinnedPayloadSource
-from dskit.pipeline.node import atomic_write, check_int_param
+from dskit.pipeline.node import JsonArtifact, atomic_write, check_int_param
 from dskit.pipeline.hedge_overlay import forward_leg_net_settle
 from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL
 from dskit.pipeline.option_exposure import (
@@ -58,7 +58,8 @@ from dskit.pipeline.option_structures import structure_payoff
 from .contracts import dividends_paid, usable_parity_rows
 from .mio_run_events import MioBookOutcomes
 
-__all__ = ["ChainQuotes", "CellRank", "GreeksRefusal", "MIOGreeksDiagnostics"]
+__all__ = ["AttestedMIOGreeksDiagnostics", "ChainQuotes", "CellRank",
+           "GreeksRefusal", "MIOGreeksDiagnostics"]
 
 #: Path A0003: the holdout opens on this session; no seal may lie beyond it.
 PROTECTED_FROM = "2024-01-02"
@@ -929,6 +930,10 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         return (books, ["method", "quarter", *cells],
                 ["method", "quarter", *BookGreeksReport.EXPOSURE_COLUMNS])
 
+    @staticmethod
+    def _summary_bytes(summary):
+        return (json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+
     def _write(self, out_dir, result):
         """Serialize all four outputs in memory, then land them under ``out_dir``, all or nothing.
 
@@ -938,10 +943,20 @@ class MIOGreeksDiagnostics(BookGreeksReport):
         payloads = {name: self._csv(rows, columns) for name, rows, columns in zip(
             OUTPUT_FILES, (result["books"], result["cells"], result["exposure"]),
             self._declared())}
-        payloads[OUTPUT_FILES[3]] = (json.dumps(
-            result["summary"], indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+        payloads[OUTPUT_FILES[3]] = self._summary_bytes(result["summary"])
         out_dir.mkdir(parents=True, exist_ok=True)
         summary = OUTPUT_FILES[3]
         (out_dir / summary).unlink(missing_ok=True)   # the summary vouches for its CSVs: none, until all land
         for name in (*OUTPUT_FILES[:3], summary):
             atomic_write(str(out_dir / name), payloads[name])
+
+
+class AttestedMIOGreeksDiagnostics(MIOGreeksDiagnostics):
+    """Publish a typed receipt for the exact summary bytes alongside the report."""
+
+    outputs = (*MIOGreeksDiagnostics.outputs, "summary_receipt")
+
+    def run(self, ctx, inputs):
+        result = super().run(ctx, inputs)
+        digest = hashlib.sha256(self._summary_bytes(result["summary"])).hexdigest()
+        return {**result, "summary_receipt": JsonArtifact({"summary_sha256": digest})}

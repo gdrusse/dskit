@@ -1803,3 +1803,26 @@ def test_greeks_runs_and_attests_through_the_pipeline_driver(world, tmp_path):
     summary = json.loads((Path(result.run_dir) / "carry.json").read_bytes())["greeks"]["summary"]
     assert summary == json.loads((out_dir / "greeks-summary.json").read_bytes())
     assert summary["methods"][METHOD]["books"] == 3
+
+def test_attested_greeks_receipt_binds_the_disk_and_carried_summary(world, tmp_path):
+    from dskit.pipeline.document import PipelineDocument
+    from dskit.pipeline.driver import RunAttestation, resolve_json_artifact, run_document
+
+    run_dir, out_dir = world()
+    document = PipelineDocument.from_obj({
+        "name": "greeks-receipt-fixture",
+        "pipeline": {"greeks": {
+            "uses": "index_options.mio_greeks:AttestedMIOGreeksDiagnostics",
+            "params": {**PARAMS, "run_dir": str(run_dir), "out_dir": str(out_dir)},
+        }},
+        "outputs": {"run_root": str(tmp_path / "pipeline-runs")},
+    })
+    result = run_document(document, asof="2021-06-30", journal=False)
+    assert result.exit_code == 0
+    attestation = RunAttestation(result.run_dir)
+    manifest = attestation.attested_output("greeks", "summary_receipt", document.hash)
+    receipt = resolve_json_artifact(result.run_dir, manifest)
+    disk = out_dir / "greeks-summary.json"
+    carry = json.loads((Path(result.run_dir) / "carry.json").read_bytes())["greeks"]
+    assert receipt == {"summary_sha256": _sha(disk)}
+    assert carry["summary"] == json.loads(disk.read_bytes())
