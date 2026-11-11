@@ -656,6 +656,7 @@ _G5_TIMING_METHODS = {
     ("truncated_tail", "g5_timing_tail"),
     ("usage_unbound", "g5_timing_scheduler_usage"),
     ("checkout_unbound", "g5_timing_scheduler_pins"),
+    ("self_pinned_bundle", "g5_timing_bundle_approval"),
 ])
 def test_g5_timing_projects_pinned_triplets_or_refuses_all(tmp_path, capsys, monkeypatch, damage, expected):
     from hashlib import sha256
@@ -817,6 +818,8 @@ def test_g5_timing_projects_pinned_triplets_or_refuses_all(tmp_path, capsys, mon
                        usage_path: "e" * 64 if damage == "usage_unbound" else runs[key]["usage"]["sha256"]}}]}
         runs[key]["receipt"] = pin(f"receipts/{job_id}.json", receipt)
     job_spec = pin("jobs.json", {"run_id": "synthetic", "jobs": jobs})
+    if damage != "self_pinned_bundle":
+        monkeypatch.setattr(he, "_G5_APPROVED_BUNDLES", frozenset({(matrix["sha256"], job_spec["sha256"])}))
     evidence = pin("evidence.json", {"matrix": matrix, "jobs": job_spec, "code_commit": checkout, "runs": runs})
     argv = ["g5-timing", str(tmp_path / evidence["path"]), "--sha256", evidence["sha256"]]
     assert he.main(argv) == int(expected is not None)

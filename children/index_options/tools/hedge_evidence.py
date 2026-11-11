@@ -695,6 +695,9 @@ def _main_g5_status(argv):
     return 0
 
 
+# ADR-0313 requires independent clearance of the exact operational bundle.
+_G5_APPROVED_BUNDLES: frozenset[tuple[str, str]] = frozenset()
+
 # ADR-0313's status-only declaration receipt is the prospective matrix authority.
 _G5_TIMING_WEEKS = {
     "2019Q4": dict.fromkeys(("2019-10-01", "2019-10-07", "2019-10-14"), "jointly_solved"),
@@ -982,8 +985,11 @@ def _g5_timing_read(root, evidence):
     from dskit.pipeline.base import value_hash
     from dskit.pipeline.driver import RunAttestation, resolve_json_artifact
 
-    matrix = _g5_timing_json(_g5_pinned_bytes(root, evidence["matrix"], "g5_timing_matrix_pin"))
-    jobs_manifest = _g5_timing_json(_g5_pinned_bytes(root, evidence["jobs"], "g5_timing_jobs_pin"))
+    matrix_pin, jobs_pin = evidence["matrix"], evidence["jobs"]
+    if (matrix_pin["sha256"], jobs_pin["sha256"]) not in _G5_APPROVED_BUNDLES:
+        raise _G5TimingRefusal("g5_timing_bundle_approval")
+    matrix = _g5_timing_json(_g5_pinned_bytes(root, matrix_pin, "g5_timing_matrix_pin"))
+    jobs_manifest = _g5_timing_json(_g5_pinned_bytes(root, jobs_pin, "g5_timing_jobs_pin"))
     code = evidence["code_commit"]
     if re.fullmatch(r"[0-9a-f]{40}", code) is None:
         raise _G5TimingRefusal("g5_timing_build")
