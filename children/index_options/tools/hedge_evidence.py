@@ -47,7 +47,7 @@ from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL
 
 __all__ = ["B_MEDIAN", "B_MEDIAN_REST", "RUIN", "FAMILY", "contribution_free", "depths", "quarter_read",
            "e2_verdict", "bar_reads", "e1_read", "e1b_rho2", "e4_ratio", "register_attempts", "program_quarter_read",
-           "program_verdict", "register_program_attempt", "timing_check", "read_program", "main"]
+           "program_verdict", "register_program_attempt", "timing_check", "read_program", "g5_status_weeks", "main"]
 
 #: The pre-registered E2 numbers (dollars).
 B_MEDIAN, B_MEDIAN_REST, RUIN = 2000.0, 1000.0, -4000.0
@@ -569,6 +569,131 @@ def main_program(argv):
     out.write_text(json.dumps(verdict, indent=2, sort_keys=True, allow_nan=False, default=str) + "\n")
     return 0
 
+_G5_METHODS = ("w1_010_shock10_lp", "w1_003_shock10_lp")
+_G5_SOLVED = ("selected", "cash")
+_G5_TIMEOUT = "timeout_skipped"
+_G5_STATUSES = (*_G5_SOLVED, _G5_TIMEOUT, "existing_cap_breach_cash", "no_entry_fill_session",
+                "no_eligible_candidates", "shock_risk_input", "shock_held_breach")
+_G5_QUARTERS = ("2019Q4", "2020Q1", "2021Q1", "2021Q2")
+_G5_SOURCE_ROOT = Path("/home/russell/data/index_options/full-span-rerun-20261105/adr0313-integrated-20261110")
+_G5_SOURCES = {
+    "2019Q4": (
+        "docs/base-stitched/2019Q4-run.json",
+        "dc6a02293a19afe6488b69d9537708befc1b633a5d3ee876ec2aa7ee9d17e9bd",
+        "runs/base/2019Q4-stitched/run/adr0313-a0010-2019q4-stitched-run-2019-12-31-dc533644",
+        "4a038c7db59e7875e35ac21e44c5bdb7052c5a851450cc784014df9fd8774b75",
+        "3a0540a3ff5188c9530a2033dd6812dc8de948edfd8b5cc65f09fd5659a2fdbe",
+    ),
+    "2020Q1": (
+        "docs/base-restart1/2020Q1-run.json",
+        "d38b81e2cfae8751bc990babe074b06328accae9c84d92beda67d99bff565ddf",
+        "runs/base/2020Q1/restart1/run/adr0313-a0010-2020q1-restart1-run-2020-03-31-94c5fb48",
+        "691b92d6680487e06807eaa453ba538c4c162d7091bcd45a1f6137d474dac0b1",
+        "014c103e57aa19444fb46486efecf60cc02d9e8974e119c7135809106fd67ba7",
+    ),
+}
+
+
+def _g5_method_rows(decisions, method_id, quarter):
+    if not isinstance(decisions, list):
+        raise ValueError("g5_decisions")
+    projected = {}
+    for decision in decisions:
+        if not isinstance(decision, dict):
+            raise ValueError("g5_decisions")
+        day = decision.get("date")
+        try:
+            parsed = date.fromisoformat(day)
+        except (TypeError, ValueError):
+            raise ValueError("g5_decision_date") from None
+        if (parsed.isoformat() != day or day >= DEVELOPMENT_SEAL
+                or f"{parsed.year}Q{(parsed.month - 1) // 3 + 1}" != quarter):
+            raise ValueError("g5_decision_date")
+        if day in projected:
+            raise ValueError("g5_duplicate_decision")
+        status = decision.get("status")
+        if status not in _G5_STATUSES:
+            raise ValueError("g5_decision_status")
+        selection, certificates = decision.get("selection"), decision.get("certificates")
+        solve_present = (isinstance(selection, dict) and isinstance(certificates, list)
+                         and bool(certificates) and all(isinstance(cert, dict) for cert in certificates))
+        if (not solve_present and (selection is not None or certificates is not None or status == "selected")
+                or solve_present and status not in (*_G5_SOLVED, _G5_TIMEOUT)):
+            raise ValueError("g5_solve_evidence")
+        projected[day] = {"method_id": method_id, "date": day, "status": status,
+                          "solve_present": solve_present}
+    return projected
+
+
+def g5_status_weeks(receipt, quarter):
+    """Project the two registered base methods and declare their deterministic G5 dates."""
+    if quarter not in _G5_QUARTERS:
+        raise ValueError("g5_quarter")
+    if not isinstance(receipt, dict) or receipt.get("complete") is not True:
+        raise ValueError("g5_incomplete_close")
+    results = receipt.get("results")
+    if not isinstance(results, list) or not all(isinstance(item, dict) for item in results):
+        raise ValueError("g5_results")
+    by_method = {}
+    for method_id in _G5_METHODS:
+        matches = [item for item in results if item.get("id") == method_id]
+        if len(matches) != 1:
+            raise ValueError("g5_method_missing" if not matches else "g5_method_duplicate")
+        method, = matches
+        result = method.get("result")
+        if (method.get("status") != "completed" or method.get("replay_parity") is not True
+                or not isinstance(result, dict)):
+            raise ValueError("g5_incomplete_replay")
+        by_method[method_id] = _g5_method_rows(result.get("decisions"), method_id, quarter)
+    first, second = by_method.values()
+    if first.keys() != second.keys():
+        raise ValueError("g5_calendar_mismatch")
+    dates = sorted(first)
+    joint_solves = [day for day in dates if all(rows[day]["solve_present"] and rows[day]["status"] in _G5_SOLVED
+                                               for rows in (first, second))]
+    if len(joint_solves) < 3:
+        raise ValueError("fewer_than_three_joint_solves")
+    timeouts = {day for day in dates if any(rows[day]["status"] == _G5_TIMEOUT for rows in (first, second))}
+    return {"weeks": sorted(set(joint_solves[:3]) | timeouts),
+            "rows": [rows[day] for rows in by_method.values() for day in dates]}
+
+
+def _g5_attested_weeks(root, source, quarter):
+    from hashlib import sha256
+
+    from dskit.pipeline.driver import RunAttestation, resolve_json_artifact
+
+    doc, doc_sha, run, doc_identity, receipt_sha = source
+    try:
+        if sha256((root / doc).read_bytes()).hexdigest() != doc_sha:
+            raise ValueError("g5_document_pin")
+    except OSError:
+        raise ValueError("g5_document_pin") from None
+    run_dir = root / run
+    manifest = RunAttestation(run_dir).attested_output("close_packet", "receipt", doc_identity)
+    if not isinstance(manifest, dict) or manifest.get("sha256") != receipt_sha:
+        raise ValueError("g5_close_attestation")
+    try:
+        receipt = resolve_json_artifact(run_dir, manifest)
+    except (OSError, ValueError):
+        raise ValueError("g5_close_artifact") from None
+    return {"document_sha256": doc_sha, "close_sha256": receipt_sha, **g5_status_weeks(receipt, quarter)}
+
+
+def _main_g5_status(argv):
+    parser = argparse.ArgumentParser(prog="hedge_evidence.py g5-status")
+    parser.parse_args(argv)
+    declaration = {"pending": [quarter for quarter in _G5_QUARTERS if quarter not in _G5_SOURCES],
+                   "retrospective_timing": ["2020-03-09"], "quarters": {}}
+    try:
+        for quarter, source in _G5_SOURCES.items():
+            declaration["quarters"][quarter] = _g5_attested_weeks(_G5_SOURCE_ROOT, source, quarter)
+    except ValueError as exc:
+        sys.stderr.write(f"{quarter}: {exc}\n")
+        return 1
+    print(json.dumps(declaration, sort_keys=True, allow_nan=False))
+    return 0
+
 
 def main(argv=None):
     """Write the verdict JSON: ``hedge_evidence.py ROOT FORMULATION COHORT=QUARTER... --registry R --out V``.
@@ -576,6 +701,8 @@ def main(argv=None):
     ``hedge_evidence.py program FORMULATION --controls ... --programs ... --registry R --out V`` reads the program twin.
     """
     argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "g5-status":
+        return _main_g5_status(argv[1:])
     if argv and argv[0] == "program":
         return main_program(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)

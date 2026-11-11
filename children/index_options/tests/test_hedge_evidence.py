@@ -474,3 +474,142 @@ def test_main_with_an_explicit_empty_argv_is_a_usage_error_not_sys_argv(monkeypa
     with pytest.raises(SystemExit) as exc:
         hedge_evidence.main([])
     assert exc.value.code == 2
+
+_G5_IDS = ("w1_010_shock10_lp", "w1_003_shock10_lp")
+
+
+def _g5_receipt():
+    def rows():
+        return [
+            {"date": "2020-01-06", "status": "cash"},
+            {"date": "2020-01-13", "status": "cash", "selection": {}, "certificates": [{}]},
+            {"date": "2020-01-20", "status": "selected", "selection": {}, "certificates": [{}]},
+            {"date": "2020-01-27", "status": "cash", "selection": {}, "certificates": [{}]},
+            {"date": "2020-02-03", "status": "selected", "selection": {}, "certificates": [{}]},
+            {"date": "2020-02-10", "status": "timeout_skipped"},
+            {"date": "2020-02-17", "status": "timeout_skipped"},
+        ]
+
+    return {"complete": True, "results": [
+        {"id": method, "status": "completed", "replay_parity": True,
+         "result": {"decisions": rows()}}
+        for method in _G5_IDS
+    ]}
+
+
+def test_g5_selects_earliest_three_joint_solves_and_union_of_timeouts():
+    packet = _g5_receipt()
+    first, second = [item["result"]["decisions"] for item in packet["results"]]
+    second[5] = {"date": "2020-02-10", "status": "cash"}
+    first.reverse()
+    for row in first + second:
+        row["economic_poison"] = {"value": "must never appear"}
+    output = he.g5_status_weeks(packet, "2020Q1")
+    assert output["weeks"] == [
+        "2020-01-13", "2020-01-20", "2020-01-27", "2020-02-10", "2020-02-17",
+    ]
+    assert all(set(row) == {"method_id", "date", "status", "solve_present"} for row in output["rows"])
+    assert all(row["solve_present"] is False for row in output["rows"] if row["date"] == "2020-01-06")
+
+
+@pytest.mark.parametrize("damage, expected", [
+    ("too_few", "fewer_than_three_joint_solves"),
+    ("duplicate", "g5_duplicate_decision"),
+    ("mismatch", "g5_calendar_mismatch"),
+    ("bad_date", "g5_decision_date"),
+    ("malformed", "g5_solve_evidence"),
+    ("replay", "g5_incomplete_replay"),
+    ("incomplete", "g5_incomplete_close"),
+    ("absent", "g5_method_missing"),
+])
+def test_g5_refuses_bad_status_evidence(damage, expected):
+    packet = _g5_receipt()
+    first = packet["results"][0]
+    rows = first["result"]["decisions"]
+    if damage == "too_few":
+        for row in rows[1:4]:
+            row.update(status="cash", selection=None, certificates=None)
+    elif damage == "duplicate":
+        rows.append(rows[0])
+    elif damage == "mismatch":
+        rows.pop()
+    elif damage == "bad_date":
+        rows[0]["date"] = "2021-07-01"
+    elif damage == "malformed":
+        rows[1]["certificates"] = ["POISON"]
+    elif damage == "replay":
+        first["replay_parity"] = 1
+    elif damage == "incomplete":
+        packet["complete"] = False
+    elif damage == "absent":
+        packet["results"].pop()
+    with pytest.raises(ValueError, match=expected) as exc:
+        he.g5_status_weeks(packet, "2020Q1")
+    assert "POISON" not in str(exc.value)
+
+
+@pytest.mark.parametrize("damage, expected", [
+    (None, None),
+    ("document", "g5_document_pin"),
+    ("identity", "g5_close_attestation"),
+    ("digest", "g5_close_attestation"),
+    ("bytes", "g5_close_artifact"),
+    ("incomplete", "g5_close_attestation"),
+    ("carry", "g5_close_attestation"),
+])
+def test_g5_uses_only_the_attested_close(tmp_path, damage, expected):
+    from hashlib import sha256
+
+    from dskit.pipeline.document import NodeSpec, PipelineDocument
+
+    document = PipelineDocument(name="g5-test", pipeline={"close_packet": NodeSpec(uses="synthetic")})
+    frozen = json.dumps(document.to_obj()).encode()
+    run = tmp_path / "run"
+    (run / "nodes").mkdir(parents=True)
+    (run / "artifacts/json").mkdir(parents=True)
+    receipt = json.dumps(_g5_receipt()).encode()
+    digest = sha256(receipt).hexdigest()
+    relative = f"artifacts/json/{digest}.json"
+    manifest = {"path": relative, "sha256": digest, "bytes": len(receipt), "media_type": "application/json"}
+    (run / relative).write_bytes(receipt if damage != "bytes" else b"secret")
+    (run / "config.json").write_bytes(frozen)
+    (tmp_path / "source.json").write_bytes(frozen if damage != "document" else b"secret")
+    (run / "result.json").write_text(json.dumps({"state": "error" if damage == "incomplete" else "ran"}))
+    (run / "resolved.json").write_text(json.dumps({"document_hash": document.hash}))
+    (run / "nodes/01-close_packet.json").write_text(json.dumps({
+        "node": "close_packet", "status": "ok", "document_hash": document.hash,
+        "outputs": {"receipt": manifest},
+    }))
+    (run / "carry.json").write_text(json.dumps(
+        {} if damage == "carry" else {"close_packet": {"receipt": manifest}},
+    ))
+    pin = ("source.json", sha256(frozen).hexdigest(), "run",
+           "0" * 64 if damage == "identity" else document.hash,
+           "0" * 64 if damage == "digest" else digest)
+    if expected:
+        with pytest.raises(ValueError, match=expected):
+            he._g5_attested_weeks(tmp_path, pin, "2020Q1")
+    else:
+        output = he._g5_attested_weeks(tmp_path, pin, "2020Q1")
+        assert output["close_sha256"] == digest
+        assert output["weeks"] == ["2020-01-13", "2020-01-20", "2020-01-27", "2020-02-10", "2020-02-17"]
+
+def test_g5_source_pins_match_the_pre_observation_adr():
+    adr = Path(he.__file__).resolve().parents[3] / "docs/architecture/decision-log.md"
+    declaration = adr.read_text().split("**ADR-0313 G5 status-only week selection declaration", 1)[1]
+    for quarter, source in he._G5_SOURCES.items():
+        line, = [line for line in declaration.splitlines() if line.startswith(f"- {quarter} ")]
+        assert all(f"`{pin}`" in line for pin in source)
+
+
+def test_g5_main_refusal_prints_no_partial_rows(monkeypatch, capsys):
+    def reader(root, source, quarter):
+        if quarter == "2020Q1":
+            raise ValueError("g5_close_attestation")
+        return {"rows": ["poison"], "weeks": []}
+
+    monkeypatch.setattr(he, "_g5_attested_weeks", reader)
+    assert he.main(["g5-status"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "2020Q1: g5_close_attestation\n"
