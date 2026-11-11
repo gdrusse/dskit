@@ -36681,3 +36681,15 @@ the cell key, run phase and matrix digest. Input hashes bind each close
 to its own audit. The cross-role match uses source-pin and read-bound
 identity because local quote-index paths differ by run. March 9
 retrospective entries are outside the prospective result.
+
+**G5 timing evidence authority clarification (2026-11-11).** Project
+exactly the currently declared prospective weeks and designations for the
+quarters admitted to the timing matrix. A manifest digest binds bytes
+and cannot authorize a new date. March 9 is retrospective. Future
+quarters require their own attested declarations before admission.
+Bind the full WSL preflight command to the pinned matrix and both
+verified scripts, interpreter, mount identity and checkout. Bind GNU
+time usage bytes to the terminal scheduler attempt's output hash.
+Verify the account calendar from the same bounded, pinned date-only
+session spine used by authenticated replay, through the exclusive
+settlement tail. A closed-book flag alone cannot establish tail completion.
