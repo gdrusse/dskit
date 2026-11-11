@@ -597,6 +597,7 @@ def test_g5_uses_only_the_attested_close(tmp_path, damage, expected):
 def test_g5_source_pins_match_the_pre_observation_adr():
     adr = Path(he.__file__).resolve().parents[3] / "docs/architecture/decision-log.md"
     declaration = adr.read_text().split("**ADR-0313 G5 status-only week selection declaration", 1)[1]
+    declaration = declaration.split("**ADR-0313 G5 status-only declaration receipt", 1)[0]
     for quarter, source in he._G5_SOURCES.items():
         line, = [line for line in declaration.splitlines() if line.startswith(f"- {quarter} ")]
         assert all(f"`{pin}`" in line for pin in source)
