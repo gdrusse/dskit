@@ -7,6 +7,7 @@ the nine ``locked_method_ids`` against the queue config, the development seal, t
 
 import copy
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -287,7 +288,10 @@ def test_the_command_line_writes_the_same_document(study, tmp_path):  # noqa: F8
     command = [sys.executable, str(CHILD / "tools/mio_instantiate.py"), str(template), "--base", str(base), "--name", "n",
                "--output-root", str(tmp_path / "runs"), "--edge-maps-pin", str(pin), "--decision-week", "2019-01-02",
                "--out", str(out)]
-    assert subprocess.run(command, capture_output=True, text=True).returncode == 0
+    root = CHILD.parents[1]
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(root), str(CHILD)))}
+    run = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr or run.stdout
     expected = instantiate(load(template), base_document(study), name="n", output_root=str(tmp_path / "runs"),
                            edge_maps_pin=json.loads(pin.read_text()), decision_week="2019-01-02")
     assert json.loads(out.read_text()) == expected
