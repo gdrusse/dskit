@@ -697,12 +697,12 @@ def _main_g5_status(argv):
 
 # ADR-0313 requires independent clearance of the exact operational bundle.
 _G5_CLEAN_RETRY_BUNDLE = (
-    "a899ca8acee1ca39caf23dd952ede595603a71edaf35e7529db71b75c44d1b3d",
-    "4bc58ea32d983b6b4826a226770bf7c2192159cbc53f3496c3ef008f9346f150",
+    "926686466516a18bf7364fcfb8b20e16388e1f8ee8773dda4a6f9a74400be652",
+    "637c8c16d1b93b9cf38668041cf50e17d1e2fac6d924b3eca908768965314ad8",
 )
 _G5_PROSPECTIVE_BUNDLE = (
-    "e11d5905bac92b903085e0e481278afcd9307cfc7096207596c344335e8dd1a3",
-    "0928521cb3499fd04c6b69397d80cfbaba45dfd969d2d535b94c23aa5d203794",
+    "5b199a4683b1de6ff5d209d7ae2c24e4aa236a3fd623290dbaf9d4b5fbf4569c",
+    "0095f89e36553ac16093f8a56df2384fbb578a11ea6fc4982afcebd74b906a7b",
 )
 _G5_APPROVED_BUNDLES = frozenset({_G5_CLEAN_RETRY_BUNDLE, _G5_PROSPECTIVE_BUNDLE})
 _G5_CLEAN_RETRY_WEEKS = {"2020Q1": {"2020-03-09": "retrospective_clean_rerun"}}

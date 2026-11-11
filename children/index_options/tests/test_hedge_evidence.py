@@ -901,7 +901,7 @@ def test_g5_approved_timing_bundles_match_exact_adr_pins():
     path = Path(he.__file__).resolve().parents[3] / "docs/architecture/decision-log.md"
     pins = path.read_text().split("**G5 timing bundle approval pins", 1)[1]
     clean = next(line for line in pins.splitlines() if line.startswith("- Clean March 9"))
-    prospective = next(line for line in pins.splitlines() if line.startswith("- Prospective v2"))
+    prospective = next(line for line in pins.splitlines() if line.startswith("- Prospective v3"))
     pattern = r"`([0-9a-f]{64})`"
     clean_pair = tuple(re.findall(pattern, clean))
     prospective_pair = tuple(re.findall(pattern, prospective))
