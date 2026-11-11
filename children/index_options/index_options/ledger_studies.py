@@ -2224,6 +2224,17 @@ LOCKED_FORMULATION_HASHES = MappingProxyType({
 })
 
 
+_KELLY_SEARCH_BASE = "kelly025_top100_search_lp"
+_KELLY_SEARCH_REPLAY_HEDGE = "kelly025_top100_search_replay_hedge_lp"
+_KELLY_SEARCH_BASE_SHA256 = "0b8092056012cc4d1b2cb0d3746230153172267eaf7e6d3c16c472080d5371a9"
+
+
+def _is_exact_kelly_search(method, block):
+    base = {key: value for key, value in method.items() if key != block}
+    base["id"] = _KELLY_SEARCH_BASE
+    return MethodBlocks.spec_hash(base) == _KELLY_SEARCH_BASE_SHA256
+
+
 class WeeklyOptionPortfolioStudy:
     """Replay fixed portfolio methods on a bounded archive and weekly clock.
 
@@ -2371,7 +2382,12 @@ class WeeklyOptionPortfolioStudy:
                    "gap", "time_limit"}
     #: An optional kelly key (ADR-0301): ``max_groups`` keeps, of the ``lp`` screen's survivors, only that many with
     #: the largest standalone relaxed value before the joint growth program is built (the solver's group_screen_keep).
-    _KELLY_OPTIONAL_KEYS = {"max_groups", "accept_uncertified"}
+    _KELLY_OPTIONAL_KEYS = {"max_groups", "accept_uncertified", "search", "warm_start"}
+    #: ADR-0302: ``search`` ({iterations, neighbourhood, node_limit, seed}) runs the relax_fix strategy's deterministic
+    #: incumbent local search (the solver's ``utility_search``); ``warm_start`` ({node_limit}) certifies a week the
+    #: action limit would decline from its complete incumbent under that node budget (``utility_warm_start``). Each
+    #: writes its record (``kelly.search``, ``kelly.warm_start``) only when declared.
+    _KELLY_STRATEGY_KEYS = ("search", "warm_start")
     #: ``accept_uncertified`` (ADR-0301 amendment): a week whose certification the relax_fix strategy DECLINED (a support
     #: incumbent exists, too many actions stayed free to certify within the limit) trades that incumbent instead of
     #: skipping; the gap to the relaxation's bound is recorded (``kelly.uncertified``). A failed relaxation still skips.
@@ -2636,6 +2652,12 @@ class WeeklyOptionPortfolioStudy:
                     and (cls._SIZER_STRESS_LOOKBACK < p["correlation_min_pairs"]
                          or cls._SIZER_STRESS_LOOKBACK > method["sizer"]["beta_lookback"])):
                 raise ValueError("stressed loadings need the short window within [correlation_min_pairs, beta_lookback]")
+            if "kelly" in method and any(key in method["kelly"] for key in cls._KELLY_STRATEGY_KEYS):
+                # ADR-0302: the search and the warm start act inside the solver's relax_fix strategy; the solver block
+                # they extend must accept them (a direct utility solve has no incumbent to search from).
+                defects = TransportPortfolioSolve.validate_params(cls._kelly_solver_params(p["solver"], method["kelly"]))
+                if defects:
+                    raise ValueError("; ".join(defects))
             if "kelly" in method and not cls._gap_within(p["solver"], method["kelly"]):
                 # The objective is dollars of growth: a 50-dollar gap certifies a weak week as cash and cannot tell
                 # a quarter Kelly from a half. The method states the gap it needs; a looser document refuses.
@@ -2698,9 +2720,16 @@ class WeeklyOptionPortfolioStudy:
                                  f"differently from its hedge ({mine} / {parity} against {theirs} / "
                                  f"{p.get('hedge_parity')})")
 
-    @staticmethod
-    def _hedge_configuration(p):
+    @classmethod
+    def _hedge_configuration(cls, p):
         """Refuse a hedged document that is not sealed (``hedge_seal``) or lacks its parity params (``hedge_parity_*``)."""
+        for method in p["methods"]:
+            hedge = method.get("hedge")
+            strategy = any(key in method.get("kelly", {}) for key in cls._KELLY_STRATEGY_KEYS)
+            if method["id"] == _KELLY_SEARCH_REPLAY_HEDGE or (hedge is not None and strategy):
+                if (method["id"] != _KELLY_SEARCH_REPLAY_HEDGE or not hedge or hedge["mode"] != "replay"
+                        or not _is_exact_kelly_search(method, "hedge")):
+                    raise ValueError("kelly_search_hedge_formulation: use the exact search replay-hedge research method")
         hedged = any("hedge" in m for m in p["methods"])
         if "hedge_parity" in p and not hedged:
             raise ValueError("hedge_parity_unused: hedge_parity is for a document with a hedged method")
@@ -2820,12 +2849,44 @@ class WeeklyOptionPortfolioStudy:
                 and type(beta_lookback) is int and beta_lookback >= 2)
 
     @classmethod
+    def _kelly_strategy_valid(cls, kelly):
+        """ADR-0302: whether a kelly block's search and warm start are well formed and make sense together.
+
+        Each is the solver's own declaration (:meth:`TransportPortfolioSolve.strategy_problems`). A neighbourhood
+        no smaller than ``max_groups`` frees every group the program holds: that is a node-limited solve of the whole
+        program, not a local search, and is refused.
+        """
+        from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+        search, warm = kelly.get("search"), kelly.get("warm_start")
+        if ("search" in kelly and search is None) or ("warm_start" in kelly and warm is None):
+            return False
+        if TransportPortfolioSolve.strategy_problems(search, warm):
+            return False
+        return not (search is not None and "max_groups" in kelly and type(kelly["max_groups"]) is int
+                    and search["neighbourhood"] >= kelly["max_groups"])
+
+    @classmethod
+    def _kelly_solver_params(cls, solver, kelly):
+        """The solver block a kelly method solves with: the document's, plus what its optional keys declare."""
+        params = dict(solver)
+        if "max_groups" in kelly:
+            # ADR-0301: after the lp screen keep only the best max_groups groups by standalone relaxed value.
+            params["group_screen_keep"] = kelly["max_groups"]
+        if "search" in kelly:
+            params["utility_search"] = dict(kelly["search"])
+        if "warm_start" in kelly:
+            params["utility_warm_start"] = dict(kelly["warm_start"])
+        return params
+
+    @classmethod
     def _kelly_valid(cls, method):
         """Return whether a method's kelly block is well formed and the method declares no sizing cap beside it."""
         kelly = method["kelly"]
         return (isinstance(kelly, dict) and set(kelly)-cls._KELLY_OPTIONAL_KEYS == cls._KELLY_KEYS
                 and ("max_groups" not in kelly or (type(kelly["max_groups"]) is int and kelly["max_groups"] >= 1))
                 and ("accept_uncertified" not in kelly or type(kelly["accept_uncertified"]) is bool)
+                and cls._kelly_strategy_valid(kelly)
                 and number_ok(kelly["fraction"]) and 0 < kelly["fraction"] <= 1
                 and type(kelly["n_tangents"]) is int and kelly["n_tangents"] >= 2
                 and number_ok(kelly["core"]) and kelly["core"] > 1
@@ -3422,6 +3483,117 @@ class WeeklyOptionPortfolioStudy:
             if keys:
                 caps.append({"groups": keys, "upper": max(0., limit["upper"])})
         return caps
+
+    def _strategy_records(self, kelly, strategy, selection):
+        """ADR-0302: a kelly week's ``search`` and ``warm_start`` records, for the keys its method declares.
+
+        A live solve takes them from the solver (``last_search``, ``last_warm_start``); a recorded replay from the
+        recorded week's ``kelly`` record, a derived one from the foreign entry's ``kelly_strategy``: no replay solves,
+        so what the search and the warm start did is evidence carried with the decision. Every route's records are
+        checked against the decision they explain (:meth:`_check_strategy`); a policy week (no solve) records None.
+        """
+        import copy
+
+        route, source = strategy
+        declared = [key for key in self._KELLY_STRATEGY_KEYS if key in kelly]
+        if route == "policy":
+            return {key: None for key in declared}
+        if not isinstance(source, dict) or any(key not in source for key in declared):
+            raise ValueError("a kelly week lacks its search or warm-start record")
+        out = {key: copy.deepcopy(source[key]) for key in declared}
+        self._check_strategy(kelly, out, selection)
+        return out
+
+    def _check_strategy(self, kelly, out, selection):
+        """Refuse a search or warm-start record that contradicts its declaration or the decision it explains.
+
+        The search: its seed is the declared one; at most the declared iterations ran (all of them when the budget
+        is exhausted); the accepted neighbourhoods are in iteration order, each at most ``neighbourhood`` groups, each
+        strictly better by exact utility than the one before, the last the value after; and when no solve followed
+        it (a declined or relaxation-certified week) the value after is the traded selection's value (or, when an
+        over-cap warm start kept a better incumbent, the value that warm start began from); on a certified week the
+        certification started from it, so the traded value is no worse. A week whose relaxation solved always has a
+        search record (one that never ran has no value before); ``halted_by`` is None or "clock" (then the budget
+        is not exhausted), ``failed`` counts neighbourhoods within those run, ``seconds`` is finite and nonnegative,
+        ``allowance`` (the search's clock share) None or finite and nonnegative, and never None on a clock halt.
+        The warm start: present only when a certification ran (so a certified week has one, a relaxation-decided week
+        none); a declined week that ran one ran it above the action limit; nothing accepted that was not supplied;
+        ``kept`` only on a declined over-cap week stopped deterministically, whose kept value beats its start and is
+        the traded value; a declined week that kept nothing trades the start.
+        """
+        from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+        tol = self.params["solver"]["parity_tolerance"]
+        certificate = (selection.get("certificates") or [{}])[0]
+        outcome = certificate.get("strategy_outcome")
+        traded = selection.get("candidate") if "timeout" in selection else selection
+        value = traded.get("value") if isinstance(traded, dict) else None
+        bad = ValueError("recorded kelly search or warm-start record differs from its decision")
+        w = out.get("warm_start")
+        kept = isinstance(w, dict) and w.get("kept") is True
+        if "search" in out and out["search"] is None and outcome != "relaxation_failed":
+            raise bad
+        if "search" in out and out["search"] is not None:
+            s, declared = out["search"], kelly["search"]
+            if (not isinstance(s, dict) or set(s) != set(TransportPortfolioSolve.SEARCH_RECORD_KEYS)
+                    or type(s["seed"]) is not int or s["seed"] != declared["seed"]
+                    or type(s["iterations"]) is not int or not 0 <= s["iterations"] <= declared["iterations"]
+                    or type(s["improved"]) is not bool or type(s["budget_exhausted"]) is not bool
+                    or (s["budget_exhausted"] and s["iterations"] != declared["iterations"])
+                    or s["halted_by"] not in (None, "clock") or (s["budget_exhausted"] and s["halted_by"] is not None)
+                    or type(s["failed"]) is not int or not 0 <= s["failed"] <= s["iterations"]
+                    or not number_ok(s["seconds"]) or s["seconds"] < 0
+                    or (s["allowance"] is not None and (not number_ok(s["allowance"]) or s["allowance"] < 0))
+                    or (s["halted_by"] == "clock" and s["allowance"] is None)
+                    or not isinstance(s["accepted_neighbourhoods"], list)
+                    or s["improved"] != bool(s["accepted_neighbourhoods"]) or outcome == "relaxation_failed"):
+                raise bad
+            accepted, before, after = s["accepted_neighbourhoods"], s["value_before"], s["value_after"]
+            if before is None:
+                if s["iterations"] or accepted or after is not None:
+                    raise bad
+            else:
+                if not number_ok(before) or not number_ok(after):
+                    raise bad
+                last, previous = before, -1
+                for entry in accepted:
+                    if (not isinstance(entry, dict) or set(entry) != {"iteration", "groups", "value"}
+                            or type(entry["iteration"]) is not int
+                            or not previous < entry["iteration"] < s["iterations"]
+                            or not isinstance(entry["groups"], list)
+                            or not 0 < len(entry["groups"]) <= declared["neighbourhood"]
+                            or any(not isinstance(g, str) for g in entry["groups"])
+                            or not number_ok(entry["value"]) or entry["value"] <= last):
+                        raise bad
+                    last, previous = entry["value"], entry["iteration"]
+                if last != after:
+                    raise bad
+                # What the search left is what was traded, unless a warm start then kept a better point from it.
+                reached = w["value_before"] if kept and number_ok(w.get("value_before")) else value
+                if (outcome in ("declined", "relaxation_certified") and after > tol
+                        and (not number_ok(reached) or abs(after-reached) > tol)):
+                    raise bad
+                if outcome == "certified" and number_ok(value) and after > value+2*tol:
+                    raise bad
+        if "warm_start" in out:
+            if w is None:
+                if outcome == "certified" or (outcome == "declined" and value is not None):
+                    raise bad
+            elif (not isinstance(w, dict) or set(w) != set(TransportPortfolioSolve.WARM_START_RECORD_KEYS)
+                    or any(type(w[k]) is not bool for k in ("supplied", "accepted", "over_cap", "kept"))
+                    or not isinstance(w["termination"], str) or outcome not in ("certified", "declined")
+                    or any(w[k] is not None and not number_ok(w[k]) for k in ("value_before", "value_after"))
+                    or (w["accepted"] and not w["supplied"]) or (outcome == "declined" and not w["over_cap"])):
+                raise bad
+            elif kept and (outcome != "declined"
+                           or w["termination"] not in TransportPortfolioSolve.DETERMINISTIC_TERMINATIONS
+                           or w["value_before"] is None or w["value_after"] is None
+                           or not w["value_after"] > w["value_before"]+tol
+                           or not number_ok(value) or abs(value-w["value_after"]) > tol):
+                raise bad
+            elif (not kept and outcome == "declined" and number_ok(value) and w["value_before"] is not None
+                  and abs(value-w["value_before"]) > tol):
+                raise bad
 
     def _books(self, selection, metadata, charge=None):
         """Freeze selected positions and verify exact full-domain reserve parity."""
@@ -4096,11 +4268,16 @@ class WeeklyOptionPortfolioStudy:
         if derived is not None:
             import json
             json.dumps(derived, allow_nan=False)
+            # ADR-0302: a method declaring a search or a warm start carries the foreign week's records of them beside
+            # its actions (``kelly_strategy``); every other method's entries are exactly as before.
+            entry_keys = {"actions", "certificates"} | (
+                {"kelly_strategy"} if isinstance(method.get("kelly"), dict)
+                and any(key in method["kelly"] for key in self._KELLY_STRATEGY_KEYS) else set())
             if (not isinstance(derived, dict) or set(derived) != {"method", "weeks", "decisions"}
                     or derived["method"] != method["id"] or derived["weeks"] != self.weeks
                     or not isinstance(derived["decisions"], dict)
                     or any(day not in self.weeks or not isinstance(entry, dict)
-                           or set(entry) != {"actions", "certificates"}
+                           or set(entry) != entry_keys
                            for day, entry in derived["decisions"].items())):
                 raise ValueError("derived method or decision calendar differs")
             derived_decisions = dict(derived["decisions"])
@@ -4278,9 +4455,8 @@ class WeeklyOptionPortfolioStudy:
                                        **({} if adjusts is None else {"value_adjust": adjusts[g["id"]]})}
                                       for g, meta in zip(groups, metadata)]
                         solver_params = p["solver"]
-                        if kelly is not None and "max_groups" in kelly:
-                            # ADR-0301: after the lp screen keep only the best max_groups groups by standalone relaxed value.
-                            solver_params = {**p["solver"], "group_screen_keep": kelly["max_groups"]}
+                        if kelly is not None and any(key in kelly for key in ("max_groups", *self._KELLY_STRATEGY_KEYS)):
+                            solver_params = self._kelly_solver_params(p["solver"], kelly)
                         solver = TransportPortfolioSolve("portfolio", solver_params)
                         program = {"groups": configured,
                                    "caps": self._caps(self._limits(account, method, components, solve=True), metadata)}
@@ -4320,11 +4496,13 @@ class WeeklyOptionPortfolioStudy:
                             quantities = yield copy.deepcopy(request)
                             selection = scorer.evaluate(quantities)
                             record["decision_source"] = "policy"
+                            strategy = ("policy", None)
                         elif derived_decisions is not None:
                             if day not in derived_decisions:
                                 raise ValueError("derived actions lack an eligible week: "+day)
                             claimed = derived_decisions[day]
                             consumed.add(day)
+                            strategy = ("derived", claimed.get("kelly_strategy"))
                             try:
                                 selection = solver.derived(program, claimed["actions"],
                                                            claimed["certificates"])["selection"]
@@ -4337,8 +4515,10 @@ class WeeklyOptionPortfolioStudy:
                                 raise exc
                         elif recorded_decisions is None:
                             selection = solver.run(None, program)["selection"]
+                            strategy = ("live", {"search": solver.last_search, "warm_start": solver.last_warm_start})
                         else:
                             claimed = recorded_decisions[day]
+                            strategy = ("recorded", claimed.get("kelly") if isinstance(claimed, dict) else None)
                             if sizer is not None and "stage1" in claimed:
                                 # A sized week records stage 1 apart: its selection and certificate are what the stage-1
                                 # program certifies; the sized counts are checked by the sizer's own replay below.
@@ -4404,6 +4584,8 @@ class WeeklyOptionPortfolioStudy:
                             if kelly.get("accept_uncertified"):
                                 # Only a method that declares the key carries the field: earlier kelly records are unchanged.
                                 record["kelly"]["uncertified"] = uncertified
+                            if any(key in kelly for key in self._KELLY_STRATEGY_KEYS):
+                                record["kelly"].update(self._strategy_records(kelly, strategy, selection))
                             # The lp screen is a restriction: it drops candidate groups with no edge that could hedge.
                             # How many it dropped this week is a decision field, not only a log line.
                             record["kelly"]["screen"] = (None if policy else dict(solver.last_screen))
@@ -4913,6 +5095,15 @@ class MIOPacketCompare(StudyNode):
     #: What a comparison row keeps of each kelly decision's ``kelly`` record (``book``: the exact sd, the charge, their
     #: ratio and the fraction the charge applies, ADR-0299).
     _KELLY_ROW_KEYS = ("status", "dropped", "candidates", "screen", "book", "solve", "uncertified")
+    #: What a row keeps of the ADR-0302 records, only when the decision carries them (a method that declares
+    #: ``kelly.search`` or ``kelly.warm_start``): every other row is exactly as before.
+    _KELLY_DECLARED_ROW_KEYS = ("search", "warm_start")
+
+    @classmethod
+    def _kelly_row(cls, kelly):
+        """What a comparison row keeps of one decision's ``kelly`` record (the ADR-0302 records only when present)."""
+        return ({k: kelly.get(k) for k in cls._KELLY_ROW_KEYS}
+                | {k: kelly[k] for k in cls._KELLY_DECLARED_ROW_KEYS if k in kelly})
     #: What a comparison row keeps of each sizer decision's ``sizer`` record (ADR-0300): how the week was sized and how
     #: far the counts moved from the stage-1 selection.
     _SIZER_ROW_KEYS = ("status", "reserve_ratio", "stake_ratio", "value", "exact", "wealth_min", "reserve",
@@ -4963,8 +5154,7 @@ class MIOPacketCompare(StudyNode):
                     row["decisions"] = [{k: v for k, v in decision.items() if k in {
                         "date", "status", "candidate_books", "candidate_contracts", "eligible_by_pair",
                         "eligible_by_symbol", "fitted", "fallback", "refusals", "cdf_noise_repaired"}}
-                        | ({"kelly": {k: decision["kelly"].get(k) for k in self._KELLY_ROW_KEYS}}
-                           if "kelly" in decision else {})
+                        | ({"kelly": self._kelly_row(decision["kelly"])} if "kelly" in decision else {})
                         | ({"sizer": {k: decision["sizer"].get(k) for k in self._SIZER_ROW_KEYS}}
                            if "sizer" in decision else {}) for decision in result["decisions"]]
                     if any("kelly" in d for d in result["decisions"]):
