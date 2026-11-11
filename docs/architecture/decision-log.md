@@ -36693,3 +36693,10 @@ time usage bytes to the terminal scheduler attempt's output hash.
 Verify the account calendar from the same bounded, pinned date-only
 session spine used by authenticated replay, through the exclusive
 settlement tail. A closed-book flag alone cannot establish tail completion.
+
+**G5 timing bundle approval (2026-11-11).** Authorize operational
+matrix and scheduler job bytes by an exact SHA-256 pair in the projector.
+A caller-supplied evidence pin establishes integrity. The repository's
+pair establishes approval of the scripts, checkout and interpreter
+bound into those bytes. Production starts with an empty allowlist.
+Add the pair only after independent clearance of the frozen bundle.
