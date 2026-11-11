@@ -11,6 +11,7 @@ from datetime import date, timedelta
 
 from dskit.pipeline.base import value_hash
 from dskit.pipeline.driver import RunAttestation, resolve_json_artifact
+from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL, MethodBlocks
 from dskit.onboarding.artifacts import PinnedPayloadSource
 from dskit.pipeline.node import JsonArtifact, Node, reject_unknown_params
 from dskit.pipeline.study_protocol import StudyContract, StudyNode
@@ -23,7 +24,7 @@ __all__ = ["MIOStudyContract", "OptionPolicyStudyContract", "OptionPolicyFeasibi
 
 _DIMENSIONS_MEMORY_MAX = 5 * 1024**3
 #: Owner ruling 2026-11-05 (ADR-0297, amending ADR-0293's "do not truncate 2023Q4"): a packet that ends by
-#: this date never reads a settlement date on or after it. It is the ONLY boundary a tail is capped at.
+#: this date never reads a settlement date on or after it.
 OWNER_TAIL_CAP = "2024-01-01"
 _LOG = logging.getLogger(__name__)
 
@@ -224,10 +225,9 @@ class MIOStudyContract(StudyContract):
         """Return ``(tail_before, capped)``: the settlement read tail and whether the owner cap applied.
 
         The tail is the packet end plus the longest pair maturity and padding and may not pass the
-        document's own ``protected_end_before``. The ONLY case that is capped instead of refused is the
-        owner's 2023Q4 ruling (2026-11-05): a boundary of exactly ``OWNER_TAIL_CAP`` (options expiring
-        before 2024-01-01). A tail equal to the boundary is not capped. Under a later boundary, a packet
-        whose tail would reach the cap refuses.
+        document's own ``protected_end_before``. Capping is allowed at ``OWNER_TAIL_CAP`` under the
+        owner's 2023Q4 ruling and at ``DEVELOPMENT_SEAL`` for an explicitly sealed research packet.
+        A tail equal to its boundary is not capped.
 
         Raises
         ------
@@ -242,6 +242,17 @@ class MIOStudyContract(StudyContract):
         tail = (date.fromisoformat(end)+timedelta(days=maximum+d["tail_padding_days"])).isoformat()
         if end > protected:
             raise ValueError("packet reaches protected data")
+        if protected == DEVELOPMENT_SEAL:
+            from .ledger_studies import LOCKED_FORMULATION_HASHES
+
+            params = d["params"]
+            if packet["purpose"] != "development" or not params["methods"]:
+                raise ValueError("development tail cap requires a nonempty research development packet")
+            problems = MethodBlocks.lock_problems(LOCKED_FORMULATION_HASHES, params.get("locked_method_ids"),
+                                                  [method["id"] for method in params["methods"]])
+            if problems:
+                raise ValueError("; ".join(problems))
+            return min(tail, protected), tail > protected
         if tail > protected:
             if protected != OWNER_TAIL_CAP:
                 raise ValueError("derived settlement tail reaches protected data")

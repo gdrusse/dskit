@@ -20,7 +20,7 @@ Run it from the repository root::
 
     PYTHONPATH=.:children/index_options python children/index_options/tools/mio_instantiate.py TEMPLATE.json \\
         --base QUARTER_RUN_DOC.json --name NAME --output-root DIR --edge-maps-pin PIN.json --out DOC.json \\
-        [--decision-week YYYY-MM-DD]
+        [--decision-week YYYY-MM-DD] [--cap-at-development-seal]
 
 It lives outside the pinned ``index_options`` package (like ``mio_parallel_queue.py``), so editing it never moves a
 study's code pin. It reads no market data.
@@ -97,10 +97,13 @@ def _refuse(problems):
         raise ValueError("; ".join(problems))
 
 
-def instantiate(template, base, *, name, output_root, edge_maps_pin=None, decision_week=None, queue_config=QUEUE_CONFIG):
+def instantiate(template, base, *, name, output_root, edge_maps_pin=None, decision_week=None,
+                queue_config=QUEUE_CONFIG, cap_at_development_seal=False):
     """Return the run document of ``template`` on the quarter of ``base``; refuses while any placeholder is unresolved."""
     overlay = copy.deepcopy(template["study_overlay"])
     domain = overlay["domain"]
+    if cap_at_development_seal:
+        domain["params"].setdefault("bridge", {})["protected_end_before"] = DEVELOPMENT_SEAL
     if "edge_maps" in domain.get("sources", {}):
         if edge_maps_pin is None:
             raise ValueError("edge_maps_pin_missing: this template binds the walk's maps; pass the onboarding pin")
@@ -148,13 +151,16 @@ def main(argv=None):
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--edge-maps-pin", help="JSON file holding the onboarding pin of the published edge maps")
     parser.add_argument("--decision-week")
+    parser.add_argument("--cap-at-development-seal", action="store_true",
+                        help="cap the research packet's settlement tail at the development seal")
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
     load = lambda path: json.loads(Path(path).read_text())  # noqa: E731
     pin = load(args.edge_maps_pin) if args.edge_maps_pin else None
     try:
         document = instantiate(load(args.template), load(args.base), name=args.name, output_root=args.output_root,
-                               edge_maps_pin=pin, decision_week=args.decision_week)
+                               edge_maps_pin=pin, decision_week=args.decision_week,
+                               cap_at_development_seal=args.cap_at_development_seal)
     except ValueError as error:
         print(error)
         return 1

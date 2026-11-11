@@ -3055,3 +3055,40 @@ def test_resolve_hands_the_settlement_tail_to_the_configuration_validator(study,
                         classmethod(lambda cls, p, **kw: (seen.append(kw), real(cls, p, **kw))[1]))
     MIOStudyContract().resolve(study)
     assert seen and seen[0]["tail_end_before"] == MIOStudyContract.settlement_tail(study)[0]
+
+def test_research_tail_cap_excludes_exact_seal_and_later_expiries(study, tmp_path, monkeypatch):
+    from dskit.pipeline import method_blocks
+    from index_options import mio_contract
+    from index_options.ledger_studies import LOCKED_FORMULATION_HASHES
+
+    cap = "2019-02-01"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache-home"))
+    monkeypatch.setattr(method_blocks, "DEVELOPMENT_SEAL", cap)
+    monkeypatch.setattr(mio_contract, "DEVELOPMENT_SEAL", cap, raising=False)
+    params = study["domain"]["params"]
+    params["bridge"]["protected_end_before"] = cap
+    params["locked_method_ids"] = list(LOCKED_FORMULATION_HASHES)
+    uncapped = copy.deepcopy(study)
+    uncapped["domain"]["params"]["bridge"]["protected_end_before"] = "2020-01-01"
+    assert mio_contract.MIOStudyContract.settlement_tail(uncapped)[0] > cap
+    for locked_id in ("nominal_lp", " NOMINAL_LP "):
+        invalid = copy.deepcopy(study)
+        invalid["domain"]["params"]["methods"][0]["id"] = locked_id
+        with pytest.raises(ValueError, match="locked_method_id_collision"):
+            mio_contract.MIOStudyContract.settlement_tail(invalid)
+    _, plan, permit = _open(study)
+    assert all(plan["read_bounds"][role]["end_before"] == cap for role in ("chain", "bars", "sessions"))
+    ctx = NodeContext(name="intake", asof=cap, run_dir=str(tmp_path / "run"))
+    intake = MIOPacketInputs("intake", {"study": study}).run(ctx, {"permit": permit})
+    bounded = intake["bounded_inputs"]
+    assert bounded["clocks"]["tail_end_before"] == cap
+    assert max(bounded["clocks"]["sessions"]) < cap
+    for symbol in bounded["inputs"].values():
+        assert all(row["date"] < cap for row in symbol["bars"])
+        assert not symbol["contexts"] and not symbol["forecasts"]
+        assert symbol["chain_index"]["bounds"]["expiration"] == {"end_before": cap}
+    out = MIOPacketStudy("study", {"study": study}).run(
+        ctx, {"permit": permit, "bounded_inputs": bounded, "provenance": intake["provenance"]})
+    assert out["audit"]["tail_capped_at"] == cap
+    assert all(row["status"] == "completed" and row["replay_parity"]
+               and not row["result"]["trades"] for row in out["results"])
