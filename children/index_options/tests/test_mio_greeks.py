@@ -1778,6 +1778,12 @@ def test_a_standalone_greeks_hook_neither_raises_attribute_error_nor_guesses_par
         node._parity_rows({"factor": 1.0}, "2021-04-06", [])
     assert code_of(info) == "quote_params_missing"
 
+def test_greeks_constructor_defaults_to_an_empty_pipeline_artifact(world):
+    run_dir, out_dir = world()
+    node = MIOGreeksDiagnostics("greeks", {**PARAMS, "run_dir": str(run_dir), "out_dir": str(out_dir)})
+    assert node.artifact == ""
+
+
 def test_greeks_runs_and_attests_through_the_pipeline_driver(world, tmp_path):
     from dskit.pipeline.document import PipelineDocument
     from dskit.pipeline.driver import RunAttestation, run_document

@@ -327,7 +327,7 @@ class MIOGreeksDiagnostics(BookGreeksReport):
     CELL_BY_INCOMPLETE = "cell_by_incomplete"
     FLAG_MATCHES, FLAG_CONFIG = "matches_shock", "config_value_no_shock"
 
-    def __init__(self, key, params, *, mode=None, artifact=None):
+    def __init__(self, key, params, *, mode=None, artifact=""):
         super().__init__(key, params, mode=mode, artifact=artifact)
         self._quote_params = None            # set by _domain from the run's bridge
         self._parity_counts = Counter()      # reset per method by run
