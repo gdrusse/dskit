@@ -34,10 +34,13 @@ def _case(sign=1, bid=1.0, ask=1.4, size=5, quantity=1):
         params={"solver": {"multiplier": 100, "fee_per_contract_usd": 0.65},
                 "stress_spread_fraction": 0.25},
         _usable_quote=lambda row, factor: (row["bid"], row["ask"]))
-    study = SimpleNamespace(
-        params={}, _nodes={"ABC": node}, _factors={"ABC": {"2019-01-03": 1.0}},
-        _quotes={"ABC": {("2019-01-03", "2019-02-01", "call", 100.0): row}},
-        _charge=lambda method: {}, _floor=lambda reserve, charge, legs, mult: reserve)
+    study = WeeklyOptionPortfolioStudy.__new__(WeeklyOptionPortfolioStudy)
+    study.params = {}
+    study._nodes = {"ABC": node}
+    study._factors = {"ABC": {"2019-01-03": 1.0}}
+    study._quotes = {"ABC": {("2019-01-03", "2019-02-01", "call", 100.0): row}}
+    study._charge = lambda method: {}
+    study._floor = lambda reserve, charge, legs, mult: reserve
     return study, book
 
 
@@ -1364,3 +1367,122 @@ def test_a_missing_later_day_forward_carries_the_last_level_flagged_and_counted_
     counts = result["hedge"]["counts"]
     assert counts["hedge_forward_missing"] >= 2 and counts["mark_forward_carried"] >= 2 and counts["hedge_marks"] > 0
     assert result["curve"]
+
+def test_v6_packet_replays_a_post_entry_settlement_with_pinned_history(tmp_path, q1_loaders, monkeypatch):
+    """Gate 0 reproduces the original account across its independently bounded settlement tail."""
+    from datetime import date, timedelta
+    from pathlib import Path
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    end = Q1[10]
+    tail = (date.fromisoformat(end) + timedelta(days=60)).isoformat()
+    calendar = [d for d in Q1 if d < tail]
+    document, pins = _v5_tree(tmp_path, overrides={'end_before': end, 'sessions': len(calendar),
+                                                    'latest_expiry': Q1_EXPIRY})
+    cohort = document['cohorts'][Q1_COHORT]
+    config_path = stress.FrozenMIOReplay._run_document(document, Q1_COHORT)
+    config = json.loads(config_path.read_text())
+    config['name'] = 'frozen-packet'
+    config['pipeline']['plan']['uses'] = 'dskit.pipeline.study_protocol:StudyProtocolPlan'
+    config['pipeline']['close'] = {'uses': 'dskit.pipeline.study_protocol:StudyPacketClose'}
+    study = config['pipeline']['plan']['params']['study']
+    study.update(contract='index_options.mio_contract:MIOStudyContract', selected_packet='dev',
+                 packets=[{'id': 'dev', 'start': Q1[0], 'end_before': end}])
+    study['domain'].update(history_start='2020-12-31', tail_padding_days=0)
+    study['domain']['params']['bridge']['end_before'] = end
+    study['domain']['sources']['sessions'] = {'pin': {'id': 'sessions'}, 'files': {'shared': 'days.parquet'}}
+
+    def pin_config():
+        config_path.write_text(json.dumps(config))
+        pins['original_configs'][cohort['config']]['sha256'] = stress._sha(config_path)
+        from dskit.pipeline.document import PipelineDocument
+        pins['runs'][Q1_COHORT]['document_hash'] = PipelineDocument.from_obj(config).hash
+
+    pin_config()
+    result_dir = Path(cohort['result_dir'])
+    result_path = result_dir / 'result.json'
+    original = json.loads(result_path.read_text())
+    original['audit']['calendar'] = calendar
+
+    def pin_result():
+        result_path.write_text(json.dumps(original))
+        cohort['result_sha256'] = stress._sha(result_path)
+        pins['runs'][Q1_COHORT]['sha256'] = cohort['result_sha256']
+
+    pin_result()
+    document.update(schema='mio-execution-stress/v6', hedge={'block': {}})
+    history = ['2020-12-31', *calendar]
+    session_file = tmp_path / 'days.parquet'
+    pq.write_table(pa.table({'date': [*history, '2021-07-01', '2021-07-02']}), session_file)
+    verified = []
+
+    class PinnedSessions:
+        def __init__(self, pin):
+            assert pin == {'id': 'sessions'}
+
+        def file(self, relative, *, verify):
+            assert relative == session_file.name and verify
+            verified.append(relative)
+            return session_file
+
+    from dskit.pipeline.driver import RunAttestation
+
+    def attested_output(self, node, port, document_hash):
+        assert (node, port, document_hash) == ('close', 'receipt', pins['runs'][Q1_COHORT]['document_hash'])
+        return {'sha256': pins['runs'][Q1_COHORT]['sha256']}
+
+    monkeypatch.setattr(RunAttestation, 'attested_output', attested_output)
+    monkeypatch.setattr(stress, 'PinnedPayloadSource', PinnedSessions)
+    replay = stress.FrozenMIOReplay(Q1_COHORT, document, pins)
+    assert replay.calendar == calendar and max(replay.calendar) > end
+    assert replay.study(CONTROL).adjustments == {}
+    assert set(replay.bars['ABC']) == set(history)
+    assert verified == ['days.parquet', 'days.parquet']
+
+    with monkeypatch.context() as patch:
+        patch.setattr(stress.FrozenMIOReplay, '_verify_control_csv_rows', lambda self, result: None)
+        for packet in original['results']:
+            result, _ = replay.run_method(packet, CONTROL)
+            packet['result'] = json.loads(json.dumps(result))
+    pin_result()
+    for name, body in _csvs(original['results']).items():
+        (result_dir / name).write_text(body)
+        cohort['csv_sha256'][name] = stress._sha(result_dir / name)
+    replay = stress.FrozenMIOReplay(Q1_COHORT, document, pins)
+    result, _ = replay.run_method(replay.original['results'][0], CONTROL)
+    assert result == original['results'][0]['result']
+    assert result['trades'][0]['close_date'] == Q1_EXPIRY > end
+    assert all(row['date'] < end for row in result['curve'] if row['deposit'])
+
+    original['audit']['calendar'] = calendar[:-1]
+    pin_result()
+    with pytest.raises(ValueError, match='calendar differs from the pinned packet sessions'):
+        stress.FrozenMIOReplay(Q1_COHORT, document, pins)
+    original['audit']['calendar'] = calendar
+    pin_result()
+    verified.clear()
+    sha, load = stress._sha, stress._load_json
+
+    def metadata_only(read):
+        def wrapped(path):
+            assert not Path(path).is_relative_to(result_dir), "result or CSV was accessed before seal refusal"
+            return read(path)
+        return wrapped
+
+    monkeypatch.setattr(stress, '_sha', metadata_only(sha))
+    monkeypatch.setattr(stress, '_load_json', metadata_only(load))
+    monkeypatch.setattr(stress.FrozenMIOReplay, '_verify_original_csvs',
+                        lambda *args: pytest.fail("CSV reads before seal refusal"))
+    good_result = cohort['result_sha256']
+    cohort['result_sha256'] = '0' * 64
+    with pytest.raises(ValueError, match='close receipt'):
+        stress.FrozenMIOReplay(Q1_COHORT, document, pins)
+    cohort['result_sha256'] = good_result
+
+    study['domain']['tail_padding_days'] = 400
+    pin_config()
+    with pytest.raises(ValueError, match='hedge_seal'):
+        stress.FrozenMIOReplay(Q1_COHORT, document, pins)
+    assert verified == []

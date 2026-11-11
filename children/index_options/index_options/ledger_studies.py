@@ -4837,7 +4837,7 @@ class MIOPacketStudy(StudyNode):
         from .mio_contract import MIOStudyContract
         tail, capped = MIOStudyContract.settlement_tail(self.params["study"])
         if capped:
-            audit["tail_capped_at"] = tail  # ADR-0297: the owner's 2023Q4 cap applied to this packet
+            audit["tail_capped_at"] = tail
         if self.params.get("recorded") is not None:
             audit["recorded_from"] = {k: recorded_from[k] for k in sorted(recorded_from)}
             if rejections:  # only a rejecting packet carries the key; the coordinator reads it (no economics)

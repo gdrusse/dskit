@@ -381,3 +381,24 @@ def test_an_instantiated_hedged_program_arm_runs_to_completion(study, tmp_path, 
     totals = arm["ledger_summary"]["totals"]
     assert totals["closed_trades"] == 1
     assert totals["pnl_usd"] == pytest.approx(trade["pnl"], abs=.005)
+
+def test_timing_pair_can_opt_into_the_same_full_packet_seal(study):  # noqa: F811
+    from index_options.mio_contract import MIOStudyContract
+
+    study["packets"][0].update(start="2021-04-01", end_before=DEVELOPMENT_SEAL)
+    study["domain"]["params"]["bridge"].update(start="2021-04-01", end_before=DEVELOPMENT_SEAL,
+                                               protected_end_before="2024-01-01")
+    before = copy.deepcopy(study)
+    for suffix in ("control", "arm"):
+        template = load(PLANS / f"timing-check-{suffix}.template.json")
+        doc = instantiate(template, base_document(study), name=suffix, output_root="runs",
+                          decision_week="2021-04-05", edge_maps_pin={}, cap_at_development_seal=True)
+        derived = doc["pipeline"]["plan"]["params"]["study"]
+        assert derived["packets"] == before["packets"]
+        assert derived["code"] == before["code"]
+        assert all(derived["domain"]["sources"][role] == before["domain"]["sources"][role]
+                   for role in ("forecasts", "contexts", "chain", "bars", "sessions"))
+        assert MIOStudyContract.settlement_tail(derived) == (DEVELOPMENT_SEAL, True)
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(
+            derived["domain"]["params"], tail_end_before=DEVELOPMENT_SEAL)
+    assert study == before
