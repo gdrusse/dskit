@@ -783,6 +783,18 @@ class MIOMethodWorker:
         return body
 
 
+def _decision_certificates(entry):
+    """Return the dollar-solve certificates followed by the local-search evidence, when present."""
+    return [*entry.get("stage1", {}).get("certificates", []), *entry["certificates"]]
+
+
+def _termination(certificate):
+    """Name the solver's termination or the local-search heuristic outcome."""
+    if "termination" in certificate:
+        return certificate["termination"]
+    return certificate["strategy_outcome"]
+
+
 def main(argv=None):
     """Run one worker from a JSON spec: ``python -m index_options.mio_worker spec.json [--print]``."""
     for name in THREAD_VARIABLES:
@@ -813,18 +825,18 @@ def main(argv=None):
         # Two hosts may return different optimal books of equal value, so this compares objectives (within the
         # certify tolerance) and termination words, not actions. The parity gate is the real similarity check.
         days = sorted(body["actions"]["decisions"])
-        weeks = [body["actions"]["decisions"][day]["certificates"] for day in days]
+        weeks = [_decision_certificates(body["actions"]["decisions"][day]) for day in days]
         if not weeks or not all(weeks):  # nothing was solved: a pass here would compare two empty outputs
             sys.stderr.write("RuntimeError: --check found no solved week (zero weeks, or a week with no certificate)\n")
             return 1
         sys.stdout.write(json.dumps({"method": body["method"], "weeks": len(days),
                                      "objectives": [[c["objective"] for c in week] for week in weeks],
-                                     "terminations": [[c["termination"] for c in week] for week in weeks]},
+                                     "terminations": [[_termination(c) for c in week] for week in weeks]},
                                     sort_keys=True) + "\n")
     if args.print:
         # Integer actions and each week's termination word only: no float and no timing, so the line is
         # comparable across hosts (the digest compute-run certify compares).
-        digest = {day: {"actions": entry["actions"], "termination": [c["termination"] for c in entry["certificates"]]}
+        digest = {day: {"actions": entry["actions"], "termination": [_termination(c) for c in _decision_certificates(entry)]}
                   for day, entry in body["actions"]["decisions"].items()}
         sys.stdout.write(json.dumps({"method": body["method"], "actions_sha256": value_hash(digest)}, sort_keys=True) + "\n")
     return 0

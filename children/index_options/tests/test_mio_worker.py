@@ -284,6 +284,54 @@ def test_worker_then_recorded_document_closes_with_provenance(study, tmp_path, c
     assert MIOPacketStudy.validate_params({"study": recorded_study, "other": 1})
 
 
+@pytest.mark.parametrize("study", ["hedged_program"], indirect=True)
+@pytest.mark.parametrize("tamper", [False, True])
+def test_local_search_replay_hedge_worker_packet_requires_valid_stage_one(study, tmp_path, monkeypatch, tamper):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+    from test_ledger_studies import FORMULATIONS, LOCAL_FORMULATIONS, _for_kelly, _PARITY, _REPLAY_BLOCK
+
+    method = "kelly050_ls_replay_hedge_lp"
+    params = _for_kelly(study["domain"]["params"])
+    params.update(methods=[{"id": method, **LOCAL_FORMULATIONS["kelly050_ls_lp"], "hedge": dict(_REPLAY_BLOCK)}],
+                  hedge_parity=dict(_PARITY), locked_method_ids=list(FORMULATIONS))
+    bundle = tmp_path / "bundle"
+    manifest = MIOMethodBundle(study, bundle).build()
+    proc = _worker(tmp_path, bundle, method, check=True)
+    assert proc.returncode == 0, proc.stderr
+    check = json.loads(proc.stdout)
+    assert check["method"] == method and check["weeks"] >= 1
+    assert len(check["objectives"][0]) == 2 and check["terminations"][0][-1] == "local_search"
+    recorded = tmp_path / "recorded"
+    path = recorded / f"{method}.json"
+    body = json.loads(path.read_text())
+    assert body["bundle_manifest_sha256"] == manifest["sha256"]
+    decision = next(iter(body["actions"]["decisions"].values()))
+    assert set(decision["stage1"]) == {"actions", "certificates"}
+    if tamper:
+        decision["stage1"]["certificates"][0]["variables"] += 1
+        raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+        path.write_bytes(raw)
+        path.with_suffix(".json.sha256").write_text(hashlib.sha256(raw).hexdigest() + "  " + path.name + "\n")
+
+    def no_resolve(*args, **kwargs):
+        pytest.fail("a paired worker packet must never re-solve its integer program in WSL")
+
+    monkeypatch.setattr(TransportPortfolioSolve, "run", no_resolve)
+    _, plan, request = _init(study)
+    doc = _close_document(tmp_path, "paired-recorded", study, plan, request, recorded=recorded)
+    ran = run_document(doc, asof="2019-02-09", journal=False)
+    assert ran.state == "ran", ran
+    receipt = _receipt(ran, doc)
+    assert receipt["complete"] is not tamper
+    if tamper:
+        assert receipt["results"][0]["status"] == "failed"
+        assert receipt["audit"]["recorded_rejections"][0]["check"]
+        assert receipt["audit"]["recorded_from"] == {}
+    else:
+        assert receipt["results"][0]["replay_parity"]
+        assert receipt["audit"]["recorded_from"][method]["bundle_manifest_sha256"] == manifest["sha256"]
+
+
 @pytest.mark.parametrize("tamper", ["quantity", "sidecar", "plan", "inputs", "study", "absent", "schema", "empty_sidecar",
                                     "pairs_none"])
 def test_tampered_or_mismatched_recorded_falls_back_to_local_solve(study, tmp_path, caplog, monkeypatch, tamper):  # noqa: F811

@@ -6412,6 +6412,14 @@ def test_exact_search_hedge_reuses_the_solver_and_replays_the_settled_forward(mo
     trade, = hedged["trades"]
     assert trade["hedge"]["status"] == "ok" and trade["hedge"]["units"] != 0
     assert trade["close_date"] == "2019-02-01"
+    units = trade["hedge"]["units"]
+    reference = trade["hedge"]["reference"]
+    level = next(row["close"] for row in closes if row["date"] == trade["close_date"])
+    rates = trade["hedge"]["rates"]
+    fees = abs(units) * (2 * rates["hedge_fee_per_share"]
+                        + (reference + level) * rates["hedge_half_spread_bps"] / 10_000)
+    option_trade, = plain["trades"]
+    assert trade["pnl"] - option_trade["pnl"] == pytest.approx(units * (level - reference) - fees)
     assert study._method(arm, None, recorded=hedged) == hedged
     assert len(calls) == 2
     if fraction is not None:
