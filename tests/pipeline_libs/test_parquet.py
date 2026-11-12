@@ -1250,3 +1250,37 @@ def test_sqlite_index_reuse_key_scope(tmp_path, monkeypatch):
     assert key(verified_source_sha256="b" * 64) != base
     assert key(predicate="q") != base
     assert key(validator={"x": 1}) != base
+
+
+def test_sqlite_index_reuse_key_tracks_build_code(monkeypatch):
+    import inspect
+    args = ({"verified_source_sha256": "a" * 64}, ["a"], {}, ["a"], ["a"], [], 8192, 16384)
+    base = pack.SQLiteParquetIndex._reuse_key(*args)
+    real = inspect.getsource
+    for target in (pack.DateBoundedParquet, pack.SQLiteParquetIndex._ident,
+                   pack.SQLiteParquetIndex.build.__func__):
+        monkeypatch.setattr(inspect, "getsource",
+                            lambda obj, t=target: real(obj) + ("#x" if obj is t else ""))
+        assert pack.SQLiteParquetIndex._reuse_key(*args) != base
+    monkeypatch.setattr(inspect, "getsource", real)
+    assert pack.SQLiteParquetIndex._reuse_key(*args) == base
+
+
+def test_sqlite_index_copy_publish_never_unlinks_shared_blob(tmp_path, monkeypatch):
+    source = tmp_path / "one.sqlite"
+    source.write_bytes(b"bytes")
+    digest = path_hash(str(source))
+    root = tmp_path / "cache"
+    blob = pack.SQLiteParquetIndex._cache_blob(root, digest)
+    def no_links(*a, **k):
+        raise OSError(errno.EXDEV, "no links")
+    monkeypatch.setattr(os, "link", no_links)
+    descriptor = {"rows": 0, "sha256": digest, "path": str(source)}
+    # A racing publisher's manifest for the same key conflicts: the shared blob must survive.
+    key = "b" * 64
+    manifest = pack.SQLiteParquetIndex._cache_manifest(root, key)
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"input_sha256":"%s","sha256":"%s","metadata":{"rows":1}}' % (key, "c" * 64))
+    with pytest.raises(ValueError, match="collision"):
+        pack.SQLiteParquetIndex._publish_cache(root, key, source, descriptor)
+    assert blob.read_bytes() == b"bytes" and not list(root.rglob("*.copy-*"))

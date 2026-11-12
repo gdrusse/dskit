@@ -198,6 +198,10 @@ class DateBoundedParquet:
         return ranked
 
 
+class _CopyPublished(Exception):
+    """Control flow: a verified copy was published instead of a hard link."""
+
+
 class SQLiteParquetIndex:
     """Run-local source-ordered index over a bounded Parquet row stream.
 
@@ -451,7 +455,12 @@ class SQLiteParquetIndex:
                 if blob.exists():
                     raise FileExistsError(errno.EEXIST, "cache blob exists", str(blob))
                 cls._copy_atomic(destination, blob, digest)
+                # A copy renames over any racing publisher's identical blob, so this run
+                # cannot claim sole ownership: never unlink it on a later failure.
+                raise _CopyPublished
             created_blob = True
+        except _CopyPublished:
+            pass
         except FileExistsError:
             cls._verify_cache_blob(blob, digest, metadata, key)
             if not cls._link_run(blob, destination, digest=digest):
@@ -479,6 +488,9 @@ class SQLiteParquetIndex:
                         if manifest.exists():
                             raise FileExistsError(errno.EEXIST, "manifest exists", str(manifest))
                         os.replace(candidate, manifest)
+                        # Replace has no exclusive-create check: re-read to catch a racing writer.
+                        if cls._read_manifest(manifest) != record:
+                            raise ValueError("index cache input identity collision")
                     manifest_accepted = True
                 except FileExistsError:
                     if cls._read_manifest(manifest) != record:
