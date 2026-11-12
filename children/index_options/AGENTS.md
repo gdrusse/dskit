@@ -159,7 +159,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # report document is configs/mio-report-limited36-available-size-20261029.json);
                            # MioBookOutcomes: every filled and refused book of a saved result.json with its realized or
                            # counterfactual settlement from the pinned bars (the expected-profit calibration audit)
-                           # mio_stress_coverage.py (ADR-0278: pinned opt-in 2019 one-day account mark coverage driver; prepare, execute, aggregate);
+                           # mio_stress_coverage.py (ADR-0278: pinned opt-in 2019 one-day account mark coverage driver; prepare, execute, aggregate); mio_execution_stress.py (ADR-0280 fixed-selection replay; schema v7, ADR-0316: fifteen cases, shocks.json, verdict.json, template configs/mio-deployment-stress-template.json);
                            # theta_hypotheses.py (ADR-0265 Amendment 5: generates the H0-H7 documents, their validation twins and the
                            # index-panel document from configs/theta-hypothesis-inputs.json; write | check | set-pin | freeze-universe)
                            # pooled.py (generates configs/run-pooled-zoo-417{,-folds}.json, workflow-pooled-zoo-417.json
