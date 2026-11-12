@@ -2263,3 +2263,70 @@ def test_raw_stock_expiry_event_refuses_prior_held_book(world):
         {"symbol": "BLK", "date": EXPIRY, "kind": "irregular_spinoff"}]
     with pytest.raises(GreeksRefusal, match="stock_corporate_action"):
         _raw_stock_run(run_dir, out_dir, inputs)
+
+
+def test_raw_stock_passes_settlement_only_holiday(world):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    inputs["non_settlement_dates"] = ["2021-04-08"]
+    out = _raw_stock_run(run_dir, out_dir, inputs)
+    first = out["trades"][0]
+    assert first["date"] == "2021-04-07"
+    assert first["settlement_date"] == "2021-04-12"
+    assert "2021-04-08" in {r["date"] for r in out["daily"]}
+
+
+@pytest.mark.parametrize("excluded", [None, ["2021-4-8"], ["2021-04-08", "2021-04-08"],
+                                       ["2021-07-01"]])
+def test_raw_stock_bad_settlement_exclusion_before_price_reads(world, monkeypatch, excluded):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    inputs["non_settlement_dates"] = excluded
+    def no_read(*args):
+        pytest.fail("market source accessed before exclusion validation")
+    monkeypatch.setattr(mio_greeks.MIODailyStockHedge, "_read_bars", no_read)
+    with pytest.raises(GreeksRefusal):
+        _raw_stock_run(run_dir, out_dir, inputs)
+
+
+@pytest.mark.parametrize("change", [
+    lambda sessions: None,
+    lambda sessions: sessions + [[]],
+    lambda sessions: sessions + ["2021-7-1"],
+    lambda sessions: sessions + ["2021-07-02", "2021-07-01"],
+    lambda sessions: sessions + [sessions[-1]],
+    lambda sessions: ["2021-01-01", *sessions[1:]],
+    lambda sessions: sessions[:-1],
+], ids=["not-list", "malformed-date", "noncanonical", "reversed",
+        "duplicate", "nonprefix", "short"])
+def test_raw_stock_bad_settlement_calendar_before_price_reads(world, monkeypatch, change):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    sessions = sorted({row["date"] for row in inputs["stock_bars"]})
+    inputs["settlement_sessions"] = change(sessions)
+
+    def no_read(*args):
+        pytest.fail("market source accessed before settlement calendar validation")
+
+    monkeypatch.setattr(mio_greeks.MIODailyStockHedge, "_read_bars", no_read)
+    with pytest.raises(GreeksRefusal, match="stock_inputs"):
+        _raw_stock_run(run_dir, out_dir, inputs)
+
+
+def test_raw_stock_postseal_settlement_tail_is_date_only(world, monkeypatch):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    sessions = sorted({row["date"] for row in inputs["stock_bars"]})
+    original = mio_greeks.ChainQuotes.chain
+    quote_reads = []
+
+    def chain(self, symbol, day, expiry):
+        assert day in sessions
+        quote_reads.append((symbol, day, expiry))
+        return original(self, symbol, day, expiry)
+
+    monkeypatch.setattr(mio_greeks.ChainQuotes, "chain", chain)
+    baseline = _raw_stock_run(run_dir, out_dir, inputs)
+    baseline_reads = quote_reads.copy()
+    quote_reads.clear()
+    inputs["settlement_sessions"] = sessions + ["2021-07-01", "2021-07-02"]
+    out = _raw_stock_run(run_dir, out_dir, inputs)
+    assert out["daily"] == baseline["daily"]
+    assert out["trades"] == baseline["trades"]
+    assert quote_reads == baseline_reads and quote_reads
