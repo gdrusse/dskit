@@ -168,7 +168,7 @@ dskit/pipeline/
 │                      OptionScenarioReprice (JSON book, named full-repricing shocks;
 │                      opt-in stable_tail_v1 with normal-tail and dollar-error refusals)
 ├── option_exposure.py ParityForward, LegGreeks, BookGreeks, StockEquivalent, StaticDeltaHedge, CellAttribution, ExposureSnapshot, fit_betas, BookGreeksReport (kind book_greeks_report, by import path; ADR-0310):
-│                      chain-implied forward, spot-term Greeks, delta-equivalent stock vs residual P&L split, beta-weighted exposure by DTE bucket; static delta-hedge P&L; four hooks (incl. _hedge_dividend)
+│                      chain-implied forward, spot-term Greeks, delta-equivalent stock vs residual P&L split, beta-weighted exposure by DTE bucket; static delta-hedge P&L; four hooks (incl. _hedge_dividend); ReverseStress (largest declared market move that breaches no funding loss limit) + NameShare (largest name's share of a total), ADR-0316
 ├── option_structures.py leg-set algebra (credit, payoff, max loss, quote_defect) graduated from
 │                      the index_options child (ADR-0265); classify_option_strategy adds post-solve
 │                      anatomy/quantity labels without selection templates (ADR-0276)
@@ -224,6 +224,7 @@ dskit/pipeline/
 │                      chain_parquet (ParquetChainRows: Parquet-tree source of the chain nodes), chain_panel (ChainPanelBuild: per-date panel, resumable per root), chain_reuse (ReuseDetector), root_stitch (RootStitch: renames + reuse breaks), by import path, ADR-0265 Amendment 3
 │                      chain_orders (ChainStructureOrders: expiry + strike selection by atm / delta / max open interest / mirror from a daily chain, orders for the ledger, by import path, ADR-0265 Amendment 5); ParquetStreamRows takes `include` / `iso_fields` / `where`; DailyBarFeatures takes `realized_vol`; QuoteBook is chain_features' public quote book
 │                      cdf_grid_methods (GridCDFMethod: one forecaster per fold on a declared CDF grid from a scored-rows parquet by pit_map / linear_pool / best_component / binary_gbm / beta_pool / quantile_average (level_bands, weight_features) / location_scale kinds, learning rules fit_band / prior_validation / rolling (refit_days blocks), optional half_life_days recency weights, components joined from other scored-rows files, grid twCRPS, paired tables with date and group clustered errors, by import path, ADR-0276)
+│                      cdf_faults (FeatureFault + StaleFeatures / MissingFeatures / ScaledFeatures; ForecastFaultStudy scores one restored CDFExperiment fit again on altered inputs, no refit, statistics only, required `sealed_from`; by import path, ADR-0316)
 ├── README.md          user-facing docs
 ├── EXTENDING.md       extension points + gotchas (moved out of this file 2026-10-10)
 └── AGENTS.md          this file

@@ -4,7 +4,10 @@ This reads the saved decisions and verified source bars, then delegates
 fills, reserve admission, settlements and marks to the existing study owners.
 The JSON document declares every sensitivity and a fresh output root. v1-v4
 replay the 2019 cohorts; v5 (ADR-0280 amendment) replays any range the
-document pins, below the Path A0003 holdout.
+document pins, below the Path A0003 holdout. v7 (ADR-0316 Decision A) adds the eight severity
+cases (full-spread price, quarter depth, volatility-sized and market-beta expiry shocks, and their
+joint forms), three per-case statistics, a control reverse stress and a pre-registered verdict,
+all from the same saved selections: nothing is solved and no new account is opened.
 """
 
 from __future__ import annotations
@@ -18,14 +21,18 @@ import math
 import re
 import sqlite3
 import subprocess
+from abc import ABC, abstractmethod
 from collections import Counter
 from datetime import date, timedelta
 from pathlib import Path
 
+from dskit.evaluation.criteria import Criterion, Scorecard
 from dskit.onboarding.artifacts import PinnedPayloadSource
 from dskit.pipeline.libs.option_ledger import FundedOptionAccount
 from dskit.pipeline.libs.parquet import DateBoundedParquet
+from dskit.pipeline.option_exposure import NameShare, ReverseStress
 from dskit.pipeline.option_structures import quote_defect, structure_max_loss
+from dskit.pipeline.records import number_ok
 from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL
 from index_options.ledger_studies import (
     ReplayHedge,
@@ -44,6 +51,18 @@ def adverse_side(bid, ask, sign, fraction=0.25):
 def effective_size(size, half):
     """Return original displayed depth or its integer half."""
     return size // 2 if half else size
+
+
+def scaled_size(size, divisor):
+    """Return displayed depth floor-divided by ``divisor``; divisor 1 leaves it as shown."""
+    return size if divisor == 1 else size // divisor
+
+
+def _size_divisor(scenario):
+    """Return the depth divisor of a case: v7 declares it, v1-v6 declare ``half_size``."""
+    if "size_divisor" in scenario:
+        return scenario["size_divisor"]
+    return 2 if scenario["half_size"] else 1
 
 
 def _sha(path):
@@ -166,8 +185,13 @@ _AVAILABLE_SIZE_SCHEMA = "mio-execution-stress/v4"
 _RANGE_SCHEMA = "mio-execution-stress/v5"
 # v6 (ADR-0312 Amendment 1 S3) is v5 plus a ``hedge`` document key: the no-solve static_forward_hedge scenarios.
 _HEDGE_SCHEMA = "mio-execution-stress/v6"
-_RANGE_SCHEMAS = (_RANGE_SCHEMA, _HEDGE_SCHEMA)
-_AVAILABLE_SIZE_SCHEMAS = (_AVAILABLE_SIZE_SCHEMA, _RANGE_SCHEMA, _HEDGE_SCHEMA)
+# v7 (ADR-0316 Decision A) is v5 plus ``stress`` and ``criteria`` and no ``hedge``: the eight severity cases, three
+# per-case statistics, a reverse stress and a pre-registered verdict, over the packet layout v6 already reads.
+_STRESS_SCHEMA = "mio-execution-stress/v7"
+_RANGE_SCHEMAS = (_RANGE_SCHEMA, _HEDGE_SCHEMA, _STRESS_SCHEMA)
+#: The schemas whose replay reads the packet's session spine and may settle after the entry window.
+_PACKET_SCHEMAS = (_HEDGE_SCHEMA, _STRESS_SCHEMA)
+_AVAILABLE_SIZE_SCHEMAS = (_AVAILABLE_SIZE_SCHEMA, _RANGE_SCHEMA, _HEDGE_SCHEMA, _STRESS_SCHEMA)
 #: The pre-registered ratio sweep (ADR-0312 A1 section 2): read in this order, the smallest passing ratio adopted.
 HEDGE_RATIOS = (0.25, 0.5, 0.75, 1.0)
 HEDGE_MARKS = ("parity", "carry_ratio")
@@ -232,13 +256,13 @@ def _cohort_order(document):
             raise ValueError("v5 cohort name must be lower-case [a-z0-9_]: " + name)
         if not isinstance(entry, dict) or set(entry) != _RANGE_ENTRY:
             raise ValueError("v5 cohort fields differ from the contract: " + name)
-        _range_bounds(entry, v6=document["schema"] == _HEDGE_SCHEMA)
+        _range_bounds(entry, v6=document["schema"] in _PACKET_SCHEMAS)
     return tuple(cohorts)
 
 
 def _fill_shocked(scenario):
     """Tell whether a case changes the fill price or the displayed depth."""
-    return scenario["price_fraction"] != 0 or scenario["half_size"]
+    return scenario["price_fraction"] != 0 or _size_divisor(scenario) != 1
 
 
 def _available_size(study):
@@ -274,7 +298,7 @@ def _proportional_fill(study, book, day, method, scenario):
         if leg["quantity"] != 0:
             side = "ask_size" if leg["sign"] > 0 else "bid_size"
             fits = WeeklyOptionPortfolioStudy._depth_multiple(
-                leg["quantity"], units, effective_size(row[side], scenario["half_size"]))
+                leg["quantity"], units, scaled_size(row[side], _size_divisor(scenario)))
             if fits is None:
                 return None, "insufficient_fill_size"
             multiple = min(multiple, fits)
@@ -298,7 +322,7 @@ def _scenario_fill(study, book, day, method, scenario, *, resized=False):
     if not resized and (scenario.get("proportional_fill", False)
                         or (_available_size(study) and _fill_shocked(scenario))):
         return _proportional_fill(study, book, day, method, scenario)
-    if scenario["price_fraction"] == 0 and not scenario["half_size"]:
+    if scenario["price_fraction"] == 0 and _size_divisor(scenario) == 1:
         active = [leg for leg in book["legs"] if leg["quantity"] != 0]
         if not scenario.get("single_leg_fill", False) or len(active) != 1:
             return study._fill(book, day, study._charge(method))
@@ -327,7 +351,7 @@ def _scenario_fill(study, book, day, method, scenario, *, resized=False):
         if market is None:
             return None, "missing_fill_quote"
         side = "ask_size" if leg["sign"] > 0 else "bid_size"
-        depth = effective_size(row[side], scenario["half_size"])
+        depth = scaled_size(row[side], _size_divisor(scenario))
         if depth < leg["quantity"]:
             if not single_leg or depth < 1:
                 return None, "insufficient_fill_size"
@@ -365,7 +389,7 @@ def _attempt_evidence(study, book, day, scenario):
         market = node._usable_quote(row, factor)
         side = "ask_size" if leg["sign"] > 0 else "bid_size"
         original_depth = row.get(side) if row is not None else None
-        effective_depth = (effective_size(original_depth, scenario["half_size"])
+        effective_depth = (scaled_size(original_depth, _size_divisor(scenario))
                            if type(original_depth) is int else None)
         bid, ask = market if market is not None else (None, None)
         original_price = (ask if leg["sign"] > 0 else bid) if market else None
@@ -477,8 +501,403 @@ def _scenario_finish(study, method, account, decisions, rejected, snapshots, hed
     return result
 
 
+class UnsupportedStress(ValueError):
+    """A stress input the replay cannot estimate; the case is unsupported and nothing is substituted."""
+
+
+class ShockEstimator:
+    """Per-name scale and market beta from sessions strictly before a day, over the unshocked bars.
+
+    The estimator owns a read-only study that carries the packet's session
+    spine and the pinned, unshocked bars, so a shocked bar never feeds an
+    estimate. The window is the ``lookback`` daily log returns ending at the
+    last session strictly before the estimate day. A short window, a
+    nonfinite return, a zero standard deviation, zero basket variance or any
+    other condition under which the beta owner would silently fall back to
+    all ones raises :class:`UnsupportedStress`. No estimate is shared between
+    instances: build one per method and case.
+
+    Parameters
+    ----------
+    params : dict
+        The run's study params (``symbols``, ``correlation_min_pairs``, ``bridge``).
+    history : list of str
+        The packet's ordered session spine.
+    bars : dict
+        Symbol to ``{session: close}`` over the spine, never mutated here.
+    factors : dict
+        Symbol to ``{session: basis factor}`` (read by the reverse stress).
+    lookback : int
+        Returns per window; at least ``correlation_min_pairs``.
+    """
+
+    def __init__(self, params, history, bars, factors, lookback):
+        if type(lookback) is not int or lookback < params["correlation_min_pairs"]:
+            raise ValueError("v7 stress lookback must be an integer of at least correlation_min_pairs")
+        study = WeeklyOptionPortfolioStudy.__new__(WeeklyOptionPortfolioStudy)
+        study.params = params
+        study.history_calendar = list(history)
+        study._bars = bars
+        study._factors = factors
+        study._beta_cache = {}
+        self.study, self.lookback, self._windows = study, lookback, {}
+
+    def window_end(self, day):
+        """Return the last spine session strictly before ``day``."""
+        return max(d for d in self.study.history_calendar if d < day)
+
+    def sessions_between(self, day, expiry):
+        """Return the spine sessions after ``day`` up to and including ``expiry``."""
+        return sum(day < d <= expiry for d in self.study.history_calendar)
+
+    def _window(self, day, symbols):
+        """Return the day's returns after checking length and finiteness for ``symbols``."""
+        import numpy as np
+
+        if day not in self._windows:
+            with np.errstate(all="ignore"):
+                self._windows[day] = self.study._returns(day, self.lookback)
+        returns, count = self._windows[day]
+        if count != self.lookback:
+            raise UnsupportedStress(f"window of {count} returns before {day}; {self.lookback} needed")
+        for symbol in symbols:
+            if not np.all(np.isfinite(returns[symbol])):
+                raise UnsupportedStress(f"nonpositive or nonfinite bar for {symbol} in the window before {day}")
+        return returns
+
+    def _deviation(self, symbol, day):
+        """Return one name's sample standard deviation over the window; zero or nonfinite is unsupported."""
+        import numpy as np
+
+        std = float(np.std(self._window(day, [symbol])[symbol], ddof=1))
+        if not math.isfinite(std) or std <= 0:
+            raise UnsupportedStress(f"zero standard deviation for {symbol} in the window before {day}")
+        return std
+
+    def scale(self, symbol, day, expiry):
+        """Return ``(daily standard deviation, sessions to expiry, window end)`` of one name."""
+        std = self._deviation(symbol, day)
+        sessions = self.sessions_between(day, expiry)
+        if sessions < 1:
+            raise UnsupportedStress(f"no sessions between {day} and the expiry {expiry}")
+        return std, sessions, self.window_end(day)
+
+    def check_beta_window(self, day):
+        """Refuse a window the beta owner would answer with its all-ones fallback."""
+        import numpy as np
+
+        symbols = self.study.params["symbols"]
+        returns = self._window(day, symbols)
+        if not float(np.var(np.mean([returns[s] for s in symbols], axis=0))) > 0:
+            raise UnsupportedStress(f"zero basket variance in the window before {day}")
+
+    def beta(self, symbol, day):
+        """Return the name's beta on the equal-weight basket of the domain's symbols.
+
+        A name with no variation of its own is unsupported, as for :meth:`scale`: its beta of zero would
+        silently leave it unshocked.
+        """
+        self.check_beta_window(day)
+        self._deviation(symbol, day)
+        fitted = self.study._betas(day, self.lookback)
+        value = fitted["betas"][symbol]
+        if fitted["observations"] != self.lookback or not math.isfinite(value):
+            raise UnsupportedStress(f"beta for {symbol} is not fitted on {day}")
+        return value
+
+
+class ExpiryShock(ABC):
+    """One rule that scales the settlement bar of each (symbol, expiry) a case shocks.
+
+    A rule names which settlement bars it moves (:meth:`points`) and by how
+    much (:meth:`estimate`); :meth:`apply` joins the two. Subclasses are the
+    only place a kind differs: the replay never branches on it.
+
+    Parameters
+    ----------
+    value : float
+        The rule's one knob; the subclass names it (``_VALUE``).
+    """
+
+    KIND = None
+    _VALUE = None
+
+    def __init__(self, value):
+        self.value = value
+
+    @classmethod
+    def _acceptable(cls, value):
+        """Say whether ``value`` is a finite number that is not a bool."""
+        return type(value) is not bool and number_ok(value)
+
+    @staticmethod
+    def of(spec):
+        """Build the rule a ``{"kind": ..., <knob>: value}`` mapping names; refuse any other shape."""
+        if not isinstance(spec, dict) or spec.get("kind") not in _SHOCKS:
+            raise ValueError("expiry shock must name one of " + str(sorted(_SHOCKS)) + ": " + repr(spec))
+        cls = _SHOCKS[spec["kind"]]
+        if set(spec) != {"kind", cls._VALUE} or not cls._acceptable(spec[cls._VALUE]):
+            raise ValueError(f"expiry shock {cls.KIND} takes exactly kind and a valid {cls._VALUE}: {spec!r}")
+        return cls(spec[cls._VALUE])
+
+    def spec(self):
+        """Return the rule as the mapping the document restates."""
+        return {"kind": self.KIND, self._VALUE: self.value}
+
+    def _estimator(self, replay):
+        """Return the estimator the rule reads, ``None`` for a rule that needs none."""
+        return None
+
+    @abstractmethod
+    def points(self, replay, packet):
+        """Return ``{(symbol, expiry): estimate day}`` for the settlement bars to move."""
+
+    @abstractmethod
+    def estimate(self, estimator, symbol, day, expiry):
+        """Return ``(multiplier, record)``; the record is ``None`` for a rule with no estimate."""
+
+    def apply(self, replay, packet):
+        """Return ``({(symbol, expiry): multiplier}, [estimate records])`` for one method's packet."""
+        points = self.points(replay, packet)
+        estimator = self._estimator(replay) if points else None
+        multipliers, records = {}, []
+        for (symbol, expiry), day in sorted(points.items()):
+            multiplier, record = self.estimate(estimator, symbol, day, expiry)
+            multipliers[symbol, expiry] = multiplier
+            if record is not None:
+                records.append(record)
+        return multipliers, records
+
+
+class FlatShock(ExpiryShock):
+    """Scale every settlement bar by one fixed multiplier (the ADR-0280 cases)."""
+
+    KIND, _VALUE = "flat", "multiplier"
+
+    @classmethod
+    def _acceptable(cls, value):
+        return super()._acceptable(value) and value > 0
+
+    def points(self, replay, packet):
+        """Move the packet's own expiries (every method's when no packet), none for a multiplier of one."""
+        return {} if self.value == 1 else dict.fromkeys(replay.expiry_points(packet))
+
+    def estimate(self, estimator, symbol, day, expiry):
+        """Return the fixed multiplier and no record: nothing is estimated."""
+        return self.value, None
+
+
+class EstimatedShock(ExpiryShock):
+    """A rule sized from sessions strictly before the earliest fill of each (symbol, expiry)."""
+
+    def _estimator(self, replay):
+        return replay.new_estimator()
+
+    def points(self, replay, packet):
+        """Move each (symbol, expiry) of the packet's books, estimated at the earliest fill session."""
+        return replay.fill_points(packet)
+
+    def _record(self, estimator, symbol, day, expiry, multiplier, **found):
+        """Return one estimate row of ``shocks.json``."""
+        return {"symbol": symbol, "expiry": expiry, "window_end": estimator.window_end(day),
+                "sessions_to_expiry": estimator.sessions_between(day, expiry),
+                "std": None, "beta": None, "multiplier": multiplier, **found}
+
+
+class VolatilityShock(EstimatedShock):
+    """Scale by ``exp(sigmas x s)``, ``s`` the name's trailing daily deviation over the sessions to expiry."""
+
+    KIND, _VALUE = "volatility", "sigmas"
+
+    def estimate(self, estimator, symbol, day, expiry):
+        """Return ``exp(sigmas x std x sqrt(sessions))`` and its record; refuse a nonpositive result."""
+        std, sessions, _end = estimator.scale(symbol, day, expiry)
+        try:
+            multiplier = math.exp(self.value * std * math.sqrt(sessions))
+        except OverflowError:
+            multiplier = math.inf
+        if not math.isfinite(multiplier) or multiplier <= 0:
+            raise UnsupportedStress(f"volatility multiplier for {symbol} is not finite and positive")
+        return multiplier, self._record(estimator, symbol, day, expiry, multiplier, std=std)
+
+
+class MarketShock(EstimatedShock):
+    """Scale by ``max(0, 1 + beta x move)``, the rule ``_account_shock`` applies."""
+
+    KIND, _VALUE = "market", "move"
+
+    def estimate(self, estimator, symbol, day, expiry):
+        """Return ``max(0, 1 + beta x move)`` and its record."""
+        beta = estimator.beta(symbol, day)
+        multiplier = max(0.0, 1.0 + beta * self.value)
+        return multiplier, self._record(estimator, symbol, day, expiry, multiplier, beta=beta)
+
+
+_SHOCKS = {cls.KIND: cls for cls in (FlatShock, VolatilityShock, MarketShock)}
+
+
+def expiry_shock(scenario):
+    """Return a case's expiry rule: v7 declares one, v1-v6 declare ``expiry_multiplier``."""
+    if "expiry_shock" in scenario:
+        return ExpiryShock.of(scenario["expiry_shock"])
+    return FlatShock(scenario["expiry_multiplier"])
+
+
+#: The closed statistics a criterion may name (ADR-0316 A6); worst-over-cases, then the reverse distances.
+STRESS_STATISTICS = ("worst_loss_fraction", "worst_drawdown", "worst_breach_days",
+                     "worst_name_reserve_share", "reverse_down_move", "reverse_up_move")
+_REVERSE_STATISTICS = STRESS_STATISTICS[4:]
+#: A criterion on a worst-case statistic is an upper limit; on a reverse distance it is a lower limit.
+_UPPER_LIMITS, _LOWER_LIMITS = ("<", "<="), (">", ">=")
+
+
+class StressSpec:
+    """The validated ``stress`` and ``criteria`` entries of a v7 document."""
+
+    def __init__(self, lookback, reverse, criteria):
+        self.lookback, self.reverse, self.criteria = lookback, reverse, criteria
+
+    @classmethod
+    def from_document(cls, document):
+        """Validate the entries (default-deny) and return the spec, before any replay."""
+        spec = document.get("stress")
+        if not isinstance(spec, dict) or set(spec) != {"lookback", "reverse"}:
+            raise ValueError("v7 stress must carry exactly lookback and reverse")
+        lookback = spec["lookback"]
+        if type(lookback) is not int or lookback < 1:
+            raise ValueError("v7 stress lookback must be a positive integer")
+        problems = ReverseStress.validate_params(spec["reverse"])
+        if problems:
+            raise ValueError("v7 stress reverse: " + "; ".join(problems))
+        return cls(lookback, ReverseStress(spec["reverse"]), StressVerdict.check(document.get("criteria")))
+
+
+class CaseStatistics:
+    """The three per-case statistics of a v7 summary row (ADR-0316 A5)."""
+
+    KEYS = ("loss_fraction", "breach_days", "worst_name_reserve_share")
+
+    @classmethod
+    def of(cls, result, daily):
+        """Return the case's loss over contributions, breach sessions and largest name share of equity."""
+        books = {trade["id"]: trade for trade in result["trades"]}
+        names, share = NameShare({}), None
+        for row in daily:
+            if not row["open_ids"]:
+                continue
+            found = names.largest(((books[key]["symbol"], books[key]["reserve"]) for key in row["open_ids"]),
+                                  row["equity"])
+            share = found[1] if share is None or found[1] > share else share
+        return {"loss_fraction": (0.0 - result["pnl"]) / result["contributions"],
+                "breach_days": sum(bool(row["reserve_breach"] or row["negative_cash"] or row["negative_funding"])
+                                   for row in daily),
+                "worst_name_reserve_share": share}
+
+
+class _Statistic:
+    """One table entry as ``Scorecard`` reads it."""
+
+    def __init__(self, value, n):
+        self.value, self.n = value, n
+
+
+class _StressTable:
+    """The closed statistics table ``Scorecard`` judges."""
+
+    names = frozenset(STRESS_STATISTICS)
+
+    def __init__(self, entries):
+        self._entries = entries
+
+    def get(self, name):
+        return _Statistic(self._entries[name]["value"], self._entries[name]["n"])
+
+
+class StressVerdict:
+    """The pre-registered criteria applied to each method's worst case (ADR-0316 A6 and A7).
+
+    Parameters
+    ----------
+    criteria : list of dict
+        ``Criterion`` objects over :data:`STRESS_STATISTICS`; empty is legal and judges nothing.
+    """
+
+    def __init__(self, criteria):
+        self.criteria = self.check(criteria)
+
+    @staticmethod
+    def check(criteria):
+        """Return the built criteria or refuse: unknown statistic, wrong direction or malformed entry."""
+        if not isinstance(criteria, list):
+            raise ValueError("v7 criteria must be a list")
+        problems = [p for i, obj in enumerate(criteria) for p in Criterion.problems(obj, f"criteria[{i}]")]
+        if problems:
+            raise ValueError("; ".join(problems))
+        built = [Criterion.from_obj(obj) for obj in criteria]
+        unknown = sorted({c.stat for c in built} - set(STRESS_STATISTICS))
+        if unknown:
+            raise ValueError(f"criteria name unknown statistic(s) {unknown}; known: {list(STRESS_STATISTICS)}")
+        for c in built:
+            allowed = _LOWER_LIMITS if c.stat in _REVERSE_STATISTICS else _UPPER_LIMITS
+            if c.op not in allowed:
+                raise ValueError(f"criterion {c.name!r} on {c.stat} takes {list(allowed)}: wrong direction")
+        return built
+
+    def rows(self, completed):
+        """Return one verdict row per (cohort, method), in first-seen order."""
+        groups = {}
+        for item in completed:
+            groups.setdefault((item[0], item[2]), []).append(item)
+        return [self._row(cohort, method, items) for (cohort, method), items in groups.items()]
+
+    @staticmethod
+    def _statistics(items):
+        """Return the closed table: each worst value over complete cases, then the control's reverse distances."""
+        control = next(item for item in items if item[1] == "control")
+        reverse = (control[3] or {}).get("reverse_stress") or {}
+        filled = control[5]["filled"] or 0
+        complete = [item[5] for item in items if item[5]["status"] == "complete"]
+        worst_n = min(m["filled"] for m in complete)
+        shares = [m["worst_name_reserve_share"] for m in complete if m["worst_name_reserve_share"] is not None]
+        values = {
+            "worst_loss_fraction": max(m["loss_fraction"] for m in complete),
+            "worst_drawdown": -min(m["max_drawdown"] for m in complete),
+            "worst_breach_days": max(m["breach_days"] for m in complete),
+            "worst_name_reserve_share": max(shares) if shares else None,
+            "reverse_down_move": reverse.get("down_move"), "reverse_up_move": reverse.get("up_move")}
+        if filled == 0:
+            values = dict.fromkeys(values)
+        return {name: {"value": value, "n": filled if name in _REVERSE_STATISTICS else worst_n}
+                for name, value in values.items()}
+
+    def _row(self, cohort, method, items):
+        statistics = self._statistics(items)
+        card = Scorecard(self.criteria, _StressTable(statistics))
+        unsupported = [item[1] for item in items if item[5]["status"] != "complete"]
+        covered = {c.stat for c in self.criteria}
+        uncovered = [name for name in STRESS_STATISTICS if name not in covered]
+        status = card.status
+        if unsupported:
+            status = "FAIL"
+        elif status == "PASS" and uncovered:
+            status = "INCONCLUSIVE"
+        reverse = (next(item for item in items if item[1] == "control")[3] or {}).get("reverse_stress") or {}
+        return {"cohort": cohort, "method": method, "status": status, "statistics": statistics,
+                "unsupported": unsupported, "uncovered": uncovered,
+                "cases": [{"scenario": item[1], "status": item[5]["status"],
+                           "selected": item[5]["selected"], "filled": item[5]["filled"]} for item in items],
+                "reverse": {key: reverse.get(key) for key in
+                            ("down_reached", "up_reached", "sessions", "unavailable")},
+                "criteria": [verdict.to_obj() for verdict in card.verdicts]}
+
+
 class FrozenMIOReplay:
     """Replay saved selected books through existing account/ledger mechanics."""
+
+    #: v7 only: each method's shocks are keyed by its own packet and a control reverse stress runs.
+    per_method = False
+    stress = None
+    last_shocks = ()
 
     def __init__(self, cohort, document, pins):
         self.cohort = cohort
@@ -487,7 +906,10 @@ class FrozenMIOReplay:
         self.ranged = document["schema"] in _RANGE_SCHEMAS
         entry = document["cohorts"][cohort]
         v6 = document["schema"] == _HEDGE_SCHEMA
-        bounds = _range_bounds(entry, v6=v6) if self.ranged else _LEGACY_BOUNDS
+        v7 = document["schema"] == _STRESS_SCHEMA
+        later = document["schema"] in _PACKET_SCHEMAS
+        label = "v7" if v7 else "v6"
+        bounds = _range_bounds(entry, v6=later) if self.ranged else _LEGACY_BOUNDS
         original = self._result_dir(document, cohort)
         self.original_dir = original
         config_path = self._run_document(document, cohort)
@@ -505,17 +927,19 @@ class FrozenMIOReplay:
         self._sizing_schema(self.domain["params"], document["schema"])
         self.symbols = self.domain["params"]["symbols"]
         tail, packet = bounds["end_before"], None
-        if v6 and study.get("contract") == "index_options.mio_contract:MIOStudyContract":
+        if later and study.get("contract") == "index_options.mio_contract:MIOStudyContract":
             from index_options.mio_contract import MIOStudyContract
 
             packet = MIOStudyContract.packet(study)
             if (packet["end_before"] != bounds["end_before"]
                     or any(self.domain["params"]["bridge"][key] != packet[key]
                            for key in ("start", "end_before"))):
-                raise ValueError("v6 entry window differs from the packet")
-            if "corporate_actions" in self.domain["sources"]:
+                raise ValueError(label + " entry window differs from the packet")
+            if v6 and "corporate_actions" in self.domain["sources"]:
                 raise ValueError("hedge_split_unsupported: a hedged replay takes no split adjustment")
             tail, _ = MIOStudyContract.settlement_tail(study)
+        if v7 and packet is None:
+            raise ValueError("v7 requires an MIOStudyContract packet run document with a pinned session spine")
         self.check_hedge_seal(self.hedge_spec, {**bounds, "end_before": tail}, cohort)
         result_path = original / "result.json"
         expected = entry["result_sha256"]
@@ -569,6 +993,42 @@ class FrozenMIOReplay:
         _missing_expiry_factors(self.domain["sources"]["chain"], self.symbols,
                                 needed, self.factors)
         self.params = {**self.domain["params"], "selected_pairs": self.domain["pairs"]}
+        self.history = history
+        if v7:
+            self.stress = StressSpec.from_document(document)
+            self.per_method = True
+            self.new_estimator()        # refuses a lookback below correlation_min_pairs before any case runs
+
+    def new_estimator(self):
+        """Return a fresh estimator over the unshocked bars and the packet spine; none is shared between cases."""
+        return ShockEstimator(self.params, self.history, self.bars, self.factors, self.stress.lookback)
+
+    def expiry_points(self, packet=None):
+        """Return the (symbol, expiry) of the packet's selected books, or of every method's when ``None``."""
+        packets = self.original["results"] if packet is None else [packet]
+        return {(book["symbol"], book["expiry"]) for item in packets
+                for decision in item["result"]["decisions"] for book in decision.get("books", [])}
+
+    def fill_points(self, packet):
+        """Return ``{(symbol, expiry): earliest fill session}`` of one method's selected books.
+
+        A book fills on the first account session after its decision date. Books that share a symbol and an
+        expiry share one settlement bar, so they share one shock estimated at the earliest of their fills.
+
+        Raises
+        ------
+        UnsupportedStress
+            When a selected book has no session to fill on.
+        """
+        points = {}
+        for decision in packet["result"]["decisions"]:
+            fill = next((day for day in self.calendar if day > decision["date"]), None)
+            for book in decision.get("books", []):
+                if fill is None:
+                    raise UnsupportedStress("no fill session after the decision on " + decision["date"])
+                key = (book["symbol"], book["expiry"])
+                points[key] = min(fill, points.get(key, fill))
+        return points
 
     @staticmethod
     def check_hedge_seal(spec, bounds, cohort):
@@ -617,7 +1077,7 @@ class FrozenMIOReplay:
         """Bind available-size fills to schema v4/v5, and v4/v5 to available-size fills."""
         available = params.get("fill_sizing") == WeeklyOptionPortfolioStudy._AVAILABLE_SIZE
         if available != (schema in _AVAILABLE_SIZE_SCHEMAS):
-            version = "v6" if schema == _HEDGE_SCHEMA else "v5" if schema == _RANGE_SCHEMA else "v4"
+            version = {_STRESS_SCHEMA: "v7", _HEDGE_SCHEMA: "v6", _RANGE_SCHEMA: "v5"}.get(schema, "v4")
             raise ValueError("available-size fill sizing and schema " + version
                              + " require each other")
 
@@ -722,8 +1182,12 @@ class FrozenMIOReplay:
         for view in self.quotes.values():
             view.close(verify=True)
 
-    def study(self, scenario):
-        """Build only the existing study fields needed for frozen replay."""
+    def study(self, scenario, packet=None):
+        """Build only the existing study fields needed for frozen replay.
+
+        ``packet`` (v7) keys the expiry shock to that method's own selected books; without it every method's
+        expiries are shocked, as v1 to v6 always did.
+        """
         study = WeeklyOptionPortfolioStudy.__new__(WeeklyOptionPortfolioStudy)
         study.params = self.params
         study.calendar = self.calendar
@@ -734,15 +1198,30 @@ class FrozenMIOReplay:
         study._nodes = {symbol: _AllQuotedOptionContext(
             "prepare", {**self.params["bridge"], "symbol": symbol})
             for symbol in self.symbols}
-        multiplier = scenario["expiry_multiplier"]
-        if multiplier != 1:
-            expiries = {(book["symbol"], book["expiry"])
-                        for packet in self.original["results"]
-                        for decision in packet["result"]["decisions"]
-                        for book in decision.get("books", [])}
-            for symbol, day in expiries:
-                study._bars[symbol][day] *= multiplier
+        multipliers, self.last_shocks = expiry_shock(scenario).apply(self, packet)
+        for (symbol, day), multiplier in multipliers.items():
+            study._bars[symbol][day] *= multiplier
         return study
+
+    def _reverse_stress(self, opens):
+        """Return the control's reverse-stress record; an input error gives nulls and its reason, never a raise."""
+        spec = self.stress
+        try:
+            estimator = self.new_estimator()
+            sessions = []
+            for day, books, funding in opens:
+                if not books:
+                    continue
+                estimator.check_beta_window(day)
+                _estimate, losses = estimator.study._account_shock(
+                    books, day, {"moves": spec.reverse.params["moves"], "beta_lookback": spec.lookback})
+                if losses is None:
+                    raise UnsupportedStress("a book input is missing or nonfinite on " + day)
+                sessions.append((funding, {float(move): loss for move, loss in losses.items()}))
+            return {**spec.reverse.search(sessions), "sessions": len(sessions), "unavailable": None}
+        except ValueError as exc:
+            return {"down_move": None, "down_reached": None, "up_move": None, "up_reached": None,
+                    "sessions": 0, "unavailable": str(exc)}
 
     def run_method(self, packet, scenario):
         """Carry one method's frozen orders through a separate scenario account."""
@@ -753,7 +1232,12 @@ class FrozenMIOReplay:
         account = FundedOptionAccount(
             self.params["initial"], self.params["deposit"], self.params["deposit_every_days"],
             self.calendar[0], deposit_end_before=self.params["bridge"]["end_before"])
-        study = self.study(scenario)
+        rejected, snapshots, daily = [], [], []
+        self.last_progress = {"daily": daily, "rejected": rejected,
+                              "account": account, "date": None,
+                              "attempted_ids": [], "attempts": [],
+                              "settlements": {}}
+        study = self.study(scenario, packet) if self.per_method else self.study(scenario)
         hedge = None
         if "hedge_ratio" in scenario:
             problems = WeeklyOptionPortfolioStudy._BLOCKS.cross_checks({**method, "hedge": self.hedge_spec["block"]})
@@ -764,11 +1248,7 @@ class FrozenMIOReplay:
             hedge = ReplayHedge(study, {**self.hedge_spec["block"], "ratio": scenario["hedge_ratio"]},
                                 self.hedge_spec["parity"], mark_rule=scenario["hedge_mark"])
         pending = None
-        rejected, snapshots, daily = [], [], []
-        self.last_progress = {"daily": daily, "rejected": rejected,
-                              "account": account, "date": None,
-                              "attempted_ids": [], "attempts": [],
-                              "settlements": {}}
+        opens = []
         for day in self.calendar:
             attempts, fills, refusals = [], [], []
             attempt_evidence = []
@@ -822,6 +1302,7 @@ class FrozenMIOReplay:
                 "open_ids": sorted(account.open),
                 "reserve": sum(book["reserve"] for book in account.open.values())}
             snapshots.append(snapshot)
+            opens.append((day, list(account.open.values()), account.funding))
             daily.append({
                 "date": day,
                 "candidate_books": decision["candidate_books"] if decision else 0,
@@ -873,6 +1354,8 @@ class FrozenMIOReplay:
                     raise ValueError("zero-shock control mismatch: " + self.cohort +
                                      "/" + method["id"] + "/" + key)
             self._verify_control_csv_rows(result)
+            if self.per_method:
+                result["reverse_stress"] = self._reverse_stress(opens)
         previous_equity = account.initial
         for row, point in zip(daily, result["curve"], strict=True):
             row.update(equity=point["equity"], drawdown=point["drawdown"],
@@ -1155,16 +1638,25 @@ def _unsupported_metrics(selected, reason, rejected):
 
 
 _SCHEMA_VERSIONS = ("mio-execution-stress/v1", "mio-execution-stress/v2",
-                    "mio-execution-stress/v3", _AVAILABLE_SIZE_SCHEMA, _RANGE_SCHEMA, _HEDGE_SCHEMA)
+                    "mio-execution-stress/v3", _AVAILABLE_SIZE_SCHEMA, _RANGE_SCHEMA, _HEDGE_SCHEMA,
+                    _STRESS_SCHEMA)
 _LEGACY_DOCUMENT = frozenset({"schema", "repository_root", "original_root", "results_pins",
                               "results_pins_sha256", "cohorts", "scenarios", "output_root"})
 _RANGE_DOCUMENT = (_LEGACY_DOCUMENT - {"original_root"}) | {"period_label"}
 _HEDGE_DOCUMENT = _RANGE_DOCUMENT | {"hedge"}
+_STRESS_DOCUMENT = _RANGE_DOCUMENT | {"stress", "criteria"}
 
 
 def hedge_scenario_id(ratio, mark="parity"):
     """Return the id of the ``static_forward_hedge`` scenario at ``ratio`` (the carry-ratio robustness twin adds a suffix)."""
     return f"static_forward_hedge_r{round(ratio * 100):03d}" + ("" if mark == "parity" else "_carry")
+
+
+def _require_clean_worktree(repository_root):
+    """Refuse a replay whose source worktree has uncommitted changes."""
+    if subprocess.check_output(["git", "-C", repository_root, "status", "--porcelain"],
+                               text=True).strip():
+        raise ValueError("replay source worktree must be clean for pinned publication")
 
 
 def _hedge_document(hedge):
@@ -1180,16 +1672,37 @@ def _hedge_document(hedge):
     return hedge
 
 
+#: The seven ADR-0280 cases: id, price fraction, half depth, flat expiry multiplier.
+_ADR_0280_CASES = (
+    ("control", 0, False, 1), ("adverse_price", 0.25, False, 1),
+    ("half_size", 0, True, 1), ("expiry_down_15", 0, False, 0.85),
+    ("expiry_up_15", 0, False, 1.15),
+    ("joint_down_15", 0.25, True, 0.85),
+    ("joint_up_15", 0.25, True, 1.15))
+#: The eight ADR-0316 severity cases: id, price fraction, depth divisor, expiry rule kind and its value.
+#: The joint cases keep full displayed depth (Amendment 3); ``quarter_size`` is its own case.
+_SEVERITY_CASES = (
+    ("adverse_price_100", 1.0, 1, "flat", 1), ("quarter_size", 0, 4, "flat", 1),
+    ("expiry_down_3s", 0, 1, "volatility", -3), ("expiry_up_3s", 0, 1, "volatility", 3),
+    ("market_down_30", 0, 1, "market", -0.30), ("market_up_20", 0, 1, "market", 0.20),
+    ("joint_down_severe", 1.0, 1, "market", -0.30), ("joint_up_severe", 1.0, 1, "market", 0.20))
+
+
+def _stress_scenarios():
+    """Return the fifteen approved v7 cases in one uniform shape (price, depth divisor, expiry rule)."""
+    cases = [(name, price, 2 if half else 1, "flat", expiry) for name, price, half, expiry in _ADR_0280_CASES]
+    return [{"id": name, "price_fraction": price, "size_divisor": divisor,
+             "expiry_shock": _SHOCKS[kind](value).spec()}
+            for name, price, divisor, kind, value in [*cases, *_SEVERITY_CASES]]
+
+
 def _approved_scenarios(schema, hedge=None):
     """Return the exact approved scenario list for one document version (v6 appends the hedge sweep)."""
     if schema not in _SCHEMA_VERSIONS:
         raise ValueError("invalid execution-stress document")
-    expected = [
-        ("control", 0, False, 1), ("adverse_price", 0.25, False, 1),
-        ("half_size", 0, True, 1), ("expiry_down_15", 0, False, 0.85),
-        ("expiry_up_15", 0, False, 1.15),
-        ("joint_down_15", 0.25, True, 0.85),
-        ("joint_up_15", 0.25, True, 1.15)]
+    if schema == _STRESS_SCHEMA:
+        return _stress_scenarios()
+    expected = list(_ADR_0280_CASES)
     expected = [
         {"id": name, "price_fraction": price, "half_size": half,
          "expiry_multiplier": expiry}
@@ -1220,17 +1733,24 @@ def execute(document_path):
     """Validate one JSON contract, replay all methods, then pin fresh outputs."""
     doc_path = Path(document_path).resolve()
     document = _load_json(doc_path)
-    required = (_HEDGE_DOCUMENT if isinstance(document, dict) and document.get("schema") == _HEDGE_SCHEMA
+    required = (_STRESS_DOCUMENT if isinstance(document, dict) and document.get("schema") == _STRESS_SCHEMA
+                else _HEDGE_DOCUMENT if isinstance(document, dict) and document.get("schema") == _HEDGE_SCHEMA
                 else _RANGE_DOCUMENT if isinstance(document, dict) and document.get("schema") == _RANGE_SCHEMA
                 else _LEGACY_DOCUMENT)
     if (not isinstance(document, dict) or set(document) != required
             or document["schema"] not in _SCHEMA_VERSIONS):
         raise ValueError("invalid execution-stress document")
+    stress_run = document["schema"] == _STRESS_SCHEMA
+    if stress_run:
+        StressSpec.from_document(document)      # shape, direction and statistic names, before any replay
     if _sha(document["results_pins"]) != document["results_pins_sha256"]:
         raise ValueError("results pins identity drift")
     pins = _load_json(document["results_pins"])
     scenarios = document["scenarios"]
-    if scenarios != _approved_scenarios(document["schema"], document.get("hedge")):
+    approved = _approved_scenarios(document["schema"], document.get("hedge"))
+    # v7 compares the canonical JSON text, so 2.0 or true cannot stand in for 2 or 1; v1 to v6 compare as before.
+    if scenarios != approved or (stress_run and json.dumps(scenarios, sort_keys=True)
+                                 != json.dumps(approved, sort_keys=True)):
         raise ValueError("scenario values differ from approved contract")
     cohorts = _cohort_order(document)
     period = document.get("period_label")
@@ -1238,7 +1758,10 @@ def execute(document_path):
     if output.exists():
         raise FileExistsError("fresh output root required: " + str(output))
     completed = []
+    if stress_run:
+        _require_clean_worktree(document["repository_root"])    # v7 also checks before any replay
     incomplete = {}
+    shock_rows = []
     selected_contracts = {}
     source_indexes = {}
     run_documents = {}
@@ -1251,6 +1774,10 @@ def execute(document_path):
         try:
             result, daily = replay.run_method(packet, scenario)
             metrics = _metrics(result, daily, selected)
+            if replay.per_method:
+                metrics.update(CaseStatistics.of(result, daily))
+                shock_rows.extend({"cohort": cohort, "method": packet["id"], "case": scenario["id"], **record}
+                                  for record in replay.last_shocks)
         except ValueError as exc:
             if control:
                 raise
@@ -1264,6 +1791,8 @@ def execute(document_path):
                 "rejected": list(progress["rejected"]),
                 "open_books": list(account.open.values())}
             metrics = _unsupported_metrics(selected, str(exc), progress["rejected"])
+            if replay.per_method:
+                metrics.update(dict.fromkeys(CaseStatistics.KEYS))
         dispositions = _dispositions(
             cohort, scenario["id"], packet["id"], result, daily,
             decisions=packet["result"]["decisions"],
@@ -1331,6 +1860,11 @@ def execute(document_path):
     _write_json(output / "daily.json", all_daily)
     _write_json(output / "attempts.json", all_attempts)
     _write_json(output / "dispositions.json", all_dispositions)
+    if stress_run:
+        verdict = StressVerdict(document["criteria"]).rows(completed)
+        _write_json(output / "shocks.json", shock_rows)
+        _write_json(output / "verdict.json", {"schema": "mio-execution-stress-verdict/v1",
+                                              "criteria": document["criteria"], "rows": verdict})
     with (output / "summary.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(summary[0]))
         writer.writeheader()
@@ -1387,13 +1921,13 @@ def execute(document_path):
         lines.append("- [" + row["cohort"] + " / " + row["method"] + " / " +
                      row["scenario"] + "](" + relative + ")")
     lines.append("")
+    if stress_run:
+        lines += _verdict_section(verdict)
     (output / "report.md").write_text("\n".join(lines))
     repository_root = document["repository_root"]
     replay_commit = subprocess.check_output(
         ["git", "-C", repository_root, "rev-parse", "HEAD"], text=True).strip()
-    if subprocess.check_output(["git", "-C", repository_root, "status", "--porcelain"],
-                               text=True).strip():
-        raise ValueError("replay source worktree must be clean for pinned publication")
+    _require_clean_worktree(repository_root)
     manifest = {"schema": "mio-execution-stress-pins/v1",
                 "document_sha256": _sha(doc_path),
                 "replay_commit": replay_commit,
@@ -1417,10 +1951,28 @@ def execute(document_path):
         manifest["original_run_documents"] = run_documents
     if period is not None:
         manifest["period_label"] = period
-        manifest["cohort_bounds"] = {cohort: _range_bounds(document["cohorts"][cohort], v6=document["schema"] == _HEDGE_SCHEMA)
+        manifest["cohort_bounds"] = {cohort: _range_bounds(document["cohorts"][cohort], v6=document["schema"] in _PACKET_SCHEMAS)
                                      for cohort in cohorts}
     _write_json(output / "pins.json", manifest)
     return output
+
+
+def _verdict_section(rows):
+    """Return the report's Verdict section: one line per (cohort, method) with its closed statistics."""
+    def show(value):
+        return "-" if value is None else f"{value:.4g}"
+
+    lines = ["## Verdict", "",
+             "Statuses come from the pre-registered criteria; any unsupported case is FAIL, and a PASS needs a",
+             "criterion on every statistic. shocks.json lists every estimate behind the sized cases.", "",
+             "| Cohort | Method | Status | Unsupported | " + " | ".join(STRESS_STATISTICS) + " |",
+             "|---|---|---|---|" + "---:|" * len(STRESS_STATISTICS)]
+    for row in rows:
+        lines.append("| " + " | ".join([
+            row["cohort"], row["method"], row["status"], ", ".join(row["unsupported"]) or "-",
+            *(show(row["statistics"][name]["value"]) for name in STRESS_STATISTICS)]) + " |")
+    lines.append("")
+    return lines
 
 
 def main(argv=None):

@@ -1486,3 +1486,1122 @@ def test_v6_packet_replays_a_post_entry_settlement_with_pinned_history(tmp_path,
     with pytest.raises(ValueError, match='hedge_seal'):
         stress.FrozenMIOReplay(Q1_COHORT, document, pins)
     assert verified == []
+
+
+# =============================================================================================================
+# ADR-0316 Decision A (Amendments 1 and 3): schema v7, the severity scenarios, three per-case statistics, the
+# reverse stress and the pre-registered verdict. Synthetic only; every expected number is worked by hand.
+# =============================================================================================================
+import math  # noqa: E402
+
+V7 = 'mio-execution-stress/v7'
+NEW_EIGHT = ['adverse_price_100', 'quarter_size', 'expiry_down_3s', 'expiry_up_3s',
+             'market_down_30', 'market_up_20', 'joint_down_severe', 'joint_up_severe']
+FLAT, VOL, MKT = 'flat', 'volatility', 'market'
+
+
+def _shock(kind, value):
+    return {'kind': kind, {FLAT: 'multiplier', VOL: 'sigmas', MKT: 'move'}[kind]: value}
+
+
+def _v7(price=0, divisor=1, shock=None, name='case'):
+    return {'id': name, 'price_fraction': price, 'size_divisor': divisor,
+            'expiry_shock': shock or _shock(FLAT, 1)}
+
+
+def test_v7_scenarios_are_the_fifteen_approved_cases_in_order():
+    cases = stress._approved_scenarios(V7)
+    assert [c['id'] for c in cases] == [
+        'control', 'adverse_price', 'half_size', 'expiry_down_15', 'expiry_up_15',
+        'joint_down_15', 'joint_up_15', *NEW_EIGHT]
+    assert {tuple(sorted(c)) for c in cases} == {
+        ('expiry_shock', 'id', 'price_fraction', 'size_divisor')}
+    # (price fraction, size divisor, expiry shock); the joint severe cases keep FULL depth (Amendment 3).
+    expected = {
+        'control': (0, 1, _shock(FLAT, 1)), 'adverse_price': (0.25, 1, _shock(FLAT, 1)),
+        'half_size': (0, 2, _shock(FLAT, 1)), 'expiry_down_15': (0, 1, _shock(FLAT, 0.85)),
+        'expiry_up_15': (0, 1, _shock(FLAT, 1.15)), 'joint_down_15': (0.25, 2, _shock(FLAT, 0.85)),
+        'joint_up_15': (0.25, 2, _shock(FLAT, 1.15)),
+        'adverse_price_100': (1.0, 1, _shock(FLAT, 1)), 'quarter_size': (0, 4, _shock(FLAT, 1)),
+        'expiry_down_3s': (0, 1, _shock(VOL, -3)), 'expiry_up_3s': (0, 1, _shock(VOL, 3)),
+        'market_down_30': (0, 1, _shock(MKT, -0.30)), 'market_up_20': (0, 1, _shock(MKT, 0.20)),
+        'joint_down_severe': (1.0, 1, _shock(MKT, -0.30)), 'joint_up_severe': (1.0, 1, _shock(MKT, 0.20))}
+    for case in cases:
+        assert (case['price_fraction'], case['size_divisor'], case['expiry_shock']) == expected[case['id']]
+
+
+def test_the_v7_legacy_seven_carry_the_v5_values_and_every_earlier_list_is_unchanged():
+    v5 = {c['id']: c for c in stress._approved_scenarios(V5)}
+    for case in stress._approved_scenarios(V7)[:7]:
+        old = v5[case['id']]
+        assert case['price_fraction'] == old['price_fraction']
+        assert case['size_divisor'] == (2 if old['half_size'] else 1)
+        assert case['expiry_shock'] == _shock(FLAT, old['expiry_multiplier'])
+    for schema in ('mio-execution-stress/v1', V4, V5):
+        assert all(set(c) >= {'id', 'price_fraction', 'half_size', 'expiry_multiplier'}
+                   and 'size_divisor' not in c and 'expiry_shock' not in c
+                   for c in stress._approved_scenarios(schema))
+    assert stress._SCHEMA_VERSIONS[-1] == V7 and len(stress._approved_scenarios(V7)) == 15
+
+
+def test_scaled_size_floors_the_displayed_depth_and_keeps_the_half_rule():
+    assert [stress.scaled_size(11, d) for d in (1, 2, 4)] == [11, 5, 2]
+    assert stress.scaled_size(3, 4) == 0 and stress.scaled_size(7, 1) == 7
+    assert stress.effective_size(5, True) == stress.scaled_size(5, 2)
+    assert stress._size_divisor({'half_size': True, 'price_fraction': 0}) == 2
+    assert stress._size_divisor({'half_size': False, 'price_fraction': 0}) == 1
+    assert stress._size_divisor(_v7(divisor=4)) == 4
+
+
+def test_adverse_price_100_pays_a_full_spread_on_a_buy_and_gives_up_a_full_spread_on_a_sale():
+    scenario = _v7(price=1.0)
+    study, book = _case()                              # bid 1.0 ask 1.4: buy at 1.4 + 0.4
+    filled, reason = stress._scenario_fill(study, book, '2019-01-03', {}, scenario)
+    assert reason is None and filled['legs'][0]['fill_price'] == pytest.approx(1.8)
+    assert filled['credit'] == pytest.approx(-180.65)  # -1.8 x 100 less the 0.65 fee
+    study, book = _case(sign=-1)                       # sell at 1.0 - 0.4
+    filled, reason = stress._scenario_fill(study, book, '2019-01-03', {}, scenario)
+    assert reason is None and filled['legs'][0]['fill_price'] == pytest.approx(0.6)
+    assert filled['credit'] == pytest.approx(59.35)
+    study, book = _case(sign=-1, bid=0.3, ask=0.7)     # 0.3 - 0.4 < 0: refused, not clipped
+    assert stress._scenario_fill(study, book, '2019-01-03', {}, scenario) == (
+        None, 'invalid_stressed_fill_price')
+
+
+def test_quarter_size_floor_divides_displayed_depth_by_four_in_every_reader():
+    scenario = _v7(divisor=4)
+    study, book = _case(size=11, quantity=3)           # 11 // 4 = 2 < 3
+    assert stress._scenario_fill(study, book, '2019-01-03', {}, scenario) == (
+        None, 'insufficient_fill_size')
+    evidence = stress._attempt_evidence(study, book, '2019-01-03', scenario)['legs'][0]
+    assert (evidence['original_depth'], evidence['effective_depth']) == (11, 2)
+    study, book = _case(size=11, quantity=2)
+    filled, reason = stress._scenario_fill(study, book, '2019-01-03', {}, scenario)
+    assert reason is None and filled['legs'][0]['quantity'] == 2
+    study, book = _case(size=3, quantity=1)            # 3 // 4 = 0
+    assert stress._scenario_fill(study, book, '2019-01-03', {}, scenario)[1] == 'insufficient_fill_size'
+    assert stress._fill_shocked(scenario) and not stress._fill_shocked(_v7())
+    assert stress._fill_shocked(_v7(price=1.0))
+    study, book = _sized((6, 4), (16, 12))             # available size: 16//4 = 4, 12//4 = 3 -> 3 and 2
+    filled, reason = stress._scenario_fill(study, book, '2019-01-03', {}, scenario)
+    assert reason is None and [leg['quantity'] for leg in filled['legs']] == [3, 2]
+
+
+def test_a_v7_formatted_legacy_case_fills_exactly_like_its_v5_twin():
+    v5 = {c['id']: c for c in stress._approved_scenarios(V5)}
+    for case in stress._approved_scenarios(V7)[:7]:
+        old = v5[case['id']]
+        depths = (8, 6) if old['half_size'] else (4, 3)
+        assert (stress._scenario_fill(*_sized((6, 4), depths), '2019-01-03', {}, case)
+                == stress._scenario_fill(*_sized((6, 4), depths), '2019-01-03', {}, old))
+        study, book = _sized((6, 4), depths)
+        assert (stress._attempt_evidence(study, book, '2019-01-03', case)
+                == stress._attempt_evidence(study, book, '2019-01-03', old))
+
+
+# --- the expiry-shock hook hierarchy ---------------------------------------------------------------------------
+@pytest.mark.parametrize('spec, cls', [(_shock(FLAT, 0.85), 'FlatShock'), (_shock(VOL, -3), 'VolatilityShock'),
+                                       (_shock(MKT, 0.2), 'MarketShock')])
+def test_expiry_shock_builds_the_subclass_its_kind_names(spec, cls):
+    shock = stress.ExpiryShock.of(spec)
+    assert type(shock) is getattr(stress, cls) and shock.spec() == spec
+
+
+@pytest.mark.parametrize('spec', [
+    {'kind': 'nope', 'multiplier': 1}, {'kind': FLAT}, {'kind': FLAT, 'multiplier': 1, 'extra': 1},
+    _shock(FLAT, 0), _shock(FLAT, -1), _shock(FLAT, float('nan')), _shock(FLAT, True), _shock(FLAT, '1'),
+    _shock(VOL, True), _shock(VOL, float('inf')), _shock(VOL, 'x'), _shock(MKT, None), _shock(MKT, float('nan')),
+    {'multiplier': 1}, [], None])
+def test_expiry_shock_is_default_deny(spec):
+    with pytest.raises(ValueError):
+        stress.ExpiryShock.of(spec)
+
+
+def test_the_expiry_shock_hook_is_abstract():
+    with pytest.raises(TypeError):
+        stress.ExpiryShock()
+    with pytest.raises(TypeError):
+        stress.EstimatedShock(1)
+    assert stress.expiry_shock({'expiry_multiplier': 0.85, 'half_size': False,
+                                'price_fraction': 0}).spec() == _shock(FLAT, 0.85)
+
+
+# --- the estimator: a wave world with hand-worked scale and beta ------------------------------------------------
+W = _weekdays(10, '2021-01-04')                        # d0 .. d9
+
+
+def _wave(amplitude, days=W):
+    """Bars whose log returns alternate -a, +a, -a ... from d1 (odd index up)."""
+    return {day: 100.0 * math.exp(amplitude * (i % 2)) for i, day in enumerate(days)}
+
+
+def _estimation_params(symbols, min_pairs=3):
+    return {'symbols': list(symbols), 'correlation_min_pairs': min_pairs,
+            'bridge': {'solver': {'multiplier': 100}}}
+
+
+def _estimator(bars=None, lookback=4, symbols=('A', 'B'), min_pairs=3):
+    bars = bars if bars is not None else {'A': _wave(0.02), 'B': _wave(0.04)}
+    factors = {s: {d: 1.0 for d in W} for s in symbols}
+    return stress.ShockEstimator(_estimation_params(symbols, min_pairs), W, bars, factors, lookback)
+
+
+def test_scale_is_the_sample_deviation_of_the_window_before_the_day_and_counts_sessions_to_expiry():
+    # Fill d6: the window is the four returns d1->d5, (-a, +a, -a, +a); ddof 1 gives a*sqrt(4/3).
+    # Sessions after d6 up to d9 are d7, d8, d9 = 3, so the horizon scale is a*sqrt(4/3)*sqrt(3) = 2a.
+    est = _estimator()
+    std, sessions, window_end = est.scale('A', W[6], W[9])
+    assert (sessions, window_end) == (3, W[5]) and std == pytest.approx(0.02 * math.sqrt(4 / 3))
+    assert est.scale('B', W[6], W[9])[0] == pytest.approx(0.04 * math.sqrt(4 / 3))
+    assert stress.VolatilityShock(-3).estimate(est, 'A', W[6], W[9])[0] == pytest.approx(0.8869204367171575)
+    assert stress.VolatilityShock(3).estimate(est, 'A', W[6], W[9])[0] == pytest.approx(1.1274968515793757)
+    assert stress.VolatilityShock(-3).estimate(est, 'B', W[6], W[9])[0] == pytest.approx(0.7866278610665535)
+    assert stress.VolatilityShock(3).estimate(est, 'B', W[6], W[9])[0] == pytest.approx(1.2712491503214047)
+    multiplier, record = stress.VolatilityShock(-3).estimate(est, 'A', W[6], W[9])
+    assert record == {'symbol': 'A', 'expiry': W[9], 'window_end': W[5], 'sessions_to_expiry': 3,
+                      'std': pytest.approx(0.02309401076758503), 'beta': None,
+                      'multiplier': multiplier}
+    # One session to expiry from d8: window d3->d7 is again (-,+,-,+); horizon 1.
+    assert stress.VolatilityShock(-3).estimate(est, 'A', W[8], W[9])[0] == pytest.approx(0.9330634889213453)
+
+
+def test_beta_is_the_equal_weight_basket_loading_and_the_market_multiplier_floors_at_zero():
+    # A = a*p, B = 2a*p, basket = 1.5a*p: beta_A = 2/3, beta_B = 4/3.
+    est = _estimator()
+    assert est.beta('A', W[6]) == pytest.approx(2 / 3) and est.beta('B', W[6]) == pytest.approx(4 / 3)
+    for move, a, b in ((-0.30, 0.8, 0.6), (0.20, 1 + 0.2 * 2 / 3, 1 + 0.2 * 4 / 3)):
+        shock = stress.MarketShock(move)
+        assert shock.estimate(est, 'A', W[6], W[9])[0] == pytest.approx(a)
+        assert shock.estimate(est, 'B', W[6], W[9])[0] == pytest.approx(b)
+    record = stress.MarketShock(-0.30).estimate(est, 'A', W[6], W[9])[1]
+    assert record['beta'] == pytest.approx(2 / 3) and record['window_end'] == W[5] and record['std'] is None
+    # Four names, only A moving: beta_A = 4, beta_B = 0; 1 + 4 x -0.30 < 0 floors at zero.
+    flat = {s: {d: 100.0 for d in W} for s in 'BCD'}
+    est4 = _estimator({'A': _wave(0.1), **flat}, symbols=('A', 'B', 'C', 'D'))
+    assert est4.beta('A', W[6]) == pytest.approx(4.0)
+    assert stress.MarketShock(-0.30).estimate(est4, 'A', W[6], W[9])[0] == 0.0
+    with pytest.raises(stress.UnsupportedStress, match='standard deviation'):
+        stress.MarketShock(-0.30).estimate(est4, 'B', W[6], W[9])     # flat B: beta 0 would leave it unshocked
+    with pytest.raises(stress.UnsupportedStress, match='standard deviation'):
+        est4.beta('C', W[6])
+
+
+@pytest.mark.parametrize('sigmas', [-1e6, 1e6])
+def test_a_volatility_multiplier_that_underflows_or_overflows_is_unsupported(sigmas):
+    with pytest.raises(stress.UnsupportedStress, match='finite and positive'):
+        stress.VolatilityShock(sigmas).estimate(_estimator(), 'A', W[6], W[9])
+
+
+def test_v7_names_its_own_version_in_the_sizing_and_window_refusals(tmp_path, q1_loaders, monkeypatch):
+    with pytest.raises(ValueError, match='schema v7 require each other'):
+        stress.FrozenMIOReplay._sizing_schema({}, V7)
+    world = _v7_world(tmp_path, monkeypatch)
+    world.cohort.update(end_before=Q1[11])
+    with pytest.raises(ValueError, match='v7 entry window differs from the packet'):
+        world.replay()
+
+
+def test_an_estimate_never_reads_the_fill_session_or_later_but_does_read_the_session_before():
+    base = _estimator()
+    moved = {'A': _wave(0.02), 'B': _wave(0.04)}
+    for day in W[6:]:
+        moved['A'][day] *= 3.0
+        moved['B'][day] *= 0.2
+    later = _estimator(moved)
+    assert later.scale('A', W[6], W[9])[0] == base.scale('A', W[6], W[9])[0]
+    assert later.beta('A', W[6]) == base.beta('A', W[6])
+    moved['A'][W[5]] *= 1.5
+    assert _estimator(moved).scale('A', W[6], W[9])[0] != base.scale('A', W[6], W[9])[0]
+
+
+@pytest.mark.parametrize('bad, call, match', [
+    ('short', lambda e: e.scale('A', W[3], W[9]), 'window'),
+    ('short', lambda e: e.beta('A', W[3]), 'window'),
+    ('zero', lambda e: e.scale('A', W[6], W[9]), 'bar'),
+    ('negative', lambda e: e.scale('A', W[6], W[9]), 'bar'),
+    ('nan', lambda e: e.scale('A', W[6], W[9]), 'bar'),
+    ('other_name', lambda e: e.beta('A', W[6]), 'bar'),
+    ('flat_name', lambda e: e.scale('A', W[6], W[9]), 'standard deviation'),
+    ('flat_all', lambda e: e.beta('A', W[6]), 'basket variance'),
+    ('plain', lambda e: e.scale('A', W[9], W[9]), 'sessions')])
+def test_a_bad_window_is_unsupported_and_nothing_is_substituted(bad, call, match):
+    bars = {'A': _wave(0.02), 'B': _wave(0.04)}
+    if bad == 'zero':
+        bars['A'][W[4]] = 0.0
+    elif bad == 'negative':
+        bars['A'][W[4]] = -5.0
+    elif bad == 'nan':
+        bars['A'][W[4]] = float('nan')
+    elif bad == 'other_name':
+        bars['B'][W[4]] = 0.0
+    elif bad == 'flat_name':
+        bars['A'] = {d: 100.0 for d in W}
+    elif bad == 'flat_all':
+        bars = {'A': {d: 100.0 for d in W}, 'B': {d: 100.0 for d in W}}
+    with pytest.raises(stress.UnsupportedStress, match=match):
+        call(_estimator(bars))
+    assert issubclass(stress.UnsupportedStress, ValueError)
+
+
+def test_the_name_scale_ignores_another_names_bad_bar_but_the_beta_needs_every_symbol():
+    bars = {'A': _wave(0.02), 'B': _wave(0.04)}
+    bars['B'][W[4]] = float('nan')
+    est = _estimator(bars)
+    assert est.scale('A', W[6], W[9])[0] == pytest.approx(0.02309401076758503)
+    with pytest.raises(stress.UnsupportedStress):
+        est.beta('A', W[6])
+
+
+@pytest.mark.parametrize('lookback', [4.0, True, '4', None])
+def test_the_estimator_takes_an_integer_lookback_only(lookback):
+    with pytest.raises(ValueError, match='integer'):
+        _estimator(lookback=lookback)
+
+
+def test_a_lookback_below_the_beta_owners_minimum_pairs_is_refused_at_construction():
+    with pytest.raises(ValueError, match='correlation_min_pairs'):
+        _estimator(lookback=2, min_pairs=3)
+    _estimator(lookback=3, min_pairs=3)
+
+
+# --- fill points and per-method multipliers --------------------------------------------------------------------
+def _book(symbol, expiry, decision):
+    return {'id': decision + ':' + symbol + ':' + expiry, 'symbol': symbol, 'expiry': expiry,
+            'decision_date': decision}
+
+
+def _packet(method, *books):
+    decisions = [{'date': d, 'books': [b for b in books if b['decision_date'] == d]}
+                 for d in sorted({b['decision_date'] for b in books})]
+    return {'id': method, 'result': {'method': {'id': method}, 'decisions': decisions}}
+
+
+def _bare_replay(packets, lookback=4):
+    replay = stress.FrozenMIOReplay.__new__(stress.FrozenMIOReplay)
+    replay.params = _estimation_params(['A', 'B'])
+    replay.history, replay.calendar, replay.symbols = W, W[3:], ['A', 'B']
+    replay.bars = {'A': _wave(0.02), 'B': _wave(0.04)}
+    replay.factors = {s: {d: 1.0 for d in W} for s in 'AB'}
+    replay.original = {'results': packets}
+    replay.cohort = 'c'
+    replay.per_method = True
+    replay.stress = SimpleNamespace(lookback=lookback)
+    return replay
+
+
+def test_the_estimate_day_is_the_earliest_fill_session_of_the_methods_books_sharing_symbol_and_expiry():
+    early, late = _book('A', W[9], W[5]), _book('A', W[9], W[7])
+    other = _book('B', W[9], W[7])
+    packet = _packet('m0', late, early, other)
+    replay = _bare_replay([packet])
+    assert replay.fill_points(packet) == {('A', W[9]): W[6], ('B', W[9]): W[8]}
+    multipliers, records = stress.VolatilityShock(-3).apply(replay, packet)
+    assert multipliers[('A', W[9])] == pytest.approx(0.8869204367171575)      # window to d5, 3 sessions
+    assert [r['window_end'] for r in records] == [W[5], W[7]] and records[0]['sessions_to_expiry'] == 3
+
+
+def test_each_methods_multipliers_depend_only_on_its_own_books_and_no_estimate_is_shared():
+    p1 = _packet('m0', _book('A', W[9], W[5]), _book('B', W[9], W[5]))
+    p2 = _packet('m1', _book('A', W[9], W[7]))
+    replay = _bare_replay([p1, p2])
+    alone = _bare_replay([p1])
+    shock = stress.VolatilityShock(-3)
+    assert shock.apply(replay, p1)[0] == shock.apply(alone, p1)[0]
+    assert shock.apply(replay, p2)[0][('A', W[9])] == pytest.approx(0.9330634889213453)   # d7 window, 1 session
+    assert ('B', W[9]) not in shock.apply(replay, p2)[0]
+    first, second = replay.new_estimator(), replay.new_estimator()
+    assert first is not second and first.study._beta_cache is not second.study._beta_cache
+    assert first.study._bars is replay.bars          # the unshocked pinned bars, never a case's copy
+
+
+def test_a_flat_shock_moves_the_packets_own_expiries_and_one_moves_nothing():
+    p1 = _packet('m0', _book('A', W[9], W[5]))
+    p2 = _packet('m1', _book('B', W[8], W[5]))
+    replay = _bare_replay([p1, p2])
+    assert stress.FlatShock(0.85).apply(replay, p1) == ({('A', W[9]): 0.85}, [])
+    assert stress.FlatShock(1).apply(replay, p1) == ({}, [])
+    assert replay.expiry_points(None) == {('A', W[9]), ('B', W[8])}      # the v1-v6 route shocks every method's expiry
+
+
+@pytest.mark.parametrize('decision', [W[2], W[9]])
+def test_a_book_with_no_usable_window_or_no_fill_session_makes_the_case_unsupported(decision):
+    packet = _packet('m0', _book('A', W[9], decision))
+    with pytest.raises(stress.UnsupportedStress):
+        stress.VolatilityShock(-3).apply(_bare_replay([packet]), packet)
+
+
+# --- per-case statistics ---------------------------------------------------------------------------------------
+def _row(open_ids, equity, breach=False, cash=False, funding=False):
+    return {'open_ids': open_ids, 'equity': equity, 'reserve_breach': breach,
+            'negative_cash': cash, 'negative_funding': funding}
+
+
+def test_case_statistics_are_hand_worked():
+    trades = [{'id': 'b1', 'symbol': 'A', 'reserve': 300.0}, {'id': 'b2', 'symbol': 'B', 'reserve': 100.0},
+              {'id': 'b3', 'symbol': 'A', 'reserve': 200.0}]
+    result = {'pnl': -663.9, 'contributions': 10000.0, 'trades': trades}
+    daily = [_row([], 9000.0), _row(['b1', 'b2', 'b3'], 2000.0, breach=True),   # A 500 / 2000 = 0.25
+             _row(['b2'], 500.0, cash=True), _row(['b1'], 4000.0, funding=True), _row([], 9000.0, breach=True)]
+    stats = stress.CaseStatistics.of(result, daily)
+    assert stats == {'loss_fraction': pytest.approx(0.06639), 'breach_days': 4,
+                     'worst_name_reserve_share': pytest.approx(0.25)}
+    assert stress.CaseStatistics.of({**result, 'pnl': 50.0}, [_row([], 9000.0)]) == {
+        'loss_fraction': pytest.approx(-0.005), 'breach_days': 0, 'worst_name_reserve_share': None}
+    zero = stress.CaseStatistics.of({**result, 'pnl': 0.0}, [_row([], 9000.0)])
+    assert zero['loss_fraction'] == 0.0 and str(zero['loss_fraction']) == '0.0'
+
+
+# --- the verdict -----------------------------------------------------------------------------------------------
+def _case_tuple(scenario, status='complete', selected=5, filled=5, loss=0.02, drawdown=-0.10, breach=0,
+                share=0.10, reverse=None, cohort='c', method='m'):
+    if status != 'complete':
+        metrics = {'status': status, 'selected': selected, 'filled': None, 'max_drawdown': None,
+                   'loss_fraction': None, 'breach_days': None, 'worst_name_reserve_share': None}
+    else:
+        metrics = {'status': status, 'selected': selected, 'filled': filled, 'max_drawdown': drawdown,
+                   'loss_fraction': loss, 'breach_days': breach, 'worst_name_reserve_share': share}
+    result = {'reverse_stress': reverse} if reverse is not None else None
+    return (cohort, scenario, method, result, [], metrics, [])
+
+
+REVERSE = {'down_move': 0.1, 'down_reached': True, 'up_move': 0.3, 'up_reached': False,
+           'sessions': 7, 'unavailable': None}
+CRITERIA = [
+    {'name': 'loss', 'stat': 'worst_loss_fraction', 'op': '<=', 'value': 0.25, 'min_n': 1},
+    {'name': 'drawdown', 'stat': 'worst_drawdown', 'op': '<=', 'value': 0.35, 'min_n': 1},
+    {'name': 'breach', 'stat': 'worst_breach_days', 'op': '<=', 'value': 2, 'min_n': 1},
+    {'name': 'name', 'stat': 'worst_name_reserve_share', 'op': '<', 'value': 0.15, 'min_n': 1},
+    {'name': 'down', 'stat': 'reverse_down_move', 'op': '>=', 'value': 0.1, 'min_n': 1},
+    {'name': 'up', 'stat': 'reverse_up_move', 'op': '>', 'value': 0.2, 'min_n': 1}]
+
+
+def _cases(**extra):
+    return [_case_tuple('control', reverse=REVERSE, **extra),
+            _case_tuple('adverse_price', filled=4, loss=0.03, drawdown=-0.20, breach=1, share=0.12),
+            _case_tuple('half_size', filled=3, loss=0.05, drawdown=-0.30, breach=2, share=0.14)]
+
+
+def test_the_statistic_table_takes_worst_values_over_complete_cases_with_their_n():
+    row, = stress.StressVerdict([]).rows(_cases())
+    stats = row['statistics']
+    assert {k: v['value'] for k, v in stats.items()} == {
+        'worst_loss_fraction': 0.05, 'worst_drawdown': 0.30, 'worst_breach_days': 2,
+        'worst_name_reserve_share': 0.14, 'reverse_down_move': 0.1, 'reverse_up_move': 0.3}
+    # worst_* n is the smallest filled count over the complete cases (3); the reverse n is the control's (5).
+    assert {k: v['n'] for k, v in stats.items()} == {
+        'worst_loss_fraction': 3, 'worst_drawdown': 3, 'worst_breach_days': 3,
+        'worst_name_reserve_share': 3, 'reverse_down_move': 5, 'reverse_up_move': 5}
+    assert row['status'] == 'UNJUDGED' and row['unsupported'] == []
+    assert [(c['scenario'], c['selected'], c['filled']) for c in row['cases']] == [
+        ('control', 5, 5), ('adverse_price', 5, 4), ('half_size', 5, 3)]
+    assert row['reverse'] == {'down_reached': True, 'up_reached': False, 'sessions': 7, 'unavailable': None}
+
+
+def test_worst_n_includes_the_control_and_the_reverse_n_is_the_controls():
+    cases = [_case_tuple('control', filled=2, reverse=REVERSE), _case_tuple('adverse_price', filled=5),
+             _case_tuple('half_size', filled=5)]
+    stats = stress.StressVerdict([]).rows(cases)[0]['statistics']
+    assert {k: v['n'] for k, v in stats.items()} == {
+        'worst_loss_fraction': 2, 'worst_drawdown': 2, 'worst_breach_days': 2,
+        'worst_name_reserve_share': 2, 'reverse_down_move': 2, 'reverse_up_move': 2}
+    cases = [_case_tuple('control', filled=5, reverse=REVERSE), _case_tuple('adverse_price', filled=1)]
+    stats = stress.StressVerdict([]).rows(cases)[0]['statistics']
+    assert stats['worst_loss_fraction']['n'] == 1 and stats['reverse_down_move']['n'] == 5
+
+
+def test_pass_fail_and_inconclusive_are_each_reachable_and_pass_needs_every_statistic_covered():
+    assert stress.StressVerdict(CRITERIA).rows(_cases())[0]['status'] == 'PASS'
+    failing = [{**CRITERIA[0], 'value': 0.04}, *CRITERIA[1:]]
+    assert stress.StressVerdict(failing).rows(_cases())[0]['status'] == 'FAIL'
+    thin = [{**CRITERIA[0], 'min_n': 4}, *CRITERIA[1:]]                 # n = 3 < 4
+    assert stress.StressVerdict(thin).rows(_cases())[0]['status'] == 'INCONCLUSIVE'
+    failing_partial = [{**CRITERIA[0], 'value': 0.04}, *CRITERIA[1:5]]    # a failure stays FAIL without coverage
+    row = stress.StressVerdict(failing_partial).rows(_cases())[0]
+    assert row['status'] == 'FAIL' and row['uncovered'] == ['reverse_up_move']
+    partial = stress.StressVerdict(CRITERIA[:5]).rows(_cases())[0]       # no criterion on reverse_up_move
+    assert partial['status'] == 'INCONCLUSIVE' and partial['uncovered'] == ['reverse_up_move']
+    assert stress.StressVerdict(CRITERIA).rows(_cases())[0]['uncovered'] == []
+    verdicts = stress.StressVerdict(CRITERIA).rows(_cases())[0]['criteria']
+    assert [v['status'] for v in verdicts] == ['PASS'] * 6 and verdicts[0]['observed'] == 0.05
+
+
+def test_an_unsupported_case_forces_fail_and_is_skipped_by_the_worst_value():
+    cases = [*_cases(), _case_tuple('expiry_down_3s', status='unsupported')]
+    row, = stress.StressVerdict(CRITERIA).rows(cases)
+    assert row['status'] == 'FAIL' and row['unsupported'] == ['expiry_down_3s']
+    assert [(c['scenario'], c['status']) for c in row['cases']] == [
+        ('control', 'complete'), ('adverse_price', 'complete'), ('half_size', 'complete'),
+        ('expiry_down_3s', 'unsupported')]
+    assert row['statistics']['worst_loss_fraction'] == {'value': 0.05, 'n': 3}
+    assert row['statistics']['worst_breach_days'] == {'value': 2, 'n': 3}
+    assert stress.StressVerdict([]).rows(cases)[0]['status'] == 'FAIL'     # even with no criteria
+
+
+def test_a_method_with_no_control_fill_has_every_statistic_null():
+    cases = [_case_tuple('control', filled=0, loss=0.0, drawdown=0.0, share=None, reverse=REVERSE),
+             _case_tuple('half_size', filled=0, loss=0.0, drawdown=0.0, share=None)]
+    row, = stress.StressVerdict(CRITERIA).rows(cases)
+    assert all(s['value'] is None for s in row['statistics'].values())
+    assert row['status'] == 'INCONCLUSIVE'
+    assert stress.StressVerdict([]).rows(cases)[0]['status'] == 'UNJUDGED'
+
+
+def test_a_null_reverse_value_is_inconclusive_and_each_method_and_cohort_gets_its_own_row():
+    unavailable = {'down_move': None, 'down_reached': None, 'up_move': None, 'up_reached': None,
+                   'sessions': 0, 'unavailable': 'window'}
+    cases = [_case_tuple('control', reverse=unavailable), _case_tuple('control', reverse=REVERSE, method='n'),
+             _case_tuple('control', reverse=REVERSE, cohort='d')]
+    rows = stress.StressVerdict(CRITERIA).rows(cases)
+    assert [(r['cohort'], r['method']) for r in rows] == [('c', 'm'), ('c', 'n'), ('d', 'm')]
+    assert rows[0]['status'] == 'INCONCLUSIVE' and rows[0]['statistics']['reverse_down_move']['value'] is None
+    assert rows[1]['status'] == 'PASS'
+
+
+@pytest.mark.parametrize('criterion, problem', [
+    ({'name': 'x', 'stat': 'sharpe', 'op': '<=', 'value': 1, 'min_n': 1}, 'unknown statistic'),
+    ({'name': 'x', 'stat': 'worst_drawdown', 'op': '>=', 'value': 0.1, 'min_n': 1}, 'direction'),
+    ({'name': 'x', 'stat': 'worst_drawdown', 'op': '>', 'value': 0.1, 'min_n': 1}, 'direction'),
+    ({'name': 'x', 'stat': 'reverse_up_move', 'op': '<', 'value': 0.1, 'min_n': 1}, 'direction'),
+    ({'name': 'x', 'stat': 'reverse_up_move', 'op': '<=', 'value': 0.1, 'min_n': 1}, 'direction'),
+    ({'name': 'x', 'stat': 'worst_drawdown', 'op': '<=', 'value': 0.1}, 'missing'),
+    ({'name': 'x', 'stat': 'worst_drawdown', 'op': '<=', 'value': 0.1, 'min_n': 1, 'extra': 1}, 'unknown'),
+    ('not an object', 'object')])
+def test_a_criterion_outside_the_closed_set_or_direction_is_refused(criterion, problem):
+    with pytest.raises(ValueError, match=problem):
+        stress.StressVerdict.check([criterion])
+    stress.StressVerdict.check([])
+    stress.StressVerdict.check(CRITERIA)
+    with pytest.raises(ValueError, match='list'):
+        stress.StressVerdict.check({})
+
+
+def test_the_closed_statistic_set_is_the_six_the_contract_names():
+    assert stress.STRESS_STATISTICS == (
+        'worst_loss_fraction', 'worst_drawdown', 'worst_breach_days', 'worst_name_reserve_share',
+        'reverse_down_move', 'reverse_up_move')
+
+
+# --- the document ----------------------------------------------------------------------------------------------
+STRESS = {'lookback': 20, 'reverse': {'moves': [-0.2, -0.05, 0.05, 0.2], 'loss_fraction': 0.05}}
+
+
+@pytest.mark.parametrize('stress_spec', [
+    {'reverse': STRESS['reverse']}, {**STRESS, 'extra': 1}, {**STRESS, 'lookback': 0},
+    {**STRESS, 'lookback': True}, {**STRESS, 'lookback': 2.5}, {**STRESS, 'lookback': '20'},
+    {**STRESS, 'reverse': {'moves': [-0.2, 0.2]}}, {**STRESS, 'reverse': {**STRESS['reverse'], 'loss_fraction': 0}},
+    {**STRESS, 'reverse': {**STRESS['reverse'], 'moves': [0.05, 0.2]}},
+    {**STRESS, 'reverse': {**STRESS['reverse'], 'moves': [0.2, -0.2]}},
+    {**STRESS, 'reverse': {**STRESS['reverse'], 'moves': [-1.0, 0.2]}},
+    {**STRESS, 'reverse': {**STRESS['reverse'], 'typo': 1}}, [], None])
+def test_the_stress_entry_is_default_deny(stress_spec):
+    with pytest.raises(ValueError, match='v7 stress'):
+        stress.StressSpec.from_document({'stress': stress_spec, 'criteria': []})
+    spec = stress.StressSpec.from_document({'stress': STRESS, 'criteria': CRITERIA})
+    assert spec.lookback == 20 and spec.reverse.params['loss_fraction'] == 0.05
+
+
+def test_the_v7_deployment_template_pins_the_approved_scenarios_and_carries_only_placeholders():
+    from pathlib import Path
+    template = json.loads((Path(__file__).resolve().parents[1]
+                           / 'configs/mio-deployment-stress-template.json').read_text())
+    assert template['schema'] == V7
+    assert template['scenarios'] == stress._approved_scenarios(V7)
+    assert set(template) == stress._STRESS_DOCUMENT
+    assert template['criteria'] == []
+    stress.StressSpec.from_document(template)
+    entry, = template['cohorts'].values()
+    assert set(entry) == stress._RANGE_ENTRY
+    pins = [template['results_pins_sha256'], entry['result_sha256'], *entry['csv_sha256'].values(),
+            *entry['quote_index_sha256'].values()]
+    assert all(str(pin).startswith('REPLACE') for pin in pins)
+    assert set(entry['csv_sha256']) == set(stress._CONTROL_CSVS)
+
+
+# --- a v7 document over a Q1-shaped packet, on disk with every pin the replay checks ----------------------------
+def _before(day, count):
+    """Return the ``count`` weekdays that precede ``day``, ascending."""
+    from datetime import date, timedelta
+    found, cursor = [], date.fromisoformat(day)
+    while len(found) < count:
+        cursor -= timedelta(days=1)
+        if cursor.weekday() < 5:
+            found.append(cursor.isoformat())
+    return found[::-1]
+
+
+def _v7_world(tmp_path, monkeypatch, *, amplitude=0.02, lookback=20, criteria=(), reverse=None, pre=25,
+              params=None, plain_methods=False, names=None, bar_fn=None):
+    """Build the packet layout of the v6 test, regenerate the pinned control, and return a v7 document.
+
+    The bars alternate ``100`` and ``100 e^amplitude`` along the pinned session spine, so every window of an even
+    number of returns has mean zero and the expiry bar (spine index ``pre + 20``, odd) sits at ``100 e^amplitude``.
+    """
+    from datetime import date, timedelta
+    from pathlib import Path
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from dskit.pipeline.document import PipelineDocument
+    from dskit.pipeline.driver import RunAttestation
+
+    end = Q1[10]
+    tail = (date.fromisoformat(end) + timedelta(days=60)).isoformat()
+    calendar = [d for d in Q1 if d < tail]
+    spine = [*_before(Q1[0], pre), *calendar]
+    document, pins = _v5_tree(tmp_path, overrides={'end_before': end, 'sessions': len(calendar),
+                                                    'latest_expiry': Q1_EXPIRY})
+    cohort = document['cohorts'][Q1_COHORT]
+    config_path = stress.FrozenMIOReplay._run_document(document, Q1_COHORT)
+    config = json.loads(config_path.read_text())
+    config['name'] = 'frozen-packet'
+    config['pipeline']['plan']['uses'] = 'dskit.pipeline.study_protocol:StudyProtocolPlan'
+    config['pipeline']['close'] = {'uses': 'dskit.pipeline.study_protocol:StudyPacketClose'}
+    study = config['pipeline']['plan']['params']['study']
+    study.update(contract='index_options.mio_contract:MIOStudyContract', selected_packet='dev',
+                 packets=[{'id': 'dev', 'start': Q1[0], 'end_before': end}])
+    study['domain'].update(history_start=spine[0], tail_padding_days=0)
+    study['domain']['params']['bridge']['end_before'] = end
+    study['domain']['params'].update(params or {})
+    study['domain']['sources']['sessions'] = {'pin': {'id': 'sessions'}, 'files': {'shared': 'days.parquet'}}
+    session_file = tmp_path / 'days.parquet'
+    pq.write_table(pa.table({'date': spine}), session_file)
+
+    class PinnedSessions:
+        def __init__(self, pin):
+            assert pin == {'id': 'sessions'}
+
+        def file(self, relative, *, verify):
+            return session_file
+
+    def attested_output(self, node, port, document_hash):
+        return {'sha256': pins['runs'][Q1_COHORT]['sha256']}
+
+    monkeypatch.setattr(RunAttestation, 'attested_output', attested_output)
+    monkeypatch.setattr(stress, 'PinnedPayloadSource', PinnedSessions)
+    amplitudes = amplitude if isinstance(amplitude, dict) else None
+    monkeypatch.setattr(stress, '_bar_rows', lambda binding, symbols, days: {
+        s: {d: (bar_fn(s, i) if bar_fn else 100.0 * math.exp((amplitudes[s] if amplitudes else amplitude) * (i % 2)))
+            for i, d in enumerate(days)} for s in symbols})
+
+    result_dir = Path(cohort['result_dir'])
+    result_path = result_dir / 'result.json'
+    original = json.loads(result_path.read_text())
+    original['audit']['calendar'] = calendar
+    if plain_methods:                                    # no per-contract reserve floor on any method
+        for method in study['domain']['params']['methods']:
+            method.pop('reserve_per_contract', None)
+        for packet in original['results']:
+            packet['result']['method'].pop('reserve_per_contract', None)
+    if names:                                            # more names, and a second ABC book filled two sessions later
+        import copy
+        domain_params = study['domain']['params']
+        domain_params['symbols'] = list(names)
+        study['domain']['pairs'] = [{'id': 'p' + name, 'symbol': name, 'dte_min': 1, 'dte_max': 60}
+                                    for name in names]
+        cohort['quote_index_sha256'] = {name: 'q' for name in names}
+        for packet in original['results']:
+            first = packet['result']['decisions'][0]
+            base = first['books'][0]
+            first['books'] = [base, *({**copy.deepcopy(base), 'symbol': name,
+                                      'id': base['decision_date'] + ':' + name + ':' + base['expiry']}
+                                     for name in names[1:])]
+            late = copy.deepcopy(first)
+            late['date'] = Q1[2]
+            late['books'] = [{**copy.deepcopy(base), 'decision_date': Q1[2],
+                              'id': Q1[2] + ':' + base['symbol'] + ':' + base['expiry']}]
+            packet['result']['decisions'].append(late)
+    world = SimpleNamespace(document=document, pins=pins, original=original, repo=Path(document['repository_root']),
+                            path=Path(pins['evidence']['artifact-index.json']['path']).parents[2] / 'document.json',
+                            output=Path(document['output_root']), cohort=cohort)
+
+    def pin_config():
+        config_path.write_text(json.dumps(config))
+        pins['original_configs'][cohort['config']]['sha256'] = stress._sha(config_path)
+        pins['runs'][Q1_COHORT]['document_hash'] = PipelineDocument.from_obj(config).hash
+
+    def pin_result():
+        result_path.write_text(json.dumps(original))
+        cohort['result_sha256'] = stress._sha(result_path)
+        pins['runs'][Q1_COHORT]['sha256'] = cohort['result_sha256']
+
+    def save():
+        pins_path = Path(document['results_pins'])
+        pins_path.write_text(json.dumps(pins))
+        document['results_pins_sha256'] = stress._sha(pins_path)
+        world.path.write_text(json.dumps(document))
+
+    world.pin_result, world.save = pin_result, save
+    pin_config()
+    pin_result()
+    # Regenerate the pinned control with the v6 route (no reverse record), then write its extracts.
+    document.update(schema='mio-execution-stress/v6', hedge={'block': {}})
+    replay = stress.FrozenMIOReplay(Q1_COHORT, document, pins)
+    with monkeypatch.context() as patch:
+        patch.setattr(stress.FrozenMIOReplay, '_verify_control_csv_rows', lambda self, result: None)
+        for packet in original['results']:
+            result, _ = replay.run_method(packet, stress._approved_scenarios(V5)[0])
+            packet['result'] = json.loads(json.dumps(result))
+    pin_result()
+    for name, body in _csvs(original['results']).items():
+        (result_dir / name).write_text(body)
+        cohort['csv_sha256'][name] = stress._sha(result_dir / name)
+    del document['hedge']
+    document.update(schema=V7, scenarios=stress._approved_scenarios(V7),
+                    stress={'lookback': lookback, 'reverse': reverse or STRESS['reverse']},
+                    criteria=list(criteria))
+    save()
+    _commit(world.repo)
+    world.replay = lambda: stress.FrozenMIOReplay(Q1_COHORT, document, pins)
+    return world
+
+
+def _fingerprint(result):
+    return (result['pnl'], [(t['id'], t['credit'], [leg['quantity'] for leg in t['legs']])
+                            for t in result['trades']])
+
+
+def test_the_control_world_matches_the_hand_worked_known_answer(tmp_path, q1_loaders, monkeypatch):
+    world = _v7_world(tmp_path, monkeypatch)
+    replay = world.replay()
+    assert replay.per_method and replay.history[0] < replay.calendar[0] and replay.calendar == Q1[:len(replay.calendar)]
+    result, _ = replay.run_method(replay.original['results'][0], stress._approved_scenarios(V7)[0])
+    # 3x3 call spread: debit 663.90 (known answer); the expiry bar is 100 e^0.02 so the spread pays 3 x (S - 100) x 100.
+    assert result['pnl'] == pytest.approx(-663.9 + 300 * (100 * math.exp(0.02) - 100))
+
+
+def test_each_new_case_differs_from_the_control_on_a_fixture_built_to_be_sensitive_to_it(tmp_path, q1_loaders,
+                                                                                         monkeypatch):
+    """Expiry sits inside the 100/105 spread and the call leg shows only 3 of 4 contracts, so every field matters."""
+    world = _v7_world(tmp_path, monkeypatch)
+    replay = world.replay()
+    packet = replay.original['results'][0]
+    cases = {c['id']: c for c in stress._approved_scenarios(V7)}
+    control, _ = replay.run_method(packet, cases['control'])
+    assert len(control['trades']) == 1
+    seen = {}
+    for name in NEW_EIGHT:
+        result, _ = replay.run_method(packet, cases[name])
+        seen[name] = _fingerprint(result)
+        assert seen[name] != _fingerprint(control), name
+    assert seen['quarter_size'][1] == []                                  # 3 // 4 = 0 displayed: not filled
+    assert seen['adverse_price_100'][1][0][2] == [3, 3]                   # full depth, worse price only
+    assert [seen[n][1][0][2] for n in ('joint_down_severe', 'joint_up_severe')] == [[3, 3], [3, 3]]
+
+
+def test_the_seven_legacy_cases_run_identically_in_the_v7_and_the_v5_shape(tmp_path, q1_loaders, monkeypatch):
+    world = _v7_world(tmp_path, monkeypatch)
+    replay = world.replay()
+    packet = replay.original['results'][1]
+    new = stress._approved_scenarios(V7)[:7]
+    for old, case in zip(stress._approved_scenarios(V5), new):
+        if case['id'] == 'control':
+            continue
+        assert replay.run_method(packet, case) == replay.run_method(packet, old), case['id']
+
+
+def test_no_case_shocks_the_pinned_bars_and_the_estimate_reads_them_unshocked(tmp_path, q1_loaders, monkeypatch):
+    world = _v7_world(tmp_path, monkeypatch)
+    replay = world.replay()
+    packet = replay.original['results'][0]
+    before = deepcopy(replay.bars)
+    for case in stress._approved_scenarios(V7):
+        replay.run_method(packet, case)
+    assert replay.bars == before
+    study = replay.study(next(c for c in stress._approved_scenarios(V7) if c['id'] == 'expiry_down_3s'), packet)
+    # std of 20 alternating +-0.02 returns (ddof 1) times sqrt(19 sessions to expiry) = 0.02 sqrt(20).
+    multiplier = math.exp(-3 * 0.02 * math.sqrt(20))
+    assert multiplier == pytest.approx(0.7646568122115767)
+    assert study._bars['ABC'][Q1_EXPIRY] == pytest.approx(before['ABC'][Q1_EXPIRY] * multiplier)
+    assert study._bars['ABC'][Q1[5]] == before['ABC'][Q1[5]] and study._bars is not replay.bars
+    assert replay.new_estimator().scale('ABC', Q1[1], Q1_EXPIRY)[0] == pytest.approx(0.02 * math.sqrt(20 / 19))
+
+
+@pytest.mark.parametrize('fraction, expected', [
+    # Down moves leave the spread worthless: a 663.90 loss on a funding of 10,000 or 11,000. 5% of funding is at most
+    # 550, so the smallest declared move already breaches (0.0); 12% is at least 1,200, so none does. Up moves pay
+    # the spread in full (a gain), so they never breach.
+    (0.05, {'down_move': 0.0, 'down_reached': True, 'up_move': 0.2, 'up_reached': False}),
+    (0.12, {'down_move': 0.2, 'down_reached': False, 'up_move': 0.2, 'up_reached': False}),
+    # Marked equity is funding less 48.90 of spread cost (300 x (0.10 + 0.05) + 3.90 fees). At funding 10,000 a
+    # 6.65% limit is 665.00 > 663.90 (no breach on funding) while 6.65% of equity 9,951.10 is 661.73 <= 663.90 (a
+    # breach on equity): only the funding basis reports "never reached".
+    (0.0665, {'down_move': 0.2, 'down_reached': False, 'up_move': 0.2, 'up_reached': False}),
+    # Funding plus the 663.90 reserve would give 682.49 > 663.90 at a 6.4% limit; funding alone gives 640.00 <= 663.90.
+    (0.064, {'down_move': 0.0, 'down_reached': True, 'up_move': 0.2, 'up_reached': False})])
+def test_reverse_stress_on_the_control_is_the_funding_basis_lower_bound(tmp_path, q1_loaders, monkeypatch,
+                                                                         fraction, expected):
+    reverse = {'moves': [-0.2, -0.05, 0.05, 0.2], 'loss_fraction': fraction}
+    world = _v7_world(tmp_path, monkeypatch, reverse=reverse)
+    replay = world.replay()
+    control = stress._approved_scenarios(V7)[0]
+    for packet in replay.original['results']:
+        result, _ = replay.run_method(packet, control)
+        assert result['reverse_stress'] == {**expected, 'sessions': 19, 'unavailable': None}
+    other, _ = replay.run_method(replay.original['results'][0], stress._approved_scenarios(V7)[1])
+    assert 'reverse_stress' not in other                                    # the control account only
+
+
+def test_reverse_stress_input_errors_give_nulls_never_an_exception(tmp_path, q1_loaders, monkeypatch):
+    world = _v7_world(tmp_path, monkeypatch, amplitude=0.0)              # flat bars: zero basket variance
+    replay = world.replay()
+    result, _ = replay.run_method(replay.original['results'][0], stress._approved_scenarios(V7)[0])
+    assert result['reverse_stress']['down_move'] is None and result['reverse_stress']['up_reached'] is None
+    assert 'basket variance' in result['reverse_stress']['unavailable']
+    assert result['reverse_stress']['sessions'] == 0
+
+
+def test_a_book_input_the_shock_cannot_evaluate_gives_null_reverse_values(tmp_path, q1_loaders, monkeypatch):
+    world = _v7_world(tmp_path, monkeypatch)
+    replay = world.replay()
+    original = stress.WeeklyOptionPortfolioStudy._account_shock
+
+    def cannot_evaluate(self, books, day, shock, hedged=False):
+        estimate, losses = original(self, books, day, shock, hedged)
+        return (estimate, None) if day == Q1[5] else (estimate, losses)     # the shock owner's own fail-closed answer
+
+    monkeypatch.setattr(stress.WeeklyOptionPortfolioStudy, '_account_shock', cannot_evaluate)
+    result, _ = replay.run_method(replay.original['results'][0], stress._approved_scenarios(V7)[0])
+    reverse = result['reverse_stress']
+    assert [reverse[k] for k in ('down_move', 'down_reached', 'up_move', 'up_reached')] == [None] * 4
+    assert 'missing or nonfinite' in reverse['unavailable'] and Q1[5] in reverse['unavailable']
+
+
+def test_no_open_session_gives_null_reverse_values_not_a_pass(tmp_path, q1_loaders, monkeypatch):
+    replay = _v7_world(tmp_path, monkeypatch).replay()
+    reverse = replay._reverse_stress([])
+    assert reverse['down_move'] is None and reverse['up_move'] is None and reverse['sessions'] == 0
+    assert 'at least one session' in reverse['unavailable']
+
+
+def _irregular(symbol, index):
+    """Deterministic irregular closes: cumulative log returns of two incommensurate oscillations."""
+    cumulative = sum({'ABC': 0.03 * math.sin(1.7 * i), 'DEF': 0.05 * math.cos(0.9 * i + 1.0)}[symbol]
+                     for i in range(1, index + 1))
+    return 100.0 * math.exp(cumulative)
+
+
+def _beta_at(bars, spine, day, lookback, symbol, symbols):
+    """The equal-weight basket beta of one name from the ``lookback`` returns before ``day``, worked apart."""
+    import numpy as np
+    k = spine.index(day)
+    window = spine[k - lookback - 1:k]
+    returns = {s: np.diff(np.log([bars[s][d] for d in window])) for s in symbols}
+    market = np.mean([returns[s] for s in symbols], axis=0)
+    mine = returns[symbol]
+    return float(np.mean((mine - mine.mean()) * (market - market.mean())) / np.var(market))
+
+
+def test_the_reverse_stress_fits_its_betas_on_the_documents_lookback(tmp_path, q1_loaders, monkeypatch):
+    """Irregular bars on two names make beta depend on the window length, unlike the alternating waves."""
+    world = _v7_world(tmp_path, monkeypatch, bar_fn=_irregular, names=['ABC', 'DEF'], lookback=7,
+                      params={'weekly_fraction': 1.0, 'correlation_min_pairs': 5})
+    replay = world.replay()
+    calls, original = [], stress.WeeklyOptionPortfolioStudy._account_shock
+
+    def spy(self, books, day, shock, hedged=False):
+        estimate, losses = original(self, books, day, shock, hedged)
+        calls.append((day, shock['beta_lookback'], dict(estimate['betas'])))
+        return estimate, losses
+
+    monkeypatch.setattr(stress.WeeklyOptionPortfolioStudy, '_account_shock', spy)
+    result, _ = replay.run_method(replay.original['results'][0], stress._approved_scenarios(V7)[0])
+    assert result['reverse_stress']['sessions'] == len(calls) > 5
+    assert {lookback for _day, lookback, _betas in calls} == {7}
+    for day, _lookback, betas in calls:
+        for symbol in ('ABC', 'DEF'):
+            assert betas[symbol] == pytest.approx(_beta_at(replay.bars, replay.history, day, 7, symbol,
+                                                           ['ABC', 'DEF']))
+    day, _lookback, betas = calls[0]
+    assert abs(betas['ABC'] - _beta_at(replay.bars, replay.history, day, 20, 'ABC', ['ABC', 'DEF'])) > 0.05
+
+
+def test_an_unsupported_estimate_is_a_recorded_case_not_a_stopped_run(tmp_path, q1_loaders, monkeypatch):
+    world = _v7_world(tmp_path, monkeypatch, amplitude=0.0, criteria=CRITERIA)
+    output = stress.execute(world.path)
+    summary = json.loads((output / 'summary.json').read_text())
+    unsupported = ['expiry_down_3s', 'expiry_up_3s', 'market_down_30', 'market_up_20',
+                   'joint_down_severe', 'joint_up_severe']
+    assert {(r['scenario'], r['status']) for r in summary if r['status'] != 'complete'} == {
+        (name, 'unsupported') for name in unsupported}
+    row = next(r for r in summary if r['scenario'] == 'market_down_30')
+    assert [row[k] for k in ('loss_fraction', 'breach_days', 'worst_name_reserve_share')] == [None] * 3
+    verdict = json.loads((output / 'verdict.json').read_text())
+    assert [(r['method'], r['status'], r['unsupported']) for r in verdict['rows']] == [
+        (m, 'FAIL', unsupported) for m in ('m0', 'm1', 'm2')]
+    assert json.loads((output / 'shocks.json').read_text()) == []         # nothing was estimated
+
+
+def test_v7_execute_publishes_fifteen_cases_with_statistics_shocks_and_a_hashed_verdict(
+        tmp_path, q1_loaders, monkeypatch, capsys):
+    world = _v7_world(tmp_path, monkeypatch)
+    capsys.readouterr()
+    output = stress.execute(world.path)
+    lines = [line.split()[:3] for line in capsys.readouterr().out.splitlines() if line.startswith(Q1_COHORT + ' ')]
+    assert len(lines) == 45 and [c[1] for c in lines[:3]] == ['control'] * 3     # Gate 0 first
+    assert all(c[1] != 'control' for c in lines[3:])
+    summary = json.loads((output / 'summary.json').read_text())
+    assert len(summary) == 45 and {r['status'] for r in summary} == {'complete'}
+    assert all({'loss_fraction', 'breach_days', 'worst_name_reserve_share'} <= set(r) for r in summary)
+    control = next(r for r in summary if r['scenario'] == 'control' and r['method'] == 'm0')
+    assert control['loss_fraction'] == pytest.approx(-control['final_profit_usd'] / control['contributions_usd'])
+    assert control['breach_days'] == 0 and 0 < control['worst_name_reserve_share'] < 0.2
+    # The expiry bar of every shocked case, against the same case's unshocked bar.
+    ratios = {(r['scenario']): r['stressed_expiry_underlying'] / r['original_expiry_underlying']
+              for r in json.loads((output / 'dispositions.json').read_text())
+              if r['method'] == 'm0' and r['stressed_expiry_underlying'] is not None}
+    expected = {'control': 1, 'adverse_price': 1, 'expiry_down_15': 0.85, 'expiry_up_15': 1.15,
+                'expiry_down_3s': 0.7646568122115767, 'expiry_up_3s': 1.307776225922519,
+                'market_down_30': 0.7, 'market_up_20': 1.2, 'joint_down_severe': 0.7, 'joint_up_severe': 1.2,
+                'adverse_price_100': 1}
+    assert {k: v for k, v in ratios.items() if k in expected} == pytest.approx(expected)
+    shocks = json.loads((output / 'shocks.json').read_text())
+    assert len(shocks) == 18 and {r['case'] for r in shocks} == {
+        'expiry_down_3s', 'expiry_up_3s', 'market_down_30', 'market_up_20', 'joint_down_severe', 'joint_up_severe'}
+    vol = next(r for r in shocks if r['case'] == 'expiry_down_3s' and r['method'] == 'm1')
+    assert vol == {'cohort': Q1_COHORT, 'method': 'm1', 'case': 'expiry_down_3s', 'symbol': 'ABC',
+                   'expiry': Q1_EXPIRY, 'window_end': Q1[0], 'sessions_to_expiry': 19,
+                   'std': pytest.approx(0.02 * math.sqrt(20 / 19)), 'beta': None,
+                   'multiplier': pytest.approx(0.7646568122115767)}
+    market = next(r for r in shocks if r['case'] == 'market_up_20')
+    assert market['beta'] == pytest.approx(1.0) and market['std'] is None and market['multiplier'] == pytest.approx(1.2)
+    verdict = json.loads((output / 'verdict.json').read_text())
+    assert [(r['cohort'], r['method'], r['status']) for r in verdict['rows']] == [
+        (Q1_COHORT, m, 'UNJUDGED') for m in ('m0', 'm1', 'm2')]
+    assert all(len(r['cases']) == 15 and r['unsupported'] == [] for r in verdict['rows'])
+    assert json.loads((output / Q1_COHORT / 'control/m0.json').read_text())['result']['reverse_stress']['sessions'] == 19
+    assert '## Verdict' in (output / 'report.md').read_text()
+    manifest = json.loads((output / 'pins.json').read_text())
+    for name in ('verdict.json', 'shocks.json'):
+        assert manifest['files'][name]['sha256'] == stress._sha(output / name)
+    assert manifest['evidence_kind'] == stress._PROXY_NOTE
+
+
+def test_v7_verdict_statuses_follow_the_pre_registered_criteria(tmp_path, q1_loaders, monkeypatch):
+    loose = [{'name': 'loss', 'stat': 'worst_loss_fraction', 'op': '<=', 'value': 0.9, 'min_n': 0},
+             {'name': 'drawdown', 'stat': 'worst_drawdown', 'op': '<=', 'value': 0.9, 'min_n': 0},
+             {'name': 'breach', 'stat': 'worst_breach_days', 'op': '<=', 'value': 0, 'min_n': 0},  # none breach
+             {'name': 'name', 'stat': 'worst_name_reserve_share', 'op': '<=', 'value': 0.9, 'min_n': 0},
+             {'name': 'down', 'stat': 'reverse_down_move', 'op': '>=', 'value': 0, 'min_n': 1},
+             {'name': 'up', 'stat': 'reverse_up_move', 'op': '>=', 'value': 0, 'min_n': 1}]
+    outcomes = {}
+    for label, criteria in (('pass', loose), ('fail', [{**loose[2], 'value': -1}, *loose[:2], *loose[3:]]),
+                            ('thin', [{**loose[0], 'min_n': 1000}, *loose[1:]]), ('partial', loose[:5])):
+        world = _v7_world(tmp_path / label, monkeypatch, criteria=criteria)
+        output = stress.execute(world.path)
+        written = json.loads((output / 'verdict.json').read_text())
+        assert written['criteria'] == criteria and written['schema'] == 'mio-execution-stress-verdict/v1'
+        outcomes[label] = {r['status'] for r in written['rows']}
+    assert outcomes == {'pass': {'PASS'}, 'fail': {'FAIL'}, 'thin': {'INCONCLUSIVE'}, 'partial': {'INCONCLUSIVE'}}
+
+
+def test_a_criterion_naming_an_unknown_statistic_refuses_before_any_replay(tmp_path, q1_loaders, monkeypatch):
+    bad = [{'name': 'x', 'stat': 'sharpe', 'op': '<=', 'value': 1, 'min_n': 1}]
+    world = _v7_world(tmp_path, monkeypatch)
+    world.document['criteria'] = bad
+    world.save()
+    monkeypatch.setattr(stress, 'FrozenMIOReplay', lambda *a: pytest.fail('a replay was opened'))
+    with pytest.raises(ValueError, match='unknown statistic'):
+        stress.execute(world.path)
+    assert not world.output.exists()
+
+
+def test_gate_0_mismatch_stops_the_run_and_publishes_nothing(tmp_path, q1_loaders, monkeypatch):
+    world = _v7_world(tmp_path, monkeypatch)
+    world.original['results'][0]['result']['pnl'] += 1.0
+    world.pin_result()
+    world.save()
+    with pytest.raises(ValueError, match='zero-shock control mismatch'):
+        stress.execute(world.path)
+    assert not world.output.exists()
+
+
+def test_v7_checks_the_worktree_is_clean_before_any_replay(tmp_path, q1_loaders, monkeypatch):
+    world = _v7_world(tmp_path, monkeypatch)
+    (world.repo / 'stray.txt').write_text('uncommitted')
+    monkeypatch.setattr(stress, 'FrozenMIOReplay', lambda *a: pytest.fail('a replay was opened'))
+    with pytest.raises(ValueError, match='worktree must be clean'):
+        stress.execute(world.path)
+    assert not world.output.exists()
+
+
+def test_v7_keeps_the_v5_refusal_of_the_protected_window(tmp_path, q1_loaders, monkeypatch):
+    world = _v7_world(tmp_path, monkeypatch)
+    world.cohort.update(end_before='2024-01-02', latest_expiry='2024-01-02')
+    world.save()
+    monkeypatch.setattr(stress, 'FrozenMIOReplay', lambda *a: pytest.fail('a replay was opened'))
+    with pytest.raises(ValueError, match='protected window'):
+        stress.execute(world.path)
+    assert not world.output.exists()
+
+
+def test_v7_refuses_a_run_document_without_the_packet_layout_by_name(tmp_path, q1_loaders):
+    document, pins = _v5_tree(tmp_path)
+    document.update(schema=V7, scenarios=stress._approved_scenarios(V7), stress=STRESS, criteria=[])
+    with pytest.raises(ValueError, match='MIOStudyContract'):
+        stress.FrozenMIOReplay(Q1_COHORT, document, pins)
+
+
+def test_v7_refuses_a_lookback_below_the_beta_owners_minimum_pairs(tmp_path, q1_loaders, monkeypatch):
+    world = _v7_world(tmp_path, monkeypatch, lookback=19)               # the run's correlation_min_pairs is 20
+    with pytest.raises(ValueError, match='correlation_min_pairs'):
+        world.replay()
+
+
+@pytest.mark.parametrize('key, value', [('hedge', {'block': {}}), ('stress', None), ('criteria', 'x')])
+def test_v7_document_keys_are_closed(tmp_path, q1_loaders, monkeypatch, key, value):
+    world = _v7_world(tmp_path, monkeypatch)
+    if key == 'hedge':
+        world.document['hedge'] = value
+    else:
+        world.document[key] = value
+    world.save()
+    with pytest.raises(ValueError, match={'hedge': 'invalid execution-stress document',
+                                          'stress': 'v7 stress must carry exactly',
+                                          'criteria': 'v7 criteria must be a list'}[key]):
+        stress.execute(world.path)
+    assert not world.output.exists()
+
+
+def test_a_v7_scenario_list_that_differs_from_the_approved_set_refuses(tmp_path, q1_loaders, monkeypatch):
+    world = _v7_world(tmp_path, monkeypatch)
+    for mutate in (lambda c: c.reverse(), lambda c: c.pop(),
+                   lambda c: c[8].update(size_divisor=2),
+                   lambda c: c[13]['expiry_shock'].update(move=-0.31)):
+        cases = stress._approved_scenarios(V7)
+        mutate(cases)
+        world.document['scenarios'] = cases
+        world.save()
+        with pytest.raises(ValueError, match='scenario values differ'):
+            stress.execute(world.path)
+    assert not world.output.exists()
+
+
+@pytest.mark.parametrize('index, field, value', [(2, 'size_divisor', 2.0), (0, 'size_divisor', True),
+                                                  (7, 'price_fraction', True)])
+def test_a_v7_scenario_list_must_match_the_approved_json_types_exactly(tmp_path, q1_loaders, monkeypatch,
+                                                                       index, field, value):
+    """2.0 == 2 and True == 1 in Python, but the document restates the approved list exactly."""
+    world = _v7_world(tmp_path, monkeypatch)
+    cases = stress._approved_scenarios(V7)
+    assert cases[index][field] == value                      # equal by value ...
+    cases[index][field] = value
+    world.document['scenarios'] = cases
+    world.save()
+    with pytest.raises(ValueError, match='scenario values differ'):    # ... but not the same JSON
+        stress.execute(world.path)
+    assert not world.output.exists()
+
+
+def test_v7_checks_the_worktree_again_at_pin_time(tmp_path, q1_loaders, monkeypatch):
+    world = _v7_world(tmp_path, monkeypatch)
+    real, calls = stress._require_clean_worktree, []
+
+    def dirty_after_the_first_check(root):
+        calls.append(root)
+        if len(calls) == 2:                                  # the pin-time call: the replay left a stray file
+            (world.repo / 'stray.txt').write_text('written during the replay')
+        real(root)
+
+    monkeypatch.setattr(stress, '_require_clean_worktree', dirty_after_the_first_check)
+    with pytest.raises(ValueError, match='worktree must be clean'):
+        stress.execute(world.path)
+    assert len(calls) == 2
+
+
+def test_v7_template_methods_and_sessions_refuse_until_edited():
+    from pathlib import Path
+    template = json.loads((Path(__file__).resolve().parents[1]
+                           / 'configs/mio-deployment-stress-template.json').read_text())
+    entry, = template['cohorts'].values()
+    assert (entry['methods'], entry['sessions']) == (0, 0)
+    with pytest.raises(ValueError, match='positive integer'):
+        stress._range_bounds(entry, v6=True)
+
+
+def test_a_non_control_case_whose_marked_equity_goes_nonpositive_is_unsupported_and_fails_the_method(
+        tmp_path, q1_loaders, monkeypatch):
+    """Funding is 5e-6 under the 663.90 debit (inside the ledger's 1e-5 admission tolerance) and nothing is deposited: a worthless expiry leaves equity of -5e-6.
+
+    The control expires at 102.02 and earns 606.04, so it stays positive; the volatility, market and joint down
+    cases leave the spread worthless, so the existing ADR-0280 refusal in ``_scenario_curve`` ends them
+    unsupported before the new statistics are ever computed.
+    """
+    world = _v7_world(tmp_path, monkeypatch, params={'initial': 663.899995, 'deposit': 0.0, 'weekly_fraction': 1.0},
+                       plain_methods=True)
+    seen = []
+    real = stress.CaseStatistics.of
+    monkeypatch.setattr(stress.CaseStatistics, 'of', classmethod(lambda cls, r, d: seen.append(1) or real(r, d)))
+    output = stress.execute(world.path)
+    summary = json.loads((output / 'summary.json').read_text())
+    bad = {r['scenario'] for r in summary if r['status'] == 'unsupported'}
+    assert bad and 'control' not in bad
+    row = next(r for r in summary if r['status'] == 'unsupported')
+    # On the expiry session itself: the previous equity was positive, so it is `equity <= 0` that refused,
+    # not the next session's `denominator <= 0`.
+    assert row['unsupported_reason'] == 'nonpositive marked equity under scenario on ' + Q1_EXPIRY
+    assert row['loss_fraction'] is None and row['worst_name_reserve_share'] is None
+    complete = [r for r in summary if r['status'] == 'complete']
+    assert len(seen) == len(complete)                        # the statistics never saw an unsupported case
+    verdict = json.loads((output / 'verdict.json').read_text())
+    assert {r['status'] for r in verdict['rows']} == {'FAIL'}
+    assert all(set(r['unsupported']) == bad for r in verdict['rows'])
+
+
+def test_two_names_and_two_books_sharing_a_symbol_and_expiry_are_shocked_per_symbol_at_the_earliest_fill(
+        tmp_path, q1_loaders, monkeypatch):
+    """ABC has books decided on Q1[0] and Q1[2] (fills Q1[1] and Q1[3]) with one expiry; DEF has one book.
+
+    Through ``execute`` and ``shocks.json``: one estimate per (symbol, expiry) at the earlier fill (window ends
+    Q1[0], 19 sessions to expiry), and a different beta and scale for each name (ABC wave 0.02, DEF wave 0.04, so
+    betas 2/3 and 4/3 on the equal-weight basket).
+    """
+    world = _v7_world(tmp_path, monkeypatch, amplitude={'ABC': 0.02, 'DEF': 0.04}, names=['ABC', 'DEF'],
+                      params={'weekly_fraction': 1.0})
+    output = stress.execute(world.path)
+    summary = json.loads((output / 'summary.json').read_text())
+    assert {r['status'] for r in summary} == {'complete'} and all(
+        r['filled'] == 3 for r in summary if r['scenario'] == 'control')
+    shocks = [r for r in json.loads((output / 'shocks.json').read_text()) if r['method'] == 'm0']
+    assert len(shocks) == 12                                  # six sized cases x two (symbol, expiry) pairs
+    by = {(r['case'], r['symbol']): r for r in shocks}
+    for r in shocks:
+        assert (r['expiry'], r['window_end'], r['sessions_to_expiry']) == (Q1_EXPIRY, Q1[0], 19)
+    assert by['expiry_down_3s', 'ABC']['std'] == pytest.approx(0.02 * math.sqrt(20 / 19))
+    assert by['expiry_down_3s', 'DEF']['std'] == pytest.approx(0.04 * math.sqrt(20 / 19))
+    assert by['expiry_down_3s', 'ABC']['multiplier'] == pytest.approx(math.exp(-3 * 0.02 * math.sqrt(20)))
+    assert by['expiry_down_3s', 'DEF']['multiplier'] == pytest.approx(math.exp(-3 * 0.04 * math.sqrt(20)))
+    assert (by['market_down_30', 'ABC']['beta'], by['market_down_30', 'DEF']['beta']) == pytest.approx((2 / 3, 4 / 3))
+    assert (by['market_down_30', 'ABC']['multiplier'], by['market_down_30', 'DEF']['multiplier']) == pytest.approx(
+        (0.8, 0.6))
+    # Both ABC books settle on the one shocked ABC bar; the DEF book on the DEF bar.
+    rows = [r for r in json.loads((output / 'dispositions.json').read_text())
+            if r['method'] == 'm0' and r['scenario'] == 'market_down_30']
+    assert {r['symbol']: round(r['stressed_expiry_underlying'] / r['original_expiry_underlying'], 9)
+            for r in rows} == {'ABC': pytest.approx(0.8), 'DEF': pytest.approx(0.6)} and len(rows) == 3
+
+
+def test_v5_still_replays_before_it_checks_the_worktree_and_keeps_its_loose_scenario_comparison(
+        tmp_path, q1_loaders, capsys):
+    results = _q1_original_results(tmp_path)
+    _v5_tree(tmp_path / 'dirty', results=results)
+    (tmp_path / 'dirty/repo/stray.txt').write_text('uncommitted')
+    capsys.readouterr()
+    with pytest.raises(ValueError, match='worktree must be clean'):
+        stress.execute(tmp_path / 'dirty/evidence/document.json')
+    assert Q1_COHORT + ' control m0 complete' in capsys.readouterr().out      # v1-v6 order is unchanged
+    document, _pins = _v5_tree(tmp_path / 'loose', results=results)
+    document['scenarios'][0]['price_fraction'] = 0.0                          # 0.0 == 0: v5 compares by value
+    (tmp_path / 'loose/evidence/document.json').write_text(json.dumps(document))
+    assert stress.execute(tmp_path / 'loose/evidence/document.json').exists()
+
+
+def test_v5_outputs_carry_no_v7_file_and_no_v7_column(tmp_path, q1_loaders):
+    results = _q1_original_results(tmp_path)
+    _v5_tree(tmp_path / 'good', results=results)
+    output = stress.execute(tmp_path / 'good/evidence/document.json')
+    assert not (output / 'verdict.json').exists() and not (output / 'shocks.json').exists()
+    summary = json.loads((output / 'summary.json').read_text())
+    assert not {'loss_fraction', 'breach_days', 'worst_name_reserve_share'} & set(summary[0])
+    assert '## Verdict' not in (output / 'report.md').read_text()
+    assert 'reverse_stress' not in json.loads((output / Q1_COHORT / 'control/m0.json').read_text())['result']

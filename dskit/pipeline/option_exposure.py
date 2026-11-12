@@ -54,7 +54,8 @@ from dskit.pipeline.stats import sample_quantile
 
 __all__ = ["BookGreeks", "BookGreeksReport", "CellAttribution", "Concentration", "ExpiryDelta",
            "ExposureSnapshot", "ForwardHedge", "HardToBorrowProxy", "LegGreeks", "ParityForward",
-           "StaticDeltaHedge", "StockEquivalent", "fit_betas", "ExposureLimits", "DirectionEdge"]
+           "StaticDeltaHedge", "StockEquivalent", "fit_betas", "ExposureLimits", "DirectionEdge",
+           "NameShare", "ReverseStress"]
 
 #: Calendar days per year: the one divisor for years-to-expiry and per-day theta.
 DAYS_PER_YEAR = 365
@@ -927,6 +928,155 @@ class Concentration(_Configured):
         sign = self._sign(math.fsum(xs))
         return sign != 0 and all(
             self._sign(math.fsum(xs[:i] + xs[i + 1:])) == sign for i in range(len(xs)))
+
+
+class ReverseStress(_Configured):
+    """How far a market move can go before a book's loss reaches a fraction of the funding.
+
+    A reverse stress inverts the usual question: not "what does a 20% fall
+    cost" but "how small a fall costs this much". Each session brings its
+    funding and the net terminal loss of its open book at every declared
+    move; a session breaches at a move when the loss is at least
+    ``loss_fraction`` times ``max(0, funding)``. Per direction the answer is
+    the largest absolute declared move such that no declared move of that
+    direction of equal or smaller magnitude breaches on any session: a lower
+    bound on the true distance whatever the grid spacing. It is 0 when the
+    smallest declared move breaches and the largest declared move when none
+    does; ``reached`` says whether any declared move breached.
+
+    Parameters
+    ----------
+    params : dict
+        ``moves`` (strictly increasing finite nonzero numbers above -1, at
+        least one negative and one positive) and ``loss_fraction`` (in
+        (0, 1]), both required.
+
+    Examples
+    --------
+    One session of 1,000 funding losing 300 at a 30% fall, grid -0.3, -0.1::
+
+        ReverseStress({"moves": [-0.3, -0.1, 0.1, 0.3], "loss_fraction": 0.25}).search(
+            [(1000.0, {-0.3: 300.0, -0.1: 0.0, 0.1: 0.0, 0.3: 0.0})])
+        # -> {"down_move": 0.1, "down_reached": True, "up_move": 0.3, "up_reached": False}
+    """
+
+    _PARAMS = ("moves", "loss_fraction")
+
+    @classmethod
+    def _check(cls, problems, params):
+        if "loss_fraction" in params:
+            fraction = params["loss_fraction"]
+            if isinstance(fraction, bool) or not number_ok(fraction) or not 0 < fraction <= 1:
+                problems.append(f"loss_fraction must be a number in (0, 1], got {fraction!r}")
+        if "moves" in params:
+            cls._check_moves(problems, params["moves"])
+        _required(problems, params, cls._PARAMS)
+
+    @staticmethod
+    def _check_moves(problems, moves):
+        """Append the problems of a move grid."""
+        if (not isinstance(moves, (list, tuple))
+                or any(isinstance(m, bool) or not number_ok(m) for m in moves)):
+            problems.append(f"moves must be a list of finite numbers, got {moves!r}")
+            return
+        if any(m == 0 or m <= -1 for m in moves):
+            problems.append("moves must be nonzero and above -1")
+        if any(b <= a for a, b in zip(moves, moves[1:])):
+            problems.append("moves must be strictly increasing")
+        if not any(m < 0 for m in moves) or not any(m > 0 for m in moves):
+            problems.append("moves need at least one negative and one positive move")
+
+    def search(self, sessions):
+        """Return ``down_move``/``up_move`` and whether each direction ``reached`` a breach.
+
+        Parameters
+        ----------
+        sessions : iterable of (float, dict)
+            Each session's funding (finite; a nonpositive funding gives a zero
+            limit) and its net terminal loss at every declared move, keyed by
+            the move.
+
+        Raises
+        ------
+        ValueError
+            On no sessions at all (no evidence is not a pass), a nonfinite
+            funding, a nonfinite loss, or a loss table whose moves differ from
+            the declared grid.
+        """
+        moves, fraction = list(self.params["moves"]), self.params["loss_fraction"]
+        first = {-1: None, 1: None}
+        sessions = list(sessions)
+        if not sessions:
+            raise ValueError("a reverse stress needs at least one session")
+        for funding, losses in sessions:
+            if not number_ok(funding):
+                raise ValueError(f"funding must be a finite number, got {funding!r}")
+            if set(losses) != set(moves):
+                raise ValueError(f"losses must cover exactly the declared moves {moves}")
+            limit = fraction * max(0.0, funding)
+            for move in moves:
+                if not number_ok(losses[move]):
+                    raise ValueError(f"loss at move {move} must be finite, got {losses[move]!r}")
+                side = 1 if move > 0 else -1
+                if losses[move] >= limit and (first[side] is None or abs(move) < first[side]):
+                    first[side] = abs(move)
+        out = {}
+        for side, name in ((-1, "down"), (1, "up")):
+            sizes = sorted(abs(m) for m in moves if (m > 0) == (side > 0))
+            below = [m for m in sizes if first[side] is not None and m < first[side]]
+            out[f"{name}_move"] = sizes[-1] if first[side] is None else (below[-1] if below else 0.0)
+            out[f"{name}_reached"] = first[side] is not None
+        return out
+
+
+class NameShare(_Configured):
+    """The largest single name's share of a total, amounts summed per name.
+
+    Description only. The caller says what an amount is (a reserve, a delta)
+    and what the total is (equity); this owns the per-name sum and the maximum.
+
+    Parameters
+    ----------
+    params : dict
+        None; the class takes an empty mapping.
+
+    Examples
+    --------
+    Name A holds 30 + 20 of a 200 total::
+
+        NameShare({}).largest([("A", 30.0), ("B", 10.0), ("A", 20.0)], 200.0)
+        # -> ("A", 0.25)
+    """
+
+    _PARAMS = ()
+
+    @classmethod
+    def _check(cls, problems, params):
+        """Have no value to check: the class has no knob."""
+
+    def largest(self, amounts, total):
+        """Return ``(name, share)`` of the largest summed name, ``None`` with no amounts.
+
+        A tie goes to the name that sorts first.
+
+        Raises
+        ------
+        ValueError
+            On a total that is not finite and positive, or an amount that is
+            not finite and nonnegative.
+        """
+        if not price_ok(total):
+            raise ValueError(f"total must be a finite positive number, got {total!r}")
+        parts = {}
+        for name, amount in amounts:
+            if not number_ok(amount) or amount < 0:
+                raise ValueError(f"amount for {name!r} must be finite and nonnegative, got {amount!r}")
+            parts.setdefault(name, []).append(amount)
+        if not parts:
+            return None
+        sums = {name: math.fsum(values) for name, values in parts.items()}
+        name = min(sums, key=lambda n: (-sums[n], n))
+        return name, sums[name] / total
 
 
 class CellAttribution(_Configured):

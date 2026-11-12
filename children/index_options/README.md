@@ -294,6 +294,15 @@ completed MIO claim, or any sealed window.
   Run `python -m dskit.pipeline walkforward configs/run-synthetic-distribution.json --asof 1978-06-01`
   (journal initialized). Swap the `model` node to test another rung; never
   decision-eligible.
+- Deployment stress (ADR-0316 Decision A): copy
+  `configs/mio-deployment-stress-template.json`, replace every `REPLACE` pin and
+  the `methods` / `sessions` zeros from one attested quarter's result, set
+  `criteria` (an empty list reports `UNJUDGED`), then run
+  `python -m index_options.mio_execution_stress <document>`. It replays the saved
+  selections under fifteen cases, never solves, and writes `summary`, `shocks.json`
+  (every volatility and beta estimate), `verdict.json` and `pins.json` to a fresh
+  output root. A `PASS` needs a criterion on every statistic; any unsupported case
+  is `FAIL`. Development evidence only: it opens nothing from 2024 on.
 - Scenario and stress diagnostic: `configs/run-option-scenario-stress.json`
   declares a synthetic same-expiry index condor and named shocks. Run
   `python -m dskit.pipeline run configs/run-option-scenario-stress.json --asof 2026-10-26`.
@@ -723,6 +732,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # (the coordinator is NOT in this package, so a fix never changes a code pin: see tools/ below);
                            # mio_greeks.py (ADR-0310: MIOGreeksDiagnostics, Greeks, stock-equivalent split and exposure over a SAVED closed MIO run; read-only, sealed window; A2 keys quarter, dividends, seal_crossing, cell_by with cadence; per-method direction_read in the summary, quarter on every row, decision-session forward hedge; every parity forward passes contracts.usable_parity_rows, the one filter built on contracts.usable_quote that the quote nodes also call (parity_rows, parity_filter counts in the summary); configs/mio-greeks-template.json);
                            # ADR-0312 A1 S3, hedge stress: python -m index_options.mio_execution_stress <v6 document> (scenarios static_forward_hedge_rNNN[_carry], no solve);
+                           # ADR-0316 A, deployment stress: python -m index_options.mio_execution_stress <v7 document> (the seven ADR-0280 cases plus eight severity cases, shocks.json, verdict.json; template configs/mio-deployment-stress-template.json; no solve);
                            # evidence: python tools/hedge_evidence.py <stress root> <formulation> COHORT=YYYYQn... --registry R --out NEW.json [--greeks YYYYQn=greeks-summary.json] [--books YYYYQn=books.csv] [--e4-input walk-summary.json] (read-only, one new verdict file); the program twin: python tools/hedge_evidence.py program <formulation> --controls YYYYQn=doc.json... --programs YYYYQn=doc.json... [--carries YYYYQn=doc.json...] [--timing WEEK=unhedged.json,hedged.json...] --registry R --out NEW.json
                            # edge_calibration.py (ADR-0311 stage 4 + A4: IndexOptionsEdgeWalk, the weekly MIO's edge-reliability walk as a thin child of dskit's EdgeReliabilityWalk; EdgeItemFeatures is the row seam the study will share; read-only, sealed window, MIO's own _prepare/_usable_quote/_settlements rules pinned by test; template configs/edge-calibration-template.json, no run approved; documents are per quarter via `mio_documents` {quarter: {path, sha256}}, a chain not covering a quarter refuses `chain_not_covered`. RUN: `PYTHONPATH=.:children/index_options python -m dskit.pipeline validate <cfg>.json`, then `... python -m dskit.pipeline run <cfg>.json --asof 2021-06-30` from the repo root; the documents and pins must come from `quarterly_forecasts pin`; outputs under out_dir: map-<t>.json, rows/, the csv tables and summary.json with `reads` and `direction.e4_input`)
                            # mio_run_events.py (ADR-0283: MioRunRows, one method of a saved MIO result.json as event rows; the

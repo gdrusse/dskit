@@ -177,6 +177,22 @@ what would have happened. The replay never re-optimizes.
   multiplied by 0.85 or 1.15); `joint_down_15` and `joint_up_15` (all three
   changes together). With available-size sizing, depth shortfalls partly fill
   instead of refusing outright.
+- **The eight severity cases** (schema v7, ADR-0316): `adverse_price_100` (a
+  full extra spread); `quarter_size` (depth cut to a quarter); `expiry_down_3s`
+  and `expiry_up_3s` (each name's expiry price moved three of its own standard
+  deviations, sized from its trailing daily returns and the sessions left to
+  expiry); `market_down_30` and `market_up_20` (a market move times each name's
+  beta); `joint_down_severe` and `joint_up_severe` (a full extra spread plus
+  that market move, at full depth). `shocks.json` lists every estimate.
+- **Reverse stress**: on the control account, the largest declared market move
+  that no session's open books turn into a loss of the declared fraction of
+  funding. A larger number is safer; 0 means the smallest declared move already
+  breaches.
+- **Verdict**: per method, the worst value over its cases of loss fraction,
+  drawdown, breach days and largest single-name reserve share, plus the two
+  reverse moves, judged against the document's criteria. `PASS` needs a
+  criterion on every one; any unsupported case is `FAIL`; no criteria is
+  `UNJUDGED`; too little evidence is `INCONCLUSIVE`.
 
 ## Report mechanics
 
@@ -252,7 +268,9 @@ only; no row here supports a claim that the method makes money.
 `index_options/ledger_studies.py`: `WeeklyOptionPortfolioStudy._fill`,
 `_prepare`, `_limits`, the decision statuses and certificates.
 `index_options/mio_execution_stress.py`: the seven scenarios, control, unsupported
-metrics and the metrics dict. `dskit/evaluation/statistics.py`: hit rate, profit
+metrics and the metrics dict; for v7 the severity cases (`ExpiryShock`,
+`ShockEstimator`), `CaseStatistics` and `StressVerdict`.
+`dskit/pipeline/option_exposure.py`: `ReverseStress`, `NameShare`. `dskit/evaluation/statistics.py`: hit rate, profit
 factor, ES95. Run units: `column-guide.json` beside the run output. The report
 contract is `run_report` in [study.json](../plans/mio-json/study.json) and
 ADR-0283 in the [decision log](../../../../docs/architecture/decision-log.md).

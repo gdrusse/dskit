@@ -1339,6 +1339,7 @@ dskit/pipeline/
 │                      spot-term Greeks per book, delta-equivalent stock vs residual P&L split, static delta-hedge P&L (costs, short borrow, dividends; params required), per-cell shares, beta-weighted exposure by DTE bucket;
 │                      BookGreeksReport (kind book_greeks_report, by import path): composes all of them over books/quotes/bars via four hooks (_load_books, _load_quotes, _cell_key, and the optional _hedge_dividend);
 │                      option_pricing also gains black76_gamma + black76_theta (per year, forward fixed)
+│                      ADR-0316: ReverseStress (the largest declared market move that breaches no funding loss limit on any session) and NameShare (the largest name's share of a total)
 │                      ADR-0310 A2 (core): ExpiryDelta (payoff-delta split), ForwardHedge (decision-sized, struck at F_fill), StaticDeltaHedge.carry_costs (the one cost rule), HardToBorrowProxy, Concentration, LegGreeks.delta_f_sh, direction_read
 ├── option_structures.py leg-set algebra graduated from the index_options child (ADR-0265):
 │                      structure_credit (shorts at the bid, longs at the ask), structure_payoff,
@@ -1414,6 +1415,7 @@ dskit/pipeline/
 │                      chain_parquet (ParquetChainRows: Parquet-tree source of the chain nodes), chain_panel (ChainPanelBuild: per-date panel, resumable per root), chain_reuse (ReuseDetector), root_stitch (RootStitch: renames + reuse breaks), by import path, ADR-0265 Amendment 3
 │                      chain_orders (ChainStructureOrders: expiry + strike selection by atm / delta / max open interest / mirror from a daily chain, orders for the ledger, by import path, ADR-0265 Amendment 5); ParquetStreamRows takes `include` / `iso_fields`; DailyBarFeatures takes `realized_vol`; QuoteBook is chain_features' public quote book
 │                      cdf_grid_methods (GridCDFMethod: one forecaster per fold on a declared CDF grid from a scored-rows parquet by pit_map / linear_pool / best_component / binary_gbm / beta_pool / quantile_average (level_bands, weight_features) / location_scale kinds, optional feature_source {path, sha256, keys} joins extra feature columns onto the scored rows for binary_gbm features, location_scale features and quantile_average / linear_pool weight_features (one mixin, _FeatureSourced), learning rules fit_band / prior_validation / rolling (refit_days blocks), optional half_life_days recency weights, components joined from other scored-rows files, grid twCRPS, paired tables with date and group clustered errors, by import path, ADR-0276)
+│                      cdf_faults (FeatureFault + StaleFeatures / MissingFeatures / ScaledFeatures; ForecastFaultStudy scores one restored CDFExperiment fit again on altered inputs, no refit, statistics only, required `sealed_from`; by import path, ADR-0316)
 ├── README.md          this file
 ├── EXTENDING.md       extension points + gotchas (the seams, and what bites)
 └── CLAUDE.md          agent orientation
