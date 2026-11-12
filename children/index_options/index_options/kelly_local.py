@@ -55,7 +55,10 @@ class KellyLocalSearch:
     params : dict
         ``moves`` (int >= 1, accepted moves per climb), ``adds_evaluated`` (int >= 1, the add shortlist),
         ``swaps_evaluated`` (int >= 0, the swap shortlist), ``restarts`` (int >= 0, perturbation restarts after
-        the first climb) and ``seed`` (int >= 0, the restarts' generator).
+        the first climb) and ``seed`` (int >= 0, the restarts' generator). Optional, opt-in (the FAST variant's
+        amendment to ADR-0307; absent means the original behaviour, byte for byte): ``cash_floor`` (bool: a climb
+        that ends below cash trades cash) and ``repair`` (bool: an infeasible start is repaired by greedy removal
+        instead of being replaced by cash). See :attr:`OPTION_KEYS`.
 
     Examples
     --------
@@ -68,6 +71,8 @@ class KellyLocalSearch:
     """
 
     PARAM_KEYS = ("moves", "adds_evaluated", "swaps_evaluated", "restarts", "seed")
+    #: Opt-in booleans of the FAST variant (ADR-0307 Amendment 1). Each writes its record field only when declared.
+    OPTION_KEYS = ("cash_floor", "repair")
     #: A move must raise the objective by more than this fraction of ``w0`` (float noise otherwise cycles).
     IMPROVEMENT = 1e-9
     #: The chance a restart drops each held contract.
@@ -78,11 +83,13 @@ class KellyLocalSearch:
     @classmethod
     def validate_params(cls, params):
         """Return the configuration defects of a search declaration (empty when well formed)."""
-        if not isinstance(params, dict) or set(params) != set(cls.PARAM_KEYS):
+        if not isinstance(params, dict) or set(params)-set(cls.OPTION_KEYS) != set(cls.PARAM_KEYS):
             return [f"local_search needs exactly the keys {list(cls.PARAM_KEYS)}"]
         floors = {"moves": 1, "adds_evaluated": 1, "swaps_evaluated": 0, "restarts": 0, "seed": 0}
-        return [f"local_search {key} must be an int >= {floor}" for key, floor in floors.items()
-                if type(params[key]) is not int or params[key] < floor]
+        return ([f"local_search {key} must be an int >= {floor}" for key, floor in floors.items()
+                 if type(params[key]) is not int or params[key] < floor]
+                + [f"local_search {key} must be a bool" for key in cls.OPTION_KEYS
+                   if key in params and type(params[key]) is not bool])
 
     def __init__(self, scorer, params):
         defects = self.validate_params(params)
@@ -364,13 +371,17 @@ class KellyLocalSearch:
 
     # --- the search ----------------------------------------------------------------------------------------
 
-    def run(self, start=None):
+    def run(self, start=None, start_kind="stage1"):
         """Climb from a start selection (cash when None or infeasible) and return the traded selection and its record.
 
         Parameters
         ----------
         start : sequence of sequence of int or None
             The start selection in the scorer's nested layout.
+        start_kind : str
+            The record's ``start_kind`` for a feasible ``start`` (``stage1``, or ``stage1_incumbent`` for a stage one
+            that stopped at its time limit with an incumbent). With ``repair`` declared, an infeasible start is
+            repaired and recorded as ``repaired_`` plus this kind.
 
         Returns
         -------
@@ -386,12 +397,17 @@ class KellyLocalSearch:
         """
         began = time.perf_counter()
         self.evaluations = 0
-        kind = "cash" if start is None else "stage1"
+        kind = "cash" if start is None else start_kind
         first = np.zeros(self.N, dtype=np.int64) if start is None else self._flat(start)
         if len(first) != self.N:
             raise ValueError("the start differs from the program's layout")
+        repaired = 0
         if start is not None and not self.scorer.check_feasible(start)["feasible"]:
-            kind, first = "infeasible_start_cash", np.zeros(self.N, dtype=np.int64)
+            if self.params.get("repair"):
+                first, repaired = self._repaired(first)
+                kind = "repaired_"+start_kind if first.any() else "infeasible_start_cash"
+            else:
+                kind, first = "infeasible_start_cash", np.zeros(self.N, dtype=np.int64)
         self._load(first)
         start_value, start_contracts = self.value(), int(self.q.sum())
         best_q, best_values, best_kinds, best_done = None, None, None, None
@@ -413,6 +429,14 @@ class KellyLocalSearch:
                 counts[key] += count
             if best_q is None or values[-1] > best_values[-1]+self.IMPROVEMENT*self.w0:
                 best_q, best_values, best_kinds, best_done = self.q.copy(), values, kinds, done
+        floored = False
+        if self.params.get("cash_floor"):
+            # ADR-0307 Amendment 1: a climb that ends below cash trades cash (cash is always feasible).
+            self._load(np.zeros(self.N, dtype=np.int64))
+            cash_value = self.value()
+            self._load(best_q)
+            if self.value() < cash_value:
+                floored, best_q, best_values = True, np.zeros(self.N, dtype=np.int64), [cash_value]
         self._load(best_q)
         end_value = self.value()
         nested = self._nested(best_q)
@@ -425,8 +449,80 @@ class KellyLocalSearch:
                   "moves": total_moves, "evaluations": self.evaluations, "local_optimum": bool(best_done),
                   "budget_exhausted": exhausted, "restarts": ran, "restarts_skipped": skipped,
                   "move_counts": counts}
+        if "cash_floor" in self.params:
+            record["cash_floor"] = floored
+        if "repair" in self.params:
+            record["repaired_contracts"] = repaired
         return {"quantities": nested, "selection": selection, "record": record, "values": best_values,
                 "seconds": time.perf_counter()-began}
+
+    # --- repairing an infeasible start (ADR-0307 Amendment 1) -----------------------------------------------
+
+    def _excess_shared(self, wealth, joint, capsum):
+        """The summed breach of the account-wide rules: the wealth floor per scenario, the joint rows, the caps."""
+        tol = self.tol
+        out = float(np.maximum(0., self.lo-tol-wealth).sum())
+        if self.K:
+            out += float(np.maximum(0., joint-self.j_up-tol).sum())
+        return out+float(np.maximum(0., capsum-self.cap_up-tol).sum())
+
+    def _excess(self):
+        """The current selection's summed breach of every rule :meth:`_trial` checks (zero exactly when it passes)."""
+        q, tol = self.q, self.tol
+        out = float(np.maximum(0, q-self.cap).sum())
+        if len(self.pair_a):
+            out += float(np.minimum(q[self.pair_a], q[self.pair_b]).sum())
+        for g in range(self.G):
+            if self.lin_coef[g].shape[0]:
+                out += float(np.maximum(0., self.lin[g]-self.lin_up[g]-tol).sum())
+        return out+self._excess_shared(self.W, self.jtot, self.capsum)
+
+    def _removal(self, flat):
+        """Return ``(breach change, objective)`` after removing one contract of ``flat``, feasible or not."""
+        q, tol = self.q, self.tol
+        g, c, held = int(self.gid[flat]), int(self.loc[flat]), int(q[flat])
+        change = float(max(0, held-1-self.cap[flat])-max(0, held-self.cap[flat]))
+        change += 2.*sum(min(held-1, int(q[p]))-min(held, int(q[p])) for p in self.partners[flat])
+        if self.lin_coef[g].shape[0]:
+            after = self.lin[g]-self.lin_coef[g][:, c]
+            change += float(np.maximum(0., after-self.lin_up[g]-tol).sum()
+                            - np.maximum(0., self.lin[g]-self.lin_up[g]-tol).sum())
+        wealth = self.W-self.D[flat]
+        joint = self.jtot-self.J[flat] if self.K else self.jtot
+        rows = self.R[g]
+        reserve = max(0., float((self.Rq[g]-rows[:, c]).max())) if rows.shape[0] else 0.
+        capsum = self.capsum.copy()
+        for k in self.caps_of[g]:
+            capsum[k] += reserve-self.res[g]
+        change += self._excess_shared(wealth, joint, capsum)-self._excess_shared(self.W, self.jtot, self.capsum)
+        keytot = self.keytot.copy()
+        if g in self.key_of:
+            measure = self.measure[g]
+            pay = self.pay[g]-self.pay_rows[g][:, c]
+            keytot[self.key_of[g]] += measure.price*float(measure.columns(pay[:, None])[0])-self.spread[g]
+        u = tangent_utility(wealth, self.w0, self.gamma)[0]
+        return change, float(self.w0*(self.weights @ u)-(self.slopes @ keytot**2))
+
+    def _repaired(self, q):
+        """Return ``(q repaired, contracts removed)``: drop one contract at a time until the scorer accepts the book.
+
+        Each step removes the contract whose removal leaves the smallest summed breach, then the highest objective,
+        then the lowest item rank (deterministic). It ends at a feasible book at worst at cash (always feasible).
+        """
+        self._load(q)
+        removed = 0
+        while self.q.any():
+            if self._excess() <= 0. and self.scorer.check_feasible(self._nested(self.q))["feasible"]:
+                break
+            best = None
+            for flat in np.flatnonzero(self.q > 0):
+                change, value = self._removal(int(flat))
+                key = (change, -value, int(self.rank[flat]))
+                if best is None or key < best[0]:
+                    best = (key, int(flat))
+            self._apply({best[1]: -1})
+            removed += 1
+        return self.q.copy(), removed
 
     def _perturbed(self, q, rng):
         """Return ``q`` with each held contract dropped with probability :attr:`PERTURBATION`, None when that changes

@@ -6361,8 +6361,8 @@ def test_search_replay_hedge_keeps_the_exact_declared_formulation():
     with pytest.raises(ValueError, match="kelly_search_hedge_formulation"):
         study.validate_configuration(params, tail_end_before="2021-07-01")
 
-@pytest.mark.parametrize("fraction", [None, .5, .75])
-def test_exact_search_hedge_reuses_the_solver_and_replays_the_settled_forward(monkeypatch, fraction):
+@pytest.mark.parametrize("fraction,fast", [(None, False), (.5, False), (.75, False), (.5, True), (.75, True)])
+def test_exact_search_hedge_reuses_the_solver_and_replays_the_settled_forward(monkeypatch, fraction, fast):
     from datetime import date, timedelta
 
     from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
@@ -6393,6 +6393,9 @@ def test_exact_search_hedge_reuses_the_solver_and_replays_the_settled_forward(mo
         method_id = f"kelly{int(fraction * 100):03}_ls_lp"
         baseline = {"id": method_id, **LOCAL_FORMULATIONS["kelly050_ls_lp"],
                     "kelly": {**LOCAL_FORMULATIONS["kelly050_ls_lp"]["kelly"], "fraction": fraction}}
+    if fast:   # ADR-0307 Amendment 1: the FAST variant pairs with the same sealed replay hedge
+        method_id = f"kelly{int(fraction * 100):03}_ls_fast_lp"
+        baseline = {"id": method_id, **FAST_LOCAL_FORMULATIONS[method_id]}
     arm = {**baseline, "id": method_id.removesuffix("_lp") + "_replay_hedge_lp", "hedge": dict(_REPLAY_BLOCK)}
     params["methods"] = [baseline]
     calls = []
@@ -6431,6 +6434,10 @@ def test_exact_search_hedge_reuses_the_solver_and_replays_the_settled_forward(mo
         assert replay["trades"] == hedged["trades"]
         assert study._method(arm, None, recorded=replay) == replay
         assert len(calls) == 2
+    if fast:
+        assert arm["id"] == method_id.removesuffix("_lp") + "_replay_hedge_lp"
+        local = hedged["decisions"][0]["kelly"]["local"]
+        assert {"cash_floor", "repaired_contracts", "stage1_timeout"} <= set(local)
 
 def test_only_exact_search_calibration_point_arm_and_identity_twin_validate():
     params, _ = _kelly_fixture()
@@ -6486,6 +6493,14 @@ LOCAL_FORMULATIONS = {
     "kelly025_ls_lp": {**_KELLY_BASE, "kelly": {**KELLY, "fraction": .25, "local_search": LOCAL_SEARCH}},
     "kelly050_ls_lp": {**_KELLY_BASE, "kelly": {**KELLY, "fraction": .5, "local_search": LOCAL_SEARCH}},
 }
+#: ADR-0307 Amendment 1 (owner approved 2026-11-12): the FAST variant, new method ids, the same search plus the four
+#: opt-in keys: stage one capped at 300 s, its time-limit incumbent as the start, a cash floor and a greedy repair.
+FAST_LOCAL_SEARCH = {**LOCAL_SEARCH, "stage1_time_limit": 300., "incumbent_start": True, "cash_floor": True,
+                     "repair": True}
+FAST_LOCAL_FORMULATIONS = {
+    f"kelly{int(fraction*100):03}_ls_fast_lp": {**_KELLY_BASE, "kelly": {**KELLY, "fraction": fraction,
+                                                                         "local_search": FAST_LOCAL_SEARCH}}
+    for fraction in (.5, .75)}
 
 
 def _local_world(search=None, fraction=.5):
@@ -6704,3 +6719,148 @@ def test_the_move_budget_binds_and_is_recorded():
     _params, _data, _method, _study, tight = _local_result(search={"moves": 1})
     local = tight["decisions"][0]["kelly"]["local"]
     assert local["moves"] <= 1 and (local["budget_exhausted"] or local["local_optimum"])
+
+
+# --- the FAST local search (ADR-0307 Amendment 1) --------------------------------------------------------------------
+
+_FAST_KEYS = ("stage1_time_limit", "incumbent_start", "cash_floor", "repair")
+#: A stage one that trades on this fixture (no radius, the shock gate wide open), so a start is not cash.
+_NOMINAL_START = {"start": {"rho": 0., "shock": {**SHOCK10, "loss_fraction": 1.}}}
+
+
+def test_the_fast_formulations_validate_and_differ_from_the_local_ones_only_by_the_four_keys():
+    for name, method in FAST_LOCAL_FORMULATIONS.items():
+        params, _inputs = _weekly_portfolio_fixture()
+        params["methods"] = [{"id": name, **method}]
+        _for_kelly(params)
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+        search = method["kelly"]["local_search"]
+        assert {k: v for k, v in search.items() if k not in _FAST_KEYS} == LOCAL_SEARCH
+        base = LOCAL_FORMULATIONS["kelly050_ls_lp"]
+        assert {k: v for k, v in method["kelly"].items() if k != "local_search"} == \
+            {**{k: v for k, v in base["kelly"].items() if k != "local_search"}, "fraction": method["kelly"]["fraction"]}
+        assert {k: v for k, v in method.items() if k != "kelly"} == {k: v for k, v in base.items() if k != "kelly"}
+    assert sorted(FAST_LOCAL_FORMULATIONS) == ["kelly050_ls_fast_lp", "kelly075_ls_fast_lp"]
+    assert [m["kelly"]["fraction"] for m in FAST_LOCAL_FORMULATIONS.values()] == [.5, .75]
+    assert FAST_LOCAL_SEARCH["stage1_time_limit"] == 300.
+
+
+@pytest.mark.parametrize("change", [
+    {"stage1_time_limit": 0}, {"stage1_time_limit": -1.}, {"stage1_time_limit": "300"},
+    {"incumbent_start": 1}, {"cash_floor": "yes"}, {"repair": None}])
+def test_a_malformed_fast_key_is_refused(change):
+    params, _data, _method = _local_world({**FAST_LOCAL_SEARCH, **change})
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_the_fast_keys_write_their_fields_and_change_nothing_when_they_do_not_bind():
+    """On this fixture stage one finishes, its book is feasible and the climb ends above cash: the fast block trades
+    the same week as the original one, records the four fields, and replays exactly on both routes."""
+    _p, _d, _m, _s, plain = _local_result()
+    params, data, method, study, fast = _local_result(search=FAST_LOCAL_SEARCH)
+    for old, new in zip(plain["decisions"], fast["decisions"]):
+        assert old.get("selection") == new.get("selection") and old.get("books") == new.get("books")
+        if "kelly" in old and "local" in old["kelly"]:
+            extra = {k: v for k, v in new["kelly"]["local"].items() if k not in old["kelly"]["local"]}
+            assert extra == {"cash_floor": False, "repaired_contracts": 0, "stage1_timeout": None}
+            assert {k: new["kelly"]["local"][k] for k in old["kelly"]["local"]} == old["kelly"]["local"]
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, recorded=fast) == fast
+    derived = _derived_from(fast, study, method)
+    replay = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, derived=derived)
+    assert [w.get("selection") for w in replay["decisions"]] == [w.get("selection") for w in fast["decisions"]]
+
+
+def test_the_stage_one_time_limit_is_handed_to_stage_one_only(monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    seen, run = [], TransportPortfolioSolve.run
+
+    def spy(self, ctx, inputs):
+        seen.append(self.params["solver_options"]["time_limit"])
+        return run(self, ctx, inputs)
+    monkeypatch.setattr(TransportPortfolioSolve, "run", spy)
+    params, _data, _method, _study, _result = _local_result(search={"stage1_time_limit": 17.})
+    assert seen and set(seen) == {17.} and params["solver"]["solver_options"]["time_limit"] == KELLY["time_limit"]
+    seen.clear()
+    _local_result()
+    assert seen and set(seen) == {KELLY["time_limit"]}
+
+
+def _stage_one_stopped_at_its_limit(monkeypatch, reason="gap"):
+    """Stage one returns the ``return`` policy's timeout envelope: its book as the incumbent (``gap``) or none. The
+    recorded route rechecks the candidate as an executable selection and hands back the same envelope."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    run, recorded = TransportPortfolioSolve.run, TransportPortfolioSolve._recorded
+
+    def stopped(self, ctx, inputs):
+        selection = run(self, ctx, inputs)["selection"]
+        candidate = {k: v for k, v in selection.items() if k != "certificates"} if reason == "gap" else None
+        return {"selection": {"timeout": reason, "candidate": candidate, "certificates": selection["certificates"]}}
+
+    def replayed(self, inputs, selection, certificates):
+        if "timeout" not in selection:
+            return recorded(self, inputs, selection, certificates)
+        if selection["candidate"] is not None:
+            checked = recorded(self, inputs, selection["candidate"], certificates)
+            assert {k: v for k, v in checked.items() if k != "certificates"} == selection["candidate"]
+        return {**selection, "certificates": certificates}
+    monkeypatch.setattr(TransportPortfolioSolve, "run", stopped)
+    monkeypatch.setattr(TransportPortfolioSolve, "_recorded", replayed)
+
+
+def test_a_stage_one_stopped_at_its_limit_with_an_incumbent_starts_the_climb_from_it(monkeypatch):
+    _stage_one_stopped_at_its_limit(monkeypatch)
+    params, data, method, _study, result = _local_result(search={**_NOMINAL_START, "incumbent_start": True})
+    week = result["decisions"][0]
+    local, stage1 = week["kelly"]["local"], week["stage1"]["selection"]
+    assert stage1["timeout"] == "gap" and local["stage1_timeout"] == "gap"
+    assert local["start_kind"] == "stage1_incumbent"
+    assert local["start_contracts"] == sum(sum(row) for row in stage1["candidate"]["quantities"]) > 0
+    assert local["end_value"] >= local["start_value"]
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, recorded=result) == result
+    # The original block under the same stop starts from cash and writes no new field.
+    _p, _d, _m, _s, old = _local_result(search=_NOMINAL_START)
+    old_local = old["decisions"][0]["kelly"]["local"]
+    assert old_local["start_kind"] == "stage1_timeout_cash" and old_local["start_contracts"] == 0
+    assert "stage1_timeout" not in old_local
+
+
+def test_a_stage_one_without_an_incumbent_still_starts_from_cash_under_incumbent_start(monkeypatch):
+    _stage_one_stopped_at_its_limit(monkeypatch, "no_incumbent")
+    _p, _d, _m, _s, result = _local_result(search={**_NOMINAL_START, "incumbent_start": True})
+    local = result["decisions"][0]["kelly"]["local"]
+    assert local["start_kind"] == "stage1_timeout_cash" and local["stage1_timeout"] == "no_incumbent"
+
+
+def test_an_infeasible_stage_one_book_is_repaired_and_replays(monkeypatch):
+    """Stage one's book is made to hold both sides of an exclusive pair: the Kelly program refuses it. With ``repair``
+    the search drops one contract and climbs from the rest; without it the week starts from cash, as before."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    run, screens = TransportPortfolioSolve.run, []
+
+    def breached(self, ctx, inputs):
+        out = run(self, ctx, inputs)
+        screens.append(dict(self.last_screen))
+        selection = out["selection"]
+        i, group = next((i, g) for i, g in enumerate(inputs["groups"]) if g["exclusive"])
+        a, b = group["exclusive"][0]
+        quantities = [list(row) for row in selection["quantities"]]
+        quantities[i][a], quantities[i][b] = max(1, quantities[i][a]), max(1, quantities[i][b])
+        return {"selection": {**selection, "quantities": quantities}}
+
+    def replayed(self, inputs, selection, certificates):
+        self.last_screen = screens[0]   # the forged book cannot pass the real recheck; the screen is the live one
+        return {**selection, "certificates": certificates}
+    monkeypatch.setattr(TransportPortfolioSolve, "run", breached)
+    monkeypatch.setattr(TransportPortfolioSolve, "_recorded", replayed)
+    params, data, method, _study, result = _local_result(search={**_NOMINAL_START, "repair": True})
+    local = result["decisions"][0]["kelly"]["local"]
+    assert local["start_kind"] == "repaired_stage1" and local["repaired_contracts"] >= 1
+    assert local["end_value"] >= local["start_value"]
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, recorded=result) == result
+    _p, _d, _m, _s, old = _local_result(search=_NOMINAL_START)
+    assert old["decisions"][0]["kelly"]["local"]["start_kind"] == "infeasible_start_cash"
+    assert "repaired_contracts" not in old["decisions"][0]["kelly"]["local"]
