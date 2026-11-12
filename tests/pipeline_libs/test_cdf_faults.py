@@ -881,3 +881,352 @@ def test_the_output_may_not_be_the_experiment_output_or_inside_it(fitted, tmp_pa
     output = fitted["output"] if where == "equal" else fitted["output"] + "/study"
     with pytest.raises(ConfigError, match="output"):
         ForecastFaultStudy(document(fitted, tmp_path, output=output))
+
+
+# ---------------------------------------------------------------- mutation sweep: every guard and aggregation pinned
+
+import fcntl
+
+
+def test_params_must_be_a_mapping():
+    assert "mapping" in MissingFeatures.validate_params("x")[0]
+    assert "mapping" in StaleFeatures.validate_params(None)[0]
+
+
+def test_an_identity_that_lacks_the_date_still_protects_the_date_column():
+    with pytest.raises(ValueError, match="quote_date"):
+        MissingFeatures(columns=["quote_date"]).apply(toy(), ["symbol", "expiry"], DATE)
+
+
+def test_stale_refuses_a_frame_that_repeats_an_identity():
+    frame = toy()
+    with pytest.raises(ValueError):
+        StaleFeatures(columns=["f1"], sessions=1).apply(pd.concat([frame, frame.iloc[[1]]]), IDENTITY, DATE)
+
+
+def test_stale_without_a_declared_column_changes_only_what_it_declares():
+    out = StaleFeatures(columns=["f2"], sessions=1).apply(toy(), IDENTITY, DATE)
+    assert list(out["f1"]) == [2., 3.] and list(out["f2"]) == [10., 20.]
+
+
+@pytest.mark.parametrize("document_", ["x", None, 5, [], {"experiment": 5}, {"experiment": None}])
+def test_a_document_that_is_not_a_mapping_with_an_experiment_refuses(document_):
+    with pytest.raises(ConfigError, match="experiment mapping"):
+        ForecastFaultStudy(document_)
+
+
+def test_the_study_keeps_its_own_copy_of_the_document(fitted, tmp_path):
+    doc = document(fitted, tmp_path)
+    study = ForecastFaultStudy(doc)
+    doc["grid"]["tail"] = -1
+    doc["faults"].append("garbage")
+    assert study.document["grid"]["tail"] == TAIL and len(study.document["faults"]) == 1
+
+
+@pytest.mark.parametrize("path", [5, None, "nocolon", "a:b:c", ":Name", "json:dumps", "pathlib:Path",
+                                  "no_such_module_zz:X", NAME + "Nope", NAME + "FeatureFault"])
+def test_a_class_path_that_is_not_a_fault_class_is_listed(fitted, tmp_path, path):
+    bad = {"name": "x", "class": path, "params": {"columns": ["rv_5"]}}
+    with pytest.raises(ConfigError, match="FeatureFault subclass"):
+        ForecastFaultStudy(document(fitted, tmp_path, [bad]))
+
+
+@pytest.mark.parametrize("name", ["", "a/b", "a\\b", ".", "..", 5, None])
+def test_a_fault_name_must_be_a_safe_string(fitted, tmp_path, name):
+    with pytest.raises(ConfigError, match=r"name must be a safe"):
+        ForecastFaultStudy(document(fitted, tmp_path, [entry("x", "MissingFeatures", columns=["rv_5"]) | {"name": name}]))
+
+
+def test_the_faults_list_and_each_entry_have_an_exact_shape(fitted, tmp_path):
+    for faults in ("x", None, {}, ()):
+        doc = document(fitted, tmp_path)
+        doc["faults"] = faults
+        with pytest.raises(ConfigError, match="faults must be a non-empty list"):
+            ForecastFaultStudy(doc)
+    good = entry("x", "MissingFeatures", columns=["rv_5"])
+    for bad in (dict(good, extra=1), {k: v for k, v in good.items() if k != "params"}, "x", None, 5):
+        with pytest.raises(ConfigError, match=r"faults\[0\] keys must be exactly"):
+            ForecastFaultStudy(document(fitted, tmp_path, [bad]))
+    with pytest.raises(ConfigError, match="mapping"):
+        ForecastFaultStudy(document(fitted, tmp_path, [dict(good, params="x")]))
+
+
+def test_identity_keys_may_not_be_fault_columns_even_when_the_identity_lacks_the_date(fitted, tmp_path):
+    doc = document(fitted, tmp_path, [entry("x", "MissingFeatures", columns=["quote_date"])])
+    with pytest.raises(ConfigError, match="identity or date columns"):
+        ForecastFaultStudy(doc)
+
+
+BAD_SETTINGS = [("sealed_from", "20010301"), ("sealed_from", "2001-3-1"), ("sealed_from", 5), ("sealed_from", None),
+                ("sealed_from", "soon"), ("min_retained", 0), ("min_retained", -.1), ("min_retained", 1.5),
+                ("min_retained", True), ("min_retained", float("nan")), ("min_retained", "x"),
+                ("min_scored", 0), ("min_scored", -1), ("min_scored", True), ("min_scored", 1.5), ("min_scored", "2"),
+                ("output", ""), ("output", 5), ("output", None)]
+
+
+@pytest.mark.parametrize("key, value", BAD_SETTINGS, ids=[f"{k}={v!r}" for k, v in BAD_SETTINGS])
+def test_each_scalar_setting_refuses_its_bad_values(fitted, tmp_path, key, value):
+    with pytest.raises(ConfigError, match=key):
+        ForecastFaultStudy(document(fitted, tmp_path, **{key: value}))
+
+
+@pytest.mark.parametrize("key, value", [("min_retained", 1), ("min_retained", 1e-9), ("min_scored", 1),
+                                        ("sealed_from", "2001-12-31")])
+def test_each_scalar_setting_accepts_its_edge_values(fitted, tmp_path, key, value):
+    ForecastFaultStudy(document(fitted, tmp_path, **{key: value}))
+
+
+BAD_GRIDS = [None, "x", [], {"z_grid": Z, "weights": W}, {"z_grid": Z, "weights": W, "tail": 4., "extra": 1},
+             {"z_grid": tuple(Z), "weights": W, "tail": 4.}, {"z_grid": [0.], "weights": [1.], "tail": 4.},
+             {"z_grid": [0., 0., 1., 2.], "weights": W, "tail": 4.}, {"z_grid": [2., 1., 0., -1.], "weights": W, "tail": 4.},
+             {"z_grid": [0., True, 2., 3.], "weights": W, "tail": 4.}, {"z_grid": [0., float("nan"), 2., 3.], "weights": W, "tail": 4.},
+             {"z_grid": Z, "weights": W[:-1], "tail": 4.}, {"z_grid": Z, "weights": tuple(W), "tail": 4.},
+             {"z_grid": Z, "weights": [1., -1., 1., 1.], "tail": 4.}, {"z_grid": Z, "weights": [0., 0., 0., 0.], "tail": 4.},
+             {"z_grid": Z, "weights": [1., "x", 1., 1.], "tail": 4.}, {"z_grid": Z, "weights": W, "tail": 0},
+             {"z_grid": Z, "weights": W, "tail": -1.}, {"z_grid": Z, "weights": W, "tail": True},
+             {"z_grid": Z, "weights": W, "tail": "x"}, {"z_grid": Z, "weights": W, "tail": float("inf")}]
+
+
+@pytest.mark.parametrize("grid", BAD_GRIDS, ids=range(len(BAD_GRIDS)))
+def test_each_grid_rule_refuses(fitted, tmp_path, grid):
+    with pytest.raises(ConfigError, match="grid"):
+        ForecastFaultStudy(document(fitted, tmp_path, grid=grid))
+
+
+@pytest.mark.parametrize("grid", [{"z_grid": [0., 1.], "weights": [0., 1.], "tail": 1e-9},
+                                  {"z_grid": [-1, 0, 1], "weights": [1, 0, 0], "tail": 2}])
+def test_edge_grids_are_valid(fitted, tmp_path, grid):
+    ForecastFaultStudy(document(fitted, tmp_path, grid=grid))
+
+
+def test_a_symlink_into_the_experiment_output_is_still_inside_it(fitted, tmp_path):
+    link = tmp_path/"link"
+    link.symlink_to(fitted["output"], target_is_directory=True)
+    with pytest.raises(ConfigError, match="output"):
+        ForecastFaultStudy(document(fitted, tmp_path, output=str(link/"study")))
+    doc = document(fitted, tmp_path, output=fitted["output"] + "/study")
+    doc["experiment"]["output"] = str(link)
+    with pytest.raises(ConfigError, match="output"):
+        ForecastFaultStudy(doc)
+
+
+def test_a_missing_fit_store_refuses_even_when_completed_exists(fitted, tmp_path):
+    shutil.rmtree(fit_root(fitted)/"fit")
+    with pytest.raises(IntegrityError, match="never fits"):
+        stats(fitted, tmp_path, [entry("s", "ScaledFeatures", columns=SCALED, factor=2.)])
+
+
+def test_a_corrupt_fit_store_refuses(fitted, tmp_path):
+    (fit_root(fitted)/"fit/metadata.json").write_text("{}")
+    with pytest.raises(IntegrityError, match="mismatch"):
+        stats(fitted, tmp_path, [entry("s", "ScaledFeatures", columns=SCALED, factor=2.)])
+
+
+@pytest.mark.parametrize("what", ["groups", "empty"])
+def test_no_admitted_group_or_no_evaluation_row_refuses(fitted, tmp_path, monkeypatch, what):
+    real = CDFExperiment._bands
+
+    def patched(self, *args):
+        bands, groups, admission = real(self, *args)
+        if what == "groups":
+            return bands, [], admission
+        return (bands[0], bands[1], bands[2].iloc[0:0]), groups, admission
+    monkeypatch.setattr(CDFExperiment, "_bands", patched)
+    with pytest.raises(IntegrityError, match="no admitted groups or no evaluation rows"):
+        stats(fitted, tmp_path, [entry("s", "ScaledFeatures", columns=SCALED, factor=2.)])
+    assert not (tmp_path/"study").exists()
+
+
+def test_provenance_is_checked_again_when_the_study_runs(fitted, tmp_path):
+    study = ForecastFaultStudy(document(fitted, tmp_path, [entry("s", "ScaledFeatures", columns=SCALED, factor=2.)]))
+    study.config["panel_sha256"] = "0"*64
+    with pytest.raises(IntegrityError, match="panel hash mismatch"):
+        study.assess()
+    assert not (tmp_path/"study").exists()
+
+
+def test_the_receipt_records_identities_and_counts_exactly(fitted, tmp_path):
+    from dskit.pipeline.base import value_hash
+    ref = Reference(fitted)
+    faults = [entry("a", "ScaledFeatures", columns=SCALED, factor=2.), entry("b", "MissingFeatures", columns=MISSING)]
+    study_id = ForecastFaultStudy(document(fitted, tmp_path, faults)).study_identity
+    out = stats(fitted, tmp_path, faults)
+    store = tmp_path/"study"
+    receipt = json.loads((store/"receipt.json").read_text())
+    checkpoint = value_hash(json.loads((fit_root(fitted)/"fit/complete.json").read_text()))
+    assert receipt == {"identity": {"study": study_id, "checkpoint": checkpoint},
+                       "experiment": CDFExperiment(fitted).identity, "groups": ["AAA", "BBB"], "faults": ["a", "b"],
+                       "evaluation_identity": value_hash(ref.band[IDENTITY].values.tolist()), "rows": 6,
+                       "scores_written": False}
+    assert json.loads((store/"complete.json").read_text())["identity"] == value_hash(receipt["identity"])
+    assert json.loads((store/"statistics.json").read_text()) == out
+
+
+def test_the_output_may_be_nested_under_directories_that_do_not_exist_yet(fitted, tmp_path):
+    out = stats(fitted, tmp_path, [entry("s", "ScaledFeatures", columns=SCALED, factor=2.)],
+                output=str(tmp_path/"deep"/"er"/"study"))
+    assert (tmp_path/"deep"/"er"/"study"/"statistics.json").exists() and out["faults"][0]["status"] == "ran"
+
+
+def test_a_study_already_running_on_the_output_is_refused(fitted, tmp_path):
+    study = ForecastFaultStudy(document(fitted, tmp_path, [entry("s", "ScaledFeatures", columns=SCALED, factor=2.)]))
+    with (tmp_path/"study.lock").open("w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        with pytest.raises(BlockingIOError):
+            study.assess()
+    assert not (tmp_path/"study").exists()
+
+
+def test_cdf_values_are_clipped_to_the_unit_interval_before_they_are_judged(fitted, tmp_path, monkeypatch):
+    class Wide:
+        def __init__(self, n):
+            self.n = n
+
+        def cdf(self, z):
+            return np.tile([-.5, .2, .7, 1.5], (self.n, 1))
+    monkeypatch.setattr(TorchCDF, "curve", lambda self, x: Wide(len(x)))
+    record = stats(fitted, tmp_path, [entry("s", "ScaledFeatures", columns=SCALED, factor=2.)])["faults"][0]
+    assert record["status"] == "inert" and record["cdf_shift_max"]["value"] == 0.
+
+
+def test_refused_records_carry_exactly_their_known_fields(fitted, tmp_path):
+    none = {"value": None, "n": 0, "dates": 0, "groups": 0}
+    out = stats(fitted, tmp_path, [entry("inf", me(InfFault), columns=["rv_5"]),
+                                   entry("none", "StaleFeatures", columns=STALE, sessions=3),
+                                   entry("few", "StaleFeatures", columns=STALE, sessions=1)], min_retained=0.9)
+    inf, nothing, few = out["faults"]
+    base = {"status": "refused", "rows": 6, "changed_rows": None, "cdf_shift_mean": none, "cdf_shift_max": none,
+            "score_change": none}
+    assert inf == dict(base, name="inf", reason="infinite_input", paired_rows=None, retained_fraction=None)
+    assert nothing == dict(base, name="none", reason="no_paired_rows", paired_rows=0, retained_fraction=0.)
+    assert few == dict(base, name="few", reason="retained_below_minimum", paired_rows=3, retained_fraction=0.5)
+
+
+def test_an_overflow_to_float32_after_pairing_keeps_the_paired_counts(fitted, tmp_path):
+    record = stats(fitted, tmp_path, [entry("huge", me(HugeFault), columns=["rv_5"])])["faults"][0]
+    assert (record["reason"], record["rows"], record["paired_rows"], record["retained_fraction"]) == (
+        "infinite_input", 6, 6, 1.0)
+    assert record["changed_rows"] is None
+
+
+def test_the_refusal_codes_are_the_closed_set():
+    assert REFUSAL_CODES == ("infinite_input", "invalid_forecast", "no_paired_rows", "retained_below_minimum")
+
+
+def test_a_ran_record_has_exactly_its_fields_and_the_clean_extent_is_counted(fitted, tmp_path):
+    out = stats(fitted, tmp_path, [entry("s", "ScaledFeatures", columns=SCALED, factor=2.)])
+    assert set(out) == {"clean", "faults"} and out["clean"] == {"rows": 6, "dates": 3, "groups": 2}
+    assert set(out["faults"][0]) == {"name", "status", "rows", "paired_rows", "retained_fraction", "changed_rows",
+                                     "cdf_shift_mean", "cdf_shift_max", "score_change"}
+    for key in ("cdf_shift_mean", "cdf_shift_max", "score_change"):
+        assert set(out["faults"][0][key]) == {"value", "n", "dates", "groups"}
+        assert out["faults"][0][key]["n"] == 6 and out["faults"][0][key]["dates"] == 3
+        assert out["faults"][0][key]["groups"] == 2
+
+
+# ---------------------------------------------------------------- mutation sweep, second pass
+
+import warnings
+
+
+class ReverseScale(FeatureFault):
+    """A test fault that scales a column and returns the rows in reverse order (pairing is by identity)."""
+
+    def apply(self, frame, identity, date):
+        out = frame.copy()
+        out[self.params["columns"]] = out[self.params["columns"]]*3.
+        return out.iloc[::-1]
+
+
+class PartialFault(FeatureFault):
+    """A test fault that drops the first row and changes only the last."""
+
+    def apply(self, frame, identity, date):
+        out = frame.iloc[1:].copy()
+        out.iloc[-1, out.columns.get_loc(self.params["columns"][0])] *= 3.
+        return out
+
+
+def test_the_unknown_param_message_lists_the_allowed_names():
+    with pytest.raises(ConfigError) as caught:
+        StaleFeatures(columns=["f1"], sessions=1, colour="red")
+    assert "allowed: ['columns', 'sessions']" in "\n".join(caught.value.errors)
+
+
+def test_stale_refuses_a_missing_or_identity_column():
+    with pytest.raises(ValueError, match="nope"):
+        StaleFeatures(columns=["nope"], sessions=1).apply(toy(), IDENTITY, DATE)
+    with pytest.raises(ValueError, match="expiry"):
+        StaleFeatures(columns=["expiry"], sessions=1).apply(toy(), IDENTITY, DATE)
+
+
+@pytest.mark.parametrize("arm", ["nope", [1], None, 5])
+def test_an_invalid_arm_does_not_add_feature_problems(fitted, tmp_path, arm):
+    bad = document(fitted, tmp_path, [entry("x", "MissingFeatures", columns=["rv_5"])], arm=arm)
+    with pytest.raises(ConfigError) as caught:
+        ForecastFaultStudy(bad)
+    assert caught.value.errors == ["arm is not an arm of the experiment"]
+
+
+@pytest.mark.parametrize("column", ["symbol", "expiry", "quote_date"])
+def test_each_identity_column_is_refused_as_a_fault_column(fitted, tmp_path, column):
+    with pytest.raises(ConfigError, match="identity or date columns"):
+        ForecastFaultStudy(document(fitted, tmp_path, [entry("x", "MissingFeatures", columns=[column])]))
+
+
+def test_the_date_column_is_refused_even_when_the_identity_lacks_it(fitted, tmp_path):
+    doc = document(fitted, tmp_path, [entry("x", "MissingFeatures", columns=["quote_date"])])
+    doc["experiment"]["study"]["identity"] = ["symbol", "expiry"]
+    with pytest.raises(ConfigError, match="identity or date columns"):
+        ForecastFaultStudy(doc)
+
+
+def test_pairing_is_by_identity_not_by_row_position(fitted, tmp_path):
+    plain = stats(fitted, tmp_path, [entry("s", "ScaledFeatures", columns=SCALED, factor=3.)])["faults"][0]
+    other = stats(fitted, tmp_path, [entry("r", me(ReverseScale), columns=SCALED)], output=str(tmp_path/"other"))["faults"][0]
+    assert other["status"] == "ran" and other["paired_rows"] == 6
+    for key in ("cdf_shift_mean", "cdf_shift_max", "score_change"):
+        assert other[key]["value"] == pytest.approx(plain[key]["value"])
+    assert other["changed_rows"] == plain["changed_rows"]
+
+
+def test_changed_rows_counts_only_the_paired_rows_that_differ(fitted, tmp_path):
+    record = stats(fitted, tmp_path, [entry("p", me(PartialFault), columns=SCALED)])["faults"][0]
+    assert (record["paired_rows"], record["changed_rows"]) == (5, 1)
+
+
+def test_the_maximum_shift_carries_its_own_counts(fitted, tmp_path):
+    record = stats(fitted, tmp_path, [entry("f", "StaleFeatures", columns=STALE, sessions=1)])["faults"][0]
+    assert (record["cdf_shift_max"]["n"], record["cdf_shift_max"]["dates"], record["cdf_shift_max"]["groups"]) == (3, 2, 2)
+
+
+def test_no_scorable_row_gives_no_value_and_raises_no_warning(fitted, tmp_path, monkeypatch):
+    scoring(monkeypatch, lambda number, scores: scores*np.nan)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        record = stats(fitted, tmp_path, [entry("s", "ScaledFeatures", columns=SCALED, factor=3.)])["faults"][0]
+    assert record["score_change"] == {"value": None, "n": 0, "dates": 0, "groups": 0}
+
+
+def test_the_declared_fold_reaches_the_band_builder(fitted, tmp_path, monkeypatch):
+    class Stop(Exception):
+        pass
+    seen = []
+
+    def spy(self, frame, calendar, fold, arm):
+        seen.append(fold)
+        raise Stop
+    monkeypatch.setattr(CDFExperiment, "_bands", spy)
+    study = ForecastFaultStudy(document(fitted, tmp_path))
+    study.document["fold"] = 7
+    with pytest.raises(Stop):
+        study.assess()
+    assert seen == [7]
+
+
+def test_a_shared_lock_also_blocks_a_second_study(fitted, tmp_path):
+    study = ForecastFaultStudy(document(fitted, tmp_path, [entry("s", "ScaledFeatures", columns=SCALED, factor=2.)]))
+    with (tmp_path/"study.lock").open("w") as held:
+        fcntl.flock(held, fcntl.LOCK_SH)
+        with pytest.raises(BlockingIOError):
+            study.assess()
