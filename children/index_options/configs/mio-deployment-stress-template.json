@@ -18,8 +18,8 @@
       "quote_index_sha256": {
         "REPLACE-SYMBOL": "REPLACE-with-sha256"
       },
-      "methods": 1,
-      "sessions": 1,
+      "methods": 0,
+      "sessions": 0,
       "end_before": "YYYY-MM-DD",
       "latest_expiry": "YYYY-MM-DD"
     }
