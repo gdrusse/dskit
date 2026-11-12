@@ -1112,13 +1112,10 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
                     or any(not isinstance(k, str) or not k or not isinstance(v, str)
                            or re.fullmatch("[0-9a-f]{64}", v) is None for k, v in provenance.items())):
                 raise GreeksRefusal("stock_inputs", "input provenance requires SHA256 identities")
-        excluded = inputs.get("non_settlement_dates", [])
-        calendar = inputs.get("settlement_sessions", sessions)
-        if (not isinstance(excluded, list) or not isinstance(calendar, list)
-                or any(self._iso(day) is None for day in excluded)
-                or len(set(excluded)) != len(excluded)
-                or any(day not in calendar for day in excluded)):
-            raise GreeksRefusal("stock_inputs", "invalid non-settlement dates")
+            try:
+                DailyStockHedge.settlement_calendar(inputs, sessions)
+            except ValueError as exc:
+                raise GreeksRefusal("stock_inputs", str(exc)) from exc
         coverage = inputs["coverage"]
         if not isinstance(coverage, dict):
             raise GreeksRefusal("stock_inputs", "invalid coverage")

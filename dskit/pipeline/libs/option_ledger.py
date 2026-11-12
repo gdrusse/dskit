@@ -1611,6 +1611,24 @@ class DailyStockHedge(Node):
         if not isinstance(row, dict) or set(row) != set(fields):
             raise ValueError("daily_stock: invalid row schema")
 
+    @classmethod
+    def settlement_calendar(cls, inputs, sessions):
+        """Validate the date-only calendar against validated market sessions."""
+        settlement = inputs.get("settlement_sessions", sessions)
+        if not isinstance(settlement, list) or settlement[:len(sessions)] != sessions:
+            raise ValueError("daily_stock: invalid settlement calendar prefix")
+        settlement_dates = [cls._date(day) for day in settlement]
+        if any(a >= b for a, b in zip(settlement_dates, settlement_dates[1:])):
+            raise ValueError("daily_stock: invalid settlement calendar order")
+        excluded = inputs.get("non_settlement_dates", [])
+        if not isinstance(excluded, list):
+            raise ValueError("daily_stock: invalid non-settlement dates")
+        for day in excluded:
+            cls._date(day)
+        if len(set(excluded)) != len(excluded) or not set(excluded) <= set(settlement):
+            raise ValueError("daily_stock: invalid non-settlement dates")
+        return settlement, set(excluded)
+
     def _intake(self, inputs):
         """Validate the full replay before producing any state or output."""
         optional = ("settlement_sessions", "non_settlement_dates")
@@ -1623,19 +1641,7 @@ class DailyStockHedge(Node):
         dates = [self._date(day) for day in sessions]
         if not dates or any(a >= b for a, b in zip(dates, dates[1:])):
             raise ValueError("daily_stock: sessions must be strictly increasing")
-        settlement = inputs.get("settlement_sessions", sessions)
-        if not isinstance(settlement, list) or settlement[:len(sessions)] != sessions:
-            raise ValueError("daily_stock: invalid settlement calendar prefix")
-        settlement_dates = [self._date(day) for day in settlement]
-        if any(a >= b for a, b in zip(settlement_dates, settlement_dates[1:])):
-            raise ValueError("daily_stock: invalid settlement calendar order")
-        excluded = inputs.get("non_settlement_dates", [])
-        if not isinstance(excluded, list):
-            raise ValueError("daily_stock: invalid non-settlement dates")
-        for day in excluded:
-            self._date(day)
-        if len(set(excluded)) != len(excluded) or not set(excluded) <= set(settlement):
-            raise ValueError("daily_stock: invalid non-settlement dates")
+        settlement, excluded = self.settlement_calendar(inputs, sessions)
         symbols = inputs["symbols"]
         if (not symbols or any(not isinstance(s, str) or not s for s in symbols)
                 or len(set(symbols)) != len(symbols)):
@@ -1704,7 +1710,7 @@ class DailyStockHedge(Node):
             dividends.setdefault(ex_day, []).append(dict(row))
         for events in dividends.values():
             events.sort(key=lambda row: row["symbol"])
-        return sessions, symbols, set(decisions), cash, market, dividends, settlement, actions, set(excluded)
+        return sessions, symbols, set(decisions), cash, market, dividends, settlement, actions, excluded
 
     def _cost(self, shares, price):
         """Use half the same-price round trip for one fill, with zero borrow."""
