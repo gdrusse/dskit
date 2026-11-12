@@ -1003,3 +1003,217 @@ def test_the_stock_instrument_named_explicitly_is_the_existing_hedge(ctx):
     b = run(ctx, chain, [HEDGE_ORDER],
             hedge={"rebalance": "daily", "instrument": "stock", "rate": RATE})
     assert a == b
+
+
+# ADR-0314: causal, fully cash-funded long-stock inventory; all inputs synthetic.
+def _daily_stock_inputs(deltas=(-5, 0, 0, 0, 0), prices=(100, 100, 110, 110, 110)):
+    sessions = [f"2020-03-{n:02d}" for n in range(2, 7)]
+    return {"sessions": sessions, "symbols": ["ABC"], "decision_dates": [sessions[0]],
+            "coverage": {"raw_prices": True, "dividends_complete": True,
+                         "corporate_actions": "none"},
+            "cash": [{"date": d, "free_cash": 1000.} for d in sessions],
+            "market": [{"date": d, "symbol": "ABC", "delta_sh": delta,
+                        "active": delta != 0, "known_at": d,
+                        "execution_price": price, "close": price}
+                       for d, delta, price in zip(sessions, deltas, prices)],
+            "dividends": []}
+
+
+def _daily_stock_run(ctx, inputs, **params):
+    import dskit.pipeline.libs.option_ledger as ledger
+    assert hasattr(ledger, "DailyStockHedge"), "missing causal daily inventory replay"
+    config = {"ratio": 1., "fee_per_share": 0., "half_spread_bps": 0.,
+              "capital_charge_rate": 0., "name_cap_usd": 10000.,
+              "gross_cap_usd": 10000., "settlement_lag_sessions": 2}
+    return ledger.DailyStockHedge("daily_stock", {**config, **params}).run(ctx, inputs)
+
+
+def test_daily_stock_causal_cash_settlement_oracle(ctx):
+    out = _daily_stock_run(ctx, _daily_stock_inputs())
+    assert [(r["date"], r["shares"]) for r in out["trades"]] == [
+        ("2020-03-03", 5), ("2020-03-04", -5)]
+    assert [r["available_cash"] for r in out["daily"]] == [1000, 500, 500, 500, 1050]
+    assert [r["sale_receivables"] for r in out["daily"]] == [0, 0, 550, 550, 0]
+    assert out["summary"]["stock_pnl_usd"] == 50
+    assert out["summary"]["open_shares"] == {"ABC": 0}
+
+
+def test_daily_stock_costs_dividends_and_capital_by_hand(ctx):
+    inputs = _daily_stock_inputs()
+    inputs["dividends"] = [{"symbol": "ABC", "ex_date": "2020-03-04",
+                            "pay_date": "2020-03-06", "amount": 2.}]
+    out = _daily_stock_run(ctx, inputs, fee_per_share=1., half_spread_bps=100.,
+                           capital_charge_rate=.365)
+    # Buy cost 5*(1+1)=10; sell cost 5*(1+1.10)=10.50; one overnight costs .50.
+    assert out["summary"]["trade_costs_usd"] == 20.5
+    assert out["summary"]["capital_charge_usd"] == .5
+    assert out["summary"]["dividend_income_usd"] == 10
+    assert out["summary"]["stock_pnl_usd"] == 39
+    assert out["daily"][2]["dividend_receivables"] == 10
+    assert out["daily"][2]["available_cash"] == 479
+    assert out["daily"][-1]["available_cash"] == 1039
+
+
+def test_daily_stock_no_current_exposure_or_close_lookahead(ctx):
+    original = _daily_stock_inputs()
+    _daily_stock_tail(original)
+    expected = _daily_stock_run(ctx, original)["trades"][0]
+    original["market"][1].update(delta_sh=-9, active=True, close=12345.)
+    actual = _daily_stock_run(ctx, original)["trades"][0]
+    assert actual == expected
+
+
+def test_daily_stock_decision_skip_does_not_defer_old_signal(ctx):
+    inputs = _daily_stock_inputs(deltas=(-5, 0, 0, 0, 0))
+    inputs["decision_dates"].append("2020-03-03")
+    out = _daily_stock_run(ctx, inputs)
+    assert out["trades"] == []
+    # A fresh decision-day signal may execute the following non-decision day.
+    inputs["market"][1].update(delta_sh=-2, active=True)
+    inputs["market"][2].update(delta_sh=-2, active=True)
+    inputs["market"][3].update(delta_sh=-2, active=True)
+    out = _daily_stock_run(ctx, inputs)
+    assert [(r["date"], r["shares"]) for r in out["trades"]] == [("2020-03-04", 2)]
+
+
+@pytest.mark.parametrize("delta,ratio", [(20, 1.), (-5, 0.)])
+def test_daily_stock_positive_delta_or_zero_ratio_never_buys(ctx, delta, ratio):
+    out = _daily_stock_run(ctx, _daily_stock_inputs(deltas=(delta,)*5), ratio=ratio)
+    assert out["trades"] == []
+    assert out["summary"]["stock_pnl_usd"] == 0
+
+
+def test_daily_stock_caps_priority_cash_persistence_and_pure_replay(ctx):
+    import copy
+    inputs = _daily_stock_inputs(deltas=(-8.9,)*5, prices=(100,)*5)
+    inputs["symbols"] = ["XYZ", "ABC"]
+    inputs["market"] += [{**r, "symbol": "XYZ"} for r in list(inputs["market"])]
+    before = copy.deepcopy(inputs)
+    out = _daily_stock_run(ctx, inputs, name_cap_usd=600., gross_cap_usd=900.)
+    assert [(r["symbol"], r["shares"]) for r in out["trades"]] == [("ABC", 6), ("XYZ", 3)]
+    assert out["daily"][-1]["available_cash"] == 100
+    assert out["summary"]["open_shares"] == {"ABC": 6, "XYZ": 3}
+    assert inputs == before
+    inputs["symbols"].reverse()
+    inputs["market"].reverse()
+    inputs["cash"].reverse()
+    assert _daily_stock_run(ctx, inputs, name_cap_usd=600., gross_cap_usd=900.) == out
+
+
+def test_daily_stock_cash_clips_and_sale_proceeds_do_not_fund_same_day_buy(ctx):
+    inputs = _daily_stock_inputs(deltas=(-8, 0, 0, 0, 0), prices=(100,)*5)
+    inputs["symbols"].append("XYZ")
+    inputs["market"] += [{**r, "symbol": "XYZ", "delta_sh": -8 if i == 1 else 0,
+                           "active": i == 1}
+                          for i, r in enumerate(list(inputs["market"]))]
+    _daily_stock_tail(inputs)
+    out = _daily_stock_run(ctx, inputs)
+    assert [(r["date"], r["symbol"], r["shares"]) for r in out["trades"]] == [
+        ("2020-03-03", "ABC", 8), ("2020-03-04", "ABC", -8),
+        ("2020-03-04", "XYZ", 2), ("2020-03-05", "XYZ", -2)]
+
+
+def test_daily_stock_weekend_charge_and_price_drift_are_disclosed(ctx):
+    inputs = _daily_stock_inputs(deltas=(-5,)*5, prices=(100, 100, 120, 120, 120))
+    dates = ["2020-03-05", "2020-03-06", "2020-03-09", "2020-03-10", "2020-03-11"]
+    inputs["sessions"] = dates
+    inputs["decision_dates"] = dates[:1]
+    for i, day in enumerate(dates):
+        inputs["market"][i].update(date=day, known_at=day)
+        inputs["cash"][i]["date"] = day
+    out = _daily_stock_run(ctx, inputs, name_cap_usd=500., gross_cap_usd=500.,
+                           capital_charge_rate=.365)
+    assert out["summary"]["capital_charge_usd"] == pytest.approx(2.7)
+    assert out["daily"][2]["gross_cap_breach"] is True
+    assert out["daily"][2]["name_cap_breaches"] == ["ABC"]
+    assert out["summary"]["open_shares"] == {"ABC": 5}
+
+
+def test_daily_stock_dividend_on_purchase_day_excludes_new_shares(ctx):
+    inputs = _daily_stock_inputs()
+    inputs["dividends"] = [{"symbol": "ABC", "ex_date": "2020-03-03",
+                            "pay_date": "2020-03-03", "amount": 2.}]
+    assert _daily_stock_run(ctx, inputs)["summary"]["dividend_income_usd"] == 0
+
+
+def test_daily_stock_refuses_negative_cash_after_external_reserve_change(ctx):
+    inputs = _daily_stock_inputs()
+    inputs["cash"][2]["free_cash"] = 400.
+    with pytest.raises(ValueError, match="insufficient settled cash"):
+        _daily_stock_run(ctx, inputs)
+
+
+def test_daily_stock_requires_tail_only_for_actual_trades(ctx):
+    inputs = _daily_stock_inputs(deltas=(0, 0, 0, -2, 0))
+    with pytest.raises(ValueError, match="incomplete settlement tail"):
+        _daily_stock_run(ctx, inputs)
+    inputs["market"][3].update(delta_sh=0, active=False)
+    assert _daily_stock_run(ctx, inputs)["trades"] == []
+    inputs["sessions"] = inputs["sessions"][:1]
+    inputs["market"] = inputs["market"][:1]
+    inputs["cash"] = inputs["cash"][:1]
+    assert _daily_stock_run(ctx, inputs)["summary"]["stock_pnl_usd"] == 0
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda x: x["market"].pop(),
+    lambda x: x["market"].append(dict(x["market"][0])),
+    lambda x: x["market"][0].update(known_at="2020-03-03"),
+    lambda x: x["market"][0].update(delta_sh=float("nan")),
+    lambda x: x["market"][0].update(active=False),
+    lambda x: x["market"][0].update(execution_price=0),
+    lambda x: x["market"][0].update(close=float("inf")),
+    lambda x: x["market"][0].update(assignment=100),
+    lambda x: x["cash"].pop(),
+    lambda x: x["cash"].append(dict(x["cash"][0])),
+    lambda x: x["sessions"].reverse(),
+    lambda x: x["symbols"].append("ABC"),
+    lambda x: x["decision_dates"].append("2020-03-01"),
+    lambda x: x["decision_dates"].append("2020-03-02"),
+    lambda x: x["coverage"].update(raw_prices=False),
+    lambda x: x["coverage"].update(corporate_actions="split"),
+    lambda x: x["coverage"].update(dividends_complete=False),
+    lambda x: x["dividends"].append({"symbol": "ABC", "ex_date": "2020-03-04",
+                                    "pay_date": "2020-03-09", "amount": 1.}),
+])
+def test_daily_stock_bad_inputs_refuse_atomically(ctx, mutation):
+    inputs = _daily_stock_inputs()
+    mutation(inputs)
+    with pytest.raises(ValueError):
+        _daily_stock_run(ctx, inputs)
+
+
+@pytest.mark.parametrize("params", [{"ratio": 1.1}, {"ratio": True}, {"fee_per_share": -1},
+                                    {"half_spread_bps": float("inf")}, {"name_cap_usd": 0},
+                                    {"settlement_lag_sessions": 0}, {"borrow_rate": .1}])
+def test_daily_stock_config_default_deny(ctx, params):
+    with pytest.raises(ConfigError):
+        _daily_stock_run(ctx, _daily_stock_inputs(), **params)
+
+
+def test_daily_stock_existing_greeks_owner_supplies_short_call_signal(ctx):
+    from dskit.pipeline.option_exposure import LegGreeks
+    owner = LegGreeks({"rate": 0., "multiplier": 100., "min_years": 1e-6, "vol_floor": 0.})
+    leg = {"right": "call", "strike": 100., "sign": -1, "quantity": 1,
+           "expiry": "2020-04-03"}
+    greeks, reason = owner.of(leg, {"bid": 2., "ask": 2.1, "iv": .2},
+                             100., 100., "2020-03-02")
+    assert reason is None
+    assert -52 < greeks["delta_sh"] < -50
+    inputs = _daily_stock_inputs(deltas=(greeks["delta_sh"],)*5, prices=(100,)*5)
+    for row in inputs["cash"]:
+        row["free_cash"] = 10000.
+    out = _daily_stock_run(ctx, inputs)
+    assert out["summary"]["open_shares"] == {"ABC": 51}
+    assert len(out["trades"]) == 1
+
+
+def _daily_stock_tail(inputs):
+    """Add a real later session so late liquidation can settle T+2."""
+    day = "2020-03-09"
+    inputs["sessions"].append(day)
+    inputs["cash"].append({"date": day, "free_cash": 1000.})
+    for symbol in inputs["symbols"]:
+        previous = next(r for r in reversed(inputs["market"]) if r["symbol"] == symbol)
+        inputs["market"].append({**previous, "date": day, "known_at": day,
+                                  "delta_sh": 0., "active": False})

@@ -290,6 +290,14 @@ legacy stage-list grammar (below).
 
 ## What ships
 
+
+ADR-0314 adds opt-in `libs.option_ledger.DailyStockHedge`: prior-close option delta
+sets next-session long-stock inventory on non-decision days. Explicit settled
+cash, T+N sale proceeds, dividends, fees, capital charges and dollar caps feed
+an incremental stock-sleeve ledger. Existing MIO methods and option orders are
+unchanged. Long stock offsets negative delta only; economic improvement is unproven.
+Inputs must supply complete trusted Greeks, raw prices and corporate-action coverage.
+
 `edge_reliability` (ADR-0311 stages 1-2, core): `SettledBefore` admits a row at `t` only if it settled strictly before
 `t` (`label_reaches`) and refuses dates outside the data rights; `ReliabilityBuckets` maps a row to one of 24 buckets
 from fixed config edges (quantile specs refuse, `bucket_edges_invalid`); `LinearEdgeState` keeps `r = a + b e` per bucket
