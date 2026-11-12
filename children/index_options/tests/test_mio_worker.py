@@ -69,11 +69,14 @@ def _events(caplog, kind):
             if r.getMessage().startswith("MIO_EVENT ") and f'"type":"{kind}"' in r.getMessage()]
 
 
-def _worker(tmp_path, bundle_root, method, attempt=1, recorded=None, unit=None, print_body=False, check=False):
+def _worker(tmp_path, bundle_root, method, attempt=1, recorded=None, unit=None, print_body=False, check=False,
+            priced_out=None):
     recorded = recorded or tmp_path / "recorded"
     spec = {"bundle_root": str(bundle_root), "method": method, "attempt": attempt,
             "work_dir": str(tmp_path / f"work-{method}.{attempt}"), "out": str(recorded / f"{method}.json"),
             "unit": unit or {"quarter": "synthetic", "arm": "fixture", "method": method}}
+    if priced_out is not None:
+        spec["priced_out"] = str(priced_out)
     spec_path = tmp_path / f"spec-{method}.{attempt}.json"
     spec_path.write_text(json.dumps(spec))
     env = {**os.environ, "PYTHONPATH": str(bundle_root / MIOMethodBundle.CODE_DIR),
@@ -1345,3 +1348,98 @@ def test_a_check_week_result_is_not_digested_as_evidence_by_the_worker():
     plain, inputs = _packet_clock_fixture()
     assert MIOMethodWorker.evidence_guard(
         WeeklyOptionPortfolioStudy(plain, inputs)._method(plain["methods"][0], None), False) is False
+
+
+def _priced_method(study, method):
+    """Configure ``study`` for one Kelly local-search method (ADR-0307, its FAST variant or ADR-0315) and return it."""
+    from test_ledger_multistart import MULTISTART_HEDGED
+    from test_ledger_studies import (FAST_LOCAL_FORMULATIONS, FORMULATIONS, LOCAL_FORMULATIONS, _for_kelly, _PARITY,
+                                     _REPLAY_BLOCK)
+
+    if method in MULTISTART_HEDGED:
+        formulation = MULTISTART_HEDGED[method]
+    else:
+        base = method.replace("_replay_hedge_lp", "_lp")
+        formulation = {**LOCAL_FORMULATIONS, **FAST_LOCAL_FORMULATIONS}[base]
+        if base != method:
+            formulation = {**formulation, "hedge": dict(_REPLAY_BLOCK)}
+    params = _for_kelly(study["domain"]["params"])
+    params.update(methods=[{"id": method, **formulation}], locked_method_ids=list(FORMULATIONS))
+    if "hedge" in formulation:
+        params["hedge_parity"] = dict(_PARITY)
+    return study
+
+
+@pytest.mark.parametrize("study", ["hedged_program"], indirect=True)
+@pytest.mark.parametrize("method", ["kelly050_ls_lp", "kelly050_ls_replay_hedge_lp", "kelly050_ls_fast_replay_hedge_lp",
+                                    "kelly050_ls_multistart_replay_hedge_lp"])
+def test_worker_pricing_equals_the_wsl_priced_replay_of_the_same_actions_exactly(study, tmp_path, monkeypatch, method):
+    """ADR-0297 Amendment 1: a worker that prices its own actions writes an UNOFFICIAL file whose full result and
+    economics digests equal the WSL official result of the same action file, bit for bit on one host; the action file
+    and the WSL path are untouched (WSL accepts it, never re-solves, and the receipt carries no worker marker)."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+    from index_options.mio_worker import PRICED_FORMAT, UNOFFICIAL_LABEL
+
+    study = _priced_method(study, method)
+    bundle = tmp_path / "bundle"
+    manifest = MIOMethodBundle(study, bundle).build()
+    files_before = set(json.loads((bundle / MIOMethodBundle.MANIFEST_FILE).read_text())["files"])
+    priced_path = tmp_path / "priced" / f"{method}.priced.json"
+    proc = _worker(tmp_path, bundle, method, priced_out=priced_path)
+    assert proc.returncode == 0, proc.stderr
+    recorded = tmp_path / "recorded"
+    assert (recorded / f"{method}.json.done").exists() and not Path(str(priced_path) + ".refused").exists()
+    raw = priced_path.read_bytes()
+    assert Path(str(priced_path) + ".sha256").read_text().split()[0] == hashlib.sha256(raw).hexdigest()
+    priced = json.loads(raw)
+    assert priced["format"] == PRICED_FORMAT and priced["unofficial"] is True and priced["official"] is False
+    assert priced["priced_on"] in {"mac", "worker"} and priced["priced_on"] == MIOMethodWorker.priced_on()
+    assert priced["label"] == UNOFFICIAL_LABEL
+    action_raw = (recorded / f"{method}.json").read_bytes()
+    assert priced["action_file_sha256"] == hashlib.sha256(action_raw).hexdigest()
+    action = json.loads(action_raw)
+    assert "unofficial" not in action and "economics" not in action, "the action file format is unchanged"
+    assert priced["bundle_manifest_sha256"] == manifest["sha256"] == action["bundle_manifest_sha256"]
+    assert priced["economics"]["contracts"] > 0 and priced["economics"]["pnl"] != 0, "a priced book, not cash"
+    assert sum(w["pnl"] for w in priced["economics"]["per_week"]) == pytest.approx(priced["economics"]["pnl"], abs=1e-6)
+    # WSL official pricing of the SAME action file (never a re-solve).
+    monkeypatch.setattr(TransportPortfolioSolve, "run", lambda *a, **k: pytest.fail("no solve in WSL"))
+    _, plan, request = _init(study)
+    doc = _close_document(tmp_path, "priced-recorded", study, plan, request, recorded=recorded)
+    ran = run_document(doc, asof="2019-02-09", journal=False)
+    assert ran.state == "ran", ran
+    receipt = _receipt(ran, doc)
+    assert receipt["complete"] and receipt["results"][0]["replay_parity"]
+    official = receipt["results"][0]["result"]
+    origin = receipt["audit"]["recorded_from"][method]
+    compared = MIOMethodWorker.compare_priced(priced, official, origin)
+    assert compared["result_identical"] and compared["economics_identical"], compared
+    assert compared["abs_diff_usd"] == {"pnl": 0., "stress_pnl": 0., "final_equity": 0.}
+    assert MIOMethodWorker.economics(official) == priced["economics"]
+    assert "unofficial" not in json.dumps(receipt), "the official receipt carries no worker-pricing marker"
+    assert files_before == set(json.loads((bundle / MIOMethodBundle.MANIFEST_FILE).read_text())["files"]), \
+        "pricing ships no extra bundle file"
+    with pytest.raises(ValueError, match="another action file"):
+        MIOMethodWorker.compare_priced(priced, official, {**origin, "sha256": "0"*64})
+    with pytest.raises(ValueError, match="unofficial"):
+        MIOMethodWorker.compare_priced({**priced, "unofficial": False}, official)
+    with pytest.raises(ValueError, match="another method"):
+        MIOMethodWorker.compare_priced({**priced, "method": "other"}, official)
+
+
+def test_worker_pricing_is_opt_in_validated_and_a_refusal_keeps_the_action_file(tmp_path, monkeypatch):
+    base = {"bundle_root": str(tmp_path / "b"), "method": "m", "attempt": 1, "work_dir": str(tmp_path / "w"),
+            "out": str(tmp_path / "out" / "m.json")}
+    for bad in ("relative/m.priced.json", base["out"], 3):
+        with pytest.raises(ValueError, match="priced_out"):
+            MIOMethodWorker({**base, "priced_out": bad})
+    worker = MIOMethodWorker({**base, "priced_out": str(tmp_path / "priced" / "m.priced.json")})
+    worker.timing_check = True
+    assert worker._write_priced(None, None, None, None, {}, b"") is None
+    assert not (tmp_path / "priced" / "m.priced.json").exists()
+    assert "timing" in (tmp_path / "priced" / "m.priced.json.refused").read_text()
+    import index_options.mio_worker as mw
+    monkeypatch.setattr(mw.platform, "system", lambda: "Darwin")
+    assert MIOMethodWorker.priced_on() == "mac"
+    monkeypatch.setattr(mw.platform, "system", lambda: "Linux")
+    assert MIOMethodWorker.priced_on() == "worker"

@@ -28,6 +28,18 @@ lines carry a stamp, a week count and a status word.
 ADR-0293: a bundle or worker never reads forecast payloads of a blinded-cache
 study, because only the registry document can verify them against an active
 permit. Such a study is refused here before any payload byte is touched.
+
+ADR-0297 Amendment 1 (worker pricing, UNOFFICIAL): a spec that names
+``priced_out`` ALSO prices the method on the worker after the solve. The
+worker re-derives its own action file through the exact path the WSL
+document takes (``_method(derived=...)`` and then the exact ``recorded=``
+replay) on a fresh study over the same bundled inputs, and writes a separate
+priced file marked ``"unofficial": true`` and ``"priced_on"`` with the full
+result's ``result_sha256`` and an economics digest (``pricing_sha256``) that
+``MIOMethodWorker.compare_priced`` checks against the WSL official result of
+the same action file. The action file, its format and the default run (no
+``priced_out``) are unchanged; the bundle gains no file, because the solve
+already settles every book from the bundled quotes and bars.
 """
 
 import argparse
@@ -53,7 +65,7 @@ from dskit.pipeline.workflow import path_hash
 from .observations import MIOPacketInputs
 
 __all__ = ["MIOMethodBundle", "MIOMethodWorker", "Heartbeat", "PayloadCapError", "BUNDLE_TOKEN", "THREAD_VARIABLES",
-           "STAMP_FORMAT", "stamp", "main"]
+           "STAMP_FORMAT", "PRICED_FORMAT", "UNOFFICIAL_LABEL", "stamp", "main"]
 
 #: The one UTC stamp format of every progress line and queue timestamp (the coordinator parses it too).
 STAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
@@ -66,6 +78,14 @@ THREAD_VARIABLES = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"
 #: The root a bundle's study.json names; a worker relocates it to the real bundle root, so one
 #: bundle (one manifest digest) serves every host root.
 BUNDLE_TOKEN = "/__MIO_BUNDLE__"
+#: The worker-priced (UNOFFICIAL) result format (ADR-0297 Amendment 1); never accepted as official evidence.
+PRICED_FORMAT = "mio-method-priced-v1"
+#: The label every worker-priced figure carries in a comparison table (owner convention: an asterisk).
+UNOFFICIAL_LABEL = "UNOFFICIAL*"
+#: The scalar result fields the economics digest covers, in this order.
+ECONOMICS_FIELDS = ("pnl", "stress_pnl", "final_equity", "deposits", "contributions", "twr", "max_drawdown",
+                    "fees", "wins", "losses", "contracts", "unfilled", "unbounded_books", "peak_open_books",
+                    "peak_reserve")
 
 
 class PayloadCapError(ValueError):
@@ -520,8 +540,11 @@ class MIOMethodWorker:
         ``attempt`` (int >= 1), ``work_dir`` (absolute; quote indexes and
         progress go here), ``out`` (absolute action-file path), optional
         ``unit`` (free-form identity carried into the action file),
-        ``reuse_root`` (same-device index cache root or null) and
-        ``host`` (a label; defaults to the hostname).
+        ``reuse_root`` (same-device index cache root or null),
+        ``host`` (a label; defaults to the hostname) and ``priced_out``
+        (absolute path: also price the method here and write an UNOFFICIAL
+        priced file there, ADR-0297 Amendment 1; absent means no pricing
+        output, exactly as before).
 
     Examples
     --------
@@ -535,7 +558,7 @@ class MIOMethodWorker:
     """
 
     _REQUIRED = {"bundle_root", "method", "attempt", "work_dir", "out"}
-    _OPTIONAL = {"unit", "reuse_root", "host"}
+    _OPTIONAL = {"unit", "reuse_root", "host", "priced_out"}
     #: The index-build heartbeat's period and hard cap: a cold build is minutes, so an hour of beating
     #: with no end is a hang the coordinator's stale limit must catch.
     HEARTBEAT_SECONDS = 60.
@@ -549,8 +572,12 @@ class MIOMethodWorker:
                 or set(spec) - self._REQUIRED - self._OPTIONAL
                 or type(spec["attempt"]) is not int or spec["attempt"] < 1
                 or any(not isinstance(spec[k], str) or not os.path.isabs(spec[k])
-                       for k in ("bundle_root", "work_dir", "out"))):
-            raise ValueError("worker spec requires absolute bundle_root, work_dir, out, a method and attempt >= 1")
+                       for k in ("bundle_root", "work_dir", "out"))
+                or ("priced_out" in spec and (not isinstance(spec["priced_out"], str)
+                                              or not os.path.isabs(spec["priced_out"])
+                                              or spec["priced_out"] == spec["out"]))):
+            raise ValueError("worker spec requires absolute bundle_root, work_dir, out, a method and attempt >= 1 "
+                             "(and priced_out, when given, absolute and not the action file)")
         self.spec = copy.deepcopy(spec)
         self.root = Path(spec["bundle_root"])
 
@@ -686,6 +713,150 @@ class MIOMethodWorker:
         return {"method": result["method"]["id"], "weeks": list(weeks), "decisions": decisions}
 
     @staticmethod
+    def price(params, bounded, method, actions):
+        """Price an action file here exactly as the WSL document does (ADR-0297 Amendment 1; UNOFFICIAL off WSL).
+
+        The same two steps as ``MIOPacketStudy.run`` on a recorded method: ``_method(derived=actions)`` on a fresh
+        study (every reserve, fill, settlement, carry, mark and P&L is this host's own) and then the exact
+        ``_method(recorded=result)`` replay on another fresh study, which must return the same result.
+
+        Parameters
+        ----------
+        params : dict
+            The study params as the document builds them (``params`` plus ``selected_pairs`` and ``clocks``).
+        bounded : dict
+            ``MIOPacketInputs.read_bounded`` output (``inputs`` and optional ``adjustments``, ``method_inputs``).
+        method : dict
+            The configured method.
+        actions : dict
+            ``MIOMethodWorker.actions`` output for this method.
+
+        Returns
+        -------
+        dict
+            The method result (the object whose ``value_hash`` the WSL receipt's result reproduces).
+
+        Raises
+        ------
+        ValueError
+            The actions do not derive, or the exact replay differs.
+        """
+        from .ledger_studies import WeeklyOptionPortfolioStudy
+
+        result = None
+        for step in ("derived", "recorded"):
+            study = WeeklyOptionPortfolioStudy(params, bounded["inputs"], adjustments=bounded.get("adjustments"),
+                                               method_inputs=bounded.get("method_inputs"))
+            try:
+                out = study._method(method, None, **{step: actions if step == "derived" else result})
+                study.close_quote_indexes(verify=True)
+            finally:
+                if any(type(q).__name__ == "_SQLiteQuoteView" for q in study._quotes.values()):
+                    try:
+                        study.close_quote_indexes()
+                    except Exception:
+                        pass
+            if result is None:
+                result = out
+            elif out != result:
+                raise ValueError("worker pricing: the exact replay differs from the derived result")
+        return result
+
+    @staticmethod
+    def economics(result):
+        """The P&L summary a priced file carries and ``pricing_sha256`` covers, from one method result.
+
+        ``ECONOMICS_FIELDS`` (P&L, stress P&L, final equity, flows, TWR, maximum drawdown, fees, counts), the
+        ledger summary, the daily marked curve (date, equity, NAV, drawdown), settled P&L per decision week
+        (sums to ``pnl`` up to float order) and the hedge record when the method carries one.
+        """
+        weeks = {d["date"]: {"status": d.get("status"), "books": 0, "pnl": 0.} for d in result["decisions"]}
+        for trade in result["trades"]:
+            week = weeks.setdefault(trade["decision_date"], {"status": None, "books": 0, "pnl": 0.})
+            week["books"] += 1
+            week["pnl"] += trade["pnl"]
+        out = {k: result[k] for k in ECONOMICS_FIELDS}
+        out.update(method=result["method"]["id"], ledger_summary=copy.deepcopy(result["ledger_summary"]),
+                   curve=[{k: p[k] for k in ("date", "equity", "nav", "drawdown")} for p in result["curve"]],
+                   per_week=[{"date": day, **weeks[day]} for day in sorted(weeks)])
+        if "hedge" in result:
+            out["hedge"] = copy.deepcopy(result["hedge"])
+        return out
+
+    @staticmethod
+    def priced_on():
+        """``"mac"`` on macOS, else ``"worker"``: where an UNOFFICIAL priced file was priced (never ``"wsl"``)."""
+        return "mac" if platform.system() == "Darwin" else "worker"
+
+    @classmethod
+    def compare_priced(cls, priced, official, origin=None):
+        """Compare an UNOFFICIAL priced file with the WSL official result of the same action file.
+
+        Parameters
+        ----------
+        priced : dict
+            A priced file body (``PRICED_FORMAT``).
+        official : dict
+            The WSL receipt's ``result`` for the method.
+        origin : dict or None
+            The receipt audit's ``recorded_from[method]``; when given, its ``sha256`` must name the action file
+            the priced file priced.
+
+        Returns
+        -------
+        dict
+            ``result_identical`` (the full result's ``value_hash``), ``economics_identical`` (``pricing_sha256``)
+            and ``abs_diff_usd`` for P&L, stress P&L and final equity.
+
+        Raises
+        ------
+        ValueError
+            Not a priced file, another method, or another action file.
+        """
+        if priced.get("format") != PRICED_FORMAT or priced.get("unofficial") is not True:
+            raise ValueError("not an unofficial priced file")
+        if priced["method"] != official["method"]["id"]:
+            raise ValueError("priced file names another method")
+        if origin is not None and origin.get("sha256") != priced["action_file_sha256"]:
+            raise ValueError("priced file priced another action file than the official result")
+        mine = cls.economics(official)
+        return {"method": priced["method"], "result_identical": value_hash(official) == priced["result_sha256"],
+                "economics_identical": value_hash(mine) == priced["pricing_sha256"],
+                "abs_diff_usd": {k: abs(mine[k] - priced["economics"][k])
+                                 for k in ("pnl", "stress_pnl", "final_equity")}}
+
+    def _write_priced(self, params, bounded, method, actions, header, action_raw):
+        """Price this worker's actions and write the UNOFFICIAL priced file, or a ``.refused`` line; never raise.
+
+        The action file is already written: a pricing refusal must not lose the solve.
+        """
+        out = Path(self.spec["priced_out"])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        started = time.perf_counter()
+        try:
+            if self.timing_check:
+                raise ValueError("a --check timing run is not priced")
+            result = self.price(params, bounded, method, actions)
+            economics = self.economics(result)
+            body = {**header, "format": PRICED_FORMAT, "unofficial": True, "priced_on": self.priced_on(),
+                    "label": UNOFFICIAL_LABEL, "official": False,
+                    "action_file_sha256": _sha256_bytes(action_raw),
+                    "result_sha256": value_hash(result), "pricing_sha256": value_hash(economics),
+                    "economics": economics, "pricing_seconds": time.perf_counter() - started}
+            raw = _canonical(body)
+            atomic_write(out, raw)
+            atomic_write(Path(str(out) + ".sha256"), (_sha256_bytes(raw) + "  " + out.name + "\n").encode("utf-8"))
+            Path(str(out) + ".refused").unlink(missing_ok=True)
+            return body
+        except Exception as exc:
+            from .ledger_studies import MIOPacketStudy
+
+            line = f"{type(exc).__name__}: {MIOPacketStudy.scrub(str(exc))}"
+            atomic_write(Path(str(out) + ".refused"), (line + "\n").encode("utf-8"))
+            sys.stderr.write(f"pricing refused (action file kept): {line}\n")
+            return None
+
+    @staticmethod
     def host_identity(label=None):
         """Describe the solving host: name, platform, interpreter and BLAS."""
         blas = None
@@ -780,6 +951,14 @@ class MIOMethodWorker:
         raw = _canonical(body)
         atomic_write(out, raw)
         atomic_write(Path(str(out) + ".sha256"), (_sha256_bytes(raw) + "  " + out.name + "\n").encode("utf-8"))
+        if "priced_out" in self.spec:  # ADR-0297 Amendment 1: before .done, so .done means every output is there
+            del result, weekly  # the solve's study and result are not needed to price; keep one study in memory
+            header = {k: body[k] for k in ("method", "attempt", "host", "bundle_manifest_sha256", "plan_sha256",
+                                           "study_sha256", "portable_inputs_sha256", "dependencies")}
+            if "unit" in body:
+                header["unit"] = body["unit"]
+            # The actions as WSL reads them: decoded from the written bytes, not the in-memory objects.
+            self._write_priced(params, bounded, method, json.loads(raw.decode("utf-8"))["actions"], header, raw)
         atomic_write(Path(str(out) + ".done"), b"done\n")
         return body
 
