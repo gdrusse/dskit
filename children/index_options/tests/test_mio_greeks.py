@@ -1961,6 +1961,48 @@ def test_stock_adapter_missing_daily_quote_refuses(world):
         _stock_adapter(run_dir, out_dir, inputs)
 
 
+@pytest.mark.parametrize("update", [
+    {"bid_size": 0}, {"ask_size": 0}, {"basis_factor": 2.},
+    {"ask": 100.}, {"bid": 0.}, {"ask": .001}, {"bid": 1., "ask": 1.},
+    {"iv": 0.}, None,
+], ids=["bid-size", "ask-size", "basis", "spread", "zero-bid", "crossed", "locked", "iv",
+        "unusable-duplicate"])
+def test_stock_adapter_unusable_active_leg_refuses(world, update):
+    run_dir, out_dir, inputs = _stock_world(world)
+    table = json.loads((run_dir/"result.json").read_text())
+    block = table["plan"]["source_pins"]["chain"]
+    relative = block["files"]["BLK"]
+    path = _FakePinned.base/relative
+    frame = pd.read_parquet(path)
+    leg = (frame.date == "2021-04-07") & (frame.type == "call") & (frame.strike_raw == 450.)
+    assert leg.sum() == 1
+    if update is None:
+        frame = pd.concat([frame, frame.loc[leg].assign(bid_size=0)], ignore_index=True)
+    else:
+        for field, value in update.items():
+            frame.loc[leg, field] = value
+    frame.to_parquet(path, index=False)
+    block["pin"]["files"][relative] = _sha(path)
+    (run_dir/"result.json").write_text(json.dumps(table))
+    sources = [path, *(p for p in run_dir.iterdir() if p.is_file())]
+    before = [_sha(p) for p in sources]
+    with pytest.raises(GreeksRefusal, match="stock_greeks"):
+        _stock_adapter(run_dir, out_dir, inputs)
+    assert [_sha(p) for p in sources] == before
+    assert not out_dir.exists()
+
+
+def test_stock_adapter_mid_iv_refuses(world):
+    run_dir, out_dir, _inputs = _stock_world(world)
+    params = {**PARAMS, "run_dir": str(run_dir), "out_dir": str(out_dir),
+              "iv_source": "mid", "iv_disagree_tol": .1,
+              "stock_hedge": {"ratio": 1., "fee_per_share": .005, "half_spread_bps": 5.,
+                              "capital_charge_rate": .01, "name_cap_usd": 10000.,
+                              "gross_cap_usd": 10000., "settlement_lag_sessions": 2}}
+    assert mio_greeks.MIODailyStockHedge.validate_params(params) == [
+        "daily stock replay requires vendor IV"]
+
+
 def test_stock_adapter_mismatched_raw_bar_refuses(world):
     run_dir, out_dir, inputs = _stock_world(world)
     inputs["stock_bars"][0]["close"] += 1
@@ -2002,7 +2044,7 @@ def test_stock_adapter_raw_factor_chain_rule(world, monkeypatch):
     from dskit.pipeline.option_exposure import BookGreeks
     def greeks(self, book, day, quotes, bars):
         return BookGreeks(20., 0., 0., 0., 100., "parity", "ok", delta_f_sh=20.), None
-    monkeypatch.setattr(MIOGreeksDiagnostics, "_greeks_at", greeks)
+    monkeypatch.setattr(mio_greeks.MIODailyStockHedge, "_greeks_at", greeks)
     # Factor change alters synthetic pricing identity too, so avoid that separate
     # recompute gate only in this narrow unit; full source route is covered above.
     monkeypatch.setattr(MIOGreeksDiagnostics, "_recompute", lambda *a: None)

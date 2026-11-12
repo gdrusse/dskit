@@ -46,6 +46,7 @@ import re
 from collections import Counter, OrderedDict
 from datetime import date, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from dskit.onboarding.artifacts import PinnedPayloadSource
 from dskit.pipeline.libs.option_ledger import DailyStockHedge
@@ -975,7 +976,8 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
     ----------
     params : dict
         MIOGreeksDiagnostics parameters plus stock_hedge (DailyStockHedge
-        parameters). Exactly one method and seal_crossing="refuse" are required.
+        parameters). Exactly one method, vendor IV and seal_crossing="refuse"
+        are required.
         out_dir retains inherited validation but no report files are written.
 
     Examples
@@ -1012,6 +1014,8 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
             problems.append("daily stock replay requires exactly one method")
         if params.get("seal_crossing") != "refuse":
             problems.append("daily stock replay cannot exclude seal-crossing books")
+        if params.get("iv_source", "vendor") != "vendor":
+            problems.append("daily stock replay requires vendor IV")
         if not isinstance(params.get("stock_hedge"), dict):
             problems.append("stock_hedge must be an explicit policy")
         else:
@@ -1080,6 +1084,21 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
                     raise GreeksRefusal("stock_inputs", "stock inputs must be mapping rows")
                 for field in fields:
                     self._stock_day(row.get(field))
+
+    def _greeks_at(self, book, day, quotes, bars):
+        """Screen held-leg quotes before the inherited forward and delta lookup."""
+        rows = quotes.chain(book["symbol"], day, book["expiry"])
+        if ParityForward.duplicates(rows):
+            return None, self.DUPLICATE_QUOTE
+        try:
+            rows = usable_parity_rows(rows, book["factor"], *self._quote_params, rescale=True)
+        except (TypeError, ValueError, ArithmeticError):
+            return None, "unusable_quote"
+        return super()._greeks_at(book, day, SimpleNamespace(chain=lambda *_: rows), bars)
+
+    def _parity_rows(self, book, day, rows):
+        """Use the same screened and basis-scaled rows as the held-leg lookup."""
+        return rows
 
     def _stock_market(self, inputs, sessions, symbols, books, bars, quotes):
         """Join raw execution bars with daily held-book Greeks without lookahead."""
