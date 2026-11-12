@@ -12,7 +12,7 @@ from test_ledger_studies import (FORMULATIONS, LOCAL_FORMULATIONS, LOCAL_SEARCH,
 #: starts replace them) and the multi-start block in place of the stage-one ``start``.
 MULTISTART_SEARCH = {"moves": 1000, "adds_evaluated": 64, "swaps_evaluated": 64, "restarts": 0, "seed": 20261112,
                      "multistart": {"top_groups": 16, "starts": 128, "climbed": 8, "pairs_evaluated": 64,
-                                    "scales": [1., .5, .25, .125]}}
+                                    "evaluations": 1000000, "scales": [1., .5, .25, .125]}}
 
 
 def _multistart(fraction):

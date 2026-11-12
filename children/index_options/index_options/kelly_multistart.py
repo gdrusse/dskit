@@ -50,7 +50,9 @@ class KellyMultiStart(KellyLocalSearch):
         ``restarts`` must be 0 here (the starts replace the perturbation restarts) and ``seed`` seeds the starts.
     multistart : dict
         ``top_groups`` (int >= 1, the LP books kept), ``starts`` (int >= 2, starts generated, cash included),
-        ``climbed`` (int >= 1, starts climbed), ``pairs_evaluated`` (int >= 0, the pair-add shortlist; 0 turns the move
+        ``climbed`` (int >= 1, starts climbed), optional ``evaluations`` (int >= 1: a cap on the exact trials of all
+        climbs, shared evenly over the climbs still to run and checked at move boundaries, so a count not a clock),
+        ``pairs_evaluated`` (int >= 0, the pair-add shortlist; 0 turns the move
         off) and ``scales`` (a nonempty list of distinct numbers in (0, 1], the rounding fractions, in order).
 
     Examples
@@ -66,6 +68,8 @@ class KellyMultiStart(KellyLocalSearch):
     """
 
     MULTISTART_KEYS = ("top_groups", "starts", "climbed", "pairs_evaluated", "scales")
+    #: Optional key: a deterministic cap on exact trials across all climbs (a count, never a clock).
+    OPTIONAL_KEYS = ("evaluations",)
     #: Draws per random start slot before the generator gives up on finding a new combination.
     DRAWS = 20
 
@@ -77,8 +81,12 @@ class KellyMultiStart(KellyLocalSearch):
             return defects
         if params["restarts"] != 0:
             return ["local_search restarts must be 0 with multistart (the starts replace them)"]
-        if not isinstance(multistart, dict) or set(multistart) != set(cls.MULTISTART_KEYS):
-            return [f"multistart needs exactly the keys {list(cls.MULTISTART_KEYS)}"]
+        if (not isinstance(multistart, dict) or not set(cls.MULTISTART_KEYS) <= set(multistart)
+                or set(multistart) - set(cls.MULTISTART_KEYS) - set(cls.OPTIONAL_KEYS)):
+            return [f"multistart needs the keys {list(cls.MULTISTART_KEYS)} and may add {list(cls.OPTIONAL_KEYS)}"]
+        if "evaluations" in multistart and (type(multistart["evaluations"]) is not int
+                                            or multistart["evaluations"] < 1):
+            return ["multistart evaluations must be an int >= 1"]
         floors = {"top_groups": 1, "starts": 2, "climbed": 1, "pairs_evaluated": 0}
         defects = [f"multistart {key} must be an int >= {floor}" for key, floor in floors.items()
                    if type(multistart[key]) is not int or multistart[key] < floor]
@@ -147,10 +155,12 @@ class KellyMultiStart(KellyLocalSearch):
             return single
         return (best[1], best[2]) if single is None or best[1] > single[0] else single
 
-    def _climb(self):
-        """ADR-0307's climb, counting the pair adds apart from the swaps."""
+    def _climb(self, stop=None):
+        """ADR-0307's climb, counting the pair adds apart from the swaps; ``stop`` is an evaluation count to stop at."""
         values, kinds = [self.value()], {"add": 0, "remove": 0, "swap": 0, "pair": 0}
         for _ in range(self.params["moves"]):
+            if stop is not None and self.evaluations >= stop:
+                return values, kinds, False
             found = self._best_move()
             if found is None:
                 return values, kinds, True
@@ -254,12 +264,14 @@ class KellyMultiStart(KellyLocalSearch):
         order = sorted(feasible, key=lambda i: (-scores[i], i))[:self.multi["climbed"]]
         counts = {"add": 0, "remove": 0, "swap": 0, "pair": 0}
         climbs, best, exhausted, total = [], None, False, 0
-        for i in order:
+        budget = self.multi.get("evaluations")
+        for n, i in enumerate(order):
+            stop = None if budget is None else self.evaluations+max(0, budget-self.evaluations)//(len(order)-n)
             first = cash.copy()
             for flat, quantity in starts[i][1].items():
                 first[flat] = quantity
             self._load(first)
-            values, kinds, done = self._climb()
+            values, kinds, done = self._climb(stop)
             total += len(values)-1
             exhausted = exhausted or not done
             for key, count in kinds.items():

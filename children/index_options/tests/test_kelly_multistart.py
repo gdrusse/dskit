@@ -33,7 +33,8 @@ def test_the_declaration_is_validated():
                           (PARAMS, {**MULTI, "scales": []}), (PARAMS, {**MULTI, "scales": [0.]}),
                           (PARAMS, {**MULTI, "scales": [1.5]}), (PARAMS, {**MULTI, "scales": [.5, .5]}),
                           (PARAMS, {**MULTI, "scales": [True]}), (PARAMS, {**MULTI, "climbed": 1.}),
-                          (PARAMS, {**MULTI, "extra": 1}), (PARAMS, None)):
+                          (PARAMS, {**MULTI, "extra": 1}), (PARAMS, None),
+                          (PARAMS, {**MULTI, "evaluations": 0}), (PARAMS, {**MULTI, "evaluations": 1.5})):
         assert KellyMultiStart.validate_multistart(params, multi), (params, multi)
     with pytest.raises(ValueError, match="restarts must be 0"):
         KellyMultiStart(_scorer(_program()), {**PARAMS, "restarts": 1}, MULTI)
@@ -171,3 +172,16 @@ def test_a_synthetic_week_runs_in_seconds():
     out = KellyMultiStart(scorer, PARAMS, {**MULTI, "top_groups": 16, "starts": 64}).run_multistart()
     assert time.perf_counter()-began < 120.
     assert out["record"]["end_value"] >= out["record"]["multistart"]["cash_value"]
+
+
+def test_an_evaluation_budget_caps_the_climbs_deterministically():
+    """ADR-0315: ``evaluations`` is a count, so two runs agree exactly, the climbs stop near it and the book is feasible."""
+    scorer = _scorer(_program())
+    free = KellyMultiStart(scorer, PARAMS, MULTI).run_multistart()
+    cap = max(1, free["record"]["evaluations"]//4)
+    runs = [KellyMultiStart(scorer, PARAMS, {**MULTI, "evaluations": cap}).run_multistart() for _ in range(2)]
+    assert runs[0]["quantities"] == runs[1]["quantities"] and runs[0]["record"] == runs[1]["record"]
+    assert runs[0]["record"]["evaluations"] < free["record"]["evaluations"]
+    assert runs[0]["record"]["budget_exhausted"]
+    assert scorer.check_feasible(runs[0]["quantities"])["feasible"]
+    assert runs[0]["record"]["end_value"] >= runs[0]["record"]["multistart"]["cash_value"]
