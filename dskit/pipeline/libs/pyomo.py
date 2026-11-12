@@ -4454,6 +4454,15 @@ class TransportPortfolioSolve(PyomoSolve):
         a valid bound on every integer book of the group and is exact at
         radius zero up to integrality. A charge only lowers the bound.
         """
+        return TransportPortfolioSolve._group_lp_relaxation(group)[0]
+
+    @staticmethod
+    def _group_lp_relaxation(group):
+        """Return ``(bound, actions)``: :meth:`_group_lp_bound`'s value and the relaxation's fractional actions.
+
+        One LP, solved once: the bound is exactly the screen's, and the actions (one float per item, within the
+        capacities) are the relaxed book that attains it (ADR-0315 rounds them into local-search starts).
+        """
         import numpy as np
         from scipy.optimize import linprog
         from scipy.sparse import csr_matrix, lil_matrix
@@ -4507,7 +4516,7 @@ class TransportPortfolioSolve(PyomoSolve):
                          bounds=bounds, method="highs", **equalities)
         if not result.success or not np.isfinite(result.fun):
             raise ValueError(f"group LP relaxation failed: {result.message}")
-        return float(-result.fun)
+        return float(-result.fun), np.asarray(result.x[:n], dtype=float)
 
     def _screen_metadata(self, groups):
         """Return the shared screen decision and its bound metadata."""

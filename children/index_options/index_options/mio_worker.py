@@ -674,7 +674,8 @@ class MIOMethodWorker:
                     else TransportPortfolioSolve.actions(selection),
                     "certificates": copy.deepcopy(decision["certificates"][-1:] if local
                                                   else decision["certificates"])}
-                if local:
+                if local and "start" in kelly["local_search"]:
+                    # ADR-0315: a multi-start week has no stage one; its final quantities and record are the evidence.
                     stage1 = decision["stage1"]
                     decisions[decision["date"]]["stage1"] = {
                         "actions": TransportPortfolioSolve.actions(stage1["selection"]),

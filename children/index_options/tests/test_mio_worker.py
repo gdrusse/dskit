@@ -332,6 +332,46 @@ def test_local_search_replay_hedge_worker_packet_requires_valid_stage_one(study,
         assert receipt["audit"]["recorded_from"][method]["bundle_manifest_sha256"] == manifest["sha256"]
 
 
+@pytest.mark.parametrize("study", ["hedged_program"], indirect=True)
+@pytest.mark.parametrize("tamper", [False, True])
+def test_multistart_replay_hedge_worker_packet_carries_no_stage_one(study, tmp_path, monkeypatch, tamper):
+    """ADR-0315: the paired multi-start worker returns its final quantities and one certificate; WSL reruns the search
+    (never a solve) and a tampered quantity closes the method without complete evidence."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+    from test_ledger_multistart import MULTISTART_HEDGED
+    from test_ledger_studies import FORMULATIONS, _for_kelly, _PARITY
+
+    method = "kelly050_ls_multistart_replay_hedge_lp"
+    params = _for_kelly(study["domain"]["params"])
+    params.update(methods=[{"id": method, **MULTISTART_HEDGED[method]}],
+                  hedge_parity=dict(_PARITY), locked_method_ids=list(FORMULATIONS))
+    bundle = tmp_path / "bundle"
+    manifest = MIOMethodBundle(study, bundle).build()
+    proc = _worker(tmp_path, bundle, method, check=True)
+    assert proc.returncode == 0, proc.stderr
+    check = json.loads(proc.stdout)
+    assert check["weeks"] >= 1 and len(check["objectives"][0]) == 1 and check["terminations"][0][-1] == "local_search"
+    path = tmp_path / "recorded" / f"{method}.json"
+    body = json.loads(path.read_text())
+    decision = next(iter(body["actions"]["decisions"].values()))
+    assert "stage1" not in decision and len(decision["certificates"]) == 1
+    if tamper:
+        decision["actions"] = [[0]*len(row) for row in decision["actions"]]
+        raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+        path.write_bytes(raw)
+        path.with_suffix(".json.sha256").write_text(hashlib.sha256(raw).hexdigest() + "  " + path.name + "\n")
+    monkeypatch.setattr(TransportPortfolioSolve, "run", lambda *a, **k: pytest.fail("no solve in WSL"))
+    _, plan, request = _init(study)
+    doc = _close_document(tmp_path, "multistart-recorded", study, plan, request, recorded=tmp_path / "recorded")
+    ran = run_document(doc, asof="2019-02-09", journal=False)
+    assert ran.state == "ran", ran
+    receipt = _receipt(ran, doc)
+    assert receipt["complete"] is not tamper
+    if not tamper:
+        assert receipt["results"][0]["replay_parity"]
+        assert receipt["audit"]["recorded_from"][method]["bundle_manifest_sha256"] == manifest["sha256"]
+
+
 @pytest.mark.parametrize("tamper", ["quantity", "sidecar", "plan", "inputs", "study", "absent", "schema", "empty_sidecar",
                                     "pairs_none"])
 def test_tampered_or_mismatched_recorded_falls_back_to_local_solve(study, tmp_path, caplog, monkeypatch, tamper):  # noqa: F811

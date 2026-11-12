@@ -2356,7 +2356,12 @@ class WeeklyOptionPortfolioStudy:
         kelly_local) and start {rho, shock}, the dollar program whose
         selection the search starts from. The one-stage program is never
         built: the week trades the exact-utility local optimum of
-        kelly_local, uncertified.
+        kelly_local, uncertified. ADR-0315: local_search may declare
+        multistart {top_groups, starts, climbed, pairs_evaluated, scales}
+        instead of start (restarts 0): no stage one is solved; the starts
+        are the program's per-group LP books, rounded and combined, and
+        the best climbs (with a pair add move) trade, never below cash
+        (kelly_multistart).
         Optional method key sizer (ADR-0300, exclusive with kelly) keeps the
         method's dollar program as stage 1, unchanged (its books and leg
         ratios, under every cap it declares), and sizes the selected books
@@ -2926,6 +2931,13 @@ class WeeklyOptionPortfolioStudy:
         from .kelly_local import KellyLocalSearch
 
         search = kelly["local_search"]
+        if isinstance(search, dict) and "multistart" in search:
+            # ADR-0315: the multi-start search declares its LP-rounded starts instead of a stage-one program.
+            from .kelly_multistart import KellyMultiStart
+
+            return ("start" not in search and not any(key in kelly for key in cls._LOCAL_SEARCH_EXCLUDES)
+                    and not KellyMultiStart.validate_multistart(
+                        {k: v for k, v in search.items() if k != "multistart"}, search["multistart"]))
         if (not isinstance(search, dict) or "start" not in search
                 or any(key in kelly for key in cls._LOCAL_SEARCH_EXCLUDES)):
             return False
@@ -3985,6 +3997,8 @@ class WeeklyOptionPortfolioStudy:
         from .kelly_local import KellyLocalSearch
 
         p, search = self.params, kelly["local_search"]
+        if "multistart" in search:
+            return self._multistart_week(day, search, program, derived, recorded)
         start = search["start"]
         dollar_groups = [{**g, "radius": start["rho"]} for g in configured]
         betas = self._betas(day, start["shock"]["beta_lookback"])["betas"]
@@ -4048,6 +4062,52 @@ class WeeklyOptionPortfolioStudy:
                 "stage1": {"selection": {k: v for k, v in first.items() if k != "certificates"},
                            "certificates": stage1_certificates},
                 "certificates": [*stage1_certificates, certificate]}
+
+    def _multistart_week(self, day, search, program, derived, recorded):
+        """Return one multi-start local-search week (ADR-0315): no stage one, the LP-rounded starts and the climbs.
+
+        The starts are the one-stage program's own per-group LP books (:class:`~index_options.kelly_multistart.
+        KellyMultiStart`); nothing is solved but those LPs and nothing reads the clock, so the recorded and the derived
+        routes rerun the whole search and refuse a selection (or a recorded start digest, chosen start or end book,
+        all inside ``kelly.local``, which the replay compares whole) that differs. The week carries no ``stage1``.
+        """
+        from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportActionScore
+        from .kelly_multistart import KellyMultiStart
+
+        p = self.params
+        scorer = TransportActionScore(program, {"parity_tolerance": p["solver"]["parity_tolerance"]})
+        out = KellyMultiStart(scorer, {k: v for k, v in search.items() if k != "multistart"},
+                              search["multistart"]).run_multistart()
+        local = out["record"]
+        certificate = {"strategy_outcome": self._LOCAL_OUTCOME, "certified": False, "objective": local["end_value"],
+                       "bound": None, "gap": None, "seconds": None, "bound_source": None}
+        if derived is not None:
+            claimed, finals = derived["actions"], derived["certificates"]
+            final = finals[0] if isinstance(finals, list) and len(finals) == 1 else None
+            valid_final = (isinstance(final, dict) and set(final) == set(certificate)
+                           and all(type(final[k]) is type(v) and final[k] == v for k, v in certificate.items()
+                                   if k != "objective")
+                           and number_ok(final["objective"])
+                           and math.isclose(final["objective"], certificate["objective"],
+                                            rel_tol=p["solver"]["parity_tolerance"],
+                                            abs_tol=p["solver"]["parity_tolerance"]))
+            if (not isinstance(claimed, list) or any(not isinstance(group, list)
+                    or any(type(quantity) is not int for quantity in group) for group in claimed)
+                    or claimed != out["quantities"] or not valid_final):
+                refusal = RecordedCheckRefusal("derived multi-start actions or certificate differ from this host's search",
+                                               "derived_actions", "other")
+                refusal.week = day
+                raise refusal
+        if recorded is not None:
+            if recorded.get("selection", {}).get("quantities") != out["quantities"]:
+                raise ValueError("recorded multi-start selection differs from this host's replay")
+            claim = (recorded.get("kelly") or {}).get("local")
+            mine = local["multistart"]
+            if (not isinstance(claim, dict) or not isinstance(claim.get("multistart"), dict)
+                    or any(claim["multistart"].get(k) != mine[k] for k in ("seed", "starts_digest", "chosen_start"))):
+                raise ValueError("recorded multi-start seed, starts digest or chosen start differs from this host's replay")
+        return {"selection": out["selection"], "local": local, "screen": out["screen"], "stage1": None,
+                "certificates": [certificate]}
 
     @staticmethod
     def _units(legs):
@@ -4421,7 +4481,7 @@ class WeeklyOptionPortfolioStudy:
             entry_keys = {"actions", "certificates"} | (
                 {"kelly_strategy"} if isinstance(method.get("kelly"), dict)
                 and any(key in method["kelly"] for key in self._KELLY_STRATEGY_KEYS) else set())
-            if local is not None:
+            if local is not None and "start" in local:
                 entry_keys.add("stage1")
             if (not isinstance(derived, dict) or set(derived) != {"method", "weeks", "decisions"}
                     or derived["method"] != method["id"] or derived["weeks"] != self.weeks
@@ -4710,7 +4770,8 @@ class WeeklyOptionPortfolioStudy:
                         certificates = [{k: v for k, v in c.items() if k != "binding"}
                                         for c in selection.get("certificates", [])]
                         if local_week is not None:
-                            record["stage1"] = copy.deepcopy(local_week["stage1"])
+                            if local_week["stage1"] is not None:
+                                record["stage1"] = copy.deepcopy(local_week["stage1"])
                             certificates = copy.deepcopy(local_week["certificates"])
                         if sizer is not None and not timed_out and books:
                             # ADR-0300: stage 1 (above, the locked formulation's program) chose the books; stage 2 sizes
