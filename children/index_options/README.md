@@ -903,3 +903,29 @@ supply complete raw stock execution/close bars, dividend payment events and
 corporate-action coverage. Stock skips MIO and option-fill days. Frozen option
 orders never change; incompatible funding refuses the replay. This synthetic
 integration writes no files and establishes no economic improvement.
+
+
+ADR-0314 Amendment 2 adds opt-in raw-stock replay of saved forward-hedged books.
+Set MIODailyStockHedge raw_stock=true and quote_iv_field=implied_volatility for
+the approved archive; keep iv_source=vendor. Each supplied stock bar includes
+positive basis_factor, RAW execution_price and RAW close, with raw close times
+factor equal to the pinned adjusted MIO close. The projector converts source open,
+close and split-adjusted dividends by dividing by that factor. Existing forwards
+remain in net delta; saved option orders, funds and reserves remain fixed.
+Every held-leg signal-day quote must pass before the stock ledger runs.
+
+Raw inputs require input_provenance SHA256 values named stock, dividends and
+events; operational drivers verify those source payloads and the saved-run close
+attestation before invoking the node. The output binds these publisher identities
+and the exact supplied projection hash. Optional settlement_sessions is the
+market calendar plus date-only settlement tail. The explicit stock policy
+defer_unpaid_dividends=true accepts pay_date=null; actual ex-date entitlements
+remain nonspendable receivables. Corporate events are symbol/date/kind rows under
+coverage.corporate_actions and refuse exposed inventory, including stale targets.
+No unsupported spinoff, split or delivery is silently ignored.
+
+The four separately pinned quarters use ratio1, name/gross caps each USD10000,
+fee USD0.005/share, half spread5bps, capital charge5% annually and T+2. Costs are
+research assumptions. Stock outputs and paired owner reports are separate from
+the forward-only MIO. Neither net-profit improvement nor downside reduction is
+established by these synthetic checks; actual preflight may refuse the replay.

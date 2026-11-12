@@ -1967,8 +1967,9 @@ def test_stock_adapter_missing_daily_quote_refuses(world):
     {"iv": 0.}, None,
 ], ids=["bid-size", "ask-size", "basis", "spread", "zero-bid", "crossed", "locked", "iv",
         "unusable-duplicate"])
-def test_stock_adapter_unusable_active_leg_refuses(world, update):
-    run_dir, out_dir, inputs = _stock_world(world)
+@pytest.mark.parametrize("raw", [False, True])
+def test_stock_adapter_unusable_active_leg_refuses(world, update, raw):
+    run_dir, out_dir, inputs = (_raw_stock_case if raw else _stock_world)(world)
     table = json.loads((run_dir/"result.json").read_text())
     block = table["plan"]["source_pins"]["chain"]
     relative = block["files"]["BLK"]
@@ -1987,7 +1988,7 @@ def test_stock_adapter_unusable_active_leg_refuses(world, update):
     sources = [path, *(p for p in run_dir.iterdir() if p.is_file())]
     before = [_sha(p) for p in sources]
     with pytest.raises(GreeksRefusal, match="stock_greeks"):
-        _stock_adapter(run_dir, out_dir, inputs)
+        (_raw_stock_run if raw else _stock_adapter)(run_dir, out_dir, inputs)
     assert [_sha(p) for p in sources] == before
     assert not out_dir.exists()
 
@@ -2068,3 +2069,197 @@ def test_stock_adapter_expiry_reserve_release_is_available_next_session_only(wor
     assert EXPIRY not in received[0]["decision_dates"]
     assert cash[EXPIRY] == 9500.  # today's 500 reserve release is not spendable yet
     assert cash["2021-04-19"] == 10000.
+
+
+def _raw_stock_case(world):
+    run_dir, out_dir, inputs = _stock_world(world)
+    for row in inputs["stock_bars"]:
+        row["basis_factor"] = 1.
+    inputs["input_provenance"] = {"stock": "a"*64, "dividends": "b"*64,
+                                 "events": "c"*64}
+    return run_dir, out_dir, inputs
+
+
+def _raw_stock_run(run_dir, out_dir, inputs, **overrides):
+    params = {**PARAMS, "run_dir": str(run_dir), "out_dir": str(out_dir),
+              "raw_stock": True, "quote_iv_field": "iv",
+              "stock_hedge": {"ratio": 1., "fee_per_share": .005, "half_spread_bps": 5.,
+                              "capital_charge_rate": .01, "name_cap_usd": 10000.,
+                              "gross_cap_usd": 10000., "settlement_lag_sessions": 2,
+                              "defer_unpaid_dividends": True}, **overrides}
+    return mio_greeks.MIODailyStockHedge("stock", params).run(None, inputs)
+
+
+def test_raw_stock_legacy_factor_one_and_provenance(world):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    out = _raw_stock_run(run_dir, out_dir, inputs)
+    legacy = {k: v for k, v in inputs.items() if k != "input_provenance"}
+    legacy["stock_bars"] = [{k: v for k, v in r.items() if k != "basis_factor"}
+                             for r in inputs["stock_bars"]]
+    assert out["trades"] == _stock_adapter(run_dir, out_dir, legacy)["trades"]
+    assert out["summary"]["adapter"]["input_provenance"] == inputs["input_provenance"]
+    assert out["summary"]["adapter"]["held_quote_book_days"] > 0
+
+
+@pytest.mark.parametrize("value", [0, -1, float("nan"), True, 2.])
+def test_raw_stock_invalid_factor_refuses(world, value):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    inputs["stock_bars"][0]["basis_factor"] = value
+    with pytest.raises(GreeksRefusal, match="stock_inputs"):
+        _raw_stock_run(run_dir, out_dir, inputs)
+
+
+def test_raw_stock_held_corporate_event_refuses(world):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    inputs["coverage"]["corporate_actions"] = [
+        {"symbol": "BLK", "date": "2021-04-07", "kind": "irregular_spinoff"}]
+    with pytest.raises(GreeksRefusal, match="stock_corporate_action"):
+        _raw_stock_run(run_dir, out_dir, inputs)
+
+
+def test_raw_stock_deferred_dividend(world):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    inputs["dividends"] = [{"symbol": "BLK", "ex_date": "2021-04-08",
+                            "pay_date": None, "amount": 1.}]
+    out = _raw_stock_run(run_dir, out_dir, inputs)
+    assert out["summary"]["dividend_receivables"] > 0
+
+
+def test_raw_stock_named_vendor_iv(world):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    table = json.loads((run_dir/"result.json").read_text())
+    relative = table["plan"]["source_pins"]["chain"]["files"]["BLK"]
+    path = _FakePinned.base/relative
+    frame = pd.read_parquet(path).rename(columns={"iv": "implied_volatility"})
+    frame.to_parquet(path, index=False)
+    _stock_edit(run_dir, lambda t: t["plan"]["source_pins"]["chain"]["pin"]["files"].update(
+        {relative: _sha(path)}))
+    out = _raw_stock_run(run_dir, out_dir, inputs, quote_iv_field="implied_volatility")
+    assert out["trades"]
+
+
+def test_raw_stock_preserves_forward_offset(world):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    def hedge(table):
+        trade = table["results"][0]["result"]["trades"][0]
+        trade["hedge"] = {"status": "ok", "units": 100., "reference": BLK_SETTLE,
+                          "days": 10, "rates": {"hedge_fee_per_share": 0.,
+                                                "hedge_half_spread_bps": 0.}}
+    _stock_edit(run_dir, hedge)
+    out = _raw_stock_run(run_dir, out_dir, inputs)
+    assert out["trades"] == []
+    assert out["summary"]["adapter"]["forward_book_days"] > 0
+    assert next(r for r in out["daily"] if r["date"] == FILL)["residual_delta_sh"]["BLK"] > 0
+
+
+@pytest.mark.parametrize("factor", [.5, 2.])
+def test_raw_stock_adjusted_basis_is_raw_share_invariant(world, factor):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    before = _raw_stock_run(run_dir, out_dir, inputs)
+    table = json.loads((run_dir/"result.json").read_text())
+    for row in inputs["stock_bars"]:
+        if row["symbol"] == "BLK":
+            row["basis_factor"] = factor
+    bars = table["plan"]["source_pins"]["bars"]
+    path = _FakePinned.base/bars["files"]["BLK"]
+    frame = pd.read_parquet(path)
+    frame["close"] *= factor
+    frame.to_parquet(path, index=False)
+    bars["pin"]["files"][bars["files"]["BLK"]] = _sha(path)
+    chain = table["plan"]["source_pins"]["chain"]
+    path = _FakePinned.base/chain["files"]["BLK"]
+    frame = pd.read_parquet(path)
+    frame["basis_factor"] = factor
+    frame["bid"] *= factor
+    frame["ask"] *= factor
+    frame.to_parquet(path, index=False)
+    chain["pin"]["files"][chain["files"]["BLK"]] = _sha(path)
+    table["results"][0]["result"]["trades"][0]["factor"] = factor
+    (run_dir/"result.json").write_text(json.dumps(table, sort_keys=True))
+    after = _raw_stock_run(run_dir, out_dir, inputs)
+    assert after["trades"] == before["trades"]
+    assert after["daily"] == before["daily"]
+
+
+@pytest.mark.parametrize("change", [
+    {"units": True}, {"units": float("nan")}, {"status": "unknown"},
+    {"reference": 0.}, {"days": -1}, {"rates": {}},
+])
+def test_raw_stock_malformed_forward_refuses(world, change):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    def mutate(table):
+        table["results"][0]["result"]["trades"][0]["hedge"] = {
+            "status": "ok", "units": 1., "reference": BLK_SETTLE, "days": 10,
+            "rates": {"hedge_fee_per_share": 0., "hedge_half_spread_bps": 0.}, **change}
+    _stock_edit(run_dir, mutate)
+    with pytest.raises(GreeksRefusal, match="stock_unsupported_book"):
+        _raw_stock_run(run_dir, out_dir, inputs)
+
+
+def test_raw_stock_missing_quote_preflight_before_core(world, monkeypatch):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    original = mio_greeks.ChainQuotes.chain
+    monkeypatch.setattr(mio_greeks.ChainQuotes, "chain",
+                        lambda self, symbol, day, expiry: [] if day == "2021-04-14"
+                        else original(self, symbol, day, expiry))
+    def no_core(*args, **kwargs):
+        pytest.fail("core executed before held quote coverage completed")
+    monkeypatch.setattr(mio_greeks.DailyStockHedge, "run", no_core)
+    with pytest.raises(GreeksRefusal, match="stock_greeks"):
+        _raw_stock_run(run_dir, out_dir, inputs)
+    assert not out_dir.exists()
+
+
+def test_raw_stock_null_dividend_requires_opt_in(world):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    inputs["dividends"] = [{"symbol": "BLK", "ex_date": "2021-04-08",
+                            "pay_date": None, "amount": 1.}]
+    policy = {"ratio": 1., "fee_per_share": .005, "half_spread_bps": 5.,
+              "capital_charge_rate": .01, "name_cap_usd": 10000.,
+              "gross_cap_usd": 10000., "settlement_lag_sessions": 2}
+    with pytest.raises(GreeksRefusal, match="bad_date"):
+        _raw_stock_run(run_dir, out_dir, inputs, stock_hedge=policy)
+
+
+@pytest.mark.parametrize("provenance", [{}, {"stock": "not-a-digest"}, {"stock": 1}])
+def test_raw_stock_provenance_required(world, provenance):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    inputs["input_provenance"] = provenance
+    with pytest.raises(GreeksRefusal, match="stock_inputs"):
+        _raw_stock_run(run_dir, out_dir, inputs)
+
+
+def test_raw_stock_flat_event_and_input_digest(world):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    inputs["coverage"]["corporate_actions"] = [
+        {"symbol": "MMM", "date": "2021-04-07", "kind": "irregular_spinoff"}]
+    first = _raw_stock_run(run_dir, out_dir, inputs)
+    inputs["input_provenance"]["stock"] = "d"*64
+    second = _raw_stock_run(run_dir, out_dir, inputs)
+    assert first["trades"] == second["trades"]
+    assert first["summary"]["adapter"]["input_projection_sha256"] != second["summary"]["adapter"]["input_projection_sha256"]
+
+
+def test_raw_stock_held_basis_change_refuses(world):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    for row in inputs["stock_bars"]:
+        if row["symbol"] == "BLK" and row["date"] >= "2021-04-08":
+            row["basis_factor"] = .5
+            row["close"] *= 2
+            row["execution_price"] *= 2
+    with pytest.raises(GreeksRefusal, match="stock_corporate_action"):
+        _raw_stock_run(run_dir, out_dir, inputs)
+
+
+def test_raw_stock_missing_selected_iv_refuses(world):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    with pytest.raises(GreeksRefusal, match="chain_columns_absent"):
+        _raw_stock_run(run_dir, out_dir, inputs, quote_iv_field="implied_volatility")
+
+
+def test_raw_stock_expiry_event_refuses_prior_held_book(world):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    inputs["coverage"]["corporate_actions"] = [
+        {"symbol": "BLK", "date": EXPIRY, "kind": "irregular_spinoff"}]
+    with pytest.raises(GreeksRefusal, match="stock_corporate_action"):
+        _raw_stock_run(run_dir, out_dir, inputs)

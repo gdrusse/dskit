@@ -1217,3 +1217,57 @@ def _daily_stock_tail(inputs):
         previous = next(r for r in reversed(inputs["market"]) if r["symbol"] == symbol)
         inputs["market"].append({**previous, "date": day, "known_at": day,
                                   "delta_sh": 0., "active": False})
+
+
+def test_daily_stock_deferred_dividend_stays_nonspendable(ctx):
+    inputs = _daily_stock_inputs(deltas=(-5, -5, -5, -5, -5), prices=(100,)*5)
+    inputs["dividends"] = [{"symbol": "ABC", "ex_date": "2020-03-04",
+                            "pay_date": None, "amount": 2.}]
+    out = _daily_stock_run(ctx, inputs, defer_unpaid_dividends=True)
+    assert out["summary"]["dividend_receivables"] == 10.
+    assert out["daily"][-1]["available_cash"] == 500.
+    assert out["summary"]["stock_pnl_usd"] == 10.
+
+
+def test_daily_stock_date_only_settlement_tail(ctx):
+    inputs = _daily_stock_inputs(deltas=(-5, -5, -5, 0, 0), prices=(100,)*5)
+    inputs["settlement_sessions"] = inputs["sessions"] + ["2020-03-09", "2020-03-10"]
+    out = _daily_stock_run(ctx, inputs)
+    assert out["trades"][-1]["settlement_date"] == "2020-03-10"
+    assert out["daily"][-1]["sale_receivables"] == 500.
+    assert out["daily"][-1]["available_cash"] == 500.
+    assert len(out["daily"]) == 5
+
+
+@pytest.mark.parametrize("tail", [[], ["2020-03-09"], ["2020-03-06"], ["2020-03-09", "2020-03-09"]])
+def test_daily_stock_invalid_settlement_calendar_refuses(ctx, tail):
+    inputs = _daily_stock_inputs(deltas=(-5, -5, -5, 0, 0))
+    inputs["settlement_sessions"] = tail
+    with pytest.raises(ValueError):
+        _daily_stock_run(ctx, inputs)
+
+
+@pytest.mark.parametrize("deltas", [(-5, -5, 0, 0, 0), (0, -5, 0, 0, 0)])
+def test_daily_stock_event_refuses_inventory_or_stale_target(ctx, deltas):
+    inputs = _daily_stock_inputs(deltas=deltas)
+    inputs["coverage"]["corporate_actions"] = [{"symbol": "ABC", "date": "2020-03-04",
+                                               "kind": "unsupported"}]
+    with pytest.raises(ValueError, match="corporate action"):
+        _daily_stock_run(ctx, inputs)
+
+
+def test_daily_stock_event_refuses_prior_active_zero_delta(ctx):
+    inputs = _daily_stock_inputs(deltas=(0,)*5)
+    inputs["market"][0]["active"] = True
+    inputs["coverage"]["corporate_actions"] = [{"symbol": "ABC", "date": inputs["sessions"][1],
+                                               "kind": "unsupported"}]
+    with pytest.raises(ValueError, match="corporate action"):
+        _daily_stock_run(ctx, inputs)
+
+
+
+def test_daily_stock_event_flat_control(ctx):
+    inputs = _daily_stock_inputs(deltas=(0,)*5)
+    inputs["coverage"]["corporate_actions"] = [{"symbol": "ABC", "date": "2020-03-04",
+                                               "kind": "unsupported"}]
+    assert _daily_stock_run(ctx, inputs)["trades"] == []

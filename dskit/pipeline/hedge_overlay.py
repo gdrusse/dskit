@@ -48,7 +48,7 @@ from dskit.pipeline.option_structures import structure_max_loss
 from dskit.pipeline.records import number_ok
 
 __all__ = ["HedgeOverlay", "NullHedgeOverlay", "FixedDeltaForwardHedge", "KINDS", "REFUSALS", "forward_leg_rule",
-           "forward_leg_net_settle"]
+           "forward_leg_net_settle", "forward_leg_spot_delta"]
 
 #: Where a method's hedge runs: over a saved selection, or inside the solve.
 MODES = ("replay", "program")
@@ -91,6 +91,22 @@ def forward_leg_net_settle(record, level):
     """
     costs = forward_leg_rule(record).carry_costs(record["units"], record["reference"], level, record["days"])
     return record["units"] * (level - record["reference"]) - costs["trade_costs"]
+
+
+
+def forward_leg_spot_delta(record, forward, spot):
+    """Return held forward units times F/S on a common pricing basis.
+
+    The caller supplies current forward and spot; no carry or mark is inferred.
+    """
+    units = record.get("units")
+    if (not number_ok(units) or not number_ok(forward) or forward <= 0
+            or not number_ok(spot) or spot <= 0):
+        raise ValueError("invalid forward delta inputs")
+    result = units*forward/spot
+    if not math.isfinite(result):
+        raise ValueError("nonfinite forward delta")
+    return result
 
 
 def _coded(code, message):

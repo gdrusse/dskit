@@ -51,7 +51,7 @@ from types import SimpleNamespace
 from dskit.onboarding.artifacts import PinnedPayloadSource
 from dskit.pipeline.libs.option_ledger import DailyStockHedge
 from dskit.pipeline.node import JsonArtifact, atomic_write, check_int_param
-from dskit.pipeline.hedge_overlay import forward_leg_net_settle
+from dskit.pipeline.hedge_overlay import forward_leg_net_settle, forward_leg_spot_delta
 from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL
 from dskit.pipeline.option_exposure import (
     STOCK_HEDGE_NOTE, BookGreeksReport, ParityForward, StaticDeltaHedge)
@@ -223,7 +223,10 @@ class ChainQuotes:
         rows = quotes.chain("BLK", "2021-04-06", "2021-04-16")   # right, strike, bid, ask, iv
     """
 
-    def __init__(self, binding, end_before, cache_days=DEFAULT_CACHE_DAYS):
+    def __init__(self, binding, end_before, cache_days=DEFAULT_CACHE_DAYS, iv_field="iv"):
+        if iv_field not in ("iv", "implied_volatility"):
+            raise ValueError("unsupported IV column")
+        self.iv_field = iv_field
         self.binding, self.end_before, self.cache_days = binding, end_before, cache_days
         self._source = PinnedPayloadSource(binding["pin"])
         self._paths, self._days = {}, OrderedDict()
@@ -254,12 +257,16 @@ class ChainQuotes:
                 raise GreeksRefusal(MIOGreeksDiagnostics.CHAIN_COLUMNS_ABSENT,
                                     f"{symbol} chain file lacks {absent}, which the quote filter reads")
             columns = [c for c in CHAIN_COLUMNS if c in names]
+            if self.iv_field != "iv":
+                if self.iv_field not in names:
+                    raise GreeksRefusal(MIOGreeksDiagnostics.CHAIN_COLUMNS_ABSENT, "selected IV column absent")
+                columns.append(self.iv_field)
             rows = pq.read_table(path, columns=columns, filters=[("date", "=", day)]).to_pylist()
             by_expiry = {}
             for r in rows:
                 by_expiry.setdefault(r["expiration"], []).append(
                     {"right": r["type"], "strike": r["strike_raw"], "bid": r["bid"],
-                     "ask": r["ask"], "iv": r.get("iv"), "bid_size": r["bid_size"],
+                     "ask": r["ask"], "iv": r.get(self.iv_field), "bid_size": r["bid_size"],
                      "ask_size": r["ask_size"], "basis_factor": r["basis_factor"]})
             self._days[symbol, day] = by_expiry
             while len(self._days) > self.cache_days:
@@ -970,7 +977,7 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
 
     Saved option orders remain fixed. A funding conflict refuses the entire
     replay; it never revises an option order or retrospectively drops stock
-    trades. This is synthetic integration, not a deployable cash allocator.
+    trades. This is a fixed-order research replay, not a deployable cash allocator.
 
     Parameters
     ----------
@@ -979,6 +986,11 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
         parameters). Exactly one method, vendor IV and seal_crossing="refuse"
         are required.
         out_dir retains inherited validation but no report files are written.
+        Optional raw_stock enables raw shares against adjusted pinned bars and
+        saved forward legs; quote_iv_field selects iv or implied_volatility.
+        Raw mode requires basis_factor on every stock bar and SHA256 identities
+        named stock, dividends and events in input_provenance. These identities
+        are publisher attestations; the adapter hashes the full supplied projection.
 
     Examples
     --------
@@ -990,7 +1002,7 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
     """
 
     _CHILD_PARAMS = (*MIOGreeksDiagnostics._CHILD_PARAMS, "stock_hedge")
-    _PARAMS = (*MIOGreeksDiagnostics._PARAMS, "stock_hedge")
+    _PARAMS = (*MIOGreeksDiagnostics._PARAMS, "stock_hedge", "raw_stock", "quote_iv_field")
     outputs = DailyStockHedge.outputs
 
     @classmethod
@@ -1016,6 +1028,10 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
             problems.append("daily stock replay cannot exclude seal-crossing books")
         if params.get("iv_source", "vendor") != "vendor":
             problems.append("daily stock replay requires vendor IV")
+        if type(params.get("raw_stock", False)) is not bool:
+            problems.append("raw_stock must be boolean")
+        if params.get("quote_iv_field", "iv") not in ("iv", "implied_volatility"):
+            problems.append("unsupported quote_iv_field")
         if not isinstance(params.get("stock_hedge"), dict):
             problems.append("stock_hedge must be an explicit policy")
         else:
@@ -1055,9 +1071,19 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
                     or not number_ok(trade.get("reserve")) or trade["reserve"] < 0
                     or not number_ok(trade.get("factor")) or trade["factor"] <= 0):
                 raise GreeksRefusal("stock_account", "invalid held-book identity or chronology")
-            if (trade.get("hedge") or trade.get("applied_adjustments")
+            if ((trade.get("hedge") and not self.params.get("raw_stock", False)) or trade.get("applied_adjustments")
                     or "active_legs" in trade or trade.get("active_factor", trade["factor"]) != trade["factor"]):
                 raise GreeksRefusal("stock_unsupported_book", "existing hedge or adjustment")
+            hedge = trade.get("hedge")
+            if self.params.get("raw_stock", False) and hedge:
+                if (not isinstance(hedge, dict) or not number_ok(hedge.get("units"))
+                        or (hedge["units"] and (hedge.get("status") != "ok"
+                            or not number_ok(hedge.get("reference")) or hedge["reference"] <= 0
+                            or not number_ok(hedge.get("days")) or hedge["days"] < 0
+                            or not isinstance(hedge.get("rates"), dict)
+                            or any(not number_ok(hedge["rates"].get(k)) or hedge["rates"][k] < 0
+                                   for k in ("hedge_fee_per_share", "hedge_half_spread_bps"))))):
+                    raise GreeksRefusal("stock_unsupported_book", "invalid forward record")
             ids.add(trade["id"])
         for row in curve:
             day = row["date"]
@@ -1074,8 +1100,29 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
 
     def _stock_input_dates(self, inputs):
         """Check supplied clocks before any pinned price/quote source is accessed."""
-        if not isinstance(inputs, dict) or set(inputs) != {"stock_bars", "dividends", "coverage"}:
-            raise GreeksRefusal("stock_inputs", "stock_bars, dividends and coverage are required")
+        required = {"stock_bars", "dividends", "coverage"}
+        if self.params.get("raw_stock", False):
+            required.add("input_provenance")
+        allowed = required | {"settlement_sessions"} if self.params.get("raw_stock", False) else required
+        if not isinstance(inputs, dict) or not required <= set(inputs) <= allowed:
+            raise GreeksRefusal("stock_inputs", "invalid stock input keys")
+        if self.params.get("raw_stock", False):
+            provenance = inputs["input_provenance"]
+            if (not isinstance(provenance, dict) or not {"stock", "dividends", "events"} <= set(provenance)
+                    or any(not isinstance(k, str) or not k or not isinstance(v, str)
+                           or re.fullmatch("[0-9a-f]{64}", v) is None for k, v in provenance.items())):
+                raise GreeksRefusal("stock_inputs", "input provenance requires SHA256 identities")
+        coverage = inputs["coverage"]
+        if not isinstance(coverage, dict):
+            raise GreeksRefusal("stock_inputs", "invalid coverage")
+        events = coverage.get("corporate_actions")
+        if isinstance(events, list):
+            for event in events:
+                if (not isinstance(event, dict) or set(event) != {"symbol", "date", "kind"}
+                        or not isinstance(event["symbol"], str) or not event["symbol"]
+                        or not isinstance(event["kind"], str) or not event["kind"]):
+                    raise GreeksRefusal("stock_inputs", "invalid corporate event")
+                self._stock_day(event.get("date"))
         for name, fields in (("stock_bars", ("date",)), ("dividends", ("ex_date", "pay_date"))):
             if not isinstance(inputs[name], list):
                 raise GreeksRefusal("stock_inputs", "stock inputs must be lists")
@@ -1083,6 +1130,9 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
                 if not isinstance(row, dict):
                     raise GreeksRefusal("stock_inputs", "stock inputs must be mapping rows")
                 for field in fields:
+                    if (field == "pay_date" and row.get(field) is None
+                            and self.params["stock_hedge"].get("defer_unpaid_dividends", False)):
+                        continue
                     self._stock_day(row.get(field))
 
     def _greeks_at(self, book, day, quotes, bars):
@@ -1102,20 +1152,26 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
 
     def _stock_market(self, inputs, sessions, symbols, books, bars, quotes):
         """Join raw execution bars with daily held-book Greeks without lookahead."""
-        if not isinstance(inputs, dict) or set(inputs) != {"stock_bars", "dividends", "coverage"}:
-            raise GreeksRefusal("stock_inputs", "stock_bars, dividends and coverage are required")
+        raw = self.params.get("raw_stock", False)
         rows = inputs["stock_bars"]
         if not isinstance(rows, list):
             raise GreeksRefusal("stock_inputs", "stock_bars must be rows")
         indexed = {}
         for row in rows:
-            if not isinstance(row, dict) or set(row) != {"date", "symbol", "execution_price", "close"}:
+            fields = {"date", "symbol", "execution_price", "close"} | ({"basis_factor"} if raw else set())
+            if not isinstance(row, dict) or set(row) != fields:
                 raise GreeksRefusal("stock_inputs", "invalid stock bar schema")
             day = self._stock_day(row["date"])
             symbol = row["symbol"]
+            factor = row.get("basis_factor", 1.)
+            if not number_ok(factor) or factor <= 0:
+                raise GreeksRefusal("stock_inputs", "invalid raw basis factor")
             if (not isinstance(symbol, str) or symbol not in symbols or day not in sessions
                     or (day, symbol) in indexed or not number_ok(row["close"]) or row["close"] <= 0
-                    or row["close"] != bars.get(symbol, {}).get(day)):
+                    or not number_ok(bars.get(symbol, {}).get(day))
+                    or (not raw and row["close"] != bars[symbol][day])
+                    or (raw and not math.isclose(row["close"]*factor, bars[symbol][day],
+                                                rel_tol=1e-10, abs_tol=1e-9))):
                 raise GreeksRefusal("stock_inputs", "duplicate, missing or mismatched raw close")
             indexed[day, symbol] = row
         expected = {(day, symbol) for day in sessions for symbol in symbols}
@@ -1127,6 +1183,21 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
                 raise GreeksRefusal("stock_account", "curve does not cover the pinned bar calendar")
         self._owned()
         market, fallback = [], 0
+        self._stock_quote_days = self._stock_forward_days = 0
+        actions = inputs["coverage"].get("corporate_actions")
+        events = actions if isinstance(actions, list) else []
+        for i, day in enumerate(sessions):
+            prior = sessions[max(0, i-1)]
+            changed = {symbol for symbol in symbols if raw and i and
+                       indexed[day, symbol]["basis_factor"] != indexed[prior, symbol]["basis_factor"]}
+            event_names = {e.get("symbol") for e in events if e.get("date") == day} | changed
+            if any(book["symbol"] in event_names and book["fill_date"] <= day
+                   and book["expiry"] > prior for book in books):
+                raise GreeksRefusal("stock_corporate_action", "held book crosses unsupported action")
+            for symbol in changed:
+                if not any(e.get("symbol") == symbol and e.get("date") == day for e in events):
+                    raise GreeksRefusal("stock_corporate_action", "unattested basis change")
+
         for day in sessions:
             deltas = {symbol: [] for symbol in symbols}
             for book in books:
@@ -1135,9 +1206,19 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
                     if reason:
                         raise GreeksRefusal("stock_greeks", reason)
                     fallback += greeks.forward_source == "spot"
-                    deltas[book["symbol"]].append(greeks.delta_sh/book["factor"])
+                    self._stock_quote_days += 1
+                    factor = indexed[day, book["symbol"]].get("basis_factor", 1.)
+                    if raw and factor != book["factor"]:
+                        raise GreeksRefusal("stock_inputs", "held quote and raw stock basis disagree")
+                    delta = greeks.delta_sh
+                    if raw and book.get("forward_leg"):
+                        delta += forward_leg_spot_delta(book["forward_leg"], greeks.forward,
+                                                        self._spot(bars, book, day))
+                        self._stock_forward_days += 1
+                    deltas[book["symbol"]].append(delta*factor/book["factor"])
             for symbol in symbols:
-                market.append({**indexed[day, symbol], "delta_sh": math.fsum(deltas[symbol]),
+                bar = {k: v for k, v in indexed[day, symbol].items() if k != "basis_factor"}
+                market.append({**bar, "delta_sh": math.fsum(deltas[symbol]),
                                "active": bool(deltas[symbol]), "known_at": day})
         return market, fallback
 
@@ -1174,8 +1255,12 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
         bars, bar_shas = self._read_bars(table, symbols)
         books = self._load_books({"method": method, "trades": trades,
                                   "bars": bars, "multiplier": multiplier})
+        if self.params.get("raw_stock", False):
+            hedges = {f"{method}|{t['id']}": t.get("hedge") for t in trades}
+            for book in books:
+                book["forward_leg"] = hedges[book["key"]]
         quotes = ChainQuotes(table["plan"]["source_pins"]["chain"], self._seal(),
-                             self.params["chain_cache_days"])
+                             self.params["chain_cache_days"], self.params.get("quote_iv_field", "iv"))
         market, fallback = self._stock_market(inputs, sessions, symbols, books, bars, quotes)
         fill_days = {t["fill_date"] for t in trades}
         cash = [{"date": day, "free_cash": curve[max(0, i-1)]["funding"]-curve[max(0, i-1)]["reserve"]}
@@ -1184,7 +1269,9 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
             "sessions": sessions, "symbols": symbols,
             "decision_dates": sorted(set(decisions) | fill_days),
             "cash": cash, "market": market,
-            "dividends": inputs["dividends"], "coverage": inputs["coverage"]})
+            "dividends": inputs["dividends"], "coverage": inputs["coverage"],
+            **({"settlement_sessions": inputs["settlement_sessions"]}
+               if "settlement_sessions" in inputs else {})})
         for actual, row in zip(curve, replay["daily"], strict=True):
             spendable = actual["funding"]-actual["reserve"]+row["stock_cash"]
             if not math.isfinite(spendable) or spendable < 0:
@@ -1196,4 +1283,13 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
             "mio_dates": decisions, "option_fill_dates": sorted(fill_days),
             "forward_spot_book_days": fallback, "sealed_from": self._seal(),
             "sources": {**shas, **bar_shas, **{f"chain/{f}": v for f, v in quotes.files.items()}}}
+        if self.params.get("raw_stock", False):
+            replay["summary"]["adapter"].update(
+                input_provenance=dict(inputs["input_provenance"]),
+                input_projection_sha256=hashlib.sha256(json.dumps(
+                    inputs, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest(),
+                held_quote_book_days=self._stock_quote_days,
+                forward_book_days=self._stock_forward_days,
+                delta_basis="raw shares; options plus saved forwards",
+                quote_iv_field=self.params.get("quote_iv_field", "iv"))
         return replay
