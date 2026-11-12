@@ -1826,3 +1826,245 @@ def test_attested_greeks_receipt_binds_the_disk_and_carried_summary(world, tmp_p
     carry = json.loads((Path(result.run_dir) / "carry.json").read_bytes())["greeks"]
     assert receipt == {"summary_sha256": _sha(disk)}
     assert carry["summary"] == json.loads(disk.read_bytes())
+
+
+# ADR-0314 Amendment 1: a saved synthetic MIO book drives daily stock purchases.
+def _stock_world(world):
+    def replace(table):
+        legs = [_leg("call", -1, 1, 450., 1.60, 1.65),
+                _leg("call", 1, 1, 455., 1.15, 1.10)]
+        trade = _trade("short_call_spread", "BLK", DECISION, FILL, EXPIRY,
+                       legs, BLK_SETTLE)
+        trade["reserve"] = 500.
+        result = table["results"][0]["result"]
+        result["trades"] = [trade]
+        result["decisions"] = [{"date": DECISION}, {"date": LATER_DECISION}]
+        sessions = [d for d in _sessions() if DECISION <= d <= "2021-04-22"]
+        result["curve"] = [{"date": d, "funding": 10000., "reserve": 500. if FILL <= d < EXPIRY else 0.,
+                            "open_ids": [trade["id"]] if FILL <= d < EXPIRY else [],
+                            "cash": 10000.+trade["credit"] if FILL <= d < EXPIRY else 10000.}
+                           for d in sessions]
+    run_dir, out_dir = world(mutate=replace)
+    table = json.loads((run_dir/"result.json").read_text())
+    base = _FakePinned.base
+    sessions = [r["date"] for r in table["results"][0]["result"]["curve"]]
+    stock_bars = []
+    for symbol, relative in table["plan"]["source_pins"]["bars"]["files"].items():
+        frame = pd.read_parquet(base/relative)
+        for row in frame.to_dict("records"):
+            if row["date"] in sessions:
+                stock_bars.append({"date": row["date"], "symbol": symbol,
+                                   "execution_price": row["close"], "close": row["close"]})
+    pin = table["plan"]["source_pins"]["chain"]
+    relative = pin["files"]["BLK"]
+    rows = []
+    for day in sessions:
+        if FILL <= day < EXPIRY:
+            rows += _chain_rows("BLK", day, EXPIRY, BLK_FORWARD, BLK_VOL, [450., 455.])
+    for row in rows:
+        row["bid"] = max(.001, row["bid"])
+        row["ask"] = max(.002, row["ask"])
+    pd.DataFrame(rows).to_parquet(base/relative, index=False)
+    pin["pin"]["files"][relative] = _sha(base/relative)
+    (run_dir/"result.json").write_text(json.dumps(table, sort_keys=True))
+    return run_dir, out_dir, {"stock_bars": stock_bars, "dividends": [],
+                              "coverage": {"raw_prices": True, "dividends_complete": True,
+                                           "corporate_actions": "none"}}
+
+
+def _stock_adapter(run_dir, out_dir, inputs, **stock_policy):
+    assert hasattr(mio_greeks, "MIODailyStockHedge"), "missing saved-MIO daily-stock adapter"
+    params = {**PARAMS, "run_dir": str(run_dir), "out_dir": str(out_dir),
+              "stock_hedge": {"ratio": 1., "fee_per_share": .005, "half_spread_bps": 5.,
+                              "capital_charge_rate": .01, "name_cap_usd": 10000.,
+                              "gross_cap_usd": 10000., "settlement_lag_sessions": 2, **stock_policy}}
+    return mio_greeks.MIODailyStockHedge("stock", params).run(None, inputs)
+
+
+def test_stock_adapter_saved_book_drives_daily_stock_without_source_writes(world):
+    run_dir, out_dir, inputs = _stock_world(world)
+    before = {str(p): _sha(p) for p in run_dir.iterdir() if p.is_file()}
+    out = _stock_adapter(run_dir, out_dir, inputs)
+    assert out["trades"] and out["trades"][0]["date"] == "2021-04-07"
+    assert out["trades"][0]["shares"] > 0
+    assert not any(r["date"] in (DECISION, FILL, LATER_DECISION) for r in out["trades"])
+    assert out["summary"]["open_shares"] == {"BLK": 0, "MMM": 0}
+    assert out["summary"]["adapter"]["method"] == METHOD
+    assert {str(p): _sha(p) for p in run_dir.iterdir() if p.is_file()} == before
+    assert not out_dir.exists()
+
+
+def _stock_edit(run_dir, transform):
+    path = run_dir/"result.json"
+    table = json.loads(path.read_text())
+    transform(table)
+    path.write_text(json.dumps(table, sort_keys=True))
+
+
+def test_stock_adapter_current_cash_release_does_not_resize_current_order(world):
+    run_dir, out_dir, inputs = _stock_world(world)
+    before = _stock_adapter(run_dir, out_dir, inputs, name_cap_usd=1e9, gross_cap_usd=1e9)
+    # Non-MIO, non-fill day: current released funding is unavailable until tomorrow.
+    day = "2021-04-08"
+    _stock_edit(run_dir, lambda t: [r.update(funding=100000.)
+                                   for r in t["results"][0]["result"]["curve"] if r["date"] >= day])
+    after = _stock_adapter(run_dir, out_dir, inputs, name_cap_usd=1e9, gross_cap_usd=1e9)
+    assert [r for r in after["trades"] if r["date"] <= day] == [
+        r for r in before["trades"] if r["date"] <= day]
+    assert next(r for r in after["daily"] if r["date"] == day)["available_cash"] == next(
+        r for r in before["daily"] if r["date"] == day)["available_cash"]
+
+
+def test_stock_adapter_skipped_cash_decision_still_suppresses_stock(world):
+    run_dir, out_dir, inputs = _stock_world(world)
+    _stock_edit(run_dir, lambda t: t["results"][0]["result"]["decisions"].append(
+        {"date": "2021-04-07", "status": "cash"}))
+    out = _stock_adapter(run_dir, out_dir, inputs)
+    assert out["trades"][0]["date"] == "2021-04-08"
+
+
+@pytest.mark.parametrize("change", [
+    lambda r: r["curve"][2].update(open_ids=[]),
+    lambda r: r["curve"][2].update(reserve=0),
+    lambda r: r["curve"].pop(3),
+    lambda r: r["curve"].insert(1, dict(r["curve"][0])),
+    lambda r: r["decisions"].append(dict(r["decisions"][0])),
+    lambda r: r["trades"][0].update(hedge={"units": 1}),
+    lambda r: r["trades"][0].update(applied_adjustments=[{"ratio": 2}]),
+])
+def test_stock_adapter_bad_saved_account_refuses(world, change):
+    run_dir, out_dir, inputs = _stock_world(world)
+    _stock_edit(run_dir, lambda t: change(t["results"][0]["result"]))
+    with pytest.raises(ValueError):
+        _stock_adapter(run_dir, out_dir, inputs)
+
+
+def test_stock_adapter_current_funding_conflict_refuses_frozen_orders(world):
+    run_dir, out_dir, inputs = _stock_world(world)
+    _stock_edit(run_dir, lambda t: next(r for r in t["results"][0]["result"]["curve"]
+                                       if r["date"] == "2021-04-08").update(funding=500.))
+    with pytest.raises(ValueError, match="insufficient settled cash|stock_funding_conflict"):
+        _stock_adapter(run_dir, out_dir, inputs)
+
+
+def test_stock_adapter_missing_daily_quote_refuses(world):
+    run_dir, out_dir, inputs = _stock_world(world)
+    table = json.loads((run_dir/"result.json").read_text())
+    block = table["plan"]["source_pins"]["chain"]
+    relative = block["files"]["BLK"]
+    path = _FakePinned.base/relative
+    frame = pd.read_parquet(path)
+    frame[frame.date != "2021-04-07"].to_parquet(path, index=False)
+    block["pin"]["files"][relative] = _sha(path)
+    (run_dir/"result.json").write_text(json.dumps(table))
+    with pytest.raises(GreeksRefusal, match="stock_greeks"):
+        _stock_adapter(run_dir, out_dir, inputs)
+
+
+@pytest.mark.parametrize("update", [
+    {"bid_size": 0}, {"ask_size": 0}, {"basis_factor": 2.},
+    {"ask": 100.}, {"bid": 0.}, {"ask": .001}, {"bid": 1., "ask": 1.},
+    {"iv": 0.}, None,
+], ids=["bid-size", "ask-size", "basis", "spread", "zero-bid", "crossed", "locked", "iv",
+        "unusable-duplicate"])
+def test_stock_adapter_unusable_active_leg_refuses(world, update):
+    run_dir, out_dir, inputs = _stock_world(world)
+    table = json.loads((run_dir/"result.json").read_text())
+    block = table["plan"]["source_pins"]["chain"]
+    relative = block["files"]["BLK"]
+    path = _FakePinned.base/relative
+    frame = pd.read_parquet(path)
+    leg = (frame.date == "2021-04-07") & (frame.type == "call") & (frame.strike_raw == 450.)
+    assert leg.sum() == 1
+    if update is None:
+        frame = pd.concat([frame, frame.loc[leg].assign(bid_size=0)], ignore_index=True)
+    else:
+        for field, value in update.items():
+            frame.loc[leg, field] = value
+    frame.to_parquet(path, index=False)
+    block["pin"]["files"][relative] = _sha(path)
+    (run_dir/"result.json").write_text(json.dumps(table))
+    sources = [path, *(p for p in run_dir.iterdir() if p.is_file())]
+    before = [_sha(p) for p in sources]
+    with pytest.raises(GreeksRefusal, match="stock_greeks"):
+        _stock_adapter(run_dir, out_dir, inputs)
+    assert [_sha(p) for p in sources] == before
+    assert not out_dir.exists()
+
+
+def test_stock_adapter_mid_iv_refuses(world):
+    run_dir, out_dir, _inputs = _stock_world(world)
+    params = {**PARAMS, "run_dir": str(run_dir), "out_dir": str(out_dir),
+              "iv_source": "mid", "iv_disagree_tol": .1,
+              "stock_hedge": {"ratio": 1., "fee_per_share": .005, "half_spread_bps": 5.,
+                              "capital_charge_rate": .01, "name_cap_usd": 10000.,
+                              "gross_cap_usd": 10000., "settlement_lag_sessions": 2}}
+    assert mio_greeks.MIODailyStockHedge.validate_params(params) == [
+        "daily stock replay requires vendor IV"]
+
+
+def test_stock_adapter_mismatched_raw_bar_refuses(world):
+    run_dir, out_dir, inputs = _stock_world(world)
+    inputs["stock_bars"][0]["close"] += 1
+    with pytest.raises(GreeksRefusal, match="stock_inputs"):
+        _stock_adapter(run_dir, out_dir, inputs)
+
+
+def test_stock_adapter_sealed_input_refuses_before_pinned_price_reads(world, monkeypatch):
+    run_dir, out_dir, inputs = _stock_world(world)
+    inputs["stock_bars"][0]["date"] = "2021-07-01"
+    def forbidden(*args, **kwargs):
+        raise AssertionError("pinned prices accessed before date guard")
+    monkeypatch.setattr(MIOGreeksDiagnostics, "_read_bars", forbidden)
+    with pytest.raises(GreeksRefusal, match="window_outside_data_rights"):
+        _stock_adapter(run_dir, out_dir, inputs)
+
+
+def test_stock_adapter_sealed_curve_refuses_before_pinned_price_reads(world, monkeypatch):
+    run_dir, out_dir, inputs = _stock_world(world)
+    _stock_edit(run_dir, lambda t: t["results"][0]["result"]["curve"][-1].update(date="2021-07-01"))
+    def forbidden(*args, **kwargs):
+        raise AssertionError("pinned prices accessed before date guard")
+    monkeypatch.setattr(MIOGreeksDiagnostics, "_read_bars", forbidden)
+    with pytest.raises(GreeksRefusal, match="window_outside_data_rights"):
+        _stock_adapter(run_dir, out_dir, inputs)
+
+
+def test_stock_adapter_raw_factor_chain_rule(world, monkeypatch):
+    run_dir, out_dir, inputs = _stock_world(world)
+    captured = []
+    original = mio_greeks.DailyStockHedge.run
+    def record(node, ctx, supplied):
+        captured.append(copy.deepcopy(supplied))
+        return original(node, ctx, supplied)
+    monkeypatch.setattr(mio_greeks.DailyStockHedge, "run", record)
+    _stock_adapter(run_dir, out_dir, inputs)
+    baseline = captured[-1]["market"]
+    # Isolate the wrapper's chain rule with the already-reviewed Greek owner's output.
+    from dskit.pipeline.option_exposure import BookGreeks
+    def greeks(self, book, day, quotes, bars):
+        return BookGreeks(20., 0., 0., 0., 100., "parity", "ok", delta_f_sh=20.), None
+    monkeypatch.setattr(mio_greeks.MIODailyStockHedge, "_greeks_at", greeks)
+    # Factor change alters synthetic pricing identity too, so avoid that separate
+    # recompute gate only in this narrow unit; full source route is covered above.
+    monkeypatch.setattr(MIOGreeksDiagnostics, "_recompute", lambda *a: None)
+    _stock_edit(run_dir, lambda t: t["results"][0]["result"]["trades"][0].update(factor=2.))
+    _stock_adapter(run_dir, out_dir, inputs)
+    rows = [r for r in captured[-1]["market"] if r["symbol"] == "BLK" and r["active"]]
+    assert rows and all(r["delta_sh"] == 10 for r in rows)
+    assert any(r["active"] for r in baseline)
+
+
+def test_stock_adapter_expiry_reserve_release_is_available_next_session_only(world, monkeypatch):
+    run_dir, out_dir, inputs = _stock_world(world)
+    received = []
+    original = mio_greeks.DailyStockHedge.run
+    def capture(node, ctx, supplied):
+        received.append(copy.deepcopy(supplied))
+        return original(node, ctx, supplied)
+    monkeypatch.setattr(mio_greeks.DailyStockHedge, "run", capture)
+    _stock_adapter(run_dir, out_dir, inputs)
+    cash = {row["date"]: row["free_cash"] for row in received[0]["cash"]}
+    assert EXPIRY not in received[0]["decision_dates"]
+    assert cash[EXPIRY] == 9500.  # today's 500 reserve release is not spendable yet
+    assert cash["2021-04-19"] == 10000.

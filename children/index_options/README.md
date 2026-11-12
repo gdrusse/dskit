@@ -894,3 +894,12 @@ A completed cohort remains pending review. Fresh windows require separate
 admission evidence and an explicit next-cohort freeze. Daily basis factors are
 bounded date metadata;
 option quotes are filtered to selected signal-date expiry bands.
+
+
+ADR-0314 Amendment 1 adds `index_options.mio_greeks.MIODailyStockHedge`.
+It reads one sealed saved MIO account, derives daily held-book Greeks, and
+feeds `DailyStockHedge` with prior-session funding minus reserves. Inputs
+supply complete raw stock execution/close bars, dividend payment events and
+corporate-action coverage. Stock skips MIO and option-fill days. Frozen option
+orders never change; incompatible funding refuses the replay. This synthetic
+integration writes no files and establishes no economic improvement.
