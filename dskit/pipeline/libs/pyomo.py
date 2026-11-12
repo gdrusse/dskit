@@ -485,7 +485,9 @@ class _UtilitySolveRecord(SolveRecord):
         certification solve), ``certified`` (a certification solve ran on the program with the actions the reduced
         costs rule out fixed), ``declined`` (too many actions left free to certify: no limit was hit, the
         incumbent stands under the relaxation's bound), ``relaxation_failed`` (the relaxation did not solve, no
-        incumbent) or ``direct`` (the whole integer program was handed to the solver).
+        incumbent), ``solver_error`` (the solver ended in ``error`` with no solution and no objective or bound, under
+        ``timeout_policy="return"``: a no-incumbent week recorded as the error it was, not as a timeout) or ``direct``
+        (the whole integer program was handed to the solver).
     bound_source : str
         ``relaxation`` (the bound is the LP relaxation's), ``certification`` (the tighter of the relaxation and the
         certification solve with the fixed actions' reach), ``solver`` (the solver's own bound, ``direct``) or
@@ -496,7 +498,7 @@ class _UtilitySolveRecord(SolveRecord):
     bound_source: str
 
     #: The values the two fields may hold.
-    OUTCOMES = ("relaxation_certified", "certified", "declined", "relaxation_failed", "direct")
+    OUTCOMES = ("relaxation_certified", "certified", "declined", "relaxation_failed", "direct", "solver_error")
     SOURCES = ("relaxation", "certification", "solver", "none")
 
     def coherent(self):
@@ -5234,6 +5236,10 @@ class TransportPortfolioSolve(PyomoSolve):
         record = PyomoSolve._build_solve_record(solver, model, results, name, seconds)
         if getattr(model, "_transport_no_incumbent", False):
             record = replace(record, objective=None, gap=None, binding=())
+            if (record.termination == "error" and record.bound is None
+                    and getattr(model, "_transport_outcome", None) is not None):   # a utility program
+                # Not a timeout: a solver that ended in error with nothing to load (the week is skipped all the same).
+                model._transport_outcome, model._transport_bound_source = "solver_error", "none"
         relaxed = getattr(model, "_transport_bound", None)
         if relaxed is not None and number_ok(relaxed):
             # The solver's bound covers the program it saw, with the actions fixed by reduced cost; every solution
@@ -5264,8 +5270,13 @@ class TransportPortfolioSolve(PyomoSolve):
         allowance = max(self.params["absolute_gap"], self.params["relative_gap"]*abs(value))
         return "gap" if max(0., certificate["bound"]-value) > allowance else None
 
-    def _empty_timeout(self, model, certificates):
-        """Validate absent-incumbent evidence against the reconstructed model."""
+    def _empty_timeout(self, model, certificates, recorded=None):
+        """Validate absent-incumbent evidence against the reconstructed model.
+
+        A ``maxTimeLimit`` termination is a ``no_incumbent`` week; an ``error`` termination with no solution, no
+        objective, no bound and no gap is a ``solver_error`` week (the same cash week, named for what happened).
+        ``recorded`` is the envelope's claimed reason on a replay, which must be the one the certificate implies.
+        """
         import copy
         from pyomo.environ import Constraint, Var
         fields = self._certificate_fields(self._utility is not None)
@@ -5274,19 +5285,24 @@ class TransportPortfolioSolve(PyomoSolve):
                 or not isinstance(certificates[0], dict) or set(certificates[0]) != fields):
             raise ValueError("incomplete no-incumbent timeout evidence")
         c = certificates[0]
+        errored = c["termination"] == "error"
+        reason = "solver_error" if errored else "no_incumbent"
         if (c["solver"] != self.params.get("solver", DEFAULT_SOLVER)
-                or c["termination"] != "maxTimeLimit"
-                or c["status"] not in ("ok", "warning", "aborted")
+                or c["termination"] not in ("maxTimeLimit", "error")
+                or c["status"] not in (("error", "aborted") if errored else ("ok", "warning", "aborted"))
                 or c["objective"] is not None or c["gap"] is not None
                 or not number_ok(c["seconds"]) or c["seconds"] < 0
+                or (errored and c["bound"] is not None)
                 or (c["bound"] is not None
-                    and (not number_ok(c["bound"]) or c["bound"] < -self.params["parity_tolerance"]))):
+                    and (not number_ok(c["bound"]) or c["bound"] < -self.params["parity_tolerance"]))
+                or (errored and "strategy_outcome" in c and c["strategy_outcome"] != "solver_error")
+                or (recorded is not None and recorded != reason)):
             raise ValueError("contradictory no-incumbent timeout evidence")
         for key, component in (("variables", Var), ("constraints", Constraint)):
             expected = sum(1 for _ in model.component_data_objects(component, active=True))
             if type(c[key]) is not int or c[key] != expected:
                 raise ValueError("recorded model dimensions differ")
-        return {"timeout": "no_incumbent", "candidate": None,
+        return {"timeout": reason, "candidate": None,
                 "certificates": copy.deepcopy(certificates)}
 
     def _incumbent(self, model):
@@ -5376,12 +5392,13 @@ class TransportPortfolioSolve(PyomoSolve):
         if isinstance(selection, dict) and "timeout" in selection:
             if (self.params.get("timeout_policy", "raise") != "return"
                     or set(selection) != {"timeout", "candidate"}
-                    or selection["timeout"] not in ("gap", "missing_bound", "no_incumbent")):
+                    or selection["timeout"] not in ("gap", "missing_bound", "no_incumbent", "solver_error")):
                 raise ValueError("invalid recorded timeout envelope")
-            if selection["timeout"] == "no_incumbent":
+            if selection["timeout"] in ("no_incumbent", "solver_error"):
                 if selection["candidate"] is not None:
                     raise ValueError("no-incumbent timeout has candidate actions")
-                return self._empty_timeout(self.build_model(inputs, self.params), certificates)
+                return self._empty_timeout(self.build_model(inputs, self.params), certificates,
+                                           selection["timeout"])
             candidate = self._recorded_candidate(
                 inputs, selection["candidate"], certificates, timeout=selection["timeout"])
             return {"timeout": selection["timeout"],
