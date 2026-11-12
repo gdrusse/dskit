@@ -1,0 +1,182 @@
+{
+  "schema": "mio-execution-stress/v7",
+  "repository_root": "REPLACE-absolute-path-of-a-clean-checkout",
+  "period_label": "REPLACE-period-label",
+  "results_pins": "REPLACE-path-of-the-results-pins-json",
+  "results_pins_sha256": "REPLACE-with-sha256",
+  "cohorts": {
+    "cohort_placeholder": {
+      "config": "REPLACE/run-document.json",
+      "result_dir": "REPLACE-directory-of-result.json",
+      "result_sha256": "REPLACE-with-sha256",
+      "csv_sha256": {
+        "trades.csv": "REPLACE-with-sha256",
+        "rejected-orders.csv": "REPLACE-with-sha256",
+        "orders-and-fills.csv": "REPLACE-with-sha256",
+        "daily-account.csv": "REPLACE-with-sha256"
+      },
+      "quote_index_sha256": {
+        "REPLACE-SYMBOL": "REPLACE-with-sha256"
+      },
+      "methods": 1,
+      "sessions": 1,
+      "end_before": "YYYY-MM-DD",
+      "latest_expiry": "YYYY-MM-DD"
+    }
+  },
+  "scenarios": [
+    {
+      "id": "control",
+      "price_fraction": 0,
+      "size_divisor": 1,
+      "expiry_shock": {
+        "kind": "flat",
+        "multiplier": 1
+      }
+    },
+    {
+      "id": "adverse_price",
+      "price_fraction": 0.25,
+      "size_divisor": 1,
+      "expiry_shock": {
+        "kind": "flat",
+        "multiplier": 1
+      }
+    },
+    {
+      "id": "half_size",
+      "price_fraction": 0,
+      "size_divisor": 2,
+      "expiry_shock": {
+        "kind": "flat",
+        "multiplier": 1
+      }
+    },
+    {
+      "id": "expiry_down_15",
+      "price_fraction": 0,
+      "size_divisor": 1,
+      "expiry_shock": {
+        "kind": "flat",
+        "multiplier": 0.85
+      }
+    },
+    {
+      "id": "expiry_up_15",
+      "price_fraction": 0,
+      "size_divisor": 1,
+      "expiry_shock": {
+        "kind": "flat",
+        "multiplier": 1.15
+      }
+    },
+    {
+      "id": "joint_down_15",
+      "price_fraction": 0.25,
+      "size_divisor": 2,
+      "expiry_shock": {
+        "kind": "flat",
+        "multiplier": 0.85
+      }
+    },
+    {
+      "id": "joint_up_15",
+      "price_fraction": 0.25,
+      "size_divisor": 2,
+      "expiry_shock": {
+        "kind": "flat",
+        "multiplier": 1.15
+      }
+    },
+    {
+      "id": "adverse_price_100",
+      "price_fraction": 1.0,
+      "size_divisor": 1,
+      "expiry_shock": {
+        "kind": "flat",
+        "multiplier": 1
+      }
+    },
+    {
+      "id": "quarter_size",
+      "price_fraction": 0,
+      "size_divisor": 4,
+      "expiry_shock": {
+        "kind": "flat",
+        "multiplier": 1
+      }
+    },
+    {
+      "id": "expiry_down_3s",
+      "price_fraction": 0,
+      "size_divisor": 1,
+      "expiry_shock": {
+        "kind": "volatility",
+        "sigmas": -3
+      }
+    },
+    {
+      "id": "expiry_up_3s",
+      "price_fraction": 0,
+      "size_divisor": 1,
+      "expiry_shock": {
+        "kind": "volatility",
+        "sigmas": 3
+      }
+    },
+    {
+      "id": "market_down_30",
+      "price_fraction": 0,
+      "size_divisor": 1,
+      "expiry_shock": {
+        "kind": "market",
+        "move": -0.3
+      }
+    },
+    {
+      "id": "market_up_20",
+      "price_fraction": 0,
+      "size_divisor": 1,
+      "expiry_shock": {
+        "kind": "market",
+        "move": 0.2
+      }
+    },
+    {
+      "id": "joint_down_severe",
+      "price_fraction": 1.0,
+      "size_divisor": 1,
+      "expiry_shock": {
+        "kind": "market",
+        "move": -0.3
+      }
+    },
+    {
+      "id": "joint_up_severe",
+      "price_fraction": 1.0,
+      "size_divisor": 1,
+      "expiry_shock": {
+        "kind": "market",
+        "move": 0.2
+      }
+    }
+  ],
+  "stress": {
+    "lookback": 60,
+    "reverse": {
+      "moves": [
+        -0.4,
+        -0.3,
+        -0.2,
+        -0.1,
+        0.1,
+        0.2,
+        0.3,
+        0.4
+      ],
+      "loss_fraction": 0.25
+    }
+  },
+  "criteria": [],
+  "output_root": "REPLACE-a-fresh-output-directory"
+}
