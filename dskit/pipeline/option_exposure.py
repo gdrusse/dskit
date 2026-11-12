@@ -931,16 +931,18 @@ class Concentration(_Configured):
 
 
 class ReverseStress(_Configured):
-    """The smallest declared market move whose net terminal loss reaches a fraction of equity.
+    """How far a market move can go before a book's loss reaches a fraction of the funding.
 
     A reverse stress inverts the usual question: not "what does a 20% fall
     cost" but "how small a fall costs this much". Each session brings its
-    marked equity and the net terminal loss of its open book at every declared
+    funding and the net terminal loss of its open book at every declared
     move; a session breaches at a move when the loss is at least
-    ``loss_fraction`` times that session's equity. Per direction the answer is
-    the smallest absolute breaching move over all sessions. When no declared
-    move of a direction breaches, the answer is the largest absolute declared
-    move of that direction and ``reached`` is false, so it is a lower bound.
+    ``loss_fraction`` times ``max(0, funding)``. Per direction the answer is
+    the largest absolute declared move such that no declared move of that
+    direction of equal or smaller magnitude breaches on any session: a lower
+    bound on the true distance whatever the grid spacing. It is 0 when the
+    smallest declared move breaches and the largest declared move when none
+    does; ``reached`` says whether any declared move breached.
 
     Parameters
     ----------
@@ -951,11 +953,11 @@ class ReverseStress(_Configured):
 
     Examples
     --------
-    One session of 1,000 equity losing 300 at a 30% fall::
+    One session of 1,000 funding losing 300 at a 30% fall, grid -0.3, -0.1::
 
-        ReverseStress({"moves": [-0.3, 0.3], "loss_fraction": 0.25}).search(
-            [(1000.0, {-0.3: 300.0, 0.3: 10.0})])
-        # -> {"down_move": 0.3, "down_reached": True, "up_move": 0.3, "up_reached": False}
+        ReverseStress({"moves": [-0.3, -0.1, 0.1, 0.3], "loss_fraction": 0.25}).search(
+            [(1000.0, {-0.3: 300.0, -0.1: 0.0, 0.1: 0.0, 0.3: 0.0})])
+        # -> {"down_move": 0.1, "down_reached": True, "up_move": 0.3, "up_reached": False}
     """
 
     _PARAMS = ("moves", "loss_fraction")
@@ -985,39 +987,41 @@ class ReverseStress(_Configured):
             problems.append("moves need at least one negative and one positive move")
 
     def search(self, sessions):
-        """Return ``down_move``/``up_move`` and whether each was ``reached``.
+        """Return ``down_move``/``up_move`` and whether each direction ``reached`` a breach.
 
         Parameters
         ----------
         sessions : iterable of (float, dict)
-            Each session's marked equity (finite, positive) and its net
-            terminal loss at every declared move, keyed by the move.
+            Each session's funding (finite; a nonpositive funding gives a zero
+            limit) and its net terminal loss at every declared move, keyed by
+            the move.
 
         Raises
         ------
         ValueError
-            On a nonpositive or nonfinite equity, a nonfinite loss, or a loss
-            table whose moves differ from the declared grid.
+            On a nonfinite funding, a nonfinite loss, or a loss table whose
+            moves differ from the declared grid.
         """
         moves, fraction = list(self.params["moves"]), self.params["loss_fraction"]
-        smallest = {-1: None, 1: None}
-        for equity, losses in sessions:
-            if not price_ok(equity):
-                raise ValueError(f"equity must be a finite positive number, got {equity!r}")
+        first = {-1: None, 1: None}
+        for funding, losses in sessions:
+            if not number_ok(funding):
+                raise ValueError(f"funding must be a finite number, got {funding!r}")
             if set(losses) != set(moves):
                 raise ValueError(f"losses must cover exactly the declared moves {moves}")
+            limit = fraction * max(0.0, funding)
             for move in moves:
                 if not number_ok(losses[move]):
                     raise ValueError(f"loss at move {move} must be finite, got {losses[move]!r}")
                 side = 1 if move > 0 else -1
-                if losses[move] >= fraction * equity and (
-                        smallest[side] is None or abs(move) < smallest[side]):
-                    smallest[side] = abs(move)
+                if losses[move] >= limit and (first[side] is None or abs(move) < first[side]):
+                    first[side] = abs(move)
         out = {}
         for side, name in ((-1, "down"), (1, "up")):
-            widest = max(abs(m) for m in moves if (m > 0) == (side > 0))
-            out[f"{name}_move"] = widest if smallest[side] is None else smallest[side]
-            out[f"{name}_reached"] = smallest[side] is not None
+            sizes = sorted(abs(m) for m in moves if (m > 0) == (side > 0))
+            below = [m for m in sizes if first[side] is not None and m < first[side]]
+            out[f"{name}_move"] = sizes[-1] if first[side] is None else (below[-1] if below else 0.0)
+            out[f"{name}_reached"] = first[side] is not None
         return out
 
 

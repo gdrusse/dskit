@@ -2204,34 +2204,47 @@ def test_exposure_limits_no_groups_emit_no_rows():
 MOVES = [-0.3, -0.1, 0.1, 0.3]
 
 
-def test_reverse_stress_finds_the_smallest_breaching_move_per_direction_over_sessions():
-    """Hand worked: session A (equity 1000) breaches at 250, session B (equity 400) at 100."""
+def test_reverse_stress_is_the_largest_move_below_the_first_breach_per_direction():
+    """Hand worked: session A (funding 1000) breaches at 250, session B (funding 400) at 100."""
     search = ox.ReverseStress({"moves": MOVES, "loss_fraction": 0.25})
     a = (1000.0, {-0.3: 300.0, -0.1: 100.0, 0.1: -50.0, 0.3: 200.0})
-    b = (400.0, {-0.3: 120.0, -0.1: 100.0, 0.1: 10.0, 0.3: 150.0})
-    assert search.search([a]) == {"down_move": 0.3, "down_reached": True,
+    b = (400.0, {-0.3: 120.0, -0.1: 99.0, 0.1: 10.0, 0.3: 150.0})
+    # A breaches down only at 0.3, so 0.1 is the largest move with no breach at or below it.
+    assert search.search([a]) == {"down_move": 0.1, "down_reached": True,
                                   "up_move": 0.3, "up_reached": False}
-    # B reaches exactly its limit at -0.1 (at least, not more than) and up at +0.3.
+    # B: down breaches at -0.3 (120 >= 100) but not -0.1 (99 < 100); up breaches at +0.3 (150 >= 100).
     assert search.search([a, b]) == {"down_move": 0.1, "down_reached": True,
-                                     "up_move": 0.3, "up_reached": True}
+                                     "up_move": 0.1, "up_reached": True}
+    # Exactly at the limit counts (at least), and the smallest declared move breaching gives 0.
+    c = (400.0, {-0.3: 120.0, -0.1: 100.0, 0.1: 100.0, 0.3: 150.0})
+    assert search.search([c]) == {"down_move": 0.0, "down_reached": True,
+                                  "up_move": 0.0, "up_reached": True}
 
 
-def test_reverse_stress_not_reached_is_the_largest_declared_move_as_a_lower_bound():
+def test_reverse_stress_not_reached_is_the_largest_declared_move():
     search = ox.ReverseStress({"moves": [-0.5, -0.2, 0.1, 0.4], "loss_fraction": 1.0})
     out = search.search([(100.0, {-0.5: 99.0, -0.2: 1.0, 0.1: 0.0, 0.4: 50.0})])
     assert out == {"down_move": 0.5, "down_reached": False, "up_move": 0.4, "up_reached": False}
     assert search.search([]) == out
 
 
+def test_reverse_stress_uses_a_zero_limit_for_nonpositive_funding():
+    search = ox.ReverseStress({"moves": [-0.2, 0.2], "loss_fraction": 0.5})
+    assert search.search([(-5.0, {-0.2: 0.0, 0.2: 1.0})]) == {
+        "down_move": 0.0, "down_reached": True, "up_move": 0.0, "up_reached": True}
+    assert search.search([(0.0, {-0.2: -1.0, 0.2: -0.1})]) == {
+        "down_move": 0.2, "down_reached": False, "up_move": 0.2, "up_reached": False}
+
+
 def test_reverse_stress_refuses_a_malformed_session():
     search = ox.ReverseStress({"moves": MOVES, "loss_fraction": 0.25})
     full = {-0.3: 1.0, -0.1: 1.0, 0.1: 1.0, 0.3: 1.0}
-    for equity, losses in ((0.0, full), (-5.0, full), (float("nan"), full),
-                           (100.0, {**full, 0.3: float("inf")}),
-                           (100.0, {-0.3: 1.0, -0.1: 1.0, 0.1: 1.0}),
-                           (100.0, {**full, 0.5: 1.0})):
+    for funding, losses in ((float("nan"), full), (float("inf"), full),
+                            (100.0, {**full, 0.3: float("inf")}),
+                            (100.0, {-0.3: 1.0, -0.1: 1.0, 0.1: 1.0}),
+                            (100.0, {**full, 0.5: 1.0})):
         with pytest.raises(ValueError):
-            search.search([(equity, losses)])
+            search.search([(funding, losses)])
 
 
 @pytest.mark.parametrize("bad", [
