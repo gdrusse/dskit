@@ -1536,8 +1536,8 @@ class DailyStockHedge(Node):
     decision_dates suppress trades only. Dividends have symbol, ex_date,
     pay_date and amount per raw share. Coverage must attest raw_prices=True,
     dividends_complete=True and corporate_actions="none", or a list of
-    symbol/date/kind events. Events with prior stock, prior nonzero exposure or
-    current active exposure refuse. Optional settlement_sessions begins with the
+    symbol/date/kind events. Events with prior stock or active exposure on
+    the prior or current session refuse. Optional settlement_sessions begins with the
     complete sessions list and adds settlement dates only, without market rows.
 
     Targets use yesterday's exposure, never today's close or exposure.
@@ -1775,8 +1775,8 @@ class DailyStockHedge(Node):
         daily = []
         for index, day in enumerate(sessions):
             for symbol in actions.get(day, []):
-                prior_delta = market[sessions[index-1], symbol]["delta_sh"] if index else 0.
-                if state["shares"][symbol] or prior_delta or market[day, symbol]["active"]:
+                prior_active = index > 0 and market[sessions[index-1], symbol]["active"]
+                if state["shares"][symbol] or prior_active or market[day, symbol]["active"]:
                     raise ValueError("daily_stock: unsupported corporate action exposure")
             for event in dividends.get(day, []):
                 amount = state["shares"][event["symbol"]]*event["amount"]

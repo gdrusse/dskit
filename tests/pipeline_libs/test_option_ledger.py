@@ -1256,6 +1256,16 @@ def test_daily_stock_event_refuses_inventory_or_stale_target(ctx, deltas):
         _daily_stock_run(ctx, inputs)
 
 
+def test_daily_stock_event_refuses_prior_active_zero_delta(ctx):
+    inputs = _daily_stock_inputs(deltas=(0,)*5)
+    inputs["market"][0]["active"] = True
+    inputs["coverage"]["corporate_actions"] = [{"symbol": "ABC", "date": inputs["sessions"][1],
+                                               "kind": "unsupported"}]
+    with pytest.raises(ValueError, match="corporate action"):
+        _daily_stock_run(ctx, inputs)
+
+
+
 def test_daily_stock_event_flat_control(ctx):
     inputs = _daily_stock_inputs(deltas=(0,)*5)
     inputs["coverage"]["corporate_actions"] = [{"symbol": "ABC", "date": "2020-03-04",
