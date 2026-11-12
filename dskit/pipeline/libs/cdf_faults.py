@@ -496,7 +496,7 @@ class ForecastFaultStudy(CDFExperiment):
 
         s, arm = self.config["study"], self.config["arms"][self.document["arm"]]
         total = len(band)
-        faulted = fault.apply(band, s["identity"], s["date"])
+        faulted = fault.apply(band.copy(), s["identity"], s["date"])    # a foreign fault cannot corrupt the band
         if np.isinf(faulted[arm["features"]].to_numpy(float)).any():
             return self._refused(name, "infinite_input", total, None, None)
         left, right = self._pair(band, faulted)

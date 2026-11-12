@@ -1230,3 +1230,28 @@ def test_a_shared_lock_also_blocks_a_second_study(fitted, tmp_path):
         fcntl.flock(held, fcntl.LOCK_SH)
         with pytest.raises(BlockingIOError):
             study.assess()
+
+
+class MutatingFault(FeatureFault):
+    """A test fault that breaks the contract: it overwrites its input in place and returns it."""
+
+    def apply(self, frame, identity, date):
+        frame[self.params["columns"]] = 0.0
+        return frame
+
+
+def test_a_fault_that_mutates_its_input_cannot_corrupt_the_band_or_later_faults(fitted, tmp_path, monkeypatch):
+    kept = {}
+    real = CDFExperiment._bands
+
+    def spy(self, *args):
+        bands, groups, admission = real(self, *args)
+        kept["band"], kept["before"] = bands[2], bands[2].copy(deep=True)
+        return bands, groups, admission
+    monkeypatch.setattr(CDFExperiment, "_bands", spy)
+    alone = stats(fitted, tmp_path, [entry("m", "MissingFeatures", columns=MISSING)],
+                  output=str(tmp_path/"alone"))["faults"][0]
+    after = stats(fitted, tmp_path, [entry("bad", me(MutatingFault), columns=SCALED),
+                                     entry("m", "MissingFeatures", columns=MISSING)])
+    pd.testing.assert_frame_equal(kept["band"], kept["before"])
+    assert after["faults"][1] == alone
