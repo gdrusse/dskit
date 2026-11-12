@@ -6680,6 +6680,26 @@ def test_a_stage_one_timeout_starts_the_search_from_cash_and_says_so(monkeypatch
     assert week["status"] in ("selected", "cash")
 
 
+def test_a_stage_one_solver_error_starts_the_search_from_cash_and_names_the_error(monkeypatch):
+    from dataclasses import replace
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    run = TransportPortfolioSolve.run
+
+    def errored(self, ctx, inputs):
+        selection = run(self, ctx, inputs)["selection"]
+        certificate = {**selection["certificates"][0], "termination": "error", "status": "error",
+                       "objective": None, "bound": None, "gap": None}
+        return {"selection": {"timeout": "solver_error", "candidate": None, "certificates": [certificate]}}
+    monkeypatch.setattr(TransportPortfolioSolve, "run", errored)
+    _params, _data, _method, _study, result = _local_result()
+    week = result["decisions"][0]
+    assert week["kelly"]["local"]["start_kind"] == "stage1_timeout_cash" and week["kelly"]["local"]["start_contracts"] == 0
+    assert week["status"] in ("selected", "cash")
+    assert week["stage1"]["selection"] == {"timeout": "solver_error", "candidate": None}
+    assert week["stage1"]["certificates"][0]["termination"] == "error"
+
+
 def test_the_move_budget_binds_and_is_recorded():
     _params, _data, _method, _study, tight = _local_result(search={"moves": 1})
     local = tight["decisions"][0]["kelly"]["local"]

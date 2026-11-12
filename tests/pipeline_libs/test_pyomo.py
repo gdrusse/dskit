@@ -3741,6 +3741,56 @@ def test_transport_portfolio_timeout_no_incumbent_is_not_warmstart_cash():
             node._recorded(program, selection, [{**certs[0], **change}])
 
 
+def _solver_error_case(policy="return", bound=None):
+    from types import SimpleNamespace
+    from pyomo.opt import SolverResults, SolverStatus, TerminationCondition
+    node, model = _profit_certificate_case()
+    node.params["timeout_policy"] = policy
+    results = SolverResults()
+    results.solver.status = SolverStatus.error
+    results.solver.termination_condition = TerminationCondition.error
+    if bound is not None:
+        results.problem.upper_bound = bound
+    solver = SimpleNamespace(solve=lambda m, **kw: results, warm_start_capable=lambda: True)
+    node._solve(solver, model)
+    node.solve_record = node._build_solve_record(solver, model, results, "appsi_highs", .01)
+    return node, model, results
+
+
+def test_transport_portfolio_solver_error_without_incumbent_is_a_named_cash_week():
+    node, model, results = _solver_error_case()
+    record = node.solve_record
+    assert (record.termination, record.objective, record.bound, record.gap) == ("error", None, None, None)
+    selection = node.extract(model, results)["selection"]
+    assert selection["timeout"] == "solver_error" and selection["candidate"] is None
+    certs = [{k: v for k, v in c.items() if k != "binding"} for c in selection.pop("certificates")]
+    assert certs[0]["termination"] == "error"
+    program = {"groups": node._groups, "caps": node._caps}
+    assert node._recorded(program, selection, certs)["timeout"] == "solver_error"
+    with pytest.raises(ValueError):   # the envelope must name what the certificate says
+        node._recorded(program, {**selection, "timeout": "no_incumbent"}, certs)
+    for change in ({"objective": 0.}, {"gap": 0.}, {"bound": 1.}, {"status": "ok"}, {"variables": 99},
+                   {"seconds": -1.}, {"solver": "invented"}):
+        with pytest.raises(ValueError):
+            node._recorded(program, selection, [{**certs[0], **change}])
+    node.params.pop("timeout_policy")
+    with pytest.raises(ValueError):
+        node._recorded(program, selection, certs)
+
+
+def test_transport_portfolio_solver_error_under_raise_still_raises():
+    node, model, results = _solver_error_case(policy="raise")
+    with pytest.raises(ValueError):
+        node.extract(model, results)
+
+
+def test_transport_portfolio_solver_error_with_a_bound_is_refused():
+    node, model, results = _solver_error_case(bound=5.)
+    assert node.solve_record.bound is not None
+    with pytest.raises(ValueError):
+        node.extract(model, results)
+
+
 @pytest.mark.parametrize("policy", [None, True, 1, "skip", {}, []])
 def test_transport_portfolio_timeout_policy_refuses_unknown_values(policy):
     node = _roundtrip_selector()
