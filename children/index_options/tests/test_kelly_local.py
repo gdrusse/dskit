@@ -292,3 +292,93 @@ def test_a_program_whose_best_book_is_cash_returns_cash():
     assert out["quantities"] == [[0, 0], [0, 0]] and out["record"]["moves"] == 0 and out["record"]["local_optimum"]
     assert out["record"]["start_value"] == out["record"]["end_value"] == pytest.approx(0., abs=1e-9)
     assert max(_exact(scorer, book) for book in scorer.catalogue(10000)) == pytest.approx(0., abs=1e-9)
+
+
+# --- the FAST variant's opt-in options (ADR-0307 Amendment 1) -------------------------------------------------------
+
+def test_the_fast_options_are_opt_in_booleans_and_absent_ones_write_no_record_field():
+    assert KellyLocalSearch.validate_params({**PARAMS, "cash_floor": True, "repair": False}) == []
+    for bad in ({**PARAMS, "cash_floor": 1}, {**PARAMS, "repair": "yes"}, {**PARAMS, "repair": None}):
+        assert KellyLocalSearch.validate_params(bad), bad
+    scorer = _scorer(_program(n_groups=4, n_pairs=3, seed=6, capacity=5))
+    plain = KellyLocalSearch(scorer, PARAMS).run(None)
+    assert "cash_floor" not in plain["record"] and "repaired_contracts" not in plain["record"]
+    off = KellyLocalSearch(scorer, {**PARAMS, "cash_floor": False, "repair": False}).run(None)
+    assert off["quantities"] == plain["quantities"] and off["values"] == plain["values"]
+    assert {k: v for k, v in off["record"].items() if k not in ("cash_floor", "repaired_contracts")} == plain["record"]
+    assert off["record"]["cash_floor"] is False and off["record"]["repaired_contracts"] == 0
+
+
+def _losing_start(scorer, search):
+    """Every contract of the single worst item: a book well below cash that one move cannot lift above it."""
+    worst, worst_value = None, 0.
+    for flat in range(search.N):
+        start = [[0]*len(g["capacity"]) for g in scorer.groups]
+        start[int(search.gid[flat])][int(search.loc[flat])] = int(search.cap[flat])
+        if scorer.check_feasible(start)["feasible"] and _exact(scorer, start) < worst_value:
+            worst, worst_value = start, _exact(scorer, start)
+    return worst
+
+
+def test_the_cash_floor_trades_cash_when_the_climb_ends_below_it():
+    scorer = _scorer(_program(n_groups=4, n_pairs=3, seed=6, capacity=5))
+    start = _losing_start(scorer, KellyLocalSearch(scorer, PARAMS))
+    budget = {**PARAMS, "moves": 1}
+    below = KellyLocalSearch(scorer, budget).run(start)
+    assert below["record"]["end_value"] < 0 and below["record"]["end_contracts"] > 0
+    floored = KellyLocalSearch(scorer, {**budget, "cash_floor": True}).run(start)
+    record = floored["record"]
+    assert record["cash_floor"] is True and record["end_contracts"] == 0
+    assert record["end_value"] == pytest.approx(0., abs=1e-9) == _exact(scorer, floored["quantities"])
+    assert not any(q for row in floored["quantities"] for q in row)
+    assert record["start_value"] == below["record"]["start_value"] and record["moves"] == below["record"]["moves"]
+    # A climb that ends above cash is untouched by the floor.
+    up = KellyLocalSearch(scorer, {**PARAMS, "cash_floor": True}).run(None)
+    assert up["record"]["cash_floor"] is False and up["record"]["end_value"] > 0
+
+
+def test_the_breach_measure_is_zero_exactly_when_the_scorer_accepts_the_book():
+    rng = np.random.default_rng(4)
+    for shape in (dict(reserve_cap=900.), dict(lin_upper=3.), dict(joint_upper=60.), dict(floor=9000.)):
+        scorer = _scorer(_program(n_groups=4, n_pairs=2, seed=9, capacity=4, **shape))
+        search = KellyLocalSearch(scorer, PARAMS)
+        for _ in range(25):
+            q = rng.integers(0, 3, search.N)
+            search._load(q)
+            assert (search._excess() <= 0.) == scorer.check_feasible(search._nested(search.q))["feasible"]
+
+
+def test_repair_drops_the_breaching_contract_and_climbs_from_the_rest():
+    scorer = _scorer(_program(n_groups=3, n_pairs=2, seed=2, capacity=3))
+    search = KellyLocalSearch(scorer, PARAMS)
+    cash = search.run(None)
+    start = [[0]*len(g["capacity"]) for g in scorer.groups]
+    start[0][0] = start[0][1] = 1   # both sides of one pair: exclusive
+    start[1][0] = 2                 # a legal holding the repair must keep
+    assert not scorer.check_feasible(start)["feasible"]
+    out = KellyLocalSearch(scorer, {**PARAMS, "repair": True}).run(start)
+    record = out["record"]
+    assert record["start_kind"] == "repaired_stage1" and record["repaired_contracts"] == 1
+    assert record["start_contracts"] == 3 and record["end_value"] >= record["start_value"]
+    assert scorer.check_feasible(out["quantities"])["feasible"]
+    again = KellyLocalSearch(scorer, {**PARAMS, "repair": True}).run(start)
+    assert again["quantities"] == out["quantities"] and again["record"] == record
+    incumbent = KellyLocalSearch(scorer, {**PARAMS, "repair": True}).run(start, "stage1_incumbent")
+    assert incumbent["record"]["start_kind"] == "repaired_stage1_incumbent"
+    # Without the option the original rule holds: cash.
+    plain = KellyLocalSearch(scorer, PARAMS).run(start)
+    assert plain["record"]["start_kind"] == "infeasible_start_cash" and plain["quantities"] == cash["quantities"]
+
+
+@pytest.mark.parametrize("shape", [dict(reserve_cap=900.), dict(joint_upper=60.), dict(lin_upper=3.)])
+def test_repair_of_a_shared_breach_removes_until_the_book_is_accepted(shape):
+    scorer = _scorer(_program(n_groups=4, n_pairs=2, seed=9, capacity=4, **shape))
+    search = KellyLocalSearch(scorer, PARAMS)
+    # One side of each pair, every contract: far past the cap, the joint row or the linear row.
+    full = [[int(c) if j % 2 == 0 else 0 for j, c in enumerate(g["capacity"])] for g in scorer.groups]
+    assert not scorer.check_feasible(full)["feasible"]
+    repaired, removed = search._repaired(search._flat(full))
+    assert removed > 0 and scorer.check_feasible(search._nested(repaired))["feasible"]
+    out = KellyLocalSearch(scorer, {**PARAMS, "repair": True}).run(full)
+    assert out["record"]["repaired_contracts"] == removed
+    assert scorer.check_feasible(out["quantities"])["feasible"]

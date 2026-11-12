@@ -286,13 +286,16 @@ def test_worker_then_recorded_document_closes_with_provenance(study, tmp_path, c
 
 @pytest.mark.parametrize("study", ["hedged_program"], indirect=True)
 @pytest.mark.parametrize("tamper", [False, True])
-def test_local_search_replay_hedge_worker_packet_requires_valid_stage_one(study, tmp_path, monkeypatch, tamper):
+@pytest.mark.parametrize("base", ["kelly050_ls_lp", "kelly050_ls_fast_lp"])
+def test_local_search_replay_hedge_worker_packet_requires_valid_stage_one(study, tmp_path, monkeypatch, tamper, base):
     from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
-    from test_ledger_studies import FORMULATIONS, LOCAL_FORMULATIONS, _for_kelly, _PARITY, _REPLAY_BLOCK
+    from test_ledger_studies import (FAST_LOCAL_FORMULATIONS, FORMULATIONS, LOCAL_FORMULATIONS, _for_kelly, _PARITY,
+                                     _REPLAY_BLOCK)
 
-    method = "kelly050_ls_replay_hedge_lp"
+    method = base.removesuffix("_lp") + "_replay_hedge_lp"
+    formulation = {**LOCAL_FORMULATIONS, **FAST_LOCAL_FORMULATIONS}[base]
     params = _for_kelly(study["domain"]["params"])
-    params.update(methods=[{"id": method, **LOCAL_FORMULATIONS["kelly050_ls_lp"], "hedge": dict(_REPLAY_BLOCK)}],
+    params.update(methods=[{"id": method, **formulation, "hedge": dict(_REPLAY_BLOCK)}],
                   hedge_parity=dict(_PARITY), locked_method_ids=list(FORMULATIONS))
     bundle = tmp_path / "bundle"
     manifest = MIOMethodBundle(study, bundle).build()

@@ -1187,3 +1187,100 @@ def test_sqlite_index_invalid_reuse_root_has_no_filesystem_effect(tmp_path):
             unique_by=("symbol", "date", "expiration"), partition_by=("date", "expiration"),
             reuse_root="relative-cache")
     assert not destination.parent.exists()
+
+
+@pytest.mark.parametrize("code", [errno.EXDEV, errno.EPERM, errno.EOPNOTSUPP])
+def test_sqlite_index_cache_reused_when_hard_links_fail(tmp_path, monkeypatch, code):
+    source = tmp_path / "quotes.parquet"
+    pq.write_table(pa.table({"symbol": ["X", "X"], "date": ["2019-01-02", "2019-01-03"],
+                             "expiration": ["2019-02-01", "2019-02-01"], "price": [1.0, 2.0]}), source)
+    cache = tmp_path / "cache"
+    kwargs = {"unique_by": ("symbol", "date", "expiration"),
+              "partition_by": ("date", "expiration"), "reuse_root": cache,
+              "reuse_identity": {"verified_source_sha256": path_hash(str(source)), "filter": "all"},
+              "replay_validator": True}
+    args = (str(source), ["symbol", "date", "expiration", "price"],
+            {"date": {"start": "2019-01-01", "end_before": "2020-01-01"}})
+    def no_links(*a, **k):
+        raise OSError(code, "hard links unsupported")
+    monkeypatch.setattr(os, "link", no_links)
+    first = tmp_path / "one.sqlite"
+    one = pack.SQLiteParquetIndex.build(args[0], str(first), *args[1:],
+                                        validator=lambda row: None, **kwargs)
+    blobs = list(cache.rglob("*.sqlite"))
+    assert len(blobs) == 1 and len(list(cache.rglob("*.json"))) == 1
+    assert blobs[0].stat().st_nlink == 1 and path_hash(str(blobs[0])) == one["sha256"]
+    scanned, seen = [], []
+    original_batches = pack.DateBoundedParquet.batches
+    def track_scan(self, *a, **k):
+        scanned.append(True)
+        yield from original_batches(self, *a, **k)
+    monkeypatch.setattr(pack.DateBoundedParquet, "batches", track_scan)
+    second = tmp_path / "two.sqlite"
+    two = pack.SQLiteParquetIndex.build(args[0], str(second), *args[1:],
+                                        validator=lambda row: seen.append(row["price"]), **kwargs)
+    assert not scanned and seen == [1.0, 2.0]
+    assert two["sha256"] == one["sha256"] == path_hash(str(second))
+    assert second.stat().st_ino != blobs[0].stat().st_ino
+    assert not list(tmp_path.glob("*.copy-*")) and not list(tmp_path.glob("*.link-*"))
+    # A corrupted cache blob is still refused on the copy path.
+    blobs[0].chmod(0o644)
+    blobs[0].write_bytes(b"not SQLite")
+    blobs[0].chmod(0o444)
+    third = tmp_path / "three.sqlite"
+    with pytest.raises(ValueError, match="digest"):
+        pack.SQLiteParquetIndex.build(args[0], str(third), *args[1:],
+                                      validator=lambda row: None, **kwargs)
+    assert not third.exists()
+
+
+def test_sqlite_index_reuse_key_scope(tmp_path, monkeypatch):
+    identity = {"verified_source_sha256": "a" * 64, "predicate": "p"}
+    def key(**over):
+        ident = {**identity, **over}
+        return pack.SQLiteParquetIndex._reuse_key(ident, ["a"], {}, ["a"], ["a"], [], 8192, 16384)
+    base = key()
+    # Cache publication/lookup code does not decide index bytes.
+    monkeypatch.setattr(pack.SQLiteParquetIndex, "_publish_cache",
+                        classmethod(lambda cls, *a: None))
+    monkeypatch.setattr(pack.SQLiteParquetIndex, "_link_run",
+                        classmethod(lambda cls, *a, **k: False))
+    assert key() == base
+    # Source digest, predicate and validator parameters still do.
+    assert key(verified_source_sha256="b" * 64) != base
+    assert key(predicate="q") != base
+    assert key(validator={"x": 1}) != base
+
+
+def test_sqlite_index_reuse_key_tracks_build_code(monkeypatch):
+    import inspect
+    args = ({"verified_source_sha256": "a" * 64}, ["a"], {}, ["a"], ["a"], [], 8192, 16384)
+    base = pack.SQLiteParquetIndex._reuse_key(*args)
+    real = inspect.getsource
+    for target in (pack.DateBoundedParquet, pack.SQLiteParquetIndex._ident,
+                   pack.SQLiteParquetIndex.build.__func__):
+        monkeypatch.setattr(inspect, "getsource",
+                            lambda obj, t=target: real(obj) + ("#x" if obj is t else ""))
+        assert pack.SQLiteParquetIndex._reuse_key(*args) != base
+    monkeypatch.setattr(inspect, "getsource", real)
+    assert pack.SQLiteParquetIndex._reuse_key(*args) == base
+
+
+def test_sqlite_index_copy_publish_never_unlinks_shared_blob(tmp_path, monkeypatch):
+    source = tmp_path / "one.sqlite"
+    source.write_bytes(b"bytes")
+    digest = path_hash(str(source))
+    root = tmp_path / "cache"
+    blob = pack.SQLiteParquetIndex._cache_blob(root, digest)
+    def no_links(*a, **k):
+        raise OSError(errno.EXDEV, "no links")
+    monkeypatch.setattr(os, "link", no_links)
+    descriptor = {"rows": 0, "sha256": digest, "path": str(source)}
+    # A racing publisher's manifest for the same key conflicts: the shared blob must survive.
+    key = "b" * 64
+    manifest = pack.SQLiteParquetIndex._cache_manifest(root, key)
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"input_sha256":"%s","sha256":"%s","metadata":{"rows":1}}' % (key, "c" * 64))
+    with pytest.raises(ValueError, match="collision"):
+        pack.SQLiteParquetIndex._publish_cache(root, key, source, descriptor)
+    assert blob.read_bytes() == b"bytes" and not list(root.rglob("*.copy-*"))

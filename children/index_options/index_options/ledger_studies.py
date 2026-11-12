@@ -2361,7 +2361,11 @@ class WeeklyOptionPortfolioStudy:
         instead of start (restarts 0): no stage one is solved; the starts
         are the program's per-group LP books, rounded and combined, and
         the best climbs (with a pair add move) trade, never below cash
-        (kelly_multistart).
+        (kelly_multistart). The FAST variant (ADR-0307 Amendment 1)
+        may add, each opt-in: stage1_time_limit (seconds > 0, stage one's
+        HiGHS time limit in place of the document's), incumbent_start (bool:
+        a stage one stopped at its limit WITH an incumbent starts the climb
+        from that incumbent), cash_floor and repair (bools, see kelly_local).
         Optional method key sizer (ADR-0300, exclusive with kelly) keeps the
         method's dollar program as stage 1, unchanged (its books and leg
         ratios, under every cap it declares), and sizes the selected books
@@ -2425,6 +2429,9 @@ class WeeklyOptionPortfolioStudy:
     #: The dollar program the local search starts from: the sized arms' stage 1, declared inside the block because the
     #: kelly method itself carries rho 0 and no shock (the utility program refuses a radius).
     _LOCAL_START_KEYS = {"rho", "shock"}
+    #: ADR-0307 Amendment 1 (the FAST variant): opt-in keys of the block that steer stage one, read here and never
+    #: handed to the search (``cash_floor`` and ``repair`` are the search's own, ``KellyLocalSearch.OPTION_KEYS``).
+    _LOCAL_STAGE1_KEYS = ("stage1_time_limit", "incumbent_start")
     #: ``accept_uncertified`` (ADR-0301 amendment): a week whose certification the relax_fix strategy DECLINED (a support
     #: incumbent exists, too many actions stayed free to certify within the limit) trades that incumbent instead of
     #: skipping; the gap to the relaxation's bound is recorded (``kelly.uncertified``). A failed relaxation still skips.
@@ -2942,7 +2949,11 @@ class WeeklyOptionPortfolioStudy:
                 or any(key in kelly for key in cls._LOCAL_SEARCH_EXCLUDES)):
             return False
         start = search["start"]
-        return (not KellyLocalSearch.validate_params({k: v for k, v in search.items() if k != "start"})
+        return (not KellyLocalSearch.validate_params({k: v for k, v in search.items()
+                                                      if k not in ("start", *cls._LOCAL_STAGE1_KEYS)})
+                and ("stage1_time_limit" not in search or (number_ok(search["stage1_time_limit"])
+                                                           and search["stage1_time_limit"] > 0))
+                and ("incumbent_start" not in search or type(search["incumbent_start"]) is bool)
                 and isinstance(start, dict) and set(start) == cls._LOCAL_START_KEYS
                 and number_ok(start["rho"]) and start["rho"] >= 0
                 and cls._shock_valid(start["shock"]) and "scope" not in start["shock"])
@@ -4005,7 +4016,12 @@ class WeeklyOptionPortfolioStudy:
         dollar = {"groups": dollar_groups,
                   "caps": self._caps(self._limits(account, method, components, solve=True, stage1=True), metadata),
                   "joint_rows": self._shock_rows(start["shock"], betas, metadata, dollar_groups, mult, account.funding)}
-        solver = TransportPortfolioSolve("portfolio", p["solver"])
+        solver_params = p["solver"]
+        if "stage1_time_limit" in search:
+            # ADR-0307 Amendment 1: stage one's own time limit (the integer program is never built here).
+            solver_params = {**solver_params, "solver_options": {**solver_params.get("solver_options", {}),
+                                                                 "time_limit": search["stage1_time_limit"]}}
+        solver = TransportPortfolioSolve("portfolio", solver_params)
         if derived is not None:
             claim = derived["stage1"]
             if not isinstance(claim, dict) or set(claim) != {"actions", "certificates"}:
@@ -4028,12 +4044,19 @@ class WeeklyOptionPortfolioStudy:
             first = solver._recorded(dollar, claim["selection"], claim["certificates"])
         screen = dict(solver.last_screen)
         timed_out = "timeout" in first
+        # ADR-0307 Amendment 1: a stage one stopped at its limit WITH an incumbent (the "return" policy's timeout
+        # envelope, candidate actions present) starts the climb from that incumbent when the block says so.
+        incumbent = timed_out and search.get("incumbent_start", False) and first.get("candidate") is not None
         scorer = TransportActionScore(program, {"parity_tolerance": p["solver"]["parity_tolerance"]})
-        out = KellyLocalSearch(scorer, {k: v for k, v in search.items() if k != "start"}).run(
-            None if timed_out else first["quantities"])
+        out = KellyLocalSearch(scorer, {k: v for k, v in search.items()
+                                        if k not in ("start", *self._LOCAL_STAGE1_KEYS)}).run(
+            first["candidate"]["quantities"] if incumbent else None if timed_out else first["quantities"],
+            "stage1_incumbent" if incumbent else "stage1")
         local = out["record"]
-        if timed_out:
+        if timed_out and not incumbent:
             local["start_kind"] = "stage1_timeout_cash"
+        if "incumbent_start" in search:
+            local["stage1_timeout"] = first["timeout"] if timed_out else None
         stage1_certificates = [{k: v for k, v in c.items() if k != "binding"} for c in first.get("certificates", [])]
         certificate = {"strategy_outcome": self._LOCAL_OUTCOME, "certified": False, "objective": local["end_value"],
                        "bound": None, "gap": None, "seconds": None, "bound_source": None}

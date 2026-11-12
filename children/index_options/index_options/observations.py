@@ -976,9 +976,7 @@ class MIOPacketInputs(StudyNode):
                 reuse_root=reuse_root,
                 reuse_identity=({"verified_source_sha256": binding["pin"]["files"][relative],
                                  "predicate": {"symbol": symbol, "expiries": expiries},
-                                 "validator": quote_node.params,
-                                 "code": cls._portable_code_pins(study["code"]),
-                                 "dependencies": study["dependencies"]}
+                                 "validator": quote_node.params}
                                 if reuse_root is not None else None),
                 replay_validator=reuse_root is not None)
             for row in bars:

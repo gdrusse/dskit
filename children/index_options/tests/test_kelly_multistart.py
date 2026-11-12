@@ -34,6 +34,7 @@ def test_the_declaration_is_validated():
                           (PARAMS, {**MULTI, "scales": [1.5]}), (PARAMS, {**MULTI, "scales": [.5, .5]}),
                           (PARAMS, {**MULTI, "scales": [True]}), (PARAMS, {**MULTI, "climbed": 1.}),
                           (PARAMS, {**MULTI, "extra": 1}), (PARAMS, None),
+                          ({**PARAMS, "cash_floor": True}, MULTI), ({**PARAMS, "repair": False}, MULTI),
                           (PARAMS, {**MULTI, "evaluations": 0}), (PARAMS, {**MULTI, "evaluations": 1.5})):
         assert KellyMultiStart.validate_multistart(params, multi), (params, multi)
     with pytest.raises(ValueError, match="restarts must be 0"):

@@ -79,6 +79,8 @@ class KellyMultiStart(KellyLocalSearch):
         defects = cls.validate_params(params)
         if defects:
             return defects
+        if any(key in params for key in cls.OPTION_KEYS):
+            return [f"local_search {list(cls.OPTION_KEYS)} are the fast variant's and are not used with multistart"]
         if params["restarts"] != 0:
             return ["local_search restarts must be 0 with multistart (the starts replace them)"]
         if (not isinstance(multistart, dict) or not set(cls.MULTISTART_KEYS) <= set(multistart)
