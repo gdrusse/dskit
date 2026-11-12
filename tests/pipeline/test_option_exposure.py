@@ -37,7 +37,7 @@ def test_all_exports():
         ["ParityForward", "LegGreeks", "BookGreeks", "StockEquivalent", "CellAttribution", "DirectionEdge",
          "ExposureSnapshot", "fit_betas", "BookGreeksReport", "StaticDeltaHedge",
          "ExpiryDelta", "ForwardHedge", "Concentration", "HardToBorrowProxy",
-         "ExposureLimits"])
+         "ExposureLimits", "ReverseStress", "NameShare"])
 
 
 # ---- parity forward -------------------------------------------------------------------
@@ -2198,3 +2198,70 @@ def test_exposure_limits_no_groups_emit_no_rows():
     assert ox.ExposureLimits(LIMITS).rows(
         [{"id": "g", "symbol": "A", "dte": 10, "forward": 100.0, "items": []}],
         {"A": 1.0}, 10_000.0) == []
+
+
+# ---- ReverseStress and NameShare (ADR-0316 A8): the breach search and the largest-name share ------------------
+MOVES = [-0.3, -0.1, 0.1, 0.3]
+
+
+def test_reverse_stress_finds_the_smallest_breaching_move_per_direction_over_sessions():
+    """Hand worked: session A (equity 1000) breaches at 250, session B (equity 400) at 100."""
+    search = ox.ReverseStress({"moves": MOVES, "loss_fraction": 0.25})
+    a = (1000.0, {-0.3: 300.0, -0.1: 100.0, 0.1: -50.0, 0.3: 200.0})
+    b = (400.0, {-0.3: 120.0, -0.1: 100.0, 0.1: 10.0, 0.3: 150.0})
+    assert search.search([a]) == {"down_move": 0.3, "down_reached": True,
+                                  "up_move": 0.3, "up_reached": False}
+    # B reaches exactly its limit at -0.1 (at least, not more than) and up at +0.3.
+    assert search.search([a, b]) == {"down_move": 0.1, "down_reached": True,
+                                     "up_move": 0.3, "up_reached": True}
+
+
+def test_reverse_stress_not_reached_is_the_largest_declared_move_as_a_lower_bound():
+    search = ox.ReverseStress({"moves": [-0.5, -0.2, 0.1, 0.4], "loss_fraction": 1.0})
+    out = search.search([(100.0, {-0.5: 99.0, -0.2: 1.0, 0.1: 0.0, 0.4: 50.0})])
+    assert out == {"down_move": 0.5, "down_reached": False, "up_move": 0.4, "up_reached": False}
+    assert search.search([]) == out
+
+
+def test_reverse_stress_refuses_a_malformed_session():
+    search = ox.ReverseStress({"moves": MOVES, "loss_fraction": 0.25})
+    full = {-0.3: 1.0, -0.1: 1.0, 0.1: 1.0, 0.3: 1.0}
+    for equity, losses in ((0.0, full), (-5.0, full), (float("nan"), full),
+                           (100.0, {**full, 0.3: float("inf")}),
+                           (100.0, {-0.3: 1.0, -0.1: 1.0, 0.1: 1.0}),
+                           (100.0, {**full, 0.5: 1.0})):
+        with pytest.raises(ValueError):
+            search.search([(equity, losses)])
+
+
+@pytest.mark.parametrize("bad", [
+    {"moves": [-0.3, 0.3], "loss_fraction": 0.0},
+    {"moves": [-0.3, 0.3], "loss_fraction": 1.5},
+    {"moves": [-0.3, 0.3], "loss_fraction": True},
+    {"moves": [0.1, 0.3], "loss_fraction": 0.2},
+    {"moves": [-0.3, -0.1], "loss_fraction": 0.2},
+    {"moves": [0.3, -0.3], "loss_fraction": 0.2},
+    {"moves": [-0.3, 0.0, 0.3], "loss_fraction": 0.2},
+    {"moves": [-1.0, 0.3], "loss_fraction": 0.2},
+    {"moves": [-0.3, 0.3, 0.3], "loss_fraction": 0.2},
+    {"moves": [-0.3, float("nan"), 0.3], "loss_fraction": 0.2},
+    {"moves": "x", "loss_fraction": 0.2},
+    {"moves": [-0.3, 0.3]},
+    {"moves": [-0.3, 0.3], "loss_fraction": 0.2, "typo": 1}])
+def test_reverse_stress_is_default_deny(bad):
+    with pytest.raises(ConfigError):
+        ox.ReverseStress(bad)
+
+
+def test_name_share_is_the_largest_summed_name_over_the_total():
+    share = ox.NameShare({})
+    assert share.largest([("A", 30.0), ("B", 10.0), ("A", 20.0)], 200.0) == ("A", 0.25)
+    assert share.largest([("B", 10.0), ("A", 10.0)], 100.0) == ("A", 0.1)
+    assert share.largest([], 100.0) is None
+    assert share.largest([("A", 0.0)], 100.0) == ("A", 0.0)
+    for amounts, total in (([("A", 1.0)], 0.0), ([("A", 1.0)], float("nan")),
+                           ([("A", -1.0)], 10.0), ([("A", float("inf"))], 10.0)):
+        with pytest.raises(ValueError):
+            share.largest(amounts, total)
+    with pytest.raises(ConfigError):
+        ox.NameShare({"typo": 1})
