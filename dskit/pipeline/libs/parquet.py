@@ -198,6 +198,10 @@ class DateBoundedParquet:
         return ranked
 
 
+class _CopyPublished(Exception):
+    """Control flow: a verified copy was published instead of a hard link."""
+
+
 class SQLiteParquetIndex:
     """Run-local source-ordered index over a bounded Parquet row stream.
 
@@ -235,7 +239,6 @@ class SQLiteParquetIndex:
         import sqlite3
         import sys
         import pyarrow
-        from dskit.pipeline.workflow import path_hash
 
         source_digest = identity.get("verified_source_sha256") if isinstance(identity, dict) else None
         if (not isinstance(source_digest, str)
@@ -246,9 +249,53 @@ class SQLiteParquetIndex:
                    "float_keys": list(float_keys), "batch_size": batch_size,
                    "cache_kib": cache_kib, "python": list(sys.version_info[:3]),
                    "sqlite": sqlite3.sqlite_version, "pyarrow": pyarrow.__version__,
-                   "builder_sha256": path_hash(__file__)}
+                   "builder_sha256": SQLiteParquetIndex._builder_sha256()}
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _builder_sha256():
+        """Hash only the code that decides index bytes: the scan and the row build.
+
+        Cache publication/lookup code and unrelated classes in this module cannot
+        change a built index, so editing them keeps existing entries valid.
+        """
+        import hashlib
+        import inspect
+
+        parts = (inspect.getsource(DateBoundedParquet),
+                 inspect.getsource(SQLiteParquetIndex._ident),
+                 inspect.getsource(SQLiteParquetIndex.build.__func__))
+        return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _copy_atomic(source, destination, digest=None):
+        """Copy ``source`` to ``destination`` by fsynced temp + rename, checking ``digest``."""
+        import os
+        import shutil
+        import uuid
+        from dskit.pipeline.workflow import path_hash
+
+        candidate = destination.with_name(destination.name + ".copy-" + uuid.uuid4().hex)
+        try:
+            with open(source, "rb") as src, open(candidate, "xb") as dst:
+                shutil.copyfileobj(src, dst, 1 << 20)
+                dst.flush()
+                os.fsync(dst.fileno())
+            if digest is not None and path_hash(str(candidate), evict=True) != digest:
+                raise ValueError("index cache digest mismatch")
+            candidate.chmod(0o444)
+            os.replace(candidate, destination)
+        finally:
+            candidate.unlink(missing_ok=True)
+
+    @staticmethod
+    def _no_hard_links(exc):
+        """True when ``exc`` says this filesystem cannot hard link (drvfs/9p, FAT, cross-device)."""
+        import errno
+        return exc.errno in {getattr(errno, n) for n in
+                             ("EXDEV", "EPERM", "EOPNOTSUPP", "ENOTSUP", "ENOSYS", "EMLINK")
+                             if hasattr(errno, n)}
 
     @staticmethod
     def _cache_blob(root, digest):
@@ -310,8 +357,8 @@ class SQLiteParquetIndex:
                 connection.close()
 
     @classmethod
-    def _link_run(cls, blob, destination, validator=None, cache_kib=None):
-        """Atomically install a cache inode at the run path; report link misses."""
+    def _link_run(cls, blob, destination, validator=None, cache_kib=None, digest=None):
+        """Atomically install cache bytes at the run path: hard link, else verified copy."""
         import os
         import uuid
 
@@ -319,8 +366,12 @@ class SQLiteParquetIndex:
         try:
             try:
                 os.link(blob, candidate)
-            except OSError:
-                return False
+            except OSError as exc:
+                if not cls._no_hard_links(exc):
+                    return False
+                # Copy to a temp name, verifying the copy's digest, then rename.
+                cls._copy_atomic(blob, candidate, digest)
+                candidate.chmod(0o444)
             cls._replay_validator(blob, validator, cache_kib)
             os.replace(candidate, destination)
             return True
@@ -377,7 +428,7 @@ class SQLiteParquetIndex:
             cls._verify_cache_blob(blob, record["sha256"], metadata, key)
         except OSError:
             return None
-        if not cls._link_run(blob, destination, validator, cache_kib):
+        if not cls._link_run(blob, destination, validator, cache_kib, record["sha256"]):
             return None
         return {**metadata, "path": str(destination), "sha256": record["sha256"]}
 
@@ -393,20 +444,27 @@ class SQLiteParquetIndex:
         metadata = {k: v for k, v in descriptor.items() if k not in {"path", "sha256"}}
         blob = cls._cache_blob(root, digest)
         blob.parent.mkdir(parents=True, exist_ok=True)
-        if blob.parent.stat().st_dev != destination.stat().st_dev:
-            return
         created_blob = False
         try:
-            os.link(destination, blob)
+            try:
+                os.link(destination, blob)
+            except OSError as exc:
+                if isinstance(exc, FileExistsError) or not cls._no_hard_links(exc):
+                    raise
+                # No hard links here (cross-device, drvfs/9p): publish a verified copy.
+                if blob.exists():
+                    raise FileExistsError(errno.EEXIST, "cache blob exists", str(blob))
+                cls._copy_atomic(destination, blob, digest)
+                # A copy renames over any racing publisher's identical blob, so this run
+                # cannot claim sole ownership: never unlink it on a later failure.
+                raise _CopyPublished
             created_blob = True
+        except _CopyPublished:
+            pass
         except FileExistsError:
             cls._verify_cache_blob(blob, digest, metadata, key)
-            if not cls._link_run(blob, destination):
+            if not cls._link_run(blob, destination, digest=digest):
                 return
-        except OSError as exc:
-            if exc.errno == errno.EXDEV:
-                return
-            raise
         if key is None:
             return
         manifest_accepted = False
@@ -422,7 +480,17 @@ class SQLiteParquetIndex:
                     os.fsync(handle.fileno())
                 candidate.chmod(0o444)
                 try:
-                    os.link(candidate, manifest)
+                    try:
+                        os.link(candidate, manifest)
+                    except OSError as exc:
+                        if isinstance(exc, FileExistsError) or not cls._no_hard_links(exc):
+                            raise
+                        if manifest.exists():
+                            raise FileExistsError(errno.EEXIST, "manifest exists", str(manifest))
+                        os.replace(candidate, manifest)
+                        # Replace has no exclusive-create check: re-read to catch a racing writer.
+                        if cls._read_manifest(manifest) != record:
+                            raise ValueError("index cache input identity collision")
                     manifest_accepted = True
                 except FileExistsError:
                     if cls._read_manifest(manifest) != record:
