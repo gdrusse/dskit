@@ -37049,3 +37049,41 @@ This append is evidence only: reviewed code/test/contract/dependency bytes stay 
 *Provenance (m5).* v7 checks that the replay worktree is clean before any replay as well as at pin time. `verdict.json` is written before `pins.json`. An `unsupported` row carries null for the new statistics and is skipped by the worst-value aggregation (it forces FAIL regardless). A reverse-stress input error on the control gives null values, never an exception.
 
 *Test added (m6).* Each of the eight new cases produces a result that differs from the control on a fixture built to be sensitive to it, so a case whose new field is not wired through every reader cannot pass as the control.
+
+**ADR-0316 Amendment 4 — as built, review record and backlog (2026-11-12).** Decisions A and B are built on `claude/kind-sagan-vrh6we` from base `9d5c85b8`, each closed by two independent final lenses at zero Critical or Major. Synthetic tests only: no real-data run, no journal row, no Path row, nothing merged to main. Owner decisions 2 (criteria) and 3 (Decision B window) stay open.
+
+*Locked candidates.* Decision A, commit `5a92603f`: `mio_execution_stress.py` blob `a90dd9c7`, its tests `67020b32`, `option_exposure.py` `e97b6bc6`, its tests `a4f3b993`, the template `176cd4b5`. Decision B, commit `cf0ec787`: `cdf_faults.py` `4006c4eb`, its tests `23679eb3`. `ledger_studies.py`, `cdf_experiment.py` and `test_cdf_experiment.py` are byte-identical to the base.
+
+*Checks on the merged branch.* 1,309 passed and 2 skipped over `test_mio_execution_stress.py`, `test_option_exposure.py`, `test_cdf_faults.py`, `test_cdf_experiment.py`, the child's `test_option_exposure_pins.py`, `test_mio_greeks.py`, `test_hedge_evidence.py` and `test_mio_run_report_contract.py`, `tests/pipeline/test_hedge_overlay.py` and `tests/docs`; `ruff check` clean on the edited modules. Two tier-1 tests fail on the unchanged base and are not from this work: `test_purity.py::test_core_never_reaches_outside_the_toolkit_at_any_depth` (`parquet.py` imports `dskit.onboarding.snapshot`) and `test_study_protocol.py::test_fresh_release_uses_latest_boundary_across_all_prior_exposures`.
+
+*Review record (Critical / Major / Minor / Nit).*
+
+| Stage | Candidate | Correctness and authority lens | Test and integration lens | Outcome |
+|---|---|---|---|---|
+| Phase 0, Decision A | Amendment 1 | 0 / 4 / 6 / 0 (one design skeptic) | | Amendment 3 |
+| Phase 0, Decision B | Amendment 1 | 0 / 5 / 5 / 0 (one design skeptic) | | Amendment 2 |
+| A round 1 | `23220f0c` | 0 / 0 / 3 / 2 | 0 / 2 / 5 / 2 | corrected in `89732386` |
+| A round 2 | `89732386` | 0 / 0 / 0 / 2 | 0 / 1 / 3 / 3 | corrected in `5a92603f`, with a 176-mutant sweep |
+| A round 3 | `5a92603f` | 0 / 0 / 1 / 1 | 0 / 0 / 3 / 2 | closed |
+| B round 1 | `bf5de21b` | 0 / 0 / 2 / 4 | 0 / 2 / 7 / 2 | corrected in `a5d60ff7`, sweep `afc752a8` (298 mutants), hardening `cf0ec787` |
+| B round 2 | `cf0ec787` | 0 / 0 / 3 / 0 | 0 / 0 / 1 / 2 | closed |
+
+Every Major after Phase 0 was one family: a rule or document knob that no test pinned, found by mutation. Failed correction cycles: two for A, one for B, below the checkpoint of three; the family was closed by each implementer's own mutation sweep before the last round (A: 161 killed at once, 8 after new tests, 7 equivalent; B: 281, 7 and 10), and the last test lenses audited the equivalence claims with 116 and 70 mutants of their own. The round-2 correctness lens on A ran the base module against the candidate on the v4, v5 and v6 fixtures: 250 output files byte-identical apart from the code hash and commit in `pins.json`. Every implementer and reviewer was Sonnet, each reviewer a fresh context; the orchestrating session confirmed each finding against the code, reran every test command and read each diff. Reviewer outputs are retained in that session's transcript.
+
+*As built, where it differs from the amendments above.*
+1. v7 takes the packet branch v6 uses (the pinned session spine from `history_start`, the settlement tail, the close-receipt check) and refuses a run document without it.
+2. In v7 the seven ADR-0280 cases shock each method's own expiries only. A method's account holds only its own books, so its results are the same as v5's; only another method's expiry bars differ.
+3. `run_method` records its progress state before it builds the case study, so an unsupported estimate is reported against the right case. This also corrects a v6 failure path that reused the previous case's state. Successful v1 to v6 runs are unchanged.
+4. v7 compares the scenario list as canonical JSON text, so `2.0` or `true` cannot stand for `2` or `1`; v1 to v6 compare as before.
+5. A name with zero deviation in its window is `unsupported` in the market and joint cases as well as the volatility cases, and a reverse stress with no session is unavailable (null).
+6. Decision B, correcting Amendment 2: the locked recipe is ONE joint fit whose curve is already the linear pool of every seed (`SeedAverage`), so one study measures the delivered model component, not five; and the study describes the published forecast only while the recipe's average is `linear_pool`. The grid `tail` is required by the score owner's signature and does not enter the grid score. The study also refuses an `output` equal to or inside the experiment's output, requires `fold` to match a plan fold id and its type, gives each fault a copy of the band, and refuses the inherited `run()` and `forecast()`.
+7. The template's `stress` values (lookback 60, moves from -0.4 to 0.4 by 0.1, loss fraction 0.25) are placeholders, not owner values.
+
+*Backlog recorded at the lock (Minor and Nit; not fixed, because a change would reset both lenses).*
+- A, Minor: the reverse stress still gives a name whose close is constant over its whole window a beta of zero, so a control book on such a name looks unmoved and the reverse distance too safe; the market and joint cases refuse the same name.
+- A, Minor, tests only: no test for a flat basket of offsetting names; none pins the beta window to the estimate day when the bad bar is the newest in the window; none shows a no-book decision on the last session is accepted.
+- A, Nit: an `except Exception` in `_reverse_stress` would pass the tests; the criteria message prefix is unpinned; `effective_size` stays for the legacy tests; `ShockEstimator` calls protected owners of `WeeklyOptionPortfolioStudy` because `ledger_studies.py` may not be edited; `replay_code_sha256` covers `mio_execution_stress.py` only, as it always has, so a v7 pin does not cover `option_exposure.py`.
+- B, Minor: an integer beyond float range, a relative class path or a null byte in `output` raises `OverflowError`, `TypeError` or `ValueError` instead of the listed `ConfigError` (nothing is written); the identity key list reaches a fault by reference; no test covers "no input row changed yet the CDF moved" (the status label only).
+- B, Nit: an aborted study leaves its lock file; dates compare as zero-padded ISO strings.
+
+*What the first real-data runs need.* (1) Owner decision 2, the criteria. (2) One v7 document per quarter-arm from `configs/mio-deployment-stress-template.json` with real pins, run from a clean checkout; Gate 0 then shows which formulations the replay accepts (split-adjusted books, Kelly and hedged methods are untested against real results). (3) Owner decision 3, then a study document for one open quarter (that quarter's fit document, its fold, `sealed_from` at the metric seal, the grid and weights from the child's forecast grid), run from a checkout whose pinned sources match the fit's pins. The child entry that assembles that document and applies a verdict to Decision B's statistics is not built.
