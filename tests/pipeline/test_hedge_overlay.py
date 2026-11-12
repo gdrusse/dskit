@@ -69,7 +69,7 @@ def us(entries):
 def test_the_public_surface_is_exactly_the_declared_names():
     assert sorted(ho.__all__) == sorted(
         ["HedgeOverlay", "NullHedgeOverlay", "FixedDeltaForwardHedge", "KINDS", "REFUSALS",
-         "forward_leg_rule", "forward_leg_net_settle"])
+         "forward_leg_rule", "forward_leg_net_settle", "forward_leg_spot_delta"])
 
 
 def test_a_recorded_forward_leg_settles_net_of_its_trade_costs_by_hand():
@@ -527,3 +527,17 @@ def test_floor_rows_read_the_hedged_units_so_a_blocked_item_floors_nothing():
     blocked = overlay.units([item()], {**CONTEXT, "closes": WILD})[0]
     assert blocked["target"] < 0 and blocked["units"] == 0.0
     assert overlay.floor_rows([item()], [blocked], 100.0) == ([0.0], [-0.0])
+
+
+@pytest.mark.parametrize("units", [-3., 0., 3.])
+def test_forward_spot_delta_common_basis(units):
+    assert ho.forward_leg_spot_delta({"units": units}, 110., 100.) == pytest.approx(units*1.1)
+    assert ho.forward_leg_spot_delta({"units": units}, 55., 50.) == pytest.approx(units*1.1)
+
+
+@pytest.mark.parametrize("units,forward,spot", [(True, 110., 100.), (float("nan"), 110., 100.),
+                                               (1., 0., 100.), (1., 110., 0.),
+                                               (1., float("inf"), 100.)])
+def test_forward_spot_delta_invalid_inputs(units, forward, spot):
+    with pytest.raises(ValueError):
+        ho.forward_leg_spot_delta({"units": units}, forward, spot)

@@ -1514,6 +1514,8 @@ class DailyStockHedge(Node):
         All required: ratio in [0,1], nonnegative fee_per_share,
         half_spread_bps and annual capital_charge_rate, positive dollar
         name_cap_usd and gross_cap_usd, positive integer settlement_lag_sessions.
+        Optional defer_unpaid_dividends permits unknown pay dates as None;
+        those entitlements remain nonspendable receivables through report close.
 
     Examples
     --------
@@ -1533,7 +1535,10 @@ class DailyStockHedge(Node):
     execution after option reserves, EXCLUDING all sleeve transactions.
     decision_dates suppress trades only. Dividends have symbol, ex_date,
     pay_date and amount per raw share. Coverage must attest raw_prices=True,
-    dividends_complete=True and corporate_actions="none".
+    dividends_complete=True and corporate_actions="none", or a list of
+    symbol/date/kind events. Events with prior stock, prior nonzero exposure or
+    current active exposure refuse. Optional settlement_sessions begins with the
+    complete sessions list and adds settlement dates only, without market rows.
 
     Targets use yesterday's exposure, never today's close or exposure.
     Sells precede alphabetical buys. Caps constrain buys at execution prices;
@@ -1547,7 +1552,7 @@ class DailyStockHedge(Node):
     role = "transform"
     outputs = ("trades", "daily", "summary")
     _PARAMS = ("ratio", "fee_per_share", "half_spread_bps", "capital_charge_rate",
-               "name_cap_usd", "gross_cap_usd", "settlement_lag_sessions")
+               "name_cap_usd", "gross_cap_usd", "settlement_lag_sessions", "defer_unpaid_dividends")
     _INPUTS = ("sessions", "symbols", "decision_dates", "coverage", "cash", "market", "dividends")
     _MARKET_FIELDS = ("date", "symbol", "delta_sh", "active", "known_at",
                       "execution_price", "close")
@@ -1570,6 +1575,10 @@ class DailyStockHedge(Node):
         reject_unknown_params(problems, params, cls._PARAMS)
         for name in cls._PARAMS:
             value = params.get(name)
+            if name == "defer_unpaid_dividends":
+                if type(params.get(name, False)) is not bool:
+                    problems.append("defer_unpaid_dividends must be boolean")
+                continue
             if name == "settlement_lag_sessions":
                 check_int_param(problems, name, value, ge=1)
             elif not number_ok(value) or value < 0:
@@ -1601,7 +1610,8 @@ class DailyStockHedge(Node):
 
     def _intake(self, inputs):
         """Validate the full replay before producing any state or output."""
-        self._schema(inputs, self._INPUTS)
+        self._schema(inputs, (*self._INPUTS, "settlement_sessions")
+                     if isinstance(inputs, dict) and "settlement_sessions" in inputs else self._INPUTS)
         for field in ("sessions", "symbols", "decision_dates", "cash", "market", "dividends"):
             if not isinstance(inputs[field], list):
                 raise ValueError("daily_stock: inputs must be lists")
@@ -1609,6 +1619,12 @@ class DailyStockHedge(Node):
         dates = [self._date(day) for day in sessions]
         if not dates or any(a >= b for a, b in zip(dates, dates[1:])):
             raise ValueError("daily_stock: sessions must be strictly increasing")
+        settlement = inputs.get("settlement_sessions", sessions)
+        if not isinstance(settlement, list) or settlement[:len(sessions)] != sessions:
+            raise ValueError("daily_stock: invalid settlement calendar prefix")
+        settlement_dates = [self._date(day) for day in settlement]
+        if any(a >= b for a, b in zip(settlement_dates, settlement_dates[1:])):
+            raise ValueError("daily_stock: invalid settlement calendar order")
         symbols = inputs["symbols"]
         if (not symbols or any(not isinstance(s, str) or not s for s in symbols)
                 or len(set(symbols)) != len(symbols)):
@@ -1621,8 +1637,18 @@ class DailyStockHedge(Node):
         coverage = inputs["coverage"]
         self._schema(coverage, ("raw_prices", "dividends_complete", "corporate_actions"))
         if (coverage["raw_prices"] is not True or coverage["dividends_complete"] is not True
-                or coverage["corporate_actions"] != "none"):
+                or not (coverage["corporate_actions"] == "none"
+                        or isinstance(coverage["corporate_actions"], list))):
             raise ValueError("daily_stock: unsupported or incomplete corporate actions")
+        actions = {}
+        for event in ([] if coverage["corporate_actions"] == "none" else coverage["corporate_actions"]):
+            self._schema(event, ("symbol", "date", "kind"))
+            self._date(event["date"])
+            if (event["symbol"] not in symbols or event["date"] not in sessions
+                    or not isinstance(event["kind"], str) or not event["kind"]
+                    or event["symbol"] in actions.get(event["date"], [])):
+                raise ValueError("daily_stock: invalid corporate action")
+            actions.setdefault(event["date"], []).append(event["symbol"])
         cash = {}
         for row in inputs["cash"]:
             self._schema(row, ("date", "free_cash"))
@@ -1654,9 +1680,12 @@ class DailyStockHedge(Node):
             self._schema(row, ("symbol", "ex_date", "pay_date", "amount"))
             symbol, ex_day, pay_day = row["symbol"], row["ex_date"], row["pay_date"]
             self._date(ex_day)
-            self._date(pay_day)
+            deferred = pay_day is None and self.params.get("defer_unpaid_dividends", False)
+            if not deferred:
+                self._date(pay_day)
             if (not isinstance(symbol, str) or symbol not in symbols
-                    or ex_day not in sessions or pay_day not in sessions or pay_day < ex_day
+                    or ex_day not in sessions
+                    or (not deferred and (pay_day not in sessions or pay_day < ex_day))
                     or (symbol, ex_day) in seen
                     or not number_ok(row["amount"]) or row["amount"] < 0):
                 raise ValueError("daily_stock: invalid dividend event")
@@ -1664,7 +1693,7 @@ class DailyStockHedge(Node):
             dividends.setdefault(ex_day, []).append(dict(row))
         for events in dividends.values():
             events.sort(key=lambda row: row["symbol"])
-        return sessions, symbols, set(decisions), cash, market, dividends
+        return sessions, symbols, set(decisions), cash, market, dividends, settlement, actions
 
     def _cost(self, shares, price):
         """Use half the same-price round trip for one fill, with zero borrow."""
@@ -1740,11 +1769,15 @@ class DailyStockHedge(Node):
         ValueError
             Incomplete or unsupported inputs, cash debt or incomplete settlement.
         """
-        sessions, symbols, decisions, cash, market, dividends = self._intake(inputs)
+        sessions, symbols, decisions, cash, market, dividends, settlement, actions = self._intake(inputs)
         state = {"cash": 0., "shares": dict.fromkeys(symbols, 0), "pending": [],
                  "costs": 0., "capital": 0., "dividends": 0., "trades": []}
         daily = []
         for index, day in enumerate(sessions):
+            for symbol in actions.get(day, []):
+                prior_delta = market[sessions[index-1], symbol]["delta_sh"] if index else 0.
+                if state["shares"][symbol] or prior_delta or market[day, symbol]["active"]:
+                    raise ValueError("daily_stock: unsupported corporate action exposure")
             for event in dividends.get(day, []):
                 amount = state["shares"][event["symbol"]]*event["amount"]
                 state["pending"].append({"kind": "dividend", "due": event["pay_date"],
@@ -1762,7 +1795,7 @@ class DailyStockHedge(Node):
             if not math.isfinite(state["cash"]) or cash[day]+state["cash"] < 0:
                 raise ValueError("daily_stock: insufficient settled cash")
             if index and day not in decisions:
-                self._rebalance(state, index, sessions, symbols, market, cash[day])
+                self._rebalance(state, index, settlement, symbols, market, cash[day])
             values = {s: state["shares"][s]*market[day, s]["close"] for s in symbols}
             gross = math.fsum(values.values())
             sales = math.fsum(p["amount"] for p in state["pending"] if p["kind"] == "sale")
