@@ -658,3 +658,14 @@ def test_the_cdf_validity_tolerance_is_the_one_forecast_uses():
     assert valid(np.array([[0., .5, .5 - 1e-13]]))
     for bad in ([[0., np.nan, 1.]], [[-.1, .5, 1.]], [[0., .5, 1.1]]):
         assert not valid(np.array(bad))
+
+
+def test_the_inherited_run_and_forecast_refuse_and_write_nothing(fitted, tmp_path):
+    before = tree(fitted["output"])
+    study = ForecastFaultStudy(document(fitted, tmp_path))
+    with pytest.raises(IntegrityError, match="never fits"):
+        study.run("pooled")
+    with pytest.raises(IntegrityError, match="no forecast rows"):
+        study.forecast({})
+    assert tree(fitted["output"]) == before
+    assert not (tmp_path/"study").exists()

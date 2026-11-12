@@ -535,6 +535,14 @@ class ForecastFaultStudy(CDFExperiment):
                    for fault, entry in zip(self.faults, self.document["faults"])]
         return {"clean": {"rows": len(band), **self._extent(band, slice(None))}, "faults": records}
 
+    def run(self, regime, worker=0, workers=1, limit=None):
+        """Refuse: a fault study restores a completed fit and never fits."""
+        raise IntegrityError("a fault study never fits; fit with CDFExperiment.run")
+
+    def forecast(self, spec):
+        """Refuse: a fault study writes statistics only, never forecast rows."""
+        raise IntegrityError("a fault study writes no forecast rows; use assess")
+
     def assess(self):
         """Run the study once and publish ``statistics.json`` and ``receipt.json`` atomically.
 
