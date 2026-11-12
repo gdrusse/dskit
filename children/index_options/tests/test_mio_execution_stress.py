@@ -1680,7 +1680,25 @@ def test_beta_is_the_equal_weight_basket_loading_and_the_market_multiplier_floor
     est4 = _estimator({'A': _wave(0.1), **flat}, symbols=('A', 'B', 'C', 'D'))
     assert est4.beta('A', W[6]) == pytest.approx(4.0)
     assert stress.MarketShock(-0.30).estimate(est4, 'A', W[6], W[9])[0] == 0.0
-    assert stress.MarketShock(-0.30).estimate(est4, 'B', W[6], W[9])[0] == 1.0
+    with pytest.raises(stress.UnsupportedStress, match='standard deviation'):
+        stress.MarketShock(-0.30).estimate(est4, 'B', W[6], W[9])     # flat B: beta 0 would leave it unshocked
+    with pytest.raises(stress.UnsupportedStress, match='standard deviation'):
+        est4.beta('C', W[6])
+
+
+@pytest.mark.parametrize('sigmas', [-1e6, 1e6])
+def test_a_volatility_multiplier_that_underflows_or_overflows_is_unsupported(sigmas):
+    with pytest.raises(stress.UnsupportedStress, match='finite and positive'):
+        stress.VolatilityShock(sigmas).estimate(_estimator(), 'A', W[6], W[9])
+
+
+def test_v7_names_its_own_version_in_the_sizing_and_window_refusals(tmp_path, q1_loaders, monkeypatch):
+    with pytest.raises(ValueError, match='schema v7 require each other'):
+        stress.FrozenMIOReplay._sizing_schema({}, V7)
+    world = _v7_world(tmp_path, monkeypatch)
+    world.cohort.update(end_before=Q1[11])
+    with pytest.raises(ValueError, match='v7 entry window differs from the packet'):
+        world.replay()
 
 
 def test_an_estimate_never_reads_the_fill_session_or_later_but_does_read_the_session_before():
@@ -1732,6 +1750,12 @@ def test_the_name_scale_ignores_another_names_bad_bar_but_the_beta_needs_every_s
     assert est.scale('A', W[6], W[9])[0] == pytest.approx(0.02309401076758503)
     with pytest.raises(stress.UnsupportedStress):
         est.beta('A', W[6])
+
+
+@pytest.mark.parametrize('lookback', [4.0, True, '4', None])
+def test_the_estimator_takes_an_integer_lookback_only(lookback):
+    with pytest.raises(ValueError, match='integer'):
+        _estimator(lookback=lookback)
 
 
 def test_a_lookback_below_the_beta_owners_minimum_pairs_is_refused_at_construction():
@@ -1873,12 +1897,27 @@ def test_the_statistic_table_takes_worst_values_over_complete_cases_with_their_n
     assert row['reverse'] == {'down_reached': True, 'up_reached': False, 'sessions': 7, 'unavailable': None}
 
 
+def test_worst_n_includes_the_control_and_the_reverse_n_is_the_controls():
+    cases = [_case_tuple('control', filled=2, reverse=REVERSE), _case_tuple('adverse_price', filled=5),
+             _case_tuple('half_size', filled=5)]
+    stats = stress.StressVerdict([]).rows(cases)[0]['statistics']
+    assert {k: v['n'] for k, v in stats.items()} == {
+        'worst_loss_fraction': 2, 'worst_drawdown': 2, 'worst_breach_days': 2,
+        'worst_name_reserve_share': 2, 'reverse_down_move': 2, 'reverse_up_move': 2}
+    cases = [_case_tuple('control', filled=5, reverse=REVERSE), _case_tuple('adverse_price', filled=1)]
+    stats = stress.StressVerdict([]).rows(cases)[0]['statistics']
+    assert stats['worst_loss_fraction']['n'] == 1 and stats['reverse_down_move']['n'] == 5
+
+
 def test_pass_fail_and_inconclusive_are_each_reachable_and_pass_needs_every_statistic_covered():
     assert stress.StressVerdict(CRITERIA).rows(_cases())[0]['status'] == 'PASS'
     failing = [{**CRITERIA[0], 'value': 0.04}, *CRITERIA[1:]]
     assert stress.StressVerdict(failing).rows(_cases())[0]['status'] == 'FAIL'
     thin = [{**CRITERIA[0], 'min_n': 4}, *CRITERIA[1:]]                 # n = 3 < 4
     assert stress.StressVerdict(thin).rows(_cases())[0]['status'] == 'INCONCLUSIVE'
+    failing_partial = [{**CRITERIA[0], 'value': 0.04}, *CRITERIA[1:5]]    # a failure stays FAIL without coverage
+    row = stress.StressVerdict(failing_partial).rows(_cases())[0]
+    assert row['status'] == 'FAIL' and row['uncovered'] == ['reverse_up_move']
     partial = stress.StressVerdict(CRITERIA[:5]).rows(_cases())[0]       # no criterion on reverse_up_move
     assert partial['status'] == 'INCONCLUSIVE' and partial['uncovered'] == ['reverse_up_move']
     assert stress.StressVerdict(CRITERIA).rows(_cases())[0]['uncovered'] == []
@@ -1890,6 +1929,9 @@ def test_an_unsupported_case_forces_fail_and_is_skipped_by_the_worst_value():
     cases = [*_cases(), _case_tuple('expiry_down_3s', status='unsupported')]
     row, = stress.StressVerdict(CRITERIA).rows(cases)
     assert row['status'] == 'FAIL' and row['unsupported'] == ['expiry_down_3s']
+    assert [(c['scenario'], c['status']) for c in row['cases']] == [
+        ('control', 'complete'), ('adverse_price', 'complete'), ('half_size', 'complete'),
+        ('expiry_down_3s', 'unsupported')]
     assert row['statistics']['worst_loss_fraction'] == {'value': 0.05, 'n': 3}
     assert row['statistics']['worst_breach_days'] == {'value': 2, 'n': 3}
     assert stress.StressVerdict([]).rows(cases)[0]['status'] == 'FAIL'     # even with no criteria
@@ -1988,7 +2030,7 @@ def _before(day, count):
 
 
 def _v7_world(tmp_path, monkeypatch, *, amplitude=0.02, lookback=20, criteria=(), reverse=None, pre=25,
-              params=None, plain_methods=False, names=None):
+              params=None, plain_methods=False, names=None, bar_fn=None):
     """Build the packet layout of the v6 test, regenerate the pinned control, and return a v7 document.
 
     The bars alternate ``100`` and ``100 e^amplitude`` along the pinned session spine, so every window of an even
@@ -2039,7 +2081,7 @@ def _v7_world(tmp_path, monkeypatch, *, amplitude=0.02, lookback=20, criteria=()
     monkeypatch.setattr(stress, 'PinnedPayloadSource', PinnedSessions)
     amplitudes = amplitude if isinstance(amplitude, dict) else None
     monkeypatch.setattr(stress, '_bar_rows', lambda binding, symbols, days: {
-        s: {d: 100.0 * math.exp((amplitudes[s] if amplitudes else amplitude) * (i % 2))
+        s: {d: (bar_fn(s, i) if bar_fn else 100.0 * math.exp((amplitudes[s] if amplitudes else amplitude) * (i % 2)))
             for i, d in enumerate(days)} for s in symbols})
 
     result_dir = Path(cohort['result_dir'])
@@ -2209,6 +2251,71 @@ def test_reverse_stress_input_errors_give_nulls_never_an_exception(tmp_path, q1_
     assert result['reverse_stress']['sessions'] == 0
 
 
+def test_a_book_input_the_shock_cannot_evaluate_gives_null_reverse_values(tmp_path, q1_loaders, monkeypatch):
+    world = _v7_world(tmp_path, monkeypatch)
+    replay = world.replay()
+    original = stress.WeeklyOptionPortfolioStudy._account_shock
+
+    def cannot_evaluate(self, books, day, shock, hedged=False):
+        estimate, losses = original(self, books, day, shock, hedged)
+        return (estimate, None) if day == Q1[5] else (estimate, losses)     # the shock owner's own fail-closed answer
+
+    monkeypatch.setattr(stress.WeeklyOptionPortfolioStudy, '_account_shock', cannot_evaluate)
+    result, _ = replay.run_method(replay.original['results'][0], stress._approved_scenarios(V7)[0])
+    reverse = result['reverse_stress']
+    assert [reverse[k] for k in ('down_move', 'down_reached', 'up_move', 'up_reached')] == [None] * 4
+    assert 'missing or nonfinite' in reverse['unavailable'] and Q1[5] in reverse['unavailable']
+
+
+def test_no_open_session_gives_null_reverse_values_not_a_pass(tmp_path, q1_loaders, monkeypatch):
+    replay = _v7_world(tmp_path, monkeypatch).replay()
+    reverse = replay._reverse_stress([])
+    assert reverse['down_move'] is None and reverse['up_move'] is None and reverse['sessions'] == 0
+    assert 'at least one session' in reverse['unavailable']
+
+
+def _irregular(symbol, index):
+    """Deterministic irregular closes: cumulative log returns of two incommensurate oscillations."""
+    cumulative = sum({'ABC': 0.03 * math.sin(1.7 * i), 'DEF': 0.05 * math.cos(0.9 * i + 1.0)}[symbol]
+                     for i in range(1, index + 1))
+    return 100.0 * math.exp(cumulative)
+
+
+def _beta_at(bars, spine, day, lookback, symbol, symbols):
+    """The equal-weight basket beta of one name from the ``lookback`` returns before ``day``, worked apart."""
+    import numpy as np
+    k = spine.index(day)
+    window = spine[k - lookback - 1:k]
+    returns = {s: np.diff(np.log([bars[s][d] for d in window])) for s in symbols}
+    market = np.mean([returns[s] for s in symbols], axis=0)
+    mine = returns[symbol]
+    return float(np.mean((mine - mine.mean()) * (market - market.mean())) / np.var(market))
+
+
+def test_the_reverse_stress_fits_its_betas_on_the_documents_lookback(tmp_path, q1_loaders, monkeypatch):
+    """Irregular bars on two names make beta depend on the window length, unlike the alternating waves."""
+    world = _v7_world(tmp_path, monkeypatch, bar_fn=_irregular, names=['ABC', 'DEF'], lookback=7,
+                      params={'weekly_fraction': 1.0, 'correlation_min_pairs': 5})
+    replay = world.replay()
+    calls, original = [], stress.WeeklyOptionPortfolioStudy._account_shock
+
+    def spy(self, books, day, shock, hedged=False):
+        estimate, losses = original(self, books, day, shock, hedged)
+        calls.append((day, shock['beta_lookback'], dict(estimate['betas'])))
+        return estimate, losses
+
+    monkeypatch.setattr(stress.WeeklyOptionPortfolioStudy, '_account_shock', spy)
+    result, _ = replay.run_method(replay.original['results'][0], stress._approved_scenarios(V7)[0])
+    assert result['reverse_stress']['sessions'] == len(calls) > 5
+    assert {lookback for _day, lookback, _betas in calls} == {7}
+    for day, _lookback, betas in calls:
+        for symbol in ('ABC', 'DEF'):
+            assert betas[symbol] == pytest.approx(_beta_at(replay.bars, replay.history, day, 7, symbol,
+                                                           ['ABC', 'DEF']))
+    day, _lookback, betas = calls[0]
+    assert abs(betas['ABC'] - _beta_at(replay.bars, replay.history, day, 20, 'ABC', ['ABC', 'DEF'])) > 0.05
+
+
 def test_an_unsupported_estimate_is_a_recorded_case_not_a_stopped_run(tmp_path, q1_loaders, monkeypatch):
     world = _v7_world(tmp_path, monkeypatch, amplitude=0.0, criteria=CRITERIA)
     output = stress.execute(world.path)
@@ -2282,7 +2389,9 @@ def test_v7_verdict_statuses_follow_the_pre_registered_criteria(tmp_path, q1_loa
                             ('thin', [{**loose[0], 'min_n': 1000}, *loose[1:]]), ('partial', loose[:5])):
         world = _v7_world(tmp_path / label, monkeypatch, criteria=criteria)
         output = stress.execute(world.path)
-        outcomes[label] = {r['status'] for r in json.loads((output / 'verdict.json').read_text())['rows']}
+        written = json.loads((output / 'verdict.json').read_text())
+        assert written['criteria'] == criteria and written['schema'] == 'mio-execution-stress-verdict/v1'
+        outcomes[label] = {r['status'] for r in written['rows']}
     assert outcomes == {'pass': {'PASS'}, 'fail': {'FAIL'}, 'thin': {'INCONCLUSIVE'}, 'partial': {'INCONCLUSIVE'}}
 
 
@@ -2428,7 +2537,9 @@ def test_a_non_control_case_whose_marked_equity_goes_nonpositive_is_unsupported_
     bad = {r['scenario'] for r in summary if r['status'] == 'unsupported'}
     assert bad and 'control' not in bad
     row = next(r for r in summary if r['status'] == 'unsupported')
-    assert 'nonpositive marked equity under scenario' in row['unsupported_reason']
+    # On the expiry session itself: the previous equity was positive, so it is `equity <= 0` that refused,
+    # not the next session's `denominator <= 0`.
+    assert row['unsupported_reason'] == 'nonpositive marked equity under scenario on ' + Q1_EXPIRY
     assert row['loss_fraction'] is None and row['worst_name_reserve_share'] is None
     complete = [r for r in summary if r['status'] == 'complete']
     assert len(seen) == len(complete)                        # the statistics never saw an unsupported case
@@ -2468,6 +2579,21 @@ def test_two_names_and_two_books_sharing_a_symbol_and_expiry_are_shocked_per_sym
             if r['method'] == 'm0' and r['scenario'] == 'market_down_30']
     assert {r['symbol']: round(r['stressed_expiry_underlying'] / r['original_expiry_underlying'], 9)
             for r in rows} == {'ABC': pytest.approx(0.8), 'DEF': pytest.approx(0.6)} and len(rows) == 3
+
+
+def test_v5_still_replays_before_it_checks_the_worktree_and_keeps_its_loose_scenario_comparison(
+        tmp_path, q1_loaders, capsys):
+    results = _q1_original_results(tmp_path)
+    _v5_tree(tmp_path / 'dirty', results=results)
+    (tmp_path / 'dirty/repo/stray.txt').write_text('uncommitted')
+    capsys.readouterr()
+    with pytest.raises(ValueError, match='worktree must be clean'):
+        stress.execute(tmp_path / 'dirty/evidence/document.json')
+    assert Q1_COHORT + ' control m0 complete' in capsys.readouterr().out      # v1-v6 order is unchanged
+    document, _pins = _v5_tree(tmp_path / 'loose', results=results)
+    document['scenarios'][0]['price_fraction'] = 0.0                          # 0.0 == 0: v5 compares by value
+    (tmp_path / 'loose/evidence/document.json').write_text(json.dumps(document))
+    assert stress.execute(tmp_path / 'loose/evidence/document.json').exists()
 
 
 def test_v5_outputs_carry_no_v7_file_and_no_v7_column(tmp_path, q1_loaders):

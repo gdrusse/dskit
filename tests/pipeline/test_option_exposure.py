@@ -2225,7 +2225,18 @@ def test_reverse_stress_not_reached_is_the_largest_declared_move():
     search = ox.ReverseStress({"moves": [-0.5, -0.2, 0.1, 0.4], "loss_fraction": 1.0})
     out = search.search([(100.0, {-0.5: 99.0, -0.2: 1.0, 0.1: 0.0, 0.4: 50.0})])
     assert out == {"down_move": 0.5, "down_reached": False, "up_move": 0.4, "up_reached": False}
-    assert search.search([]) == out
+    with pytest.raises(ValueError, match="at least one session"):
+        search.search([])                       # no sessions is no evidence, never a pass
+    with pytest.raises(ValueError, match="at least one session"):
+        search.search(iter(()))
+
+
+def test_reverse_stress_reports_the_largest_declared_move_below_the_first_breach_on_a_fine_grid():
+    search = ox.ReverseStress({"moves": [-0.4, -0.3, -0.2, -0.1, 0.1, 0.2, 0.3, 0.4], "loss_fraction": 0.5})
+    quiet = {m: 0.0 for m in search.params["moves"]}
+    out = search.search([(100.0, {**quiet, -0.4: 50.0, 0.4: 60.0})])
+    assert out == {"down_move": pytest.approx(0.3), "down_reached": True,
+                   "up_move": pytest.approx(0.3), "up_reached": True}
 
 
 def test_reverse_stress_uses_a_zero_limit_for_nonpositive_funding():
