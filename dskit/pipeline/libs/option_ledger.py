@@ -60,7 +60,7 @@ from datetime import date
 
 from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.node import Node, check_int_param, reject_unknown_params
-from dskit.pipeline.option_exposure import StaticDeltaHedge
+from dskit.pipeline.option_exposure import DAYS_PER_YEAR, StaticDeltaHedge
 from dskit.pipeline.option_pricing import RIGHTS, black76_delta, black76_implied_vol
 from dskit.pipeline.option_structures import (
     classify_option_strategy,
@@ -74,7 +74,7 @@ from dskit.pipeline.option_structures import (
 from dskit.pipeline.records import number_ok, price_ok
 
 __all__ = ["CHAIN_FIELDS", "EXIT_ZERO_BID", "FILLS", "HEDGE_FORWARD_FIELDS", "HEDGE_UNITS_FIELD",
-           "INSTRUMENTS", "NODE_KINDS", "ORDER_FIELDS", "REBALANCES", "OptionStructureLedger", "FundedOptionAccount", "StandardSplitAdjustment"]
+           "DailyStockHedge", "INSTRUMENTS", "NODE_KINDS", "ORDER_FIELDS", "REBALANCES", "OptionStructureLedger", "FundedOptionAccount", "StandardSplitAdjustment"]
 
 NODE_KINDS = ()
 
@@ -1499,3 +1499,291 @@ class FundedOptionAccount:
         self.open.update({b["id"]: copy.deepcopy(b) for b in books})
         self.cash += sum(b["credit"] for b in books)
         return True
+
+
+class DailyStockHedge(Node):
+    """Replay a cash-funded long-stock sleeve from prior-close option exposures.
+
+    Stock offsets negative option delta only, not general crash risk. This node
+    changes no option orders or legacy ledger. Caller-supplied aggregate Greeks,
+    raw prices and complete event provenance are trusted upstream observations.
+
+    Parameters
+    ----------
+    params : dict
+        All required: ratio in [0,1], nonnegative fee_per_share,
+        half_spread_bps and annual capital_charge_rate, positive dollar
+        name_cap_usd and gross_cap_usd, positive integer settlement_lag_sessions.
+
+    Examples
+    --------
+    Construct a research replay with historical T+2 stock settlement::
+
+        node = DailyStockHedge("stock", {
+            "ratio": 1., "fee_per_share": .005, "half_spread_bps": 5.,
+            "capital_charge_rate": .05, "name_cap_usd": 1000.,
+            "gross_cap_usd": 5000., "settlement_lag_sessions": 2})
+
+    Notes
+    -----
+    Inputs: sessions and symbols define a complete Cartesian grid; market rows
+    have date, symbol, delta_sh, active, known_at, execution_price and close.
+    known_at is a date no later than date; same-day signals are after-close.
+    Inactive rows require zero delta. Cash rows have date and free_cash, before
+    execution after option reserves, EXCLUDING all sleeve transactions.
+    decision_dates suppress trades only. Dividends have symbol, ex_date,
+    pay_date and amount per raw share. Coverage must attest raw_prices=True,
+    dividends_complete=True and corporate_actions="none".
+
+    Targets use yesterday's exposure, never today's close or exposure.
+    Sells precede alphabetical buys. Caps constrain buys at execution prices;
+    price drift may breach caps and is reported. Sleeve cash persists separately
+    from baseline cash. Principal and fees are prefunded; gross sale proceeds
+    settle after the declared lag. Prior-close holdings establish dividend
+    entitlement; pay date releases cash. End inventory remains marked.
+    P&L is incremental sleeve NAV, not combined-account or realized-only profit.
+    """
+
+    role = "transform"
+    outputs = ("trades", "daily", "summary")
+    _PARAMS = ("ratio", "fee_per_share", "half_spread_bps", "capital_charge_rate",
+               "name_cap_usd", "gross_cap_usd", "settlement_lag_sessions")
+    _INPUTS = ("sessions", "symbols", "decision_dates", "coverage", "cash", "market", "dividends")
+    _MARKET_FIELDS = ("date", "symbol", "delta_sh", "active", "known_at",
+                      "execution_price", "close")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return all configuration problems.
+
+        Parameters
+        ----------
+        params : dict
+            Explicit cost, funding, risk and settlement policy.
+
+        Returns
+        -------
+        list of str
+            Invalid or unknown parameter descriptions.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        for name in cls._PARAMS:
+            value = params.get(name)
+            if name == "settlement_lag_sessions":
+                check_int_param(problems, name, value, ge=1)
+            elif not number_ok(value) or value < 0:
+                problems.append(f"{name} must be a finite nonnegative number")
+            elif name in ("name_cap_usd", "gross_cap_usd") and value == 0:
+                problems.append(f"{name} must be positive")
+            elif name == "ratio" and value > 1:
+                problems.append("ratio must be at most one")
+        return problems
+
+    @staticmethod
+    def _date(value):
+        """Refuse noncanonical dates without coercing their type."""
+        if not isinstance(value, str):
+            raise ValueError("daily_stock: invalid date")
+        try:
+            result = date.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("daily_stock: invalid date") from exc
+        if result.isoformat() != value:
+            raise ValueError("daily_stock: invalid date")
+        return result
+
+    @staticmethod
+    def _schema(row, fields):
+        """Require exactly the named row fields."""
+        if not isinstance(row, dict) or set(row) != set(fields):
+            raise ValueError("daily_stock: invalid row schema")
+
+    def _intake(self, inputs):
+        """Validate the full replay before producing any state or output."""
+        self._schema(inputs, self._INPUTS)
+        for field in ("sessions", "symbols", "decision_dates", "cash", "market", "dividends"):
+            if not isinstance(inputs[field], list):
+                raise ValueError("daily_stock: inputs must be lists")
+        sessions = inputs["sessions"]
+        dates = [self._date(day) for day in sessions]
+        if not dates or any(a >= b for a, b in zip(dates, dates[1:])):
+            raise ValueError("daily_stock: sessions must be strictly increasing")
+        symbols = inputs["symbols"]
+        if (not symbols or any(not isinstance(s, str) or not s for s in symbols)
+                or len(set(symbols)) != len(symbols)):
+            raise ValueError("daily_stock: invalid symbols")
+        symbols = sorted(symbols)
+        decisions = inputs["decision_dates"]
+        if (any(not isinstance(d, str) or d not in sessions for d in decisions)
+                or len(set(decisions)) != len(decisions)):
+            raise ValueError("daily_stock: invalid decision dates")
+        coverage = inputs["coverage"]
+        self._schema(coverage, ("raw_prices", "dividends_complete", "corporate_actions"))
+        if (coverage["raw_prices"] is not True or coverage["dividends_complete"] is not True
+                or coverage["corporate_actions"] != "none"):
+            raise ValueError("daily_stock: unsupported or incomplete corporate actions")
+        cash = {}
+        for row in inputs["cash"]:
+            self._schema(row, ("date", "free_cash"))
+            day = row["date"]
+            self._date(day)
+            if (day not in sessions or day in cash or not number_ok(row["free_cash"])
+                    or row["free_cash"] < 0):
+                raise ValueError("daily_stock: invalid cash grid")
+            cash[day] = float(row["free_cash"])
+        if set(cash) != set(sessions):
+            raise ValueError("daily_stock: incomplete cash grid")
+        market = {}
+        for row in inputs["market"]:
+            self._schema(row, self._MARKET_FIELDS)
+            day, symbol = row["date"], row["symbol"]
+            self._date(day)
+            known = self._date(row["known_at"])
+            if (not isinstance(symbol, str) or day not in sessions or symbol not in symbols
+                    or (day, symbol) in market or known > self._date(day)
+                    or type(row["active"]) is not bool or not number_ok(row["delta_sh"])
+                    or (not row["active"] and row["delta_sh"] != 0)
+                    or not price_ok(row["execution_price"]) or not price_ok(row["close"])):
+                raise ValueError("daily_stock: invalid market grid or late exposure")
+            market[day, symbol] = dict(row)
+        if len(market) != len(sessions)*len(symbols):
+            raise ValueError("daily_stock: incomplete market grid")
+        dividends, seen = {}, set()
+        for row in inputs["dividends"]:
+            self._schema(row, ("symbol", "ex_date", "pay_date", "amount"))
+            symbol, ex_day, pay_day = row["symbol"], row["ex_date"], row["pay_date"]
+            self._date(ex_day)
+            self._date(pay_day)
+            if (not isinstance(symbol, str) or symbol not in symbols
+                    or ex_day not in sessions or pay_day not in sessions or pay_day < ex_day
+                    or (symbol, ex_day) in seen
+                    or not number_ok(row["amount"]) or row["amount"] < 0):
+                raise ValueError("daily_stock: invalid dividend event")
+            seen.add((symbol, ex_day))
+            dividends.setdefault(ex_day, []).append(dict(row))
+        for events in dividends.values():
+            events.sort(key=lambda row: row["symbol"])
+        return sessions, symbols, set(decisions), cash, market, dividends
+
+    def _cost(self, shares, price):
+        """Use half the same-price round trip for one fill, with zero borrow."""
+        costs = StaticDeltaHedge({
+            "hedge_fee_per_share": self.params["fee_per_share"],
+            "hedge_half_spread_bps": self.params["half_spread_bps"],
+            "hedge_borrow_rate": 0.})
+        result = costs.carry_costs(shares, price, price, 0)["trade_costs"]/2
+        if not math.isfinite(result):
+            raise ValueError("daily_stock: nonfinite cost")
+        return result
+
+    def _fill(self, state, symbol, change, price, index, sessions, baseline, signal):
+        """Apply one funded integer trade and schedule its principal settlement."""
+        if not change:
+            return
+        due = index+self.params["settlement_lag_sessions"]
+        if due >= len(sessions):
+            raise ValueError("daily_stock: incomplete settlement tail")
+        cost = self._cost(change, price)
+        debit = cost+max(change, 0)*price
+        if not math.isfinite(debit) or baseline+state["cash"] < debit:
+            raise ValueError("daily_stock: insufficient settled cash")
+        state["cash"] -= debit
+        state["costs"] += cost
+        state["shares"][symbol] += change
+        if change < 0:
+            state["pending"].append({"kind": "sale", "due": sessions[due],
+                                     "amount": -change*price})
+        state["trades"].append({"date": sessions[index], "signal_date": signal,
+                                "symbol": symbol, "shares": change,
+                                "execution_price": price, "cost_usd": cost,
+                                "settlement_date": sessions[due]})
+
+    def _rebalance(self, state, index, sessions, symbols, market, baseline):
+        """Sell toward prior-close targets, then buy within cash and risk caps."""
+        day, prior = sessions[index], sessions[index-1]
+        targets = {s: math.floor(max(0., -self.params["ratio"]*market[prior, s]["delta_sh"]))
+                   for s in symbols}
+        prices = {s: market[day, s]["execution_price"] for s in symbols}
+        for symbol in symbols:
+            change = min(0, targets[symbol]-state["shares"][symbol])
+            self._fill(state, symbol, change, prices[symbol], index, sessions, baseline, prior)
+        for symbol in symbols:
+            held = state["shares"][symbol]
+            price = prices[symbol]
+            gross = math.fsum(state["shares"][s]*prices[s] for s in symbols)
+            available = baseline+state["cash"]
+            per_share = price+self._cost(1, price)
+            name_room = max(0, math.floor(self.params["name_cap_usd"]/price)-held)
+            gross_room = math.floor(max(0., self.params["gross_cap_usd"]-gross)/price)
+            cash_room = math.floor(available/per_share)
+            change = max(0, min(targets[symbol]-held, name_room, gross_room, cash_room))
+            self._fill(state, symbol, change, price, index, sessions, baseline, prior)
+
+    def run(self, ctx, inputs):
+        """Return deterministic stock trades, daily accounts and final inventory.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Unused execution context; this node performs no file I/O.
+        inputs : dict
+            Complete session, market, funding and dividend records described above.
+
+        Returns
+        -------
+        dict
+            Trades, daily accounts and summary; all NAV is incremental sleeve NAV.
+
+        Raises
+        ------
+        ValueError
+            Incomplete or unsupported inputs, cash debt or incomplete settlement.
+        """
+        sessions, symbols, decisions, cash, market, dividends = self._intake(inputs)
+        state = {"cash": 0., "shares": dict.fromkeys(symbols, 0), "pending": [],
+                 "costs": 0., "capital": 0., "dividends": 0., "trades": []}
+        daily = []
+        for index, day in enumerate(sessions):
+            for event in dividends.get(day, []):
+                amount = state["shares"][event["symbol"]]*event["amount"]
+                state["pending"].append({"kind": "dividend", "due": event["pay_date"],
+                                         "amount": amount})
+                state["dividends"] += amount
+            state["cash"] += math.fsum(p["amount"] for p in state["pending"] if p["due"] == day)
+            state["pending"] = [p for p in state["pending"] if p["due"] != day]
+            if index:
+                prior = sessions[index-1]
+                elapsed = (self._date(day)-self._date(prior)).days
+                prior_value = math.fsum(state["shares"][s]*market[prior, s]["close"] for s in symbols)
+                charge = prior_value*self.params["capital_charge_rate"]*elapsed/DAYS_PER_YEAR
+                state["cash"] -= charge
+                state["capital"] += charge
+            if not math.isfinite(state["cash"]) or cash[day]+state["cash"] < 0:
+                raise ValueError("daily_stock: insufficient settled cash")
+            if index and day not in decisions:
+                self._rebalance(state, index, sessions, symbols, market, cash[day])
+            values = {s: state["shares"][s]*market[day, s]["close"] for s in symbols}
+            gross = math.fsum(values.values())
+            sales = math.fsum(p["amount"] for p in state["pending"] if p["kind"] == "sale")
+            dividend_due = math.fsum(p["amount"] for p in state["pending"] if p["kind"] == "dividend")
+            nav = state["cash"]+gross+sales+dividend_due
+            if not all(math.isfinite(v) for v in (gross, sales, dividend_due, nav)):
+                raise ValueError("daily_stock: nonfinite account")
+            daily.append({"date": day, "stock_cash": state["cash"],
+                          "available_cash": cash[day]+state["cash"], "sale_receivables": sales,
+                          "dividend_receivables": dividend_due, "inventory_usd": gross,
+                          "stock_pnl_usd": nav, "shares": dict(state["shares"]),
+                          "residual_delta_sh": {s: market[day, s]["delta_sh"]+state["shares"][s]
+                                                for s in symbols},
+                          "name_cap_breaches": [s for s in symbols if values[s] > self.params["name_cap_usd"]],
+                          "gross_cap_breach": gross > self.params["gross_cap_usd"]})
+        return {"trades": state["trades"], "daily": daily,
+                "summary": {"stock_pnl_usd": daily[-1]["stock_pnl_usd"],
+                            "trade_costs_usd": state["costs"], "capital_charge_usd": state["capital"],
+                            "dividend_income_usd": state["dividends"], "borrow_cost_usd": 0.,
+                            "open_shares": dict(state["shares"]),
+                            "sale_receivables": daily[-1]["sale_receivables"],
+                            "dividend_receivables": daily[-1]["dividend_receivables"],
+                            "params": dict(self.params),
+                            "meaning": "incremental marked stock sleeve; economic benefit unproven"}}
