@@ -301,11 +301,12 @@ class ForecastFaultStudy(CDFExperiment):
         if extra or absent:
             return [f"document keys must be exactly {list(self.DOCUMENT_KEYS)}; unknown {extra}, missing {absent}"]
         problems = []
-        if document["fold"] not in self.study.plan.ids():
+        fold = document["fold"]
+        if not any(type(known) is type(fold) and known == fold for known in self.study.plan.ids()):
             problems.append("fold is not a fold of the experiment")
-        if document["arm"] not in self.config["arms"]:
+        if not isinstance(document["arm"], str) or document["arm"] not in self.config["arms"]:
             problems.append("arm is not an arm of the experiment")
-        if document["candidate"] not in [c["name"] for c in self.config["candidates"]]:
+        if document["candidate"] not in [c["name"] for c in self.config["candidates"]]:  # a list compares, never hashes
             problems.append("candidate is not a candidate of the experiment")
         problems.extend(self._date_problems(document["sealed_from"]))
         problems.extend(self._grid_problems(document["grid"]))
@@ -316,8 +317,17 @@ class ForecastFaultStudy(CDFExperiment):
             problems.append("min_scored must be a positive integer")
         if not isinstance(document["output"], str) or not document["output"]:
             problems.append("output must be a non-empty path")
+        elif self._inside_experiment_output(document["output"]):
+            problems.append("output must not equal or lie inside the experiment's output directory")
         problems.extend(self._fault_problems(document))
         return problems
+
+    def _inside_experiment_output(self, path):
+        """Say whether ``path`` is the experiment's output directory or lies inside it (resolved paths)."""
+        from pathlib import Path
+
+        fitted, study = Path(self.config["output"]).resolve(), Path(path).resolve()
+        return study == fitted or fitted in study.parents
 
     @staticmethod
     def _date_problems(value):
@@ -353,7 +363,7 @@ class ForecastFaultStudy(CDFExperiment):
         if not isinstance(faults, list) or not faults:
             return ["faults must be a non-empty list"]
         problems, names = [], []
-        arm = self.config["arms"].get(document["arm"])
+        arm = self.config["arms"].get(document["arm"]) if isinstance(document["arm"], str) else None
         study = self.config["study"]
         for number, entry in enumerate(faults):
             where = f"faults[{number}]"
@@ -363,7 +373,8 @@ class ForecastFaultStudy(CDFExperiment):
             name = entry["name"]
             if not isinstance(name, str) or not name or "/" in name or "\\" in name or name in (".", ".."):
                 problems.append(f"{where}.name must be a safe non-empty string")
-            names.append(name)
+            if isinstance(name, str):
+                names.append(name)
             cls = self._fault_class(entry["class"])
             if cls is None:
                 problems.append(f"{where}.class must name a FeatureFault subclass as module:Class")
