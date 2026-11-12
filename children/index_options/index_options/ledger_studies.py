@@ -2350,6 +2350,13 @@ class WeeklyOptionPortfolioStudy:
         rule and that wealth only. A kelly block may add max_groups (int >= 1,
         ADR-0301): after the lp screen only that many groups, the ones with
         the largest standalone relaxed value, enter the joint growth program.
+        A kelly block may instead add local_search (ADR-0307; exclusive with
+        max_groups and accept_uncertified): moves, adds_evaluated,
+        swaps_evaluated, restarts, seed (the search's budgets, see
+        kelly_local) and start {rho, shock}, the dollar program whose
+        selection the search starts from. The one-stage program is never
+        built: the week trades the exact-utility local optimum of
+        kelly_local, uncertified.
         Optional method key sizer (ADR-0300, exclusive with kelly) keeps the
         method's dollar program as stage 1, unchanged (its books and leg
         ratios, under every cap it declares), and sizes the selected books
@@ -2400,12 +2407,19 @@ class WeeklyOptionPortfolioStudy:
                    "gap", "time_limit"}
     #: An optional kelly key (ADR-0301): ``max_groups`` keeps, of the ``lp`` screen's survivors, only that many with
     #: the largest standalone relaxed value before the joint growth program is built (the solver's group_screen_keep).
-    _KELLY_OPTIONAL_KEYS = {"max_groups", "accept_uncertified", "search", "warm_start"}
+    _KELLY_OPTIONAL_KEYS = {"max_groups", "accept_uncertified", "search", "warm_start", "local_search"}
     #: ADR-0302: ``search`` ({iterations, neighbourhood, node_limit, seed}) runs the relax_fix strategy's deterministic
     #: incumbent local search (the solver's ``utility_search``); ``warm_start`` ({node_limit}) certifies a week the
     #: action limit would decline from its complete incumbent under that node budget (``utility_warm_start``). Each
     #: writes its record (``kelly.search``, ``kelly.warm_start``) only when declared.
     _KELLY_STRATEGY_KEYS = ("search", "warm_start")
+    #: ADR-0307: ``local_search`` climbs the one-stage program's exact objective without solving or building it, so the
+    #: keys that steer that program's solve or certify its incumbent have nothing to act on (``search``, ``warm_start``
+    #: and ``outer_approx`` are the same family, refused by name here so a later merge cannot combine them silently).
+    _LOCAL_SEARCH_EXCLUDES = ("max_groups", "accept_uncertified", "search", "warm_start", "outer_approx")
+    #: The dollar program the local search starts from: the sized arms' stage 1, declared inside the block because the
+    #: kelly method itself carries rho 0 and no shock (the utility program refuses a radius).
+    _LOCAL_START_KEYS = {"rho", "shock"}
     #: ``accept_uncertified`` (ADR-0301 amendment): a week whose certification the relax_fix strategy DECLINED (a support
     #: incumbent exists, too many actions stayed free to certify within the limit) trades that incumbent instead of
     #: skipping; the gap to the relaxation's bound is recorded (``kelly.uncertified``). A failed relaxation still skips.
@@ -2901,6 +2915,27 @@ class WeeklyOptionPortfolioStudy:
         return params
 
     @classmethod
+    def _local_search_valid(cls, kelly):
+        """Return whether a kelly block's optional ``local_search`` is well formed and combines with nothing it cannot.
+
+        The search's five budgets are :class:`~index_options.kelly_local.KellyLocalSearch`'s own declaration; ``start``
+        is the dollar program it starts from (a radius and a decision-time shock gate, the sized arms' stage 1).
+        """
+        if "local_search" not in kelly:
+            return True
+        from .kelly_local import KellyLocalSearch
+
+        search = kelly["local_search"]
+        if (not isinstance(search, dict) or "start" not in search
+                or any(key in kelly for key in cls._LOCAL_SEARCH_EXCLUDES)):
+            return False
+        start = search["start"]
+        return (not KellyLocalSearch.validate_params({k: v for k, v in search.items() if k != "start"})
+                and isinstance(start, dict) and set(start) == cls._LOCAL_START_KEYS
+                and number_ok(start["rho"]) and start["rho"] >= 0
+                and cls._shock_valid(start["shock"]) and "scope" not in start["shock"])
+
+    @classmethod
     def _kelly_valid(cls, method):
         """Return whether a method's kelly block is well formed and the method declares no sizing cap beside it."""
         kelly = method["kelly"]
@@ -2908,6 +2943,7 @@ class WeeklyOptionPortfolioStudy:
                 and ("max_groups" not in kelly or (type(kelly["max_groups"]) is int and kelly["max_groups"] >= 1))
                 and ("accept_uncertified" not in kelly or type(kelly["accept_uncertified"]) is bool)
                 and cls._kelly_strategy_valid(kelly)
+                and cls._local_search_valid(kelly)
                 and number_ok(kelly["fraction"]) and 0 < kelly["fraction"] <= 1
                 and type(kelly["n_tangents"]) is int and kelly["n_tangents"] >= 2
                 and number_ok(kelly["core"]) and kelly["core"] > 1
@@ -3467,15 +3503,17 @@ class WeeklyOptionPortfolioStudy:
         context = self._contexts[meta["symbol"]][meta["decision_date"], meta["expiry"]]
         return group["scale"]*float(context["reference_scale"])
 
-    def _limits(self, account, method, components, solve=False):
+    def _limits(self, account, method, components, solve=False, stage1=False):
         """Use one remaining-headroom policy at decision and next-session fill.
 
         ``solve`` is the decision's program only: a kelly method then keeps ``cash_buffer`` of funding out of
         the cash row, so the next session's reprice of the books has room before the fill's own (whole) limit.
+        ``stage1`` (ADR-0307) asks a local-search kelly method for its start program's caps: the dollar formulation's
+        (weekly, per-name and component caps), as a sized arm's stage 1 has them.
         """
         symbols = self.params["symbols"]
         kelly = self._kelly(method)
-        if kelly is not None:
+        if kelly is not None and not stage1:
             # The cash rule alone: new reserves within funding less open reserves (the fractions are 1).
             held_back = kelly["cash_buffer"] if solve else 0.
             return [{"members": symbols,
@@ -3928,6 +3966,89 @@ class WeeklyOptionPortfolioStudy:
         return {"status": "sized", "record": record, "selection": sized, "certificate": certificate,
                 "books": self._books(sized, metadata, self._charge(method))}
 
+    #: The local-search certificate's fixed fields: it bounds nothing, so it is never read as a certified solve.
+    _LOCAL_OUTCOME = "local_search"
+
+    def _local_search_week(self, day, method, kelly, program, configured, metadata, account, components, mult,
+                           derived, recorded):
+        """Return one local-search week (ADR-0307): the stage-one start, the climb, and the evidence for a replay.
+
+        Stage one is the dollar program of the method's ``local_search.start`` (its radius and shock gate, the dollar
+        caps, the same groups): solved live, replayed from the record (``recorded``: the week's recorded ``stage1``) or
+        derived from a foreign worker's actions (``derived``: the entry's ``stage1``). Its selection is the search's
+        start; a stage one that timed out or found no book starts from cash and says so. The search then climbs the
+        exact one-stage objective of ``program`` (:class:`~index_options.kelly_local.KellyLocalSearch`; the program is
+        scored, never built). Nothing the decision depends on reads the clock, so BOTH routes run the search again and
+        refuse a selection that differs from the recorded or claimed one.
+        """
+        from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportActionScore, TransportPortfolioSolve
+        from .kelly_local import KellyLocalSearch
+
+        p, search = self.params, kelly["local_search"]
+        start = search["start"]
+        dollar_groups = [{**g, "radius": start["rho"]} for g in configured]
+        betas = self._betas(day, start["shock"]["beta_lookback"])["betas"]
+        dollar = {"groups": dollar_groups,
+                  "caps": self._caps(self._limits(account, method, components, solve=True, stage1=True), metadata),
+                  "joint_rows": self._shock_rows(start["shock"], betas, metadata, dollar_groups, mult, account.funding)}
+        solver = TransportPortfolioSolve("portfolio", p["solver"])
+        if derived is not None:
+            claim = derived["stage1"]
+            if not isinstance(claim, dict) or set(claim) != {"actions", "certificates"}:
+                raise ValueError("derived local-search week lacks its stage-one evidence")
+            try:
+                first = solver.derived(dollar, claim["actions"], claim["certificates"])["selection"]
+            except QuoteIndexIntegrityError:
+                raise
+            except Exception as exc:  # name the week of any refusal, typed or not
+                if not isinstance(exc, RecordedCheckRefusal):
+                    exc = RecordedCheckRefusal(str(exc), "derived_actions", "other")
+                exc.week = day
+                raise exc
+        elif recorded is None:
+            first = solver.run(None, dollar)["selection"]
+        else:
+            claim = recorded.get("stage1")
+            if not isinstance(claim, dict) or "selection" not in claim or "certificates" not in claim:
+                raise ValueError("eligible decision lacks recorded solve evidence")
+            first = solver._recorded(dollar, claim["selection"], claim["certificates"])
+        screen = dict(solver.last_screen)
+        timed_out = "timeout" in first
+        scorer = TransportActionScore(program, {"parity_tolerance": p["solver"]["parity_tolerance"]})
+        out = KellyLocalSearch(scorer, {k: v for k, v in search.items() if k != "start"}).run(
+            None if timed_out else first["quantities"])
+        local = out["record"]
+        if timed_out:
+            local["start_kind"] = "stage1_timeout_cash"
+        stage1_certificates = [{k: v for k, v in c.items() if k != "binding"} for c in first.get("certificates", [])]
+        certificate = {"strategy_outcome": self._LOCAL_OUTCOME, "certified": False, "objective": local["end_value"],
+                       "bound": None, "gap": None, "seconds": None, "bound_source": None}
+        if derived is not None:
+            claimed_certificates = derived["certificates"]
+            final = (claimed_certificates[0] if isinstance(claimed_certificates, list)
+                     and len(claimed_certificates) == 1 else None)
+            valid_final = (isinstance(final, dict) and set(final) == set(certificate)
+                           and all(type(final[k]) is type(v) and final[k] == v for k, v in certificate.items()
+                                   if k != "objective")
+                           and number_ok(final["objective"])
+                           and math.isclose(final["objective"], certificate["objective"],
+                                            rel_tol=p["solver"]["parity_tolerance"],
+                                            abs_tol=p["solver"]["parity_tolerance"]))
+            claimed = derived["actions"]
+            if (not isinstance(claimed, list) or any(not isinstance(group, list)
+                    or any(type(quantity) is not int for quantity in group) for group in claimed)
+                    or claimed != out["quantities"] or not valid_final):
+                refusal = RecordedCheckRefusal("derived local-search actions or certificate differ from this host's search",
+                                               "derived_actions", "other")
+                refusal.week = day
+                raise refusal
+        if recorded is not None and (recorded.get("selection", {}).get("quantities") != out["quantities"]):
+            raise ValueError("recorded local-search selection differs from this host's replay")
+        return {"selection": out["selection"], "local": local, "screen": screen,
+                "stage1": {"selection": {k: v for k, v in first.items() if k != "certificates"},
+                           "certificates": stage1_certificates},
+                "certificates": [*stage1_certificates, certificate]}
+
     @staticmethod
     def _units(legs):
         """Return g, the gcd of the legs' quantities (0 when every leg is zero)."""
@@ -4257,9 +4378,12 @@ class WeeklyOptionPortfolioStudy:
             raise ValueError("; ".join(defects))
         hedge = calibrated = limited = None
         warm_weeks = Counter()
+        local = (self._kelly(method) or {}).get("local_search")
         present = self._BLOCKS.present(method)
         if present:
-            if derived is not None or policy:
+            derived_replay_hedge = (local is not None and set(present) == {"hedge"}
+                                    and method["hedge"]["mode"] == "replay")
+            if policy or (derived is not None and not derived_replay_hedge):
                 raise ValueError("block_not_derived: a method with a block is solved locally, never derived or policy-scored")
             # ADR-0313: each feature attaches in its own stage (I5 calibration, I6 limits, I7 the hedge with calibration,
             # ADR-0312 S3 for the hedge). A block combination no stage attaches yet must not be silently ignored.
@@ -4277,6 +4401,9 @@ class WeeklyOptionPortfolioStudy:
             # A foreign worker's actions are the sized counts, which the stage-1 certificate does not cover, and a
             # policy scores the stage-1 program only: a sizer method solves locally or replays a recorded result.
             raise ValueError("a sizer method is neither derived from foreign actions nor scored by a policy")
+        if local is not None and policy:
+            # A policy supplies the quantities; the local search IS the policy of its method (ADR-0307).
+            raise ValueError("a local-search method is not scored by a policy")
         recorded_decisions = derived_decisions = None
         if recorded is not None:
             import json
@@ -4294,6 +4421,8 @@ class WeeklyOptionPortfolioStudy:
             entry_keys = {"actions", "certificates"} | (
                 {"kelly_strategy"} if isinstance(method.get("kelly"), dict)
                 and any(key in method["kelly"] for key in self._KELLY_STRATEGY_KEYS) else set())
+            if local is not None:
+                entry_keys.add("stage1")
             if (not isinstance(derived, dict) or set(derived) != {"method", "weeks", "decisions"}
                     or derived["method"] != method["id"] or derived["weeks"] != self.weeks
                     or not isinstance(derived["decisions"], dict)
@@ -4504,7 +4633,20 @@ class WeeklyOptionPortfolioStudy:
                                 "aggregate": {meta["id"]: meta["symbol"] for meta in metadata},
                                 "joint": self._centred_scenarios(terms, kelly["moves"], record["kelly"]["weights"],
                                                                  record["kelly"]["quiet"])}
-                        if policy:
+                        local_week = None
+                        if local is not None:
+                            # ADR-0307: the one-stage program above is only SCORED (never built as a model): the week
+                            # climbs its exact objective from the start program's selection. Each route re-runs the search.
+                            if derived_decisions is not None and day not in derived_decisions:
+                                raise ValueError("derived actions lack an eligible week: "+day)
+                            if derived_decisions is not None:
+                                consumed.add(day)
+                            local_week = self._local_search_week(
+                                day, method, kelly, program, configured, metadata, account, components, mult,
+                                None if derived_decisions is None else derived_decisions[day],
+                                None if recorded_decisions is None else recorded_decisions[day])
+                            selection = local_week["selection"]
+                        elif policy:
                             from dskit.pipeline.libs.pyomo import TransportActionScore
 
                             scorer = TransportActionScore(program, {
@@ -4567,6 +4709,9 @@ class WeeklyOptionPortfolioStudy:
                         status = "timeout_skipped" if timed_out else "selected" if books else "cash"
                         certificates = [{k: v for k, v in c.items() if k != "binding"}
                                         for c in selection.get("certificates", [])]
+                        if local_week is not None:
+                            record["stage1"] = copy.deepcopy(local_week["stage1"])
+                            certificates = copy.deepcopy(local_week["certificates"])
                         if sizer is not None and not timed_out and books:
                             # ADR-0300: stage 1 (above, the locked formulation's program) chose the books; stage 2 sizes
                             # them. The stage-1 selection and certificate stay in the record so a replay checks both.
@@ -4609,14 +4754,19 @@ class WeeklyOptionPortfolioStudy:
                                 record["kelly"].update(self._strategy_records(kelly, strategy, selection))
                             # The lp screen is a restriction: it drops candidate groups with no edge that could hedge.
                             # How many it dropped this week is a decision field, not only a log line.
-                            record["kelly"]["screen"] = (None if policy else dict(solver.last_screen))
+                            record["kelly"]["screen"] = (None if policy else dict(solver.last_screen)
+                                                         if local_week is None else local_week["screen"])
                             # How the charge compares with the book it sized (exact sd, its dispersion, their ratio and the
                             # fraction actually applied): the labelled fraction is nominal. A record only; None when no solve.
                             record["kelly"]["book"] = None if timed_out else dict(candidate["utility"]["book"])
                             # How the strategy decided the week and where the bound came from (the termination fields keep
                             # their usual meaning): a failed relaxation is a skipped week that says so here.
-                            certificates = selection.get("certificates") or [{}]
-                            record["kelly"]["solve"] = {k: certificates[0].get(k)
+                            if local_week is not None:
+                                record["kelly"]["local"] = copy.deepcopy(local_week["local"])
+                                solve_certificate = local_week["certificates"][-1]
+                            else:
+                                solve_certificate = (selection.get("certificates") or [{}])[0]
+                            record["kelly"]["solve"] = {k: solve_certificate.get(k)
                                                         for k in ("strategy_outcome", "bound_source")}
                         if books:
                             pending = {"books": books, "components": components, "record": record}
@@ -4958,6 +5108,9 @@ class MIOPacketStudy(StudyNode):
                 separators=(",", ":"), sort_keys=True))
         recorded_from, rejections = {}, []
         for method in params["methods"]:
+            require_remote = ("local_search" in method.get("kelly", {})
+                              and method.get("hedge", {}).get("mode") == "replay"
+                              and self.params.get("recorded") is not None)
             event({"type": "method_start", "method": method["id"]})
             try:
                 progress = lambda mid, done, total, status: self.log.info(
@@ -5011,6 +5164,8 @@ class MIOPacketStudy(StudyNode):
                             reject(exc)
                             result = None
                 if result is None:
+                    if require_remote:
+                        raise ValueError("paired local-search worker evidence was absent or rejected")
                     result = study._method(method, progress, events=event)
                     replayed(result)
                 if origin is not None:

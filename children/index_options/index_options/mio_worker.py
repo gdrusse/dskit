@@ -656,19 +656,29 @@ class MIOMethodWorker:
             ``method``, ``weeks`` and ``decisions`` (date to ``actions`` and
             ``certificates``) for every week that carried a solve; a method
             declaring ``kelly.search`` or ``kelly.warm_start`` (ADR-0302)
-            also carries the week's records of them (``kelly_strategy``),
-            the evidence a replay cannot re-derive without solving.
+            also carries the week's records of them (``kelly_strategy``).
+            ADR-0307 carries the stage-one actions and certificate alongside
+            the final local-search quantities so this host can rerun the climb.
         """
         from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
 
         kelly = result["method"].get("kelly")
         declared = [k for k in ("search", "warm_start") if isinstance(kelly, dict) and k in kelly]
+        local = isinstance(kelly, dict) and "local_search" in kelly
         decisions = {}
         for decision in result["decisions"]:
             if "selection" in decision:
+                selection = decision["selection"]
                 decisions[decision["date"]] = {
-                    "actions": TransportPortfolioSolve.actions(decision["selection"]),
-                    "certificates": copy.deepcopy(decision["certificates"])}
+                    "actions": copy.deepcopy(selection["quantities"]) if local
+                    else TransportPortfolioSolve.actions(selection),
+                    "certificates": copy.deepcopy(decision["certificates"][-1:] if local
+                                                  else decision["certificates"])}
+                if local:
+                    stage1 = decision["stage1"]
+                    decisions[decision["date"]]["stage1"] = {
+                        "actions": TransportPortfolioSolve.actions(stage1["selection"]),
+                        "certificates": copy.deepcopy(stage1["certificates"])}
                 if declared:
                     decisions[decision["date"]]["kelly_strategy"] = {
                         k: copy.deepcopy(decision["kelly"][k]) for k in declared}
