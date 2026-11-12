@@ -36553,6 +36553,32 @@ A-8. Read 1's tail statistic: (a) the tail LEVEL `L_top = sum w r / sum w e` ove
 - *Many-attempts bar.* Every arm is declared in `docs/decisioning/attempts.jsonl` BEFORE its first solve (`AttemptRegistry.record`, key fields `family="mio_integration"`, `formulation`, `blocks`, each block's params hash, `walk_sha256`, `read`). The adopted arm must clear `attempts.max_bar` called directly (ADR-0312 Amendment 1's rule 8a: per session and per `(account, iso_week)`, floor `t = 3.0`) on `d_t` = the session increment of (arm minus twin) contribution-free equity, with `k_declared` = the count over BOTH families (`mio_integration` and `mio_hedge_overlay`) for the formulation: an integrated arm inherits the hedge sweep's multiplicity. Initially declared here: 2 arms (G2's and G4's), one read each. Every later change of a block param, map state, line, form, variant, ratio, limit value or base formulation is one more declared attempt. The bar is computed and reported for the same two-quarter-plus-fraction window (warm sessions only); with no PASS available it is information, and becomes the multiplicity guard only on a window the owner opens. Controls are not counted.
 - *NOT claimed.* Everything above is development evidence: the four selection quarters tuned the recipe (A0008) and chose the list (A0009), the decision to integrate is itself conditioned on reads of the same quarters (a selection effect on top of the walk-forward maps), the hedge ratio is chosen on the window it is then applied to, and two warm quarters plus two weeks of a third are not a sample. No profitability, out-of-sample or robustness claim follows from any PASS here. Clean evidence needs an owner amendment of A0010 admitting a named arm to 2021Q3-2023Q4 after his 3 picks (and raising `DEVELOPMENT_SEAL` for it under a separate approval), or 2024+ when that hold lifts. Neither is proposed.
 
+**ADR-0313 owner amendment: direct hedge-only comparison (2026-11-11).**
+The owner directs one full-quarter run of the already declared
+`kelly025_top100_search_replay_hedge_lp` in each of 2019Q4, 2020Q1,
+2021Q1 and 2021Q2, solely for comparison with the previously tested
+`kelly025_top100_search_lp`. Use the existing eight documents pinned by
+`kelly-assessment-4q/manifest.json` SHA-256
+`343f519ef9b99ef5a7dea625af37b608d7333f4383b5eb0bc21ba820cfbc5246`.
+For this hedge-only method, the G1 diagnostic and G5 one-week timing
+prerequisites are waived before these four quarter runs. No calibration
+block, edge map, ADR-0311 stage 5/6 read, or timing-only
+`decision_weeks` is part of this run. G0's synthetic build gate and
+G1/G5 for every other integrated arm remain unchanged.
+
+Before every dispatch, verify the pinned method and source identities,
+canonical attempt anchor, full-quarter document hashes, exclusive
+2021-07-01 seal, pristine quarter registry and run root, WSL/Windows
+memory and disk reserves, and no competing MIO solve. Run initialize
+then run, one quarter at a time, advancing only after the exact
+initialize and close attestation. Any mismatch refuses. Compare only
+against an authenticated prior control with the same quarter,
+account and settlement bounds; an absent control is reported as
+unavailable, not re-run. This is development evidence only: no
+decision eligibility, no agent access to forecasts or scores, no
+2022-2023 MIO economics before the owner's three A0010 picks, and no
+2024 onward data.
+
 **F. Compute.**
 - *Calibration.* Zero rows, zero variables, zero new constraint nonzeros: one objective coefficient per item (the objective is already dense through `credit`). `_group_lp_bound` gains the same term in its cost vector, so the existing `lp` screen (kept iff bound `> parity_tolerance`) drops every group whose calibrated relaxed value is not positive: that IS the candidate-set reduction from "calibrated edge at or below costs", with no new prune code. No item-level prune: a leg with negative standalone value is what bounds a spread's reserve. Expected direction (unmeasured): fewer live groups than the raw twin when slopes are below 1, more only if intercepts are positive (`form: "affine"`); the kept count is already recorded (`last_screen`). Warm-up weeks solve nothing. Side inputs: about 91 small JSON maps. Per-week overhead (review minor, corrected): `_prepared_cache` holds ONE day and `run` takes the methods in sequence, so `_prepare` and anything cached beside it is recomputed per (method, week), not shared across methods. The item features of B2 step 1 (one parity forward per group and one Black-76 delta per item, about 78k items a week by ADR-0311's count) are therefore paid once per blocked method per week; arm documents carry one blocked method each, so nothing is recomputed in practice, and no cross-method cache is built. Seconds per week, unmeasured until G5.
 - *Hedge.* ADR-0312 section 7: dense loss, reserve and shock coefficients, no new variable for a fixed ratio; its limits and off-ramps apply unchanged.
