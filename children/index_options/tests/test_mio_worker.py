@@ -1443,3 +1443,84 @@ def test_worker_pricing_is_opt_in_validated_and_a_refusal_keeps_the_action_file(
     assert MIOMethodWorker.priced_on() == "mac"
     monkeypatch.setattr(mw.platform, "system", lambda: "Linux")
     assert MIOMethodWorker.priced_on() == "worker"
+
+
+def _priced_spec(tmp_path, **extra):
+    return {"bundle_root": str(tmp_path / "b"), "method": "m", "attempt": 1, "work_dir": str(tmp_path / "w"),
+            "out": str(tmp_path / "out" / "m.json"), **extra}
+
+
+def test_a_refused_pricing_removes_the_earlier_attempts_priced_file(tmp_path):
+    """Review 1: a retry whose pricing is refused must not leave the old attempt's P&L beside the new action file."""
+    priced = tmp_path / "priced" / "m.priced.json"
+    priced.parent.mkdir()
+    priced.write_text("{}")
+    Path(str(priced) + ".sha256").write_text("0  m.priced.json\n")
+    worker = MIOMethodWorker(_priced_spec(tmp_path, priced_out=str(priced)))
+    worker.timing_check = True
+    assert worker._write_priced(None, None, None, None, {}, b"") is None
+    assert not priced.exists() and not Path(str(priced) + ".sha256").exists()
+    assert Path(str(priced) + ".refused").exists()
+
+
+def test_priced_out_may_not_collide_with_the_action_files_companions(tmp_path):
+    spec = _priced_spec(tmp_path)
+    for suffix in (".sha256", ".done", ".progress", ".refused"):
+        with pytest.raises(ValueError, match="priced_out"):
+            MIOMethodWorker({**spec, "priced_out": spec["out"] + suffix})
+    with pytest.raises(ValueError, match="priced_out"):  # the action file under the priced path's companions
+        MIOMethodWorker({**spec, "out": spec["out"] + ".x", "priced_out": spec["out"]})
+    MIOMethodWorker({**spec, "priced_out": str(tmp_path / "out" / "m.priced.json")})
+
+
+def test_worker_pricing_refuses_the_holdout_a_sealed_packet_and_a_missing_one(tmp_path, monkeypatch):
+    """Review 3: worker pricing writes P&L in the clear, so it refuses 2021Q3 onward before any payload is read."""
+    from index_options.mio_worker import HOLDOUT_START, _refuse_holdout_pricing
+
+    assert HOLDOUT_START == "2021-07-01"
+
+    def make(start, end, purpose="development", chain_start=None):
+        study = {"selected_packet": "p", "packets": [{"id": "p", "start": start, "end_before": end, "purpose": purpose}]}
+        plan = {"read_bounds": {"forecasts": {"start": start, "end_before": end},
+                                "chain": {"start": chain_start or start, "end_before": "2022-01-01"}}}
+        return study, plan
+
+    _refuse_holdout_pricing(*make("2021-04-01", "2021-07-01"))  # 2021Q2 ends AT the holdout: allowed
+    for args in (make("2021-07-01", "2021-10-01"), make("2021-04-01", "2021-07-02"),
+                 make("2021-04-01", "2021-07-01", chain_start="2021-07-01"),
+                 make("2019-01-02", "2020-01-01", purpose="sealed"), ({"packets": [], "selected_packet": "p"}, {"read_bounds": {}})):
+        with pytest.raises(ValueError, match="worker pricing refused"):
+            _refuse_holdout_pricing(*args)
+    # run() refuses before the work dir exists, i.e. before any payload read.
+    spec = _priced_spec(tmp_path, priced_out=str(tmp_path / "priced" / "m.priced.json"))
+    worker = MIOMethodWorker(spec)
+    monkeypatch.setattr(MIOMethodWorker, "verify", lambda self: (*make("2021-07-01", "2021-10-01"), {"sha256": "x"}))
+    with pytest.raises(ValueError, match="worker pricing refused"):
+        worker.run()
+    assert not (tmp_path / "w").exists()
+
+
+def test_a_pricing_refusal_through_run_keeps_the_solve_and_the_pricing_beats_progress(study, tmp_path, monkeypatch):
+    """Reviews 2 and 7: a --check run with priced_out keeps the action file and .done and leaves a .refused line and
+    no priced file; a normal run writes a 'pricing' progress line before .done, and a stale priced file is replaced."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache-home"))
+    bundle = tmp_path / "bundle"
+    MIOMethodBundle(study, bundle).build()
+    method = study["domain"]["params"]["methods"][0]["id"]
+    priced = tmp_path / "priced" / "m.priced.json"
+    priced.parent.mkdir()
+    priced.write_text("stale")
+    Path(str(priced) + ".sha256").write_text("stale")
+    proc = _worker(tmp_path, bundle, method, check=True, priced_out=priced)
+    action = tmp_path / "recorded" / f"{method}.json"
+    assert proc.returncode == 0, proc.stderr
+    assert action.exists() and Path(str(action) + ".done").exists()
+    assert not priced.exists() and not Path(str(priced) + ".sha256").exists()
+    assert "timing" in Path(str(priced) + ".refused").read_text()
+    (tmp_path / "again").mkdir()
+    proc = _worker(tmp_path / "again", bundle, method, priced_out=priced)
+    assert proc.returncode == 0, proc.stderr
+    again = tmp_path / "again" / "recorded" / f"{method}.json"
+    assert "pricing" in Path(str(again) + ".progress").read_text()
+    assert json.loads(priced.read_text())["format"] and Path(str(again) + ".done").exists()
+    assert not Path(str(priced) + ".refused").exists()

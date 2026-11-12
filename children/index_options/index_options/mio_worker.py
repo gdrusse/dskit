@@ -97,6 +97,25 @@ def stamp(now=None):
     return time.strftime(STAMP_FORMAT, time.gmtime(now))
 
 
+#: First date of the sealed holdout (2021Q3 onward). Worker pricing writes P&L in the clear, so it never
+#: runs for a packet whose decision window reaches it (ADR-0297 Amendment 1; repo holdout rule).
+HOLDOUT_START = "2021-07-01"
+_NONSEALED_PURPOSES = {"development", "adaptation", "confirmation"}
+
+
+def _refuse_holdout_pricing(study, plan):
+    """Refuse worker pricing for a packet that reaches the holdout or is sealed, before any payload is read."""
+    packet = next((p for p in study.get("packets", []) if p.get("id") == study.get("selected_packet")), None)
+    if packet is None or packet.get("purpose") not in _NONSEALED_PURPOSES:
+        raise ValueError("worker pricing refused: the selected packet is missing or sealed")
+    bounds = plan["read_bounds"]
+    windows = [packet["end_before"]] + [bounds[k]["end_before"] for k in ("forecasts", "contexts") if k in bounds]
+    starts = [packet["start"]] + [b["start"] for b in bounds.values()]
+    if max(windows) > HOLDOUT_START or max(starts) >= HOLDOUT_START:
+        raise ValueError(f"worker pricing refused: the decision window reaches the holdout ({HOLDOUT_START}); "
+                         "price it on WSL")
+
+
 def _refuse_blinded(study):
     """Refuse a blinded-cache study before any payload is read (ADR-0293)."""
     predictive = study.get("domain", {}).get("predictive")
@@ -544,7 +563,8 @@ class MIOMethodWorker:
         ``host`` (a label; defaults to the hostname) and ``priced_out``
         (absolute path: also price the method here and write an UNOFFICIAL
         priced file there, ADR-0297 Amendment 1; absent means no pricing
-        output, exactly as before).
+        output, exactly as before). Exactly one writer per ``priced_out`` path: two concurrent runs on one path can
+        pair one run's file with the other's ``.sha256``.
 
     Examples
     --------
@@ -563,6 +583,8 @@ class MIOMethodWorker:
     #: with no end is a hang the coordinator's stale limit must catch.
     HEARTBEAT_SECONDS = 60.
     HEARTBEAT_MAX_SECONDS = 3600.
+    #: Pricing reruns the method twice (and the local-search climb), so its hang cap is longer.
+    PRICING_HEARTBEAT_MAX_SECONDS = 6 * 3600.
 
     #: Whether this run is a ``--check`` timing run (the only run that may carry a ``decision_weeks`` result).
     timing_check = False
@@ -575,9 +597,11 @@ class MIOMethodWorker:
                        for k in ("bundle_root", "work_dir", "out"))
                 or ("priced_out" in spec and (not isinstance(spec["priced_out"], str)
                                               or not os.path.isabs(spec["priced_out"])
-                                              or spec["priced_out"] == spec["out"]))):
+                                              or any(a == b or a.startswith(b + ".")
+                                                     for a, b in ((spec["priced_out"], spec["out"]),
+                                                                  (spec["out"], spec["priced_out"])))))):
             raise ValueError("worker spec requires absolute bundle_root, work_dir, out, a method and attempt >= 1 "
-                             "(and priced_out, when given, absolute and not the action file)")
+                             "(and priced_out, when given, absolute and not the action file or a '<file>.' companion of it)")
         self.spec = copy.deepcopy(spec)
         self.root = Path(spec["bundle_root"])
 
@@ -758,7 +782,7 @@ class MIOMethodWorker:
                         pass
             if result is None:
                 result = out
-            elif out != result:
+            elif value_hash(out) != value_hash(result):  # not ``!=``: a NaN field is never equal to itself
                 raise ValueError("worker pricing: the exact replay differs from the derived result")
         return result
 
@@ -833,9 +857,13 @@ class MIOMethodWorker:
         out = Path(self.spec["priced_out"])
         out.parent.mkdir(parents=True, exist_ok=True)
         started = time.perf_counter()
+        for stale in (out, Path(str(out) + ".sha256")):  # a refusal must not leave an earlier attempt's P&L beside it
+            stale.unlink(missing_ok=True)
         try:
             if self.timing_check:
                 raise ValueError("a --check timing run is not priced")
+            if MIOPacketInputs.portable_inputs_sha256(bounded) != header["portable_inputs_sha256"]:
+                raise ValueError("the solve changed the inputs: their digest no longer equals portable_inputs_sha256")
             result = self.price(params, bounded, method, actions)
             economics = self.economics(result)
             body = {**header, "format": PRICED_FORMAT, "unofficial": True, "priced_on": self.priced_on(),
@@ -881,10 +909,10 @@ class MIOMethodWorker:
         with open(self.spec["out"] + ".progress", "a", encoding="utf-8") as handle:
             handle.write(line)
 
-    def _heartbeat(self):
-        """Append one progress line that says the index build is still running."""
+    def _heartbeat(self, what="index building"):
+        """Append one progress line that says the index build (or the pricing) is still running."""
         with open(self.spec["out"] + ".progress", "a", encoding="utf-8") as handle:
-            handle.write(f"{stamp()} index building\n")
+            handle.write(f"{stamp()} {what}\n")
 
     def run(self):
         """Verify, read, solve one method and write the action file atomically.
@@ -903,6 +931,8 @@ class MIOMethodWorker:
         from .mio_contract import MIOStudyContract
 
         study, plan, manifest = self.verify()
+        if "priced_out" in self.spec:
+            _refuse_holdout_pricing(study, plan)  # before the work dir or any payload is touched
         d = study["domain"]
         matches = [m for m in d["params"]["methods"] if m["id"] == self.spec["method"]]
         if len(matches) != 1:
@@ -958,7 +988,9 @@ class MIOMethodWorker:
             if "unit" in body:
                 header["unit"] = body["unit"]
             # The actions as WSL reads them: decoded from the written bytes, not the in-memory objects.
-            self._write_priced(params, bounded, method, json.loads(raw.decode("utf-8"))["actions"], header, raw)
+            with Heartbeat(lambda: self._heartbeat("pricing"), self.HEARTBEAT_SECONDS,
+                           self.PRICING_HEARTBEAT_MAX_SECONDS):
+                self._write_priced(params, bounded, method, json.loads(raw.decode("utf-8"))["actions"], header, raw)
         atomic_write(Path(str(out) + ".done"), b"done\n")
         return body
 
