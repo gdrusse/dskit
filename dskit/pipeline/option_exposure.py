@@ -999,11 +999,15 @@ class ReverseStress(_Configured):
         Raises
         ------
         ValueError
-            On a nonfinite funding, a nonfinite loss, or a loss table whose
-            moves differ from the declared grid.
+            On no sessions at all (no evidence is not a pass), a nonfinite
+            funding, a nonfinite loss, or a loss table whose moves differ from
+            the declared grid.
         """
         moves, fraction = list(self.params["moves"]), self.params["loss_fraction"]
         first = {-1: None, 1: None}
+        sessions = list(sessions)
+        if not sessions:
+            raise ValueError("a reverse stress needs at least one session")
         for funding, losses in sessions:
             if not number_ok(funding):
                 raise ValueError(f"funding must be a finite number, got {funding!r}")

@@ -565,13 +565,18 @@ class ShockEstimator:
                 raise UnsupportedStress(f"nonpositive or nonfinite bar for {symbol} in the window before {day}")
         return returns
 
-    def scale(self, symbol, day, expiry):
-        """Return ``(daily standard deviation, sessions to expiry, window end)`` of one name."""
+    def _deviation(self, symbol, day):
+        """Return one name's sample standard deviation over the window; zero or nonfinite is unsupported."""
         import numpy as np
 
         std = float(np.std(self._window(day, [symbol])[symbol], ddof=1))
         if not math.isfinite(std) or std <= 0:
             raise UnsupportedStress(f"zero standard deviation for {symbol} in the window before {day}")
+        return std
+
+    def scale(self, symbol, day, expiry):
+        """Return ``(daily standard deviation, sessions to expiry, window end)`` of one name."""
+        std = self._deviation(symbol, day)
         sessions = self.sessions_between(day, expiry)
         if sessions < 1:
             raise UnsupportedStress(f"no sessions between {day} and the expiry {expiry}")
@@ -587,8 +592,13 @@ class ShockEstimator:
             raise UnsupportedStress(f"zero basket variance in the window before {day}")
 
     def beta(self, symbol, day):
-        """Return the name's beta on the equal-weight basket of the domain's symbols."""
+        """Return the name's beta on the equal-weight basket of the domain's symbols.
+
+        A name with no variation of its own is unsupported, as for :meth:`scale`: its beta of zero would
+        silently leave it unshocked.
+        """
         self.check_beta_window(day)
+        self._deviation(symbol, day)
         fitted = self.study._betas(day, self.lookback)
         value = fitted["betas"][symbol]
         if fitted["observations"] != self.lookback or not math.isfinite(value):
@@ -1209,7 +1219,7 @@ class FrozenMIOReplay:
                     raise UnsupportedStress("a book input is missing or nonfinite on " + day)
                 sessions.append((funding, {float(move): loss for move, loss in losses.items()}))
             return {**spec.reverse.search(sessions), "sessions": len(sessions), "unavailable": None}
-        except (ValueError, KeyError, ArithmeticError) as exc:
+        except ValueError as exc:
             return {"down_move": None, "down_reached": None, "up_move": None, "up_reached": None,
                     "sessions": 0, "unavailable": str(exc)}
 
