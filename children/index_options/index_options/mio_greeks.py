@@ -10,7 +10,8 @@ split and aggregation arithmetic is the core's.
 It opens only ``result.json``, ``trades.csv``, ``daily-account.csv`` and the pinned
 chain and bar parquet the result names, read-only, and writes only under
 ``out_dir``. It never opens ``run.log`` (RE-ENTRY "Do not"), and imports no solver,
-no study and no replay. Every date it may touch lies below ``sealed_from`` (and
+no study or option replay. The opt-in MIODailyStockHedge adapter reuses this
+read path and the core stock ledger; it derives daily inputs without writing files. Every date it may touch lies below ``sealed_from`` (and
 below Path A0003's protected start): the seal is checked on the books' dates and
 again by the chain reader, and bars are read only below it.
 
@@ -47,6 +48,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from dskit.onboarding.artifacts import PinnedPayloadSource
+from dskit.pipeline.libs.option_ledger import DailyStockHedge
 from dskit.pipeline.node import JsonArtifact, atomic_write, check_int_param
 from dskit.pipeline.hedge_overlay import forward_leg_net_settle
 from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL
@@ -59,7 +61,7 @@ from .contracts import dividends_paid, usable_parity_rows
 from .mio_run_events import MioBookOutcomes
 
 __all__ = ["AttestedMIOGreeksDiagnostics", "ChainQuotes", "CellRank",
-           "GreeksRefusal", "MIOGreeksDiagnostics"]
+           "GreeksRefusal", "MIOGreeksDiagnostics", "MIODailyStockHedge"]
 
 #: Path A0003: the holdout opens on this session; no seal may lie beyond it.
 PROTECTED_FROM = "2024-01-02"
@@ -960,3 +962,219 @@ class AttestedMIOGreeksDiagnostics(MIOGreeksDiagnostics):
         result = super().run(ctx, inputs)
         digest = hashlib.sha256(self._summary_bytes(result["summary"])).hexdigest()
         return {**result, "summary_receipt": JsonArtifact({"summary_sha256": digest})}
+
+
+class MIODailyStockHedge(MIOGreeksDiagnostics):
+    """Feed saved option books and lagged funding to the daily long-stock ledger.
+
+    Saved option orders remain fixed. A funding conflict refuses the entire
+    replay; it never revises an option order or retrospectively drops stock
+    trades. This is synthetic integration, not a deployable cash allocator.
+
+    Parameters
+    ----------
+    params : dict
+        MIOGreeksDiagnostics parameters plus stock_hedge (DailyStockHedge
+        parameters). Exactly one method and seal_crossing="refuse" are required.
+        out_dir retains inherited validation but no report files are written.
+
+    Examples
+    --------
+    Replay supplied raw stock bars against a sealed saved MIO account::
+
+        node = MIODailyStockHedge("stock", params)
+        result = node.run(None, {"stock_bars": rows, "dividends": [],
+                                 "coverage": coverage})
+    """
+
+    _CHILD_PARAMS = (*MIOGreeksDiagnostics._CHILD_PARAMS, "stock_hedge")
+    _PARAMS = (*MIOGreeksDiagnostics._PARAMS, "stock_hedge")
+    outputs = DailyStockHedge.outputs
+
+    @classmethod
+    def validate_params(cls, params):
+        """Validate inherited source guards and the explicit stock policy.
+
+        Parameters
+        ----------
+        params : dict
+            Diagnostic source configuration plus stock_hedge.
+
+        Returns
+        -------
+        list of str
+            Every configuration error.
+        """
+        problems = super().validate_params(params)
+        if not isinstance(params, dict):
+            return problems
+        if not isinstance(params.get("methods"), list) or len(params["methods"]) != 1:
+            problems.append("daily stock replay requires exactly one method")
+        if params.get("seal_crossing") != "refuse":
+            problems.append("daily stock replay cannot exclude seal-crossing books")
+        if not isinstance(params.get("stock_hedge"), dict):
+            problems.append("stock_hedge must be an explicit policy")
+        else:
+            problems += DailyStockHedge.validate_params(params["stock_hedge"])
+        return problems
+
+    def _stock_day(self, day):
+        """Check a date against the inherited exclusive seal and window."""
+        if self._iso(day) is None:
+            raise GreeksRefusal(self.BAD_DATE, "daily stock date is not canonical ISO")
+        if day >= self._seal() or not self.params["window"]["start"] <= day <= self.params["window"]["end"]:
+            raise GreeksRefusal(self.WINDOW, "daily stock date is outside the permitted window")
+        return day
+
+    def _stock_account(self, table, trades):
+        """Validate the saved account's calendar, held identities and reserves."""
+        method = self.params["methods"][0]
+        found = [row["result"] for row in table["results"] if row["id"] == method]
+        if len(found) != 1:
+            raise GreeksRefusal("stock_account", "method is missing or duplicated")
+        result = found[0]
+        curve, decisions = result.get("curve"), result.get("decisions")
+        if not isinstance(curve, list) or not curve or not isinstance(decisions, list):
+            raise GreeksRefusal("stock_account", "daily curve and decision calendar required")
+        sessions = [self._stock_day(row.get("date")) for row in curve]
+        if any(a >= b for a, b in zip(sessions, sessions[1:])):
+            raise GreeksRefusal("stock_account", "curve dates must be strictly increasing")
+        decision_days = [self._stock_day(row.get("date")) for row in decisions]
+        if len(set(decision_days)) != len(decision_days) or not set(decision_days) <= set(sessions):
+            raise GreeksRefusal("stock_account", "invalid decision calendar")
+        ids = set()
+        for trade in trades:
+            if (not isinstance(trade.get("id"), str) or trade["id"] in ids
+                    or not trade["decision_date"] < trade["fill_date"] < trade["expiry"]
+                    or any(trade[k] not in sessions for k in _DATE_FIELDS)
+                    or trade["decision_date"] not in decision_days
+                    or not number_ok(trade.get("reserve")) or trade["reserve"] < 0
+                    or not number_ok(trade.get("factor")) or trade["factor"] <= 0):
+                raise GreeksRefusal("stock_account", "invalid held-book identity or chronology")
+            if (trade.get("hedge") or trade.get("applied_adjustments")
+                    or "active_legs" in trade or trade.get("active_factor", trade["factor"]) != trade["factor"]):
+                raise GreeksRefusal("stock_unsupported_book", "existing hedge or adjustment")
+            ids.add(trade["id"])
+        for row in curve:
+            day = row["date"]
+            held = [t for t in trades if t["fill_date"] <= day < t["expiry"]]
+            open_ids = row.get("open_ids")
+            if (not isinstance(open_ids, list) or any(not isinstance(v, str) for v in open_ids)
+                    or len(set(open_ids)) != len(open_ids)
+                    or set(open_ids) != {t["id"] for t in held}
+                    or any(not number_ok(row.get(k)) or row[k] < 0 for k in ("funding", "reserve"))
+                    or not math.isclose(row["reserve"], math.fsum(t["reserve"] for t in held),
+                                        rel_tol=1e-9, abs_tol=1e-5)):
+                raise GreeksRefusal("stock_account", "curve held identities or reserves disagree")
+        return curve, sessions, decision_days
+
+    def _stock_input_dates(self, inputs):
+        """Check supplied clocks before any pinned price/quote source is accessed."""
+        if not isinstance(inputs, dict) or set(inputs) != {"stock_bars", "dividends", "coverage"}:
+            raise GreeksRefusal("stock_inputs", "stock_bars, dividends and coverage are required")
+        for name, fields in (("stock_bars", ("date",)), ("dividends", ("ex_date", "pay_date"))):
+            if not isinstance(inputs[name], list):
+                raise GreeksRefusal("stock_inputs", "stock inputs must be lists")
+            for row in inputs[name]:
+                if not isinstance(row, dict):
+                    raise GreeksRefusal("stock_inputs", "stock inputs must be mapping rows")
+                for field in fields:
+                    self._stock_day(row.get(field))
+
+    def _stock_market(self, inputs, sessions, symbols, books, bars, quotes):
+        """Join raw execution bars with daily held-book Greeks without lookahead."""
+        if not isinstance(inputs, dict) or set(inputs) != {"stock_bars", "dividends", "coverage"}:
+            raise GreeksRefusal("stock_inputs", "stock_bars, dividends and coverage are required")
+        rows = inputs["stock_bars"]
+        if not isinstance(rows, list):
+            raise GreeksRefusal("stock_inputs", "stock_bars must be rows")
+        indexed = {}
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != {"date", "symbol", "execution_price", "close"}:
+                raise GreeksRefusal("stock_inputs", "invalid stock bar schema")
+            day = self._stock_day(row["date"])
+            symbol = row["symbol"]
+            if (not isinstance(symbol, str) or symbol not in symbols or day not in sessions
+                    or (day, symbol) in indexed or not number_ok(row["close"]) or row["close"] <= 0
+                    or row["close"] != bars.get(symbol, {}).get(day)):
+                raise GreeksRefusal("stock_inputs", "duplicate, missing or mismatched raw close")
+            indexed[day, symbol] = row
+        expected = {(day, symbol) for day in sessions for symbol in symbols}
+        if set(indexed) != expected:
+            raise GreeksRefusal("stock_inputs", "incomplete daily stock grid")
+        for symbol in symbols:
+            known_sessions = {d for d in bars[symbol] if sessions[0] <= d <= sessions[-1]}
+            if known_sessions != set(sessions):
+                raise GreeksRefusal("stock_account", "curve does not cover the pinned bar calendar")
+        self._owned()
+        market, fallback = [], 0
+        for day in sessions:
+            deltas = {symbol: [] for symbol in symbols}
+            for book in books:
+                if book["fill_date"] <= day < book["expiry"]:
+                    greeks, reason = self._greeks_at(book, day, quotes, bars)
+                    if reason:
+                        raise GreeksRefusal("stock_greeks", reason)
+                    fallback += greeks.forward_source == "spot"
+                    deltas[book["symbol"]].append(greeks.delta_sh/book["factor"])
+            for symbol in symbols:
+                market.append({**indexed[day, symbol], "delta_sh": math.fsum(deltas[symbol]),
+                               "active": bool(deltas[symbol]), "known_at": day})
+        return market, fallback
+
+    def run(self, ctx, inputs):
+        """Derive daily exposures and lagged funding, then replay fixed option orders.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Passed to the existing daily-stock ledger.
+        inputs : dict
+            Complete raw stock_bars, dividends with payment dates, and coverage.
+
+        Returns
+        -------
+        dict
+            Stock trades, daily incremental accounts and source-audited summary.
+
+        Raises
+        ------
+        GreeksRefusal
+            Source, calendar, quote, seal or frozen-order funding incompatibility.
+        ValueError
+            The core stock input or accounting contract is violated.
+        """
+        table, shas = self._read_inputs(Path(self.params["run_dir"]))
+        _domain, symbols, multiplier = self._domain(table)
+        crossing, by_method = self._census(table)
+        kept, _excluded = self._apply_crossing(crossing, by_method)
+        method = self.params["methods"][0]
+        trades = kept[method]
+        curve, sessions, decisions = self._stock_account(table, trades)
+        self._stock_input_dates(inputs)
+        bars, bar_shas = self._read_bars(table, symbols)
+        books = self._load_books({"method": method, "trades": trades,
+                                  "bars": bars, "multiplier": multiplier})
+        quotes = ChainQuotes(table["plan"]["source_pins"]["chain"], self._seal(),
+                             self.params["chain_cache_days"])
+        market, fallback = self._stock_market(inputs, sessions, symbols, books, bars, quotes)
+        fill_days = {t["fill_date"] for t in trades}
+        cash = [{"date": day, "free_cash": curve[max(0, i-1)]["funding"]-curve[max(0, i-1)]["reserve"]}
+                for i, day in enumerate(sessions)]
+        replay = DailyStockHedge(self.key, self.params["stock_hedge"]).run(ctx, {
+            "sessions": sessions, "symbols": symbols,
+            "decision_dates": sorted(set(decisions) | fill_days),
+            "cash": cash, "market": market,
+            "dividends": inputs["dividends"], "coverage": inputs["coverage"]})
+        for actual, row in zip(curve, replay["daily"], strict=True):
+            spendable = actual["funding"]-actual["reserve"]+row["stock_cash"]
+            if not math.isfinite(spendable) or spendable < 0:
+                raise GreeksRefusal("stock_funding_conflict", "frozen option orders leave insufficient stock cash")
+            row["actual_close_available_cash"] = spendable
+        replay["summary"]["adapter"] = {
+            "method": method, "option_orders": "fixed; no solver or funding feedback",
+            "sizing_cash": "prior-session funding minus reserve",
+            "mio_dates": decisions, "option_fill_dates": sorted(fill_days),
+            "forward_spot_book_days": fallback, "sealed_from": self._seal(),
+            "sources": {**shas, **bar_shas, **{f"chain/{f}": v for f, v in quotes.files.items()}}}
+        return replay
