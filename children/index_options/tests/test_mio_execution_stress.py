@@ -1845,7 +1845,7 @@ REVERSE = {'down_move': 0.1, 'down_reached': True, 'up_move': 0.3, 'up_reached':
 CRITERIA = [
     {'name': 'loss', 'stat': 'worst_loss_fraction', 'op': '<=', 'value': 0.25, 'min_n': 1},
     {'name': 'drawdown', 'stat': 'worst_drawdown', 'op': '<=', 'value': 0.35, 'min_n': 1},
-    {'name': 'breach', 'stat': 'worst_breach_days', 'op': '<=', 'value': 0, 'min_n': 1},
+    {'name': 'breach', 'stat': 'worst_breach_days', 'op': '<=', 'value': 2, 'min_n': 1},
     {'name': 'name', 'stat': 'worst_name_reserve_share', 'op': '<', 'value': 0.15, 'min_n': 1},
     {'name': 'down', 'stat': 'reverse_down_move', 'op': '>=', 'value': 0.1, 'min_n': 1},
     {'name': 'up', 'stat': 'reverse_up_move', 'op': '>', 'value': 0.2, 'min_n': 1}]
@@ -1853,16 +1853,16 @@ CRITERIA = [
 
 def _cases(**extra):
     return [_case_tuple('control', reverse=REVERSE, **extra),
-            _case_tuple('adverse_price', filled=4, loss=0.05, drawdown=-0.20, share=0.12),
-            _case_tuple('half_size', filled=3, loss=0.03, drawdown=-0.30, share=None)]
+            _case_tuple('adverse_price', filled=4, loss=0.03, drawdown=-0.20, breach=1, share=0.12),
+            _case_tuple('half_size', filled=3, loss=0.05, drawdown=-0.30, breach=2, share=0.14)]
 
 
 def test_the_statistic_table_takes_worst_values_over_complete_cases_with_their_n():
     row, = stress.StressVerdict([]).rows(_cases())
     stats = row['statistics']
     assert {k: v['value'] for k, v in stats.items()} == {
-        'worst_loss_fraction': 0.05, 'worst_drawdown': 0.30, 'worst_breach_days': 0,
-        'worst_name_reserve_share': 0.12, 'reverse_down_move': 0.1, 'reverse_up_move': 0.3}
+        'worst_loss_fraction': 0.05, 'worst_drawdown': 0.30, 'worst_breach_days': 2,
+        'worst_name_reserve_share': 0.14, 'reverse_down_move': 0.1, 'reverse_up_move': 0.3}
     # worst_* n is the smallest filled count over the complete cases (3); the reverse n is the control's (5).
     assert {k: v['n'] for k, v in stats.items()} == {
         'worst_loss_fraction': 3, 'worst_drawdown': 3, 'worst_breach_days': 3,
@@ -1891,6 +1891,7 @@ def test_an_unsupported_case_forces_fail_and_is_skipped_by_the_worst_value():
     row, = stress.StressVerdict(CRITERIA).rows(cases)
     assert row['status'] == 'FAIL' and row['unsupported'] == ['expiry_down_3s']
     assert row['statistics']['worst_loss_fraction'] == {'value': 0.05, 'n': 3}
+    assert row['statistics']['worst_breach_days'] == {'value': 2, 'n': 3}
     assert stress.StressVerdict([]).rows(cases)[0]['status'] == 'FAIL'     # even with no criteria
 
 
@@ -1951,7 +1952,7 @@ STRESS = {'lookback': 20, 'reverse': {'moves': [-0.2, -0.05, 0.05, 0.2], 'loss_f
     {**STRESS, 'reverse': {**STRESS['reverse'], 'moves': [-1.0, 0.2]}},
     {**STRESS, 'reverse': {**STRESS['reverse'], 'typo': 1}}, [], None])
 def test_the_stress_entry_is_default_deny(stress_spec):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match='v7 stress'):
         stress.StressSpec.from_document({'stress': stress_spec, 'criteria': []})
     spec = stress.StressSpec.from_document({'stress': STRESS, 'criteria': CRITERIA})
     assert spec.lookback == 20 and spec.reverse.params['loss_fraction'] == 0.05
@@ -1986,7 +1987,8 @@ def _before(day, count):
     return found[::-1]
 
 
-def _v7_world(tmp_path, monkeypatch, *, amplitude=0.02, lookback=20, criteria=(), reverse=None, pre=25):
+def _v7_world(tmp_path, monkeypatch, *, amplitude=0.02, lookback=20, criteria=(), reverse=None, pre=25,
+              params=None, plain_methods=False, names=None):
     """Build the packet layout of the v6 test, regenerate the pinned control, and return a v7 document.
 
     The bars alternate ``100`` and ``100 e^amplitude`` along the pinned session spine, so every window of an even
@@ -2018,6 +2020,7 @@ def _v7_world(tmp_path, monkeypatch, *, amplitude=0.02, lookback=20, criteria=()
                  packets=[{'id': 'dev', 'start': Q1[0], 'end_before': end}])
     study['domain'].update(history_start=spine[0], tail_padding_days=0)
     study['domain']['params']['bridge']['end_before'] = end
+    study['domain']['params'].update(params or {})
     study['domain']['sources']['sessions'] = {'pin': {'id': 'sessions'}, 'files': {'shared': 'days.parquet'}}
     session_file = tmp_path / 'days.parquet'
     pq.write_table(pa.table({'date': spine}), session_file)
@@ -2034,13 +2037,38 @@ def _v7_world(tmp_path, monkeypatch, *, amplitude=0.02, lookback=20, criteria=()
 
     monkeypatch.setattr(RunAttestation, 'attested_output', attested_output)
     monkeypatch.setattr(stress, 'PinnedPayloadSource', PinnedSessions)
+    amplitudes = amplitude if isinstance(amplitude, dict) else None
     monkeypatch.setattr(stress, '_bar_rows', lambda binding, symbols, days: {
-        s: {d: 100.0 * math.exp(amplitude * (i % 2)) for i, d in enumerate(days)} for s in symbols})
+        s: {d: 100.0 * math.exp((amplitudes[s] if amplitudes else amplitude) * (i % 2))
+            for i, d in enumerate(days)} for s in symbols})
 
     result_dir = Path(cohort['result_dir'])
     result_path = result_dir / 'result.json'
     original = json.loads(result_path.read_text())
     original['audit']['calendar'] = calendar
+    if plain_methods:                                    # no per-contract reserve floor on any method
+        for method in study['domain']['params']['methods']:
+            method.pop('reserve_per_contract', None)
+        for packet in original['results']:
+            packet['result']['method'].pop('reserve_per_contract', None)
+    if names:                                            # more names, and a second ABC book filled two sessions later
+        import copy
+        domain_params = study['domain']['params']
+        domain_params['symbols'] = list(names)
+        study['domain']['pairs'] = [{'id': 'p' + name, 'symbol': name, 'dte_min': 1, 'dte_max': 60}
+                                    for name in names]
+        cohort['quote_index_sha256'] = {name: 'q' for name in names}
+        for packet in original['results']:
+            first = packet['result']['decisions'][0]
+            base = first['books'][0]
+            first['books'] = [base, *({**copy.deepcopy(base), 'symbol': name,
+                                      'id': base['decision_date'] + ':' + name + ':' + base['expiry']}
+                                     for name in names[1:])]
+            late = copy.deepcopy(first)
+            late['date'] = Q1[2]
+            late['books'] = [{**copy.deepcopy(base), 'decision_date': Q1[2],
+                              'id': Q1[2] + ':' + base['symbol'] + ':' + base['expiry']}]
+            packet['result']['decisions'].append(late)
     world = SimpleNamespace(document=document, pins=pins, original=original, repo=Path(document['repository_root']),
                             path=Path(pins['evidence']['artifact-index.json']['path']).parents[2] / 'document.json',
                             output=Path(document['output_root']), cohort=cohort)
@@ -2152,7 +2180,13 @@ def test_no_case_shocks_the_pinned_bars_and_the_estimate_reads_them_unshocked(tm
     # 550, so the smallest declared move already breaches (0.0); 12% is at least 1,200, so none does. Up moves pay
     # the spread in full (a gain), so they never breach.
     (0.05, {'down_move': 0.0, 'down_reached': True, 'up_move': 0.2, 'up_reached': False}),
-    (0.12, {'down_move': 0.2, 'down_reached': False, 'up_move': 0.2, 'up_reached': False})])
+    (0.12, {'down_move': 0.2, 'down_reached': False, 'up_move': 0.2, 'up_reached': False}),
+    # Marked equity is funding less 48.90 of spread cost (300 x (0.10 + 0.05) + 3.90 fees). At funding 10,000 a
+    # 6.65% limit is 665.00 > 663.90 (no breach on funding) while 6.65% of equity 9,951.10 is 661.73 <= 663.90 (a
+    # breach on equity): only the funding basis reports "never reached".
+    (0.0665, {'down_move': 0.2, 'down_reached': False, 'up_move': 0.2, 'up_reached': False}),
+    # Funding plus the 663.90 reserve would give 682.49 > 663.90 at a 6.4% limit; funding alone gives 640.00 <= 663.90.
+    (0.064, {'down_move': 0.0, 'down_reached': True, 'up_move': 0.2, 'up_reached': False})])
 def test_reverse_stress_on_the_control_is_the_funding_basis_lower_bound(tmp_path, q1_loaders, monkeypatch,
                                                                          fraction, expected):
     reverse = {'moves': [-0.2, -0.05, 0.05, 0.2], 'loss_fraction': fraction}
@@ -2239,7 +2273,7 @@ def test_v7_execute_publishes_fifteen_cases_with_statistics_shocks_and_a_hashed_
 def test_v7_verdict_statuses_follow_the_pre_registered_criteria(tmp_path, q1_loaders, monkeypatch):
     loose = [{'name': 'loss', 'stat': 'worst_loss_fraction', 'op': '<=', 'value': 0.9, 'min_n': 0},
              {'name': 'drawdown', 'stat': 'worst_drawdown', 'op': '<=', 'value': 0.9, 'min_n': 0},
-             {'name': 'breach', 'stat': 'worst_breach_days', 'op': '<=', 'value': 0, 'min_n': 0},
+             {'name': 'breach', 'stat': 'worst_breach_days', 'op': '<=', 'value': 0, 'min_n': 0},  # none breach
              {'name': 'name', 'stat': 'worst_name_reserve_share', 'op': '<=', 'value': 0.9, 'min_n': 0},
              {'name': 'down', 'stat': 'reverse_down_move', 'op': '>=', 'value': 0, 'min_n': 1},
              {'name': 'up', 'stat': 'reverse_up_move', 'op': '>=', 'value': 0, 'min_n': 1}]
@@ -2313,7 +2347,9 @@ def test_v7_document_keys_are_closed(tmp_path, q1_loaders, monkeypatch, key, val
     else:
         world.document[key] = value
     world.save()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match={'hedge': 'invalid execution-stress document',
+                                          'stress': 'v7 stress must carry exactly',
+                                          'criteria': 'v7 criteria must be a list'}[key]):
         stress.execute(world.path)
     assert not world.output.exists()
 
@@ -2330,6 +2366,108 @@ def test_a_v7_scenario_list_that_differs_from_the_approved_set_refuses(tmp_path,
         with pytest.raises(ValueError, match='scenario values differ'):
             stress.execute(world.path)
     assert not world.output.exists()
+
+
+@pytest.mark.parametrize('index, field, value', [(2, 'size_divisor', 2.0), (0, 'size_divisor', True),
+                                                  (7, 'price_fraction', True)])
+def test_a_v7_scenario_list_must_match_the_approved_json_types_exactly(tmp_path, q1_loaders, monkeypatch,
+                                                                       index, field, value):
+    """2.0 == 2 and True == 1 in Python, but the document restates the approved list exactly."""
+    world = _v7_world(tmp_path, monkeypatch)
+    cases = stress._approved_scenarios(V7)
+    assert cases[index][field] == value                      # equal by value ...
+    cases[index][field] = value
+    world.document['scenarios'] = cases
+    world.save()
+    with pytest.raises(ValueError, match='scenario values differ'):    # ... but not the same JSON
+        stress.execute(world.path)
+    assert not world.output.exists()
+
+
+def test_v7_checks_the_worktree_again_at_pin_time(tmp_path, q1_loaders, monkeypatch):
+    world = _v7_world(tmp_path, monkeypatch)
+    real, calls = stress._require_clean_worktree, []
+
+    def dirty_after_the_first_check(root):
+        calls.append(root)
+        if len(calls) == 2:                                  # the pin-time call: the replay left a stray file
+            (world.repo / 'stray.txt').write_text('written during the replay')
+        real(root)
+
+    monkeypatch.setattr(stress, '_require_clean_worktree', dirty_after_the_first_check)
+    with pytest.raises(ValueError, match='worktree must be clean'):
+        stress.execute(world.path)
+    assert len(calls) == 2
+
+
+def test_v7_template_methods_and_sessions_refuse_until_edited():
+    from pathlib import Path
+    template = json.loads((Path(__file__).resolve().parents[1]
+                           / 'configs/mio-deployment-stress-template.json').read_text())
+    entry, = template['cohorts'].values()
+    assert (entry['methods'], entry['sessions']) == (0, 0)
+    with pytest.raises(ValueError, match='positive integer'):
+        stress._range_bounds(entry, v6=True)
+
+
+def test_a_non_control_case_whose_marked_equity_goes_nonpositive_is_unsupported_and_fails_the_method(
+        tmp_path, q1_loaders, monkeypatch):
+    """Funding is 5e-6 under the 663.90 debit (inside the ledger's 1e-5 admission tolerance) and nothing is deposited: a worthless expiry leaves equity of -5e-6.
+
+    The control expires at 102.02 and earns 606.04, so it stays positive; the volatility, market and joint down
+    cases leave the spread worthless, so the existing ADR-0280 refusal in ``_scenario_curve`` ends them
+    unsupported before the new statistics are ever computed.
+    """
+    world = _v7_world(tmp_path, monkeypatch, params={'initial': 663.899995, 'deposit': 0.0, 'weekly_fraction': 1.0},
+                       plain_methods=True)
+    seen = []
+    real = stress.CaseStatistics.of
+    monkeypatch.setattr(stress.CaseStatistics, 'of', classmethod(lambda cls, r, d: seen.append(1) or real(r, d)))
+    output = stress.execute(world.path)
+    summary = json.loads((output / 'summary.json').read_text())
+    bad = {r['scenario'] for r in summary if r['status'] == 'unsupported'}
+    assert bad and 'control' not in bad
+    row = next(r for r in summary if r['status'] == 'unsupported')
+    assert 'nonpositive marked equity under scenario' in row['unsupported_reason']
+    assert row['loss_fraction'] is None and row['worst_name_reserve_share'] is None
+    complete = [r for r in summary if r['status'] == 'complete']
+    assert len(seen) == len(complete)                        # the statistics never saw an unsupported case
+    verdict = json.loads((output / 'verdict.json').read_text())
+    assert {r['status'] for r in verdict['rows']} == {'FAIL'}
+    assert all(set(r['unsupported']) == bad for r in verdict['rows'])
+
+
+def test_two_names_and_two_books_sharing_a_symbol_and_expiry_are_shocked_per_symbol_at_the_earliest_fill(
+        tmp_path, q1_loaders, monkeypatch):
+    """ABC has books decided on Q1[0] and Q1[2] (fills Q1[1] and Q1[3]) with one expiry; DEF has one book.
+
+    Through ``execute`` and ``shocks.json``: one estimate per (symbol, expiry) at the earlier fill (window ends
+    Q1[0], 19 sessions to expiry), and a different beta and scale for each name (ABC wave 0.02, DEF wave 0.04, so
+    betas 2/3 and 4/3 on the equal-weight basket).
+    """
+    world = _v7_world(tmp_path, monkeypatch, amplitude={'ABC': 0.02, 'DEF': 0.04}, names=['ABC', 'DEF'],
+                      params={'weekly_fraction': 1.0})
+    output = stress.execute(world.path)
+    summary = json.loads((output / 'summary.json').read_text())
+    assert {r['status'] for r in summary} == {'complete'} and all(
+        r['filled'] == 3 for r in summary if r['scenario'] == 'control')
+    shocks = [r for r in json.loads((output / 'shocks.json').read_text()) if r['method'] == 'm0']
+    assert len(shocks) == 12                                  # six sized cases x two (symbol, expiry) pairs
+    by = {(r['case'], r['symbol']): r for r in shocks}
+    for r in shocks:
+        assert (r['expiry'], r['window_end'], r['sessions_to_expiry']) == (Q1_EXPIRY, Q1[0], 19)
+    assert by['expiry_down_3s', 'ABC']['std'] == pytest.approx(0.02 * math.sqrt(20 / 19))
+    assert by['expiry_down_3s', 'DEF']['std'] == pytest.approx(0.04 * math.sqrt(20 / 19))
+    assert by['expiry_down_3s', 'ABC']['multiplier'] == pytest.approx(math.exp(-3 * 0.02 * math.sqrt(20)))
+    assert by['expiry_down_3s', 'DEF']['multiplier'] == pytest.approx(math.exp(-3 * 0.04 * math.sqrt(20)))
+    assert (by['market_down_30', 'ABC']['beta'], by['market_down_30', 'DEF']['beta']) == pytest.approx((2 / 3, 4 / 3))
+    assert (by['market_down_30', 'ABC']['multiplier'], by['market_down_30', 'DEF']['multiplier']) == pytest.approx(
+        (0.8, 0.6))
+    # Both ABC books settle on the one shocked ABC bar; the DEF book on the DEF bar.
+    rows = [r for r in json.loads((output / 'dispositions.json').read_text())
+            if r['method'] == 'm0' and r['scenario'] == 'market_down_30']
+    assert {r['symbol']: round(r['stressed_expiry_underlying'] / r['original_expiry_underlying'], 9)
+            for r in rows} == {'ABC': pytest.approx(0.8), 'DEF': pytest.approx(0.6)} and len(rows) == 3
 
 
 def test_v5_outputs_carry_no_v7_file_and_no_v7_column(tmp_path, q1_loaders):

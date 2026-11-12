@@ -1737,7 +1737,10 @@ def execute(document_path):
         raise ValueError("results pins identity drift")
     pins = _load_json(document["results_pins"])
     scenarios = document["scenarios"]
-    if scenarios != _approved_scenarios(document["schema"], document.get("hedge")):
+    approved = _approved_scenarios(document["schema"], document.get("hedge"))
+    # v7 compares the canonical JSON text, so 2.0 or true cannot stand in for 2 or 1; v1 to v6 compare as before.
+    if scenarios != approved or (stress_run and json.dumps(scenarios, sort_keys=True)
+                                 != json.dumps(approved, sort_keys=True)):
         raise ValueError("scenario values differ from approved contract")
     cohorts = _cohort_order(document)
     period = document.get("period_label")

@@ -2234,6 +2234,9 @@ def test_reverse_stress_uses_a_zero_limit_for_nonpositive_funding():
         "down_move": 0.0, "down_reached": True, "up_move": 0.0, "up_reached": True}
     assert search.search([(0.0, {-0.2: -1.0, 0.2: -0.1})]) == {
         "down_move": 0.2, "down_reached": False, "up_move": 0.2, "up_reached": False}
+    # Funding -5 gives a limit of 0, not -2.5: a loss of -1 does not breach it.
+    assert search.search([(-5.0, {-0.2: -1.0, 0.2: -1.0})]) == {
+        "down_move": 0.2, "down_reached": False, "up_move": 0.2, "up_reached": False}
 
 
 def test_reverse_stress_refuses_a_malformed_session():
