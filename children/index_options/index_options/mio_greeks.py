@@ -1098,12 +1098,12 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
                 raise GreeksRefusal("stock_account", "curve held identities or reserves disagree")
         return curve, sessions, decision_days
 
-    def _stock_input_dates(self, inputs):
+    def _stock_input_dates(self, inputs, sessions):
         """Check supplied clocks before any pinned price/quote source is accessed."""
         required = {"stock_bars", "dividends", "coverage"}
         if self.params.get("raw_stock", False):
             required.add("input_provenance")
-        allowed = required | {"settlement_sessions"} if self.params.get("raw_stock", False) else required
+        allowed = required | {"settlement_sessions", "non_settlement_dates"} if self.params.get("raw_stock", False) else required
         if not isinstance(inputs, dict) or not required <= set(inputs) <= allowed:
             raise GreeksRefusal("stock_inputs", "invalid stock input keys")
         if self.params.get("raw_stock", False):
@@ -1112,6 +1112,13 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
                     or any(not isinstance(k, str) or not k or not isinstance(v, str)
                            or re.fullmatch("[0-9a-f]{64}", v) is None for k, v in provenance.items())):
                 raise GreeksRefusal("stock_inputs", "input provenance requires SHA256 identities")
+        excluded = inputs.get("non_settlement_dates", [])
+        calendar = inputs.get("settlement_sessions", sessions)
+        if (not isinstance(excluded, list) or not isinstance(calendar, list)
+                or any(self._iso(day) is None for day in excluded)
+                or len(set(excluded)) != len(excluded)
+                or any(day not in calendar for day in excluded)):
+            raise GreeksRefusal("stock_inputs", "invalid non-settlement dates")
         coverage = inputs["coverage"]
         if not isinstance(coverage, dict):
             raise GreeksRefusal("stock_inputs", "invalid coverage")
@@ -1251,7 +1258,7 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
         method = self.params["methods"][0]
         trades = kept[method]
         curve, sessions, decisions = self._stock_account(table, trades)
-        self._stock_input_dates(inputs)
+        self._stock_input_dates(inputs, sessions)
         bars, bar_shas = self._read_bars(table, symbols)
         books = self._load_books({"method": method, "trades": trades,
                                   "bars": bars, "multiplier": multiplier})
@@ -1270,8 +1277,7 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
             "decision_dates": sorted(set(decisions) | fill_days),
             "cash": cash, "market": market,
             "dividends": inputs["dividends"], "coverage": inputs["coverage"],
-            **({"settlement_sessions": inputs["settlement_sessions"]}
-               if "settlement_sessions" in inputs else {})})
+            **{k: inputs[k] for k in ("settlement_sessions", "non_settlement_dates") if k in inputs}})
         for actual, row in zip(curve, replay["daily"], strict=True):
             spendable = actual["funding"]-actual["reserve"]+row["stock_cash"]
             if not math.isfinite(spendable) or spendable < 0:

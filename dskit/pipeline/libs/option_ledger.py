@@ -1539,6 +1539,9 @@ class DailyStockHedge(Node):
     symbol/date/kind events. Events with prior stock or active exposure on
     the prior or current session refuse. Optional settlement_sessions begins with the
     complete sessions list and adds settlement dates only, without market rows.
+    Optional non_settlement_dates excludes declared dates from settlement counting
+    only. Trades settle on the Nth eligible declared date strictly after execution;
+    excluded dates still permit trading, marks, charges and dividend processing.
 
     Targets use yesterday's exposure, never today's close or exposure.
     Sells precede alphabetical buys. Caps constrain buys at execution prices;
@@ -1610,8 +1613,9 @@ class DailyStockHedge(Node):
 
     def _intake(self, inputs):
         """Validate the full replay before producing any state or output."""
-        self._schema(inputs, (*self._INPUTS, "settlement_sessions")
-                     if isinstance(inputs, dict) and "settlement_sessions" in inputs else self._INPUTS)
+        optional = ("settlement_sessions", "non_settlement_dates")
+        self._schema(inputs, (*self._INPUTS, *(k for k in optional
+                     if isinstance(inputs, dict) and k in inputs)))
         for field in ("sessions", "symbols", "decision_dates", "cash", "market", "dividends"):
             if not isinstance(inputs[field], list):
                 raise ValueError("daily_stock: inputs must be lists")
@@ -1625,6 +1629,13 @@ class DailyStockHedge(Node):
         settlement_dates = [self._date(day) for day in settlement]
         if any(a >= b for a, b in zip(settlement_dates, settlement_dates[1:])):
             raise ValueError("daily_stock: invalid settlement calendar order")
+        excluded = inputs.get("non_settlement_dates", [])
+        if not isinstance(excluded, list):
+            raise ValueError("daily_stock: invalid non-settlement dates")
+        for day in excluded:
+            self._date(day)
+        if len(set(excluded)) != len(excluded) or not set(excluded) <= set(settlement):
+            raise ValueError("daily_stock: invalid non-settlement dates")
         symbols = inputs["symbols"]
         if (not symbols or any(not isinstance(s, str) or not s for s in symbols)
                 or len(set(symbols)) != len(symbols)):
@@ -1693,7 +1704,7 @@ class DailyStockHedge(Node):
             dividends.setdefault(ex_day, []).append(dict(row))
         for events in dividends.values():
             events.sort(key=lambda row: row["symbol"])
-        return sessions, symbols, set(decisions), cash, market, dividends, settlement, actions
+        return sessions, symbols, set(decisions), cash, market, dividends, settlement, actions, set(excluded)
 
     def _cost(self, shares, price):
         """Use half the same-price round trip for one fill, with zero borrow."""
@@ -1710,9 +1721,11 @@ class DailyStockHedge(Node):
         """Apply one funded integer trade and schedule its principal settlement."""
         if not change:
             return
-        due = index+self.params["settlement_lag_sessions"]
-        if due >= len(sessions):
+        eligible = [day for day in sessions[index+1:] if day not in state["non_settlement_dates"]]
+        lag = self.params["settlement_lag_sessions"]
+        if len(eligible) < lag:
             raise ValueError("daily_stock: incomplete settlement tail")
+        due = eligible[lag-1]
         cost = self._cost(change, price)
         debit = cost+max(change, 0)*price
         if not math.isfinite(debit) or baseline+state["cash"] < debit:
@@ -1721,12 +1734,12 @@ class DailyStockHedge(Node):
         state["costs"] += cost
         state["shares"][symbol] += change
         if change < 0:
-            state["pending"].append({"kind": "sale", "due": sessions[due],
+            state["pending"].append({"kind": "sale", "due": due,
                                      "amount": -change*price})
         state["trades"].append({"date": sessions[index], "signal_date": signal,
                                 "symbol": symbol, "shares": change,
                                 "execution_price": price, "cost_usd": cost,
-                                "settlement_date": sessions[due]})
+                                "settlement_date": due})
 
     def _rebalance(self, state, index, sessions, symbols, market, baseline):
         """Sell toward prior-close targets, then buy within cash and risk caps."""
@@ -1769,9 +1782,10 @@ class DailyStockHedge(Node):
         ValueError
             Incomplete or unsupported inputs, cash debt or incomplete settlement.
         """
-        sessions, symbols, decisions, cash, market, dividends, settlement, actions = self._intake(inputs)
+        sessions, symbols, decisions, cash, market, dividends, settlement, actions, excluded = self._intake(inputs)
         state = {"cash": 0., "shares": dict.fromkeys(symbols, 0), "pending": [],
-                 "costs": 0., "capital": 0., "dividends": 0., "trades": []}
+                 "costs": 0., "capital": 0., "dividends": 0., "trades": [],
+                 "non_settlement_dates": excluded}
         daily = []
         for index, day in enumerate(sessions):
             for symbol in actions.get(day, []):

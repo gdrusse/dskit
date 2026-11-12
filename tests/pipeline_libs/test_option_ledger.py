@@ -1271,3 +1271,66 @@ def test_daily_stock_event_flat_control(ctx):
     inputs["coverage"]["corporate_actions"] = [{"symbol": "ABC", "date": "2020-03-04",
                                                "kind": "unsupported"}]
     assert _daily_stock_run(ctx, inputs)["trades"] == []
+
+
+@pytest.mark.parametrize("sale,holiday,due", [
+    ("2019-10-10", "2019-10-14", "2019-10-15"),
+    ("2019-10-11", "2019-10-14", "2019-10-16"),
+    ("2019-10-14", "2019-10-14", "2019-10-16"),
+    ("2019-11-07", "2019-11-11", "2019-11-12"),
+    ("2019-11-08", "2019-11-11", "2019-11-13"),
+    ("2019-11-11", "2019-11-11", "2019-11-13"),
+])
+def test_daily_stock_settlement_bank_holiday_oracles(ctx, sale, holiday, due):
+    from datetime import date, timedelta
+    start = date.fromisoformat(sale)-timedelta(days=10)
+    end = date.fromisoformat(due)+timedelta(days=2)
+    days = [(start+timedelta(days=i)).isoformat()
+            for i in range((end-start).days+1)
+            if (start+timedelta(days=i)).weekday() < 5]
+    inputs = _daily_stock_inputs()
+    inputs["sessions"] = days
+    inputs["decision_dates"] = []
+    inputs["non_settlement_dates"] = [holiday]
+    zero_from = days[days.index(sale)-1]
+    inputs["cash"] = [{"date": d, "free_cash": 1000.} for d in days]
+    inputs["market"] = [{"date": d, "symbol": "ABC", "delta_sh": -5. if d < zero_from else 0.,
+                         "active": d < zero_from, "known_at": d,
+                         "execution_price": 100., "close": 100.} for d in days]
+    out = _daily_stock_run(ctx, inputs)
+    sold = [r for r in out["trades"] if r["shares"] < 0]
+    assert len(sold) == 1
+    assert (sold[0]["date"], sold[0]["settlement_date"]) == (sale, due)
+    for row in out["daily"]:
+        if sale <= row["date"] < due:
+            assert row["sale_receivables"] == 500.
+            assert row["available_cash"] == 500.
+        if row["date"] == due:
+            assert row["sale_receivables"] == 0.
+            assert row["available_cash"] == 1000.
+
+
+def test_daily_stock_empty_settlement_exclusions_preserve_legacy(ctx):
+    inputs = _daily_stock_inputs()
+    before = _daily_stock_run(ctx, inputs)
+    inputs["non_settlement_dates"] = []
+    assert _daily_stock_run(ctx, inputs) == before
+
+
+@pytest.mark.parametrize("excluded", [None, "2020-03-03", [True], ["2020-3-3"],
+                                       ["2020-03-03", "2020-03-03"], ["2020-03-09"]])
+def test_daily_stock_invalid_settlement_exclusions(ctx, excluded):
+    inputs = _daily_stock_inputs()
+    inputs["non_settlement_dates"] = excluded
+    with pytest.raises(ValueError):
+        _daily_stock_run(ctx, inputs)
+
+
+def test_daily_stock_insufficient_eligible_tail_only_refuses_trade(ctx):
+    inputs = _daily_stock_inputs(deltas=(-5,)*5)
+    inputs["non_settlement_dates"] = inputs["sessions"][2:]
+    with pytest.raises(ValueError, match="incomplete settlement tail"):
+        _daily_stock_run(ctx, inputs)
+    for row in inputs["market"]:
+        row.update(delta_sh=0., active=False)
+    assert _daily_stock_run(ctx, inputs)["trades"] == []

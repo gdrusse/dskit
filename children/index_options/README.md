@@ -929,3 +929,11 @@ fee USD0.005/share, half spread5bps, capital charge5% annually and T+2. Costs ar
 research assumptions. Stock outputs and paired owner reports are separate from
 the forward-only MIO. Neither net-profit improvement nor downside reduction is
 established by these synthetic checks; actual preflight may refuse the replay.
+
+
+ADR-0314 Amendment 3: optional non_settlement_dates excludes bank-only holidays
+from the T+2 count without removing trading sessions. For the approved 2019Q4
+replay these dates are 2019-10-14 and 2019-11-11; other approved quarters use an
+empty list. The Nth eligible date strictly after execution is the settlement
+date. Insufficient eligible tails refuse actual trades. The raw adapter binds
+this date-only input in its projection hash; legacy omitted/empty behavior agrees.

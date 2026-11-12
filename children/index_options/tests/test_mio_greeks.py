@@ -2263,3 +2263,25 @@ def test_raw_stock_expiry_event_refuses_prior_held_book(world):
         {"symbol": "BLK", "date": EXPIRY, "kind": "irregular_spinoff"}]
     with pytest.raises(GreeksRefusal, match="stock_corporate_action"):
         _raw_stock_run(run_dir, out_dir, inputs)
+
+
+def test_raw_stock_passes_settlement_only_holiday(world):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    inputs["non_settlement_dates"] = ["2021-04-08"]
+    out = _raw_stock_run(run_dir, out_dir, inputs)
+    first = out["trades"][0]
+    assert first["date"] == "2021-04-07"
+    assert first["settlement_date"] == "2021-04-12"
+    assert "2021-04-08" in {r["date"] for r in out["daily"]}
+
+
+@pytest.mark.parametrize("excluded", [None, ["2021-4-8"], ["2021-04-08", "2021-04-08"],
+                                       ["2021-07-01"]])
+def test_raw_stock_bad_settlement_exclusion_before_price_reads(world, monkeypatch, excluded):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    inputs["non_settlement_dates"] = excluded
+    def no_read(*args):
+        pytest.fail("market source accessed before exclusion validation")
+    monkeypatch.setattr(mio_greeks.MIODailyStockHedge, "_read_bars", no_read)
+    with pytest.raises(GreeksRefusal):
+        _raw_stock_run(run_dir, out_dir, inputs)
