@@ -16,6 +16,9 @@ every formulation and, detached, leaves every output byte-identical.
   ``None`` and ``record`` is ``{}`` (the hedge fields are ABSENT, not null).
 * :class:`FixedDeltaForwardHedge` - a fixed ratio of each item's Black-76 FORWARD delta, sold through a
   cash-settled forward struck at a parity forward the caller supplies.
+* :class:`DailyDeltaForwardHedge` - the same hedge re-struck each session to the day's delta (ADR-0316):
+  the caller records every re-hedge on the leg (``rehedges``) and :func:`forward_leg_rehedged_value` settles
+  and marks the path; inside a program the item is charged its EXPECTED re-hedge cost (``item_cost``).
 
 Sign and units: held shares, negative is sold; ``u_i = -ratio x forward delta`` with the delta read from
 ``LegGreeks`` (``delta_f_sh``, never re-derived), and ONE net quantity per book
@@ -47,8 +50,9 @@ from dskit.pipeline.option_exposure import (
 from dskit.pipeline.option_structures import structure_max_loss
 from dskit.pipeline.records import number_ok
 
-__all__ = ["HedgeOverlay", "NullHedgeOverlay", "FixedDeltaForwardHedge", "KINDS", "REFUSALS", "forward_leg_rule",
-           "forward_leg_net_settle", "forward_leg_spot_delta"]
+__all__ = ["HedgeOverlay", "NullHedgeOverlay", "FixedDeltaForwardHedge", "DailyDeltaForwardHedge", "KINDS", "REFUSALS",
+           "forward_leg_rule", "forward_leg_net_settle", "forward_leg_spot_delta", "forward_leg_one_way_cost",
+           "forward_leg_rehedged_value"]
 
 #: Where a method's hedge runs: over a saved selection, or inside the solve.
 MODES = ("replay", "program")
@@ -87,11 +91,43 @@ def forward_leg_net_settle(record, level):
     """Return a recorded forward leg's settled P&L net of trade costs: ``U (level - F_fill) - carry_costs``.
 
     ``record`` carries ``units``, ``reference``, ``days`` and ``rates``; the one owner of the formula (the replay
-    hedge and the Greeks diagnostics both call it).
+    hedge and the Greeks diagnostics both call it). A leg that was re-hedged (a nonempty ``rehedges``, ADR-0316)
+    settles its whole path through :func:`forward_leg_rehedged_value`.
     """
+    if record.get("rehedges"):
+        return forward_leg_rehedged_value(record, level)
     costs = forward_leg_rule(record).carry_costs(record["units"], record["reference"], level, record["days"])
     return record["units"] * (level - record["reference"]) - costs["trade_costs"]
 
+
+
+def forward_leg_one_way_cost(record, trade, price):
+    """Return the cost of ONE trade of ``trade`` shares at ``price``: half the shared round-trip rule at that price."""
+    if not trade:
+        return 0.0
+    return forward_leg_rule(record).carry_costs(trade, price, price, 0)["trade_costs"] / 2.0
+
+
+def forward_leg_rehedged_value(record, level, day=None):
+    """Return a re-hedged forward leg's P&L net of every trade's cost (ADR-0316).
+
+    The leg holds ``units`` from ``reference`` and then, per ``rehedges`` step (``date``, ``units``, ``forward``,
+    ``cost``; in date order), the step's units from the step's forward: the P&L is each held segment
+    ``U_k (F_{k+1} - F_k)`` less the entry trade, every step's recorded cost and the closing trade at ``level``.
+    ``day`` (an ISO date) instead MARKS the leg on that day at ``level``: only the steps up to it, no closing trade.
+    With no step the settled value is the fixed leg's (:func:`forward_leg_net_settle`) up to float order.
+    """
+    held, at = record["units"], record["reference"]
+    parts = [-forward_leg_one_way_cost(record, held, at)]
+    for step in record.get("rehedges") or ():
+        if day is not None and step["date"] > day:
+            break
+        parts.extend((held * (step["forward"] - at), -step["cost"]))
+        held, at = step["units"], step["forward"]
+    parts.append(held * (level - at))
+    if day is None:
+        parts.append(-forward_leg_one_way_cost(record, held, level))
+    return math.fsum(parts)
 
 
 def forward_leg_spot_delta(record, forward, spot):
@@ -150,6 +186,8 @@ class HedgeOverlay(ABC):
     """
 
     KIND = None
+    #: Whether the caller re-strikes the hedge each session after the fill (ADR-0316); the fixed hedge never does.
+    REBALANCES = False
     _BASE_PARAMS = ("kind", "mode", "ratio", "margin_fraction", "round_units", "condition",
                     "small_delta", "hedge_cost_source") + HardToBorrowProxy._PARAMS + StaticDeltaHedge._PARAMS
     _EXTRA_PARAMS = ()
@@ -341,6 +379,10 @@ class HedgeOverlay(ABC):
         """
         return [{"instrument": "forward", "units": book["units"], "reference": self.reference(fill_context),
                  "residual": book["units"] - book["raw"]}]
+
+    def item_cost(self, entry, reference, days):
+        """Return what a PROGRAM charges one contract of an item for its hedge: both trades of ``entry["units"]`` at ``reference``."""
+        return self.costs([{"units": entry["units"], "reference": reference}], reference, days)["trade_costs"]
 
     def costs(self, legs, s_settle, days):
         """Return ``trade_costs`` and ``borrow`` of the legs through ``StaticDeltaHedge.carry_costs`` (borrow rate 0)."""
@@ -585,5 +627,81 @@ class FixedDeltaForwardHedge(HedgeOverlay):
         return out
 
 
+class DailyDeltaForwardHedge(FixedDeltaForwardHedge):
+    """The fixed-delta forward hedge, re-struck every session to that session's delta (ADR-0316).
+
+    The entry is the parent's (the decision session's forward delta, one net truncated quantity per book). After
+    the fill the CALLER re-prices the book each session with :meth:`units` / :meth:`HedgeOverlay.book_units` on
+    that session's inputs, trades the difference and appends ``{"date", "units", "forward", "trade", "cost"}`` to
+    the leg's ``rehedges``; :func:`forward_leg_rehedged_value` settles and marks the path. Nothing here reads a
+    chain or a calendar.
+
+    Inside a program the path is unknown, so an item is charged its EXPECTED re-hedge cost beside the entry and
+    exit trades (:meth:`item_cost`). The model, stated once: the delta moves by gamma times the forward's move,
+    the forward's session move is normal with the leg's implied vol, gamma and vol stay at their decision values::
+
+        turnover_i = ratio x sum_legs |gamma_F,leg| x F x iv_leg x sqrt(2 / pi) x days x sqrt(N) / 365
+
+    (``N`` = ``rehedge_sessions_per_year``, ``gamma_F`` the delta's change per dollar of FORWARD), charged one fee
+    and one half-spread per share at the decision forward. It is an approximation: gamma grows toward expiry near
+    the strike, the delta also drifts with time, and the path-dependent P&L of re-hedging (zero in expectation on a
+    driftless path) is not a scenario of the program, which sees the ENTRY hedge's payoff only.
+
+    Parameters
+    ----------
+    params : dict
+        The keys of :class:`FixedDeltaForwardHedge` plus ``rehedge_sessions_per_year`` (number > 0).
+
+    Examples
+    --------
+    The expected turnover and the cost a program charges one contract::
+
+        overlay = DailyDeltaForwardHedge({**fixed_block, "kind": "daily_delta_forward",
+                                          "rehedge_sessions_per_year": 252})
+        entry = overlay.units([item], context)[0]      # carries "rehedge_turnover" (shares)
+        overlay.item_cost(entry, context["forward"], 30)
+    """
+
+    KIND = "daily_delta_forward"
+    REBALANCES = True
+    _EXTRA_PARAMS = ("rehedge_sessions_per_year",)
+
+    @classmethod
+    def _check(cls, problems, params):
+        super()._check(problems, params)
+        if "rehedge_sessions_per_year" in params:
+            value = params["rehedge_sessions_per_year"]
+            if not (number_ok(value) and value > 0):
+                problems.append(_coded(PARAM_VALUE, f"rehedge_sessions_per_year must be a number > 0, got {value!r}"))
+
+    def _turnover(self, greeks, item, forward, context):
+        """Return the item's expected re-hedge turnover in shares per contract PER CALENDAR DAY to expiry (ratio applied)."""
+        total = []
+        for (right, sign), strike, quote in zip(item["legs"], item["strikes"], item["quotes"], strict=True):
+            leg = {"right": right, "strike": strike, "sign": sign, "quantity": 1, "expiry": item["expiry"]}
+            row, code = greeks.of(leg, quote, forward, context["spot"], context["day"])
+            if code is not None:
+                return 0.0
+            gamma_f = row["gamma_sh"] * (context["spot"] / forward) ** 2
+            total.append(abs(gamma_f) * forward * row["iv"])
+        per_day = math.sqrt(2.0 / math.pi) * math.sqrt(self.params["rehedge_sessions_per_year"]) / 365.0
+        return self.params["ratio"] * math.fsum(total) * per_day
+
+    def units(self, items, context):
+        """Return the parent's entries, each with ``rehedge_turnover``: expected re-hedged shares per contract per calendar day."""
+        entries = super().units(items, context)
+        greeks, forward = self._greeks(context), _positive_forward(context)
+        for item, entry in zip(items, entries, strict=True):
+            hedged = entry["status"] == STATUS_OK and entry["units"]
+            entry["rehedge_turnover"] = self._turnover(greeks, item, forward, context) if hedged else 0.0
+        return entries
+
+    def item_cost(self, entry, reference, days):
+        """Return the entry and exit trades of the item's units plus one trade of its expected re-hedge turnover over ``days``."""
+        turnover = entry["rehedge_turnover"] * days
+        expected = self._cost_rule.carry_costs(turnover, reference, reference, 0)["trade_costs"] / 2.0 if turnover else 0.0
+        return super().item_cost(entry, reference, days) + expected
+
+
 #: The kinds a method's ``hedge.kind`` may name, to the class that builds them.
-KINDS = {FixedDeltaForwardHedge.KIND: FixedDeltaForwardHedge}
+KINDS = {FixedDeltaForwardHedge.KIND: FixedDeltaForwardHedge, DailyDeltaForwardHedge.KIND: DailyDeltaForwardHedge}

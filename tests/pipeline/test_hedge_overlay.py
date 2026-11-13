@@ -68,8 +68,9 @@ def us(entries):
 
 def test_the_public_surface_is_exactly_the_declared_names():
     assert sorted(ho.__all__) == sorted(
-        ["HedgeOverlay", "NullHedgeOverlay", "FixedDeltaForwardHedge", "KINDS", "REFUSALS",
-         "forward_leg_rule", "forward_leg_net_settle", "forward_leg_spot_delta"])
+        ["HedgeOverlay", "NullHedgeOverlay", "FixedDeltaForwardHedge", "DailyDeltaForwardHedge", "KINDS", "REFUSALS",
+         "forward_leg_rule", "forward_leg_net_settle", "forward_leg_spot_delta", "forward_leg_one_way_cost",
+         "forward_leg_rehedged_value"])
 
 
 def test_a_recorded_forward_leg_settles_net_of_its_trade_costs_by_hand():
@@ -92,7 +93,8 @@ def test_params_tuples_are_the_amendment_tuples_with_the_owners_tuples_imported(
                                           "small_delta", "hedge_cost_source") \
         + HardToBorrowProxy._PARAMS + StaticDeltaHedge._PARAMS
     assert FixedDeltaForwardHedge._EXTRA_PARAMS == ("delta_source", "iv_source", "rate")
-    assert ho.KINDS == {"fixed_delta_forward": FixedDeltaForwardHedge}
+    assert ho.KINDS == {"fixed_delta_forward": FixedDeltaForwardHedge,
+                        "daily_delta_forward": ho.DailyDeltaForwardHedge}
     assert set(FixedDeltaForwardHedge.params_tuple()) == set(BLOCK)
 
 
@@ -541,3 +543,72 @@ def test_forward_spot_delta_common_basis(units):
 def test_forward_spot_delta_invalid_inputs(units, forward, spot):
     with pytest.raises(ValueError):
         ho.forward_leg_spot_delta({"units": units}, forward, spot)
+
+
+# --- ADR-0316: the daily re-struck hedge (DailyDeltaForwardHedge) and the re-hedged leg's value -------------------
+
+DAILY = {**BLOCK, "kind": "daily_delta_forward", "rehedge_sessions_per_year": 252}
+RATES = {"hedge_fee_per_share": 0.005, "hedge_half_spread_bps": 5.0}
+
+
+def _one_way(shares, price):
+    return abs(shares) * (0.005 + price * 5.0 / 1e4)
+
+
+def test_the_daily_kind_is_the_fixed_hedge_plus_one_param_and_the_fixed_kind_never_rebalances():
+    daily = HedgeOverlay.from_method({"hedge": DAILY})
+    assert isinstance(daily, ho.DailyDeltaForwardHedge) and daily.REBALANCES is True
+    assert FixedDeltaForwardHedge.REBALANCES is False and NullHedgeOverlay.REBALANCES is False
+    assert set(ho.DailyDeltaForwardHedge.params_tuple()) == set(BLOCK) | {"rehedge_sessions_per_year"}
+    for bad in (0, -1, True, "252", float("nan")):
+        with pytest.raises(ConfigError, match="hedge_param_value"):
+            ho.DailyDeltaForwardHedge({**DAILY, "rehedge_sessions_per_year": bad})
+    with pytest.raises(ConfigError, match="hedge_missing_key"):
+        ho.DailyDeltaForwardHedge({**BLOCK, "kind": "daily_delta_forward"})
+    with pytest.raises(ConfigError, match="hedge_unknown_key"):
+        FixedDeltaForwardHedge(block(rehedge_sessions_per_year=252))
+
+
+def test_the_daily_entry_is_the_fixed_entry_and_the_fixed_item_cost_is_the_old_expression():
+    fixed, daily = FixedDeltaForwardHedge(block()), ho.DailyDeltaForwardHedge(DAILY)
+    mine, theirs = fixed.units([item()], CONTEXT)[0], daily.units([item()], CONTEXT)[0]
+    assert {k: v for k, v in theirs.items() if k != "rehedge_turnover"} == mine and "rehedge_turnover" not in mine
+    old = fixed.costs([{"units": mine["units"], "reference": FORWARD}], FORWARD, 30)["trade_costs"]
+    assert fixed.item_cost(mine, FORWARD, 30) == old            # bit for bit: the program's old per-item cost
+
+
+def test_the_expected_rehedge_cost_is_gamma_times_the_expected_absolute_session_move_by_hand():
+    daily = ho.DailyDeltaForwardHedge({**DAILY, "ratio": 0.5})
+    entry_ = daily.units([item()], CONTEXT)[0]
+    greeks = LegGreeks({"rate": 0.0, "iv_source": "vendor", "multiplier": MULT, "min_years": 0.001, "vol_floor": 0.01})
+    row, _ = greeks.of({"right": "call", "strike": 100.0, "sign": 1, "quantity": 1, "expiry": EXPIRY},
+                       quote("call", 100.0), FORWARD, SPOT, DAY)
+    gamma_f = row["gamma_sh"] * (SPOT / FORWARD) ** 2
+    per_day = 0.5 * abs(gamma_f) * FORWARD * VOL * math.sqrt(2 / math.pi) * math.sqrt(252) / 365
+    assert entry_["rehedge_turnover"] == pytest.approx(per_day) and per_day > 0
+    fixed_part = abs(entry_["units"]) * (2 * 0.005 + 2 * FORWARD * 5.0 / 1e4)
+    assert daily.item_cost(entry_, FORWARD, 30) == pytest.approx(fixed_part + _one_way(per_day * 30, FORWARD))
+    blocked = daily.units([item()], {**CONTEXT, "closes": WILD})[0]
+    assert blocked["rehedge_turnover"] == 0.0                   # an unhedged item re-hedges nothing
+
+
+def test_a_rehedged_leg_settles_every_segment_less_every_trade_by_hand():
+    record = {"units": -10.0, "reference": 100.0, "days": 20, "rates": RATES,
+              "rehedges": [{"date": "2026-03-03", "units": -6.0, "forward": 104.0, "trade": 4.0, "cost": _one_way(4, 104.0)},
+                           {"date": "2026-03-05", "units": -9.0, "forward": 98.0, "trade": -3.0, "cost": _one_way(3, 98.0)}]}
+    segments = -10 * (104 - 100) + -6 * (98 - 104) + -9 * (101 - 98)
+    costs = _one_way(10, 100.0) + _one_way(4, 104.0) + _one_way(3, 98.0) + _one_way(9, 101.0)
+    assert ho.forward_leg_rehedged_value(record, 101.0) == pytest.approx(segments - costs)
+    assert ho.forward_leg_net_settle(record, 101.0) == ho.forward_leg_rehedged_value(record, 101.0)
+    # a mark on the day between the two steps: the first step only, no closing trade
+    marked = -10 * (104 - 100) + -6 * (99 - 104) - _one_way(10, 100.0) - _one_way(4, 104.0)
+    assert ho.forward_leg_rehedged_value(record, 99.0, "2026-03-04") == pytest.approx(marked)
+
+
+def test_a_leg_with_no_rehedge_settles_as_the_fixed_leg():
+    record = {"units": 3.0, "reference": 453.0, "days": 10, "rates": RATES}
+    fixed = ho.forward_leg_net_settle(record, 448.0)
+    assert ho.forward_leg_net_settle({**record, "rehedges": []}, 448.0) == fixed
+    assert ho.forward_leg_rehedged_value({**record, "rehedges": []}, 448.0) == pytest.approx(fixed)
+    assert ho.forward_leg_one_way_cost(record, 0, 100.0) == 0.0
+    assert ho.forward_leg_one_way_cost(record, -4, 100.0) == pytest.approx(_one_way(4, 100.0))

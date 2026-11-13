@@ -428,6 +428,10 @@ The owner paired `kelly050_ls_lp` and `kelly075_ls_lp` with the sealed **replay*
 - **Same pairing for the other families.** The FAST variants (`*_ls_fast_replay_hedge_lp`) and the multi-start variants (`*_ls_multistart_replay_hedge_lp`) pair the same way, with no new code.
 - **ADR-0314.** ADR-0314's daily long-stock inventory is a separate, opt-in replay adapter over saved MIO output (Amendments 1-2). It is not part of the `ls` decision.
 
+### 4.1 The hedge inside the search (ADR-0316, 2026-11-13)
+
+The ids `*_hedged_static_lp` and `*_hedged_dynamic_lp` put the hedge in the program instead (`hedge.mode: "program"`). Each candidate item carries its fixed-ratio forward units, so the scorer's scenarios, expected profit, dispersion charge, reserve rows and cap are the hedged ones and the search only reaches books that are feasible as hedged. The fill applies the same units (truncated once). The dynamic kind (`daily_delta_forward`) is re-struck every session in the ledger from that session's delta; the program models it as the static entry hedge plus an expected re-hedge cost, an approximation stated in the ADR. The search code (sections 2 and 3) is unchanged.
+
 ---
 
 ## 5. Recorded evidence and replay parity

@@ -75,6 +75,7 @@ from typing import NamedTuple
 
 from dskit.pipeline.driver import resolve_json_artifact
 from dskit.pipeline.hedge_overlay import (BOOKS_PREFIX, MARK_CARRIED, HedgeOverlay, forward_leg_net_settle,
+                                          forward_leg_one_way_cost, forward_leg_rehedged_value,
                                           forward_leg_rule)
 from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL, MethodBlocks
 from dskit.pipeline.option_exposure import (BookGreeks, ExposureLimits, ExposureSnapshot, HardToBorrowProxy, LegGreeks,
@@ -1562,8 +1563,7 @@ class ReplayHedge:
             return group, meta
         ov, items, loss_row = self.overlay, meta["items"], self.study._loss_row
         hedge = (units, reference)
-        costs = [ov.costs([{"units": u, "reference": reference}], reference, meta["dte"])["trade_costs"]
-                 for u in units]
+        costs = [ov.item_cost(e, reference, meta["dte"]) for e in entries]
         credit = np.asarray(group["credit"]) - np.asarray(costs)
         reserves = [(np.asarray(loss_row(items, s, mult, hedge)) - credit).tolist()
                     for s in [0., *sorted({i["strike"] for i in items})]]
@@ -1622,12 +1622,77 @@ class ReplayHedge:
             # A book the forward leg alone makes bounded (a sold call it covers): JSON has no infinity, so the
             # option legs' reserve and loss are recorded as null with the flag (ADR-0313 I7; the replay needs it).
             record.update(option_reserve=None, unhedged_max_loss=None, unhedged_unbounded=True)
+        if ov.REBALANCES:
+            record["rehedges"] = []                          # ADR-0316: filled by :meth:`rehedge`, one step per trade
         if self.is_program:
             # What the program charged (every item on its own units at F_0) beside the replay's netted cost, settled later.
             record.update(program_gross_units=hedged["gross"], decision_forward=hedged["decision_forward"],
                           program_cost_usd=self._rule(record).carry_costs(
                               hedged["gross"], hedged["decision_forward"], hedged["decision_forward"], days)["trade_costs"])
         book.update(reserve=max(reserve + allowance, ov.book_floor(units, reference)), max_loss=loss)
+
+    def rehedge(self, books, day, charge=None):
+        """Re-strike each open hedged book to ``day``'s delta (ADR-0316); a no-op for a hedge that never rebalances.
+
+        Per book on a session strictly between its fill and its expiry: the day's MARK forward (:meth:`path`'s rule:
+        the parity forward excluding the book's strikes, else the carry ratio, counted), the overlay's units for the book's legs on that session's chain, one net truncated quantity,
+        and the difference traded at that forward, appended to the leg's ``rehedges`` with its one-trade cost. The
+        book HOLDS its units, counted, when the day has no spot (``rehedge_held_no_forward``), a
+        leg cannot be priced or a short hedge sits on a hard-to-borrow name (``rehedge_held_<status>``), or the
+        re-struck book's loss would be unbounded (``rehedge_held_unbounded``). A re-struck book's ``reserve`` and
+        ``max_loss`` are re-derived as :meth:`attach` derives them, on the new units and forward with the leg's P&L
+        and costs to date beside the credit, so the reserve still bounds the settlement.
+        """
+        ov = self.overlay
+        if not ov.REBALANCES:
+            return
+        mult = self.study.params["bridge"]["solver"]["multiplier"]
+        for book in books:
+            record = book.get("hedge") or {}
+            if "rehedges" not in record or not book["fill_date"] < day < book["expiry"]:
+                continue
+            symbol, expiry, factor = book["symbol"], book["expiry"], book["factor"]
+            legs = [leg for leg in book["legs"] if leg["quantity"]]
+            level = self._level(book, day)
+            if level is None:
+                self.counts["rehedge_held_no_forward"] += 1
+                continue
+            forward = level[0]                               # the day's mark forward (carry-ratio when flagged)
+            self.counts["rehedge_forward_carried"] += level[1]
+            target = ov.book_units(self._entries(symbol, expiry, factor, day, forward, legs),
+                                   [leg["quantity"] for leg in legs])
+            if target["status"] != "ok":
+                self.counts["rehedge_held_" + target["status"]] += 1
+                continue
+            held = record["rehedges"][-1]["units"] if record["rehedges"] else record["units"]
+            units = target["units"]
+            if units == held:
+                continue
+            signed = [(leg["right"], leg["sign"] * leg["quantity"]) for leg in legs]
+            if not ov.hedgeable(signed, [leg["strike"] for leg in legs], book["credit"], mult, units, forward):
+                self.counts["rehedge_held_unbounded"] += 1
+                continue
+            trade = units - held
+            record["rehedges"].append({"date": day, "units": units, "forward": forward, "trade": trade,
+                                       "cost": forward_leg_one_way_cost(record, trade, forward)})
+            self.counts["rehedges"] += 1
+            self.counts["rehedge_shares"] += abs(trade)
+            credit = book["credit"] + forward_leg_rehedged_value(record, forward, day)
+            loss = ov.max_loss(signed, [leg["strike"] for leg in legs], credit, mult, units, forward)
+            reserve = self.study._floor(max(0., loss, -credit), charge or self.study._charge({}), book["legs"], mult)
+            allowance = forward_leg_one_way_cost(record, units, 2.0 * forward)
+            book.update(reserve=max(reserve + allowance, ov.book_floor(units, forward)), max_loss=loss)
+
+    def rehedge_excess(self, book, level, day=None):
+        """Return what the re-hedges added to a book's fixed leg: settled at ``level``, or marked on ``day`` at ``level``."""
+        record = book["hedge"]
+        if not record.get("rehedges"):
+            return 0.0
+        if day is not None:
+            return forward_leg_rehedged_value(record, level, day) - self.mark(record, level)
+        fixed = self._rule(record).carry_costs(record["units"], record["reference"], level, record["days"])
+        return forward_leg_rehedged_value(record, level) - (
+            record["units"] * (level - record["reference"]) - fixed["trade_costs"])
 
     @staticmethod
     def _rule(record):
@@ -1677,9 +1742,7 @@ class ReplayHedge:
         ``"parity"``: the day's parity forward excluding the book's strikes, else ``S_t x F_fill / S_fill``
         flagged carried; ``"carry_ratio"``: every mark on the carry ratio. The fill day is the reference.
         """
-        record, symbol, factor = book["hedge"], book["symbol"], book["factor"]
-        strikes = {leg["strike"] for leg in book["legs"] if leg["quantity"]}
-        s_fill = self._spot(symbol, book["fill_date"], factor)
+        record = book["hedge"]
         out = {}
         for day in self.study.calendar:
             if not book["fill_date"] <= day < book["expiry"]:
@@ -1687,18 +1750,26 @@ class ReplayHedge:
             if day == book["fill_date"]:
                 out[day] = (record["reference"], record["reference_source"] != ParityForward.SOURCE_PARITY)
                 continue
-            if self.mark_rule == "parity":
-                forward, source = self.forward(symbol, day, book["expiry"], factor, strikes)
-                if forward is not None and source == ParityForward.SOURCE_PARITY:
-                    out[day] = (forward, False)
-                    continue
-            spot = self._spot(symbol, day, factor)
-            if spot is not None:
-                out[day] = (spot * record["reference"] / s_fill, True)
+            level = self._level(book, day)
+            if level is not None:
+                out[day] = level
             else:                                           # one rule, both routes: carry the last level, flagged, counted
                 out[day] = (list(out.values())[-1][0], True)
                 self.missing.add((book["id"], day))
         return out
+
+    def _level(self, book, day):
+        """Return ``(forward, carried)`` for a session after the fill by the mark rule, ``None`` when the day has no spot."""
+        record, symbol, factor = book["hedge"], book["symbol"], book["factor"]
+        if self.mark_rule == "parity":
+            strikes = {leg["strike"] for leg in book["legs"] if leg["quantity"]}
+            forward, source = self.forward(symbol, day, book["expiry"], factor, strikes)
+            if forward is not None and source == ParityForward.SOURCE_PARITY:
+                return forward, False
+        spot = self._spot(symbol, day, factor)
+        if spot is None:
+            return None
+        return spot * record["reference"] / self._spot(symbol, book["fill_date"], factor), True
 
     def marked(self, record, forward, carried):
         """Return the leg's mark at ``forward`` and count it (and its carried flag) on the overlay's tally."""
@@ -2808,6 +2879,25 @@ class WeeklyOptionPortfolioStudy:
                                  f"differently from its hedge ({mine} / {parity} against {theirs} / "
                                  f"{p.get('hedge_parity')})")
 
+    #: ADR-0316: how far a program book's net hedge units may sit from a whole share and still be read as that share
+    #: when the float residue alone makes the hedged loss unbounded.
+    _RAW_UNITS_SNAP = 1e-9
+    #: ADR-0315 Amendment 3: why a hedged-search book whose forward leg could not be attached is unfilled.
+    _HEDGE_UNATTACHED = "hedge_unattached"
+
+    @staticmethod
+    def _hedged_search(method):
+        """Return whether ``method`` searches the HEDGED program (ADR-0315 Amendment 3).
+
+        A kelly ``local_search`` method (ADR-0307 and its FAST variant, ADR-0315 multi-start) with a ``program``-mode
+        hedge: every candidate item carries its fixed-ratio forward units into the program the search scores, so
+        the scenarios, the dispersion charge, the reserve rows and the cap are the hedged ones, and a book fills
+        with its hedge or not at all.
+        """
+        kelly = method.get("kelly")
+        return (isinstance(kelly, dict) and "local_search" in kelly
+                and (method.get("hedge") or {}).get("mode") == "program")
+
     @classmethod
     def _hedge_configuration(cls, p):
         """Refuse a hedged document that is not sealed (``hedge_seal``) or lacks its parity params (``hedge_parity_*``)."""
@@ -2827,7 +2917,8 @@ class WeeklyOptionPortfolioStudy:
         if not hedged:
             return
         for method in p["methods"]:
-            if method.get("hedge", {}).get("mode") == "program" and "kelly" in method:
+            if (method.get("hedge", {}).get("mode") == "program" and "kelly" in method
+                    and not cls._hedged_search(method)):
                 raise ValueError("hedge_with_sizer: a program-mode hedge cannot combine with kelly "
                                  "(the growth sampler and its scenarios are wired in a second step)")
         if p["bridge"]["end_before"] > DEVELOPMENT_SEAL:
@@ -3871,6 +3962,11 @@ class WeeklyOptionPortfolioStudy:
                 raw = math.fsum(u*q for u, q in zip(program["units"], held, strict=True))
                 cost = math.fsum(k*q for k, q in zip(program["costs"], held, strict=True))
                 loss = structure_max_loss(signed, strikes, credit-cost, mult, hedge=(raw, program["reference"]))
+                if math.isinf(loss) and abs(raw-round(raw)) < self._RAW_UNITS_SNAP:
+                    # ADR-0316: a synthetic forward's deltas net to a whole number of shares up to float order (parity),
+                    # which the program's slope row admits within its tolerance; the physical check reads it exactly.
+                    raw = float(round(raw))
+                    loss = structure_max_loss(signed, strikes, credit-cost, mult, hedge=(raw, program["reference"]))
                 reserve = max(self._floor(max(0., loss, -(credit-cost)), charge or self._charge({}), legs, mult),
                               program["margin_fraction"]*program["reference"]*abs(raw))
             if not math.isfinite(reserve) or abs(reserve-selection["reserves"][i]) > .001:
@@ -4491,6 +4587,19 @@ class WeeklyOptionPortfolioStudy:
         ledger = OptionStructureLedger("ledger", ledger_params).run(None, ledger_inputs)
         if len(ledger["trades"]) != len(trades):
             raise ValueError("shared ledger refused an admitted book")
+        if hedge and hedge.overlay.REBALANCES:
+            # ADR-0316: the shared ledger carries the option legs and the FIXED entry leg; what each recorded re-hedge
+            # added (its held segments less its trade costs) is the child's, joined here to the trade and to every mark.
+            for index, book in enumerate(trades):
+                if not book["hedge"].get("rehedges"):
+                    continue
+                level = self._bars[book["symbol"]][book["expiry"]]/book["factor"]
+                ledger["trades"][index]["pnl_usd"] += hedge.rehedge_excess(book, level)
+                path = hedge.path(book)
+                for mark in ledger["marks"]:
+                    if mark["order_index"] == index:
+                        at = path[mark["date"]][0] if mark["date"] in path else level
+                        mark["pnl_usd"] += hedge.rehedge_excess(book, at, mark["date"])
         for book, row in zip(trades, ledger["trades"]):
             if row["status"] != "closed" or abs(row["pnl_usd"]-book["pnl"]) > 1e-6:
                 raise ValueError("shared ledger/chronological account PnL mismatch")
@@ -4632,9 +4741,11 @@ class WeeklyOptionPortfolioStudy:
         local = (self._kelly(method) or {}).get("local_search")
         present = self._BLOCKS.present(method)
         if present:
-            derived_replay_hedge = (local is not None and set(present) == {"hedge"}
-                                    and method["hedge"]["mode"] == "replay")
-            if policy or (derived is not None and not derived_replay_hedge):
+            # A local-search method's hedge is derived: the search is rerun on this host over this host's own hedged
+            # program (ADR-0315 Amendment 3 for program mode), so the foreign actions are only compared.
+            derived_search_hedge = (local is not None and set(present) == {"hedge"}
+                                    and method["hedge"]["mode"] in ("replay", "program"))
+            if policy or (derived is not None and not derived_search_hedge):
                 raise ValueError("block_not_derived: a method with a block is solved locally, never derived or policy-scored")
             # ADR-0313: each feature attaches in its own stage (I5 calibration, I6 limits, I7 the hedge with calibration,
             # ADR-0312 S3 for the hedge). A block combination no stage attaches yet must not be silently ignored.
@@ -4687,9 +4798,12 @@ class WeeklyOptionPortfolioStudy:
             p["initial"], p["deposit"], p["deposit_every_days"], self.calendar[0],
             deposit_end_before=self.clocks["entry_end_before"] if self.clocks else None)
         charge = self._charge(method)
+        hedged_search = hedge is not None and self._hedged_search(method)
         decisions, rejected, snapshots, pending = [], [], [], None
         for day in self.calendar:
             self._apply_adjustments(account, day, charge)
+            if hedge is not None:
+                hedge.rehedge(account.open.values(), day, charge)   # ADR-0316: a no-op unless the hedge rebalances
             deposited = account.advance(day, self._settlements(account, day))
             if pending is not None:
                 survivors, refusals = [], []
@@ -4701,6 +4815,13 @@ class WeeklyOptionPortfolioStudy:
                     else:
                         if hedge is not None:
                             hedge.attach(filled, day, charge)
+                            if hedged_search and filled["hedge"]["status"] != "ok":
+                                # ADR-0315 Amendment 3: the search chose the hedged book; without its forward leg it
+                                # is another position, so the options do not fill either (all or none).
+                                reason = f"{self._HEDGE_UNATTACHED}:{filled['hedge']['status']}"
+                                rejected.append({**book, "status": "unfilled", "fill_date": day, "reason": reason})
+                                refusals.append({"id": book["id"], "reason": reason})
+                                continue
                         survivors.append(filled)
                 shock = self._shock(method)
                 if self._filled_scope(shock):
