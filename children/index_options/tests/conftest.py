@@ -2,6 +2,7 @@
 
 import itertools
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,6 +25,9 @@ def _no_shared_value_cache(monkeypatch):
     test that monkeypatches a producer the cache key cannot see would read another test's week. The cache's own
     tests remove the switch.
     """
+    if os.environ.get("DSKIT_TEST_CACHE_ON") == "1":  # diagnosis only: run the suite with the cache live
+        monkeypatch.delenv("DSKIT_MIO_VALUE_CACHE", raising=False)
+        return
     monkeypatch.setenv("DSKIT_MIO_VALUE_CACHE", "off")
 
 

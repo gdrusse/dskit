@@ -19,8 +19,8 @@ Layout under ``root/namespace``: ``<key[:2]>/<key>.pkl.gz`` (the gzip
 stream of the pickle) and ``<key[:2]>/<key>.json`` (format, namespace,
 key, sha256 and size of the ``.pkl.gz`` bytes). Both are published by an
 fsynced temporary file and ``os.replace``, blob first, so a reader that
-finds a manifest finds its blob; a concurrent writer of the same key
-writes the same bytes. ``max_bytes`` bounds a namespace: after a store the
+finds a manifest finds its blob; a writer takes a per-key O_EXCL lock
+(and skips an already published key), so two writers never interleave blob and manifest. ``max_bytes`` bounds a namespace: after a store the
 least recently used entries (a hit refreshes the mtime) are removed.
 """
 
@@ -159,7 +159,10 @@ def runtime_versions(*distributions):
     import sys
     from importlib import metadata
 
-    out = {"python": list(sys.version_info[:3]), "implementation": sys.implementation.name}
+    import platform
+
+    out = {"python": list(sys.version_info[:3]), "implementation": sys.implementation.name,
+           "system": platform.system(), "machine": platform.machine()}
     for name in distributions:
         try:
             out[name] = metadata.version(name)
@@ -192,7 +195,8 @@ class VerifiedValueCache:
             raise ValueError("max_bytes must be a positive int or None")
         self.directory = root / namespace
         self.namespace, self.max_bytes, self.log = namespace, max_bytes, log
-        self.counts = {"hit": 0, "miss": 0, "refused": 0, "stored": 0, "store_failed": 0}
+        self.counts = {"hit": 0, "miss": 0, "refused": 0, "stored": 0, "store_failed": 0,
+                       "uncacheable": 0, "store_skipped": 0}
 
     def _paths(self, key):
         if (not isinstance(key, str) or len(key) != 64
@@ -212,6 +216,39 @@ class VerifiedValueCache:
         if not stat.S_ISREG(info.st_mode):
             raise ValueError("cache entry is not a regular file")
         return info
+
+    @staticmethod
+    def _remove(*paths):
+        for path in paths:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+    def count_uncacheable(self):
+        """Count one input the caller could not key (a non-plain or non-finite value); it is recomputed."""
+        self.counts["uncacheable"] += 1
+
+    #: A writer's lock older than this many seconds is a crashed writer's and is taken over.
+    LOCK_STALE_SECONDS = 600
+
+    def _lock(self, folder, key):
+        """Take the per-key writer lock (O_EXCL); return its path, or None when another writer holds it."""
+        import time
+
+        path = folder / f".lock-{key}"
+        for _attempt in range(2):
+            try:
+                os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+                return path
+            except FileExistsError:
+                try:
+                    if time.time() - path.stat().st_mtime < self.LOCK_STALE_SECONDS:
+                        return None
+                    path.unlink()
+                except OSError:
+                    return None
+        return None
 
     def load(self, key):
         """Return the value stored under ``key``, or :data:`MISS`.
@@ -242,15 +279,12 @@ class VerifiedValueCache:
         except (OSError, ValueError, EOFError, pickle.UnpicklingError, gzip.BadGzipFile) as exc:
             self.counts["refused"] += 1
             self._warn("refused %s (%s); recomputing", key[:12], exc)
-            for path in (manifest, blob):
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
+            self._remove(manifest, blob)
             return MISS
         except Exception as exc:  # any other decode failure is still only a miss
             self.counts["refused"] += 1
             self._warn("refused %s (%s: %s); recomputing", key[:12], type(exc).__name__, exc)
+            self._remove(manifest, blob)
             return MISS
         try:
             os.utime(blob)
@@ -279,8 +313,16 @@ class VerifiedValueCache:
         """
         blob, manifest = self._paths(key)
         temps = []
+        lock = None
         try:
             blob.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if manifest.exists() and blob.exists():
+                self.counts["store_skipped"] += 1  # already published (a reader verifies it or removes it)
+                return True
+            lock = self._lock(blob.parent, key)
+            if lock is None:
+                self.counts["store_skipped"] += 1  # another writer of this key is publishing it
+                return False
 
             def write_blob(handle):
                 writer = _HashingWriter(handle)
@@ -310,6 +352,9 @@ class VerifiedValueCache:
                 except OSError:
                     pass
             return False
+        finally:
+            if lock is not None:
+                self._remove(lock)
         self.counts["stored"] += 1
         if self.max_bytes is not None:
             self.prune()

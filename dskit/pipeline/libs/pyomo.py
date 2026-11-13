@@ -4547,7 +4547,9 @@ class TransportPortfolioSolve(PyomoSolve):
                 key = self._screen_key(groups)
             except PlainValueError:
                 key = None  # a program holding non-plain values is screened, never cached
-            if key is not None:
+            if key is None:
+                cache.count_uncacheable()
+            else:
                 found = cache.load(key)
                 if (found is not MISS and isinstance(found, list) and len(found) == len(groups)
                         and all(type(b) is float for b in found)):

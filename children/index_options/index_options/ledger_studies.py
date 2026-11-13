@@ -3501,8 +3501,17 @@ class WeeklyOptionPortfolioStudy:
             return None  # a replaced producer (a test double, a subclass) is recomputed, never cached
         if self._prepare_identity is None:
             pipeline = Path(dskit.pipeline.__file__).parent
-            files = [*Path(__file__).parent.glob("*.py"), *pipeline.glob("*.py"), *(pipeline/"libs").glob("*.py")]
-            self._prepare_identity = [source_digest(files), runtime_versions("numpy", "scipy"),
+            files = {*Path(__file__).parent.glob("*.py"), *pipeline.glob("*.py"), *(pipeline/"libs").glob("*.py")}
+            # Plus the imported-module closure: every loaded module of this repository (so a helper in any dskit or
+            # index_options module a producer calls moves the key), tests excluded.
+            root = pipeline.parent.parent.resolve()
+            for module in list(sys.modules.values()):
+                name = getattr(module, "__file__", None)
+                if name and name.endswith(".py"):
+                    path = Path(name).resolve()
+                    if root in path.parents and "tests" not in path.relative_to(root).parts:
+                        files.add(path)
+            self._prepare_identity = [source_digest(files), runtime_versions("numpy", "scipy", "highspy"),
                                       value_hash({k: v for k, v in self.params.items() if k != "methods"})]
         return self._prepare_identity
 
@@ -3519,6 +3528,7 @@ class WeeklyOptionPortfolioStudy:
             return None
         identity = self._prepare_identity_now()
         if identity is None:
+            self._prepared_store.count_uncacheable()
             return None
         parts = []
         for symbol in self.params["symbols"]:
@@ -3532,6 +3542,7 @@ class WeeklyOptionPortfolioStudy:
         try:
             return key_digest("mio-prepared-week/1", identity, day, parts)
         except (TypeError, ValueError):
+            self._prepared_store.count_uncacheable()
             return None  # a non-JSON or non-finite input is recomputed, never cached
 
     @staticmethod

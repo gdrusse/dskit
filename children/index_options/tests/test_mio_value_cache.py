@@ -170,7 +170,7 @@ def test_the_key_follows_the_code_and_a_replaced_producer_is_never_cached(tmp_pa
     assert study._prepared_key("2019-01-02") is None
     study._prepare("2019-01-02")
     assert study.cache_counts()["mio-prepared-week"] == {"hit": 0, "miss": 0, "refused": 0, "stored": 0,
-                                                         "store_failed": 0}
+                                                         "store_failed": 0, "uncacheable": 2, "store_skipped": 0}
 
 
 def test_the_screen_key_follows_the_groups_and_skips_a_replaced_bound(tmp_path, monkeypatch):
@@ -237,3 +237,39 @@ def test_the_priced_route_derived_then_replayed_is_unchanged_by_the_cache(tmp_pa
     counts = replay.cache_counts()
     assert counts["mio-prepared-week"]["hit"] >= 2 and counts["transport-lp-screen"]["hit"] >= 1
     assert counts["mio-prepared-week"]["stored"] == counts["transport-lp-screen"]["stored"] == 0
+
+
+def test_the_code_key_covers_every_loaded_module_of_the_repository(tmp_path, monkeypatch):
+    """Review finding 1: a helper in a dskit module outside pipeline/ (loaded by the process) moves the key."""
+    import sys
+    from pathlib import Path
+    from dskit.pipeline import value_cache
+
+    import dskit.onboarding.acquire as outside  # not under dskit/pipeline, not in index_options
+    seen = []
+    real = value_cache.source_digest
+    monkeypatch.setattr(value_cache, "source_digest", lambda paths: (seen.extend(paths), real(paths))[1])
+    params, inputs = _screened_fixture()
+    WeeklyOptionPortfolioStudy(params, inputs, cache_root=tmp_path)._prepared_key("2019-01-02")
+    seen = {Path(p).resolve() for p in seen}
+    assert Path(outside.__file__).resolve() in seen
+    assert not any("tests" in p.parts and p.name.startswith("test_") for p in seen)
+
+
+def test_uncacheable_weeks_are_counted_not_silent(tmp_path):
+    """Review finding 2: a week or program that cannot be keyed or stored shows in the counts."""
+    params, inputs = _screened_fixture()
+    inputs = copy.deepcopy(inputs)
+    study = WeeklyOptionPortfolioStudy(params, inputs, cache_root=tmp_path)
+    study._forecasts["X"][next(iter(study._forecasts["X"]))] = {"bad": float("nan")}
+    for day in study.weeks:
+        study._prepared_key(day)
+    counts = study.cache_counts()["mio-prepared-week"]
+    assert counts["uncacheable"] >= 1 and {"store_failed", "uncacheable"} <= set(counts)
+
+
+def test_the_run_key_names_the_platform(tmp_path):
+    from dskit.pipeline.value_cache import runtime_versions
+    import platform
+    versions = runtime_versions("numpy")
+    assert versions["machine"] == platform.machine() and versions["system"] == platform.system()

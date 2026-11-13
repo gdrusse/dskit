@@ -56,7 +56,8 @@ def test_store_load_and_refusals(tmp_path):
     assert cache.store(key, {"v": [1.0, 2]})
     assert cache.load(key) == {"v": [1.0, 2]}
     assert cache.store(key_digest("bad"), {"v": _Float(1.)}) is False
-    assert cache.counts == {"hit": 1, "miss": 1, "refused": 0, "stored": 1, "store_failed": 1}
+    assert cache.counts == {"hit": 1, "miss": 1, "refused": 0, "stored": 1, "store_failed": 1,
+                            "uncacheable": 0, "store_skipped": 0}
     blob = next(tmp_path.glob("space/??/*.pkl.gz"))
     blob.write_bytes(blob.read_bytes() + b"x")
     assert cache.load(key) is MISS and cache.counts["refused"] == 1
@@ -101,3 +102,38 @@ def test_key_and_source_digests_are_canonical(tmp_path):
     one.write_text("x = 2\n")
     os.utime(one, ns=(1, 1))
     assert source_digest([one]) != first
+
+
+def test_an_undecodable_entry_is_removed_not_left_to_fail_again(tmp_path, monkeypatch):
+    from dskit.pipeline import value_cache
+    cache = VerifiedValueCache(tmp_path, "ns")
+    key = key_digest("k")
+    assert cache.store(key, [1, 2])
+    monkeypatch.setattr(value_cache, "plain_load", lambda handle: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert cache.load(key) is MISS and cache.counts["refused"] == 1
+    assert not list((tmp_path / "ns").glob("??/*"))
+
+
+def test_a_second_writer_skips_a_held_or_published_key(tmp_path):
+    cache = VerifiedValueCache(tmp_path, "ns")
+    key = key_digest("k")
+    blob, manifest = cache._paths(key)
+    blob.parent.mkdir(parents=True)
+    lock = cache._lock(blob.parent, key)
+    assert lock is not None and cache._lock(blob.parent, key) is None
+    assert cache.store(key, [1]) is False and cache.counts["store_skipped"] == 1 and not blob.exists()
+    lock.unlink()
+    assert cache.store(key, [1]) is True and not list(blob.parent.glob(".lock-*"))
+    before = blob.read_bytes()
+    assert cache.store(key, [2]) is True and blob.read_bytes() == before and cache.load(key) == [1]
+
+
+def test_a_stale_writer_lock_is_taken_over(tmp_path):
+    import os
+    cache = VerifiedValueCache(tmp_path, "ns")
+    key = key_digest("k")
+    blob, _ = cache._paths(key)
+    blob.parent.mkdir(parents=True)
+    lock = cache._lock(blob.parent, key)
+    os.utime(lock, (1, 1))
+    assert cache._lock(blob.parent, key) == lock
