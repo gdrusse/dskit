@@ -2311,7 +2311,8 @@ def test_raw_stock_bad_settlement_calendar_before_price_reads(world, monkeypatch
         _raw_stock_run(run_dir, out_dir, inputs)
 
 
-def test_raw_stock_postseal_settlement_tail_is_date_only(world, monkeypatch):
+@pytest.mark.parametrize("explicit", [False, True])
+def test_raw_stock_postseal_settlement_tail_is_date_only(world, monkeypatch, explicit):
     run_dir, out_dir, inputs = _raw_stock_case(world)
     sessions = sorted({row["date"] for row in inputs["stock_bars"]})
     original = mio_greeks.ChainQuotes.chain
@@ -2323,11 +2324,11 @@ def test_raw_stock_postseal_settlement_tail_is_date_only(world, monkeypatch):
         return original(self, symbol, day, expiry)
 
     monkeypatch.setattr(mio_greeks.ChainQuotes, "chain", chain)
-    baseline = _raw_stock_run(run_dir, out_dir, inputs)
+    baseline = _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=explicit)
     baseline_reads = quote_reads.copy()
     quote_reads.clear()
     inputs["settlement_sessions"] = sessions + ["2021-07-01", "2021-07-02"]
-    out = _raw_stock_run(run_dir, out_dir, inputs)
+    out = _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=explicit)
     assert out["daily"] == baseline["daily"]
     assert out["trades"] == baseline["trades"]
     assert quote_reads == baseline_reads and quote_reads
