@@ -946,3 +946,8 @@ for skipped orders, so their fills can change. An unsupported-action row
 without a factor can remain only if stock inventory, prior/current exposure
 and a candidate trade are all absent. A nonzero unconvertible dividend refuses.
 The summary records unavailable signals, prices and affected opens.
+
+ADR-0314 Amendment 8 applies the held valuation NBBO rule in explicit
+availability mode. Parity still uses strict executable quotes. An absent held
+quote or zero vendor IV withholds the whole symbol signal. Present malformed
+data refuses, including null, negative or nonfinite vendor IV.

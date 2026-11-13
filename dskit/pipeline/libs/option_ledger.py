@@ -1689,10 +1689,17 @@ class DailyStockHedge(Node):
         explicit = self.params.get("explicit_availability", False)
         fields = (*self._MARKET_FIELDS, "signal_available", "price_available") if explicit else self._MARKET_FIELDS
         for row in inputs["market"]:
-            self._schema(row, fields)
+            reason_field = explicit and isinstance(row, dict) and "unavailable_signal_reasons" in row
+            self._schema(row, (*fields, "unavailable_signal_reasons") if reason_field else fields)
             signal = row.get("signal_available", True)
             priced = row.get("price_available", True)
             delta = row["delta_sh"]
+            if reason_field:
+                reasons = row["unavailable_signal_reasons"]
+                if (signal is not False or not isinstance(reasons, list) or not reasons
+                        or any(r not in ("absent_held_quote", "zero_vendor_iv") for r in reasons)
+                        or len(set(reasons)) != len(reasons)):
+                    raise ValueError("daily_stock: invalid market signal reasons")
             day, symbol = row["date"], row["symbol"]
             self._date(day)
             known = self._date(row["known_at"])
@@ -1833,12 +1840,15 @@ class DailyStockHedge(Node):
             if explicit:
                 for symbol in symbols:
                     if not market[day, symbol]["signal_available"]:
-                        unavailable_signals.append({"date": day, "symbol": symbol,
-                                                    "reason": "absent_held_quote"})
+                        for reason in market[day, symbol].get("unavailable_signal_reasons", ("absent_held_quote",)):
+                            unavailable_signals.append({"date": day, "symbol": symbol, "reason": reason})
                     if prior and not market[prior, symbol]["signal_available"]:
                         suppressed_opens.append({"date": day, "symbol": symbol, "signal_date": prior,
                                                  "reason": "scheduled_no_trade" if day in decisions
-                                                 else "absent_prior_close_signal"})
+                                                 else "absent_prior_close_signal",
+                                                 **({"signal_reasons": market[prior, symbol]["unavailable_signal_reasons"]}
+                                                    if "unavailable_signal_reasons" in market[prior, symbol]
+                                                    else {})})
             for event in dividends.get(day, []):
                 amount = state["shares"][event["symbol"]]*event["amount"]
                 state["pending"].append({"kind": "dividend", "due": event["pay_date"],

@@ -1180,34 +1180,43 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
             return [r for r in candidates if r["right"] == leg["right"] and
                     math.isclose(r["strike"], leg["strike"], rel_tol=1e-9, abs_tol=1e-12)]
 
-        absent = False
+        unavailable = set()
+        factor = book["factor"]
         forward, source = self._tools[ParityForward].from_chain(screened, spot)
         found = []
         for leg in book["legs"]:
             raw = matches(leg, rows)
             if not raw:
-                absent = True
+                unavailable.add("absent_held_quote")
                 continue
             if len(raw) != 1:
                 return None, self.DUPLICATE_QUOTE
-            if not number_ok(raw[0].get("basis_factor")) or not math.isclose(
-                    raw[0]["basis_factor"], book["factor"], rel_tol=1e-9):
+            quote = raw[0]
+            if not number_ok(quote.get("basis_factor")) or not math.isclose(
+                    quote["basis_factor"], factor, rel_tol=1e-9):
                 return None, "held_quote_basis"
-            good = matches(leg, screened)
-            if not good:
+            bid, ask = quote.get("bid"), quote.get("ask")
+            if (not number_ok(bid) or not number_ok(ask) or bid < 0 or ask <= 0 or ask < bid
+                    or any(type(quote.get(k)) is not int or quote[k] < 0
+                           for k in ("bid_size", "ask_size"))):
                 return None, "unusable_quote"
             try:
                 greek, code = self._tools[LegGreeks].of(
-                    {**leg, "expiry": book["expiry"]}, good[0], forward, spot, day)
+                    {**leg, "expiry": book["expiry"]},
+                    {**quote, "bid": bid/factor, "ask": ask/factor}, forward, spot, day)
             except (TypeError, ValueError, ArithmeticError):
                 return None, "unusable_quote"
+            iv = quote.get("iv")
+            if code == LegGreeks.NO_IV and number_ok(iv) and iv == 0:
+                unavailable.add("zero_vendor_iv")
+                continue
             if code:
                 return None, code
             if not number_ok(greek["delta_sh"]):
                 return None, "unusable_quote"
             found.append(greek)
-        if absent:
-            return None, "absent_held_quote"
+        if unavailable:
+            return None, tuple(sorted(unavailable))
         return BookGreeks.sum(found, forward, source), None
 
     def _parity_rows(self, book, day, rows):
@@ -1275,7 +1284,7 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
 
         for day in sessions:
             deltas = {symbol: [] for symbol in symbols}
-            active, unknown = set(), set()
+            active, unknown = set(), {}
             for book in books:
                 if book["fill_date"] <= day < book["expiry"]:
                     symbol = book["symbol"]
@@ -1284,8 +1293,8 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
                     if explicit and factor != book["factor"]:
                         raise GreeksRefusal("stock_inputs", "held quote and raw stock basis disagree")
                     greeks, reason = self._greeks_at(book, day, quotes, bars)
-                    if explicit and reason == "absent_held_quote":
-                        unknown.add(symbol)
+                    if explicit and isinstance(reason, tuple):
+                        unknown.setdefault(symbol, set()).update(reason)
                         continue
                     if reason:
                         raise GreeksRefusal("stock_greeks", reason)
@@ -1304,7 +1313,9 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
                 signal = symbol not in unknown
                 market.append({**bar, "delta_sh": math.fsum(deltas[symbol]) if signal else None,
                                "active": symbol in active, "known_at": day,
-                               **({"signal_available": signal, "price_available": (day, symbol) not in unavailable}
+                               **({"signal_available": signal, "price_available": (day, symbol) not in unavailable,
+                                   **({"unavailable_signal_reasons": sorted(unknown[symbol])}
+                                      if not signal else {})}
                                   if explicit else {})})
         return market, fallback
 
