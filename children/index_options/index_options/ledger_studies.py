@@ -63,6 +63,7 @@ backtests' metrics use.
 
 import argparse
 import json
+import logging
 import math
 import os
 import sys
@@ -1297,6 +1298,10 @@ class _SQLiteQuoteView:
             raise QuoteIndexIntegrityError(str(exc)) from exc
 
 
+#: ADR-0316 Amendment 2: the logger of the run-time hedge guard (a program week whose legs all lack an iv).
+_LOG = logging.getLogger(__name__)
+
+
 class ParityForwards:
     """The study's one owner of a day's usable chain rows, its spot and its parity forward (hedge and exposure share it).
 
@@ -1527,6 +1532,7 @@ class ReplayHedge:
         if self.block["ratio"] == 0:
             return groups, metadata, [], week
         kept_groups, kept_meta, refusals, names, htb_groups = [], [], [], set(), set()
+        priced = Counter()
         for group, meta in zip(groups, metadata, strict=True):
             symbol, decision, expiry, factor = meta["symbol"], meta["decision_date"], meta["expiry"], meta["factor"]
             forward, source = self.forward(symbol, decision, expiry, factor)
@@ -1541,9 +1547,11 @@ class ReplayHedge:
             self.counts["forward_spot"] += source != ParityForward.SOURCE_PARITY
             legs = [{"right": i["right"], "strike": i["strike"], "sign": i["sign"]} for i in meta["items"]]
             entries = self._entries(symbol, expiry, factor, decision, forward, legs)
+            priced["legs"] += len(entries)
             keep = []
             for index, entry in enumerate(entries):
                 if entry["status"] == "ok":
+                    priced["ok"] += 1
                     keep.append(index)
                     continue
                 week[self._exclusion_code(entry["status"])] += 1
@@ -1561,9 +1569,27 @@ class ReplayHedge:
             kept_groups.append(group)
             kept_meta.append(meta)
         week["htb_excluded_names"], week["htb_excluded_groups"] = len(names), len(htb_groups)
+        self._guard_all_no_iv(week, priced)
         week = Counter({k: v for k, v in week.items() if v})
         self.counts.update(week)
         return kept_groups, kept_meta, refusals, week
+
+    #: ADR-0316 Amendment 2: counts a program week whose priced legs had no ``ok`` item and at least one ``leg_no_iv``.
+    ALL_NO_IV = "weeks_all_legs_no_iv"
+
+    def _guard_all_no_iv(self, week, priced):
+        """Count and log, loudly, a week in which no priced leg could be hedged and some lacked an iv (ADR-0316 A2).
+
+        The first real hedged run priced every one of its 1,716,910 legs ``leg_no_iv`` (a ``vendor`` block on the
+        packet quote index, which carries no vol column) and equalled its unhedged base without a sign; such a week
+        now shows in the week's ``hedge.excluded``, in the method's hedge ``counts`` (both ``weeks_all_legs_no_iv``)
+        and as a log warning.
+        """
+        if priced["legs"] and not priced["ok"] and week["leg_no_iv_excluded"]:
+            week[self.ALL_NO_IV] += 1
+            _LOG.warning("HEDGE GUARD %s: none of the week's %d priced legs can be hedged and %d have no iv "
+                         "(iv_source %r): no hedged candidate this week", self.ALL_NO_IV, priced["legs"],
+                         week["leg_no_iv_excluded"], self.block.get("iv_source"))
 
     @staticmethod
     def restrict(group, meta, entries, keep):

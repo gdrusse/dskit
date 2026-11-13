@@ -2198,3 +2198,30 @@ def test_exposure_limits_no_groups_emit_no_rows():
     assert ox.ExposureLimits(LIMITS).rows(
         [{"id": "g", "symbol": "A", "dte": 10, "forward": 100.0, "items": []}],
         {"A": 1.0}, 10_000.0) == []
+
+
+# --- ADR-0316 Amendment 2: the vendor iv when the quote carries one, else the mid-implied vol -------------------------
+
+@pytest.mark.parametrize("quote,source", [
+    ({"iv": 0.9}, "vendor"),                       # a vendor iv is used, the mid is not re-implied
+    ({}, "mid"),                                   # no vol key (the MIO packet quote index): the mid-implied vol
+    ({"iv": None}, "mid"),                         # a null vendor iv: the mid-implied vol
+])
+def test_vendor_else_mid_takes_the_vendor_iv_when_present_and_the_mid_implied_vol_otherwise(quote, source):
+    forward, years = 100.0, 30 / 365
+    mid = black76("call", forward, 100.0, 0.22, years)
+    leg = {"right": "call", "strike": 100.0, "sign": 1, "quantity": 1, "expiry": "2024-03-31"}
+    quote = {"bid": mid - 0.01, "ask": mid + 0.01, **quote}
+    row, code = LegGreeks({**LEG, "iv_source": "vendor_else_mid"}).of(leg, quote, forward, forward, "2024-03-01")
+    params = {**LEG, "iv_source": source, **({"iv_disagree_tol": 0.05} if source == "mid" else {})}
+    alone, _ = LegGreeks(params).of(leg, quote, forward, forward, "2024-03-01")
+    assert code is None and row == {**alone, "iv_disagree": False}
+    assert row["iv"] == (pytest.approx(0.22, abs=1e-6) if source == "mid" else 0.9)
+    assert LegGreeks.validate_params({**LEG, "iv_source": "vendor_else_mid"}) == []  # no disagreement tolerance needed
+
+
+def test_vendor_else_mid_keeps_a_present_but_unusable_vendor_iv_refused():
+    leg = {"right": "call", "strike": 100.0, "sign": 1, "quantity": 1, "expiry": "2024-03-31"}
+    quote = {"bid": 2.0, "ask": 2.2, "iv": 0.0}
+    _, code = LegGreeks({**LEG, "iv_source": "vendor_else_mid"}).of(leg, quote, 100.0, 100.0, "2024-03-01")
+    assert code == "leg_no_iv"

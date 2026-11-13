@@ -58,8 +58,12 @@ __all__ = ["BookGreeks", "BookGreeksReport", "CellAttribution", "Concentration",
 
 #: Calendar days per year: the one divisor for years-to-expiry and per-day theta.
 DAYS_PER_YEAR = 365
-#: Where a leg's volatility comes from.
-IV_SOURCES = ("vendor", "mid")
+#: Where a leg's volatility comes from: the quote's vendor ``iv``, the Black-76 vol implied by its mid on the
+#: forward, or (ADR-0316 Amendment 2) the vendor ``iv`` when the quote carries one and the mid-implied vol when it
+#: carries none (``iv`` absent or ``None``; a present but unusable vendor iv still refuses ``leg_no_iv``).
+IV_SOURCES = ("vendor", "mid", "vendor_else_mid")
+#: The source that falls back to the mid-implied vol when the quote has no vendor ``iv`` (ADR-0316 Amendment 2).
+IV_VENDOR_ELSE_MID = IV_SOURCES[2]
 #: The default volatility source (vendor ``iv``); named once.
 DEFAULT_IV_SOURCE = IV_SOURCES[0]
 #: The forward sources a chain gives.
@@ -284,8 +288,9 @@ class LegGreeks(_Configured):
     ----------
     params : dict
         ``rate`` (finite number, required; 0.0 allowed) — the Black-76
-        discount rate. ``iv_source`` (``"vendor"`` default, or ``"mid"`` to
-        re-imply the vol from the quote mid). ``multiplier`` (number > 0,
+        discount rate. ``iv_source`` (``"vendor"`` default, ``"mid"`` to
+        re-imply the vol from the quote mid, or ``"vendor_else_mid"``: the vendor
+        ``iv`` when the quote carries one, else the mid-implied vol). ``multiplier`` (number > 0,
         required). ``min_years`` (number > 0, required) — a leg closer to
         expiry is refused. ``vol_floor`` (number >= 0, required) — a vol
         below it is unusable. ``iv_disagree_tol`` (number > 0; required when
@@ -328,7 +333,10 @@ class LegGreeks(_Configured):
 
     def _vol(self, leg, quote, forward, years):
         """Return the usable vol, or ``None``."""
-        if self.params.get("iv_source", DEFAULT_IV_SOURCE) == "vendor":
+        source = self.params.get("iv_source", DEFAULT_IV_SOURCE)
+        if source == IV_VENDOR_ELSE_MID:
+            source = "mid" if quote.get("iv") is None else "vendor"
+        if source == "vendor":
             vol = quote.get("iv")
         else:
             mid = (quote["bid"] + quote["ask"]) / 2

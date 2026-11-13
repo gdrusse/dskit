@@ -29,7 +29,7 @@ forwards and the daily mark forward are INPUTS (``context["forward"]``, ``mark(l
 rule, the hard-to-borrow proxy and the hedged maximum loss are imported (``StaticDeltaHedge.carry_costs``,
 ``HardToBorrowProxy``, ``structure_max_loss``). Every refusal is a stable code (:data:`REFUSALS`) that
 starts its message. Counted, never silent: the ``LegGreeks`` codes, ``hedge_hard_to_borrow``,
-``hedge_small_delta``, ``rounding_residual``, ``mark_forward_carried`` and the ``books_<status>`` of
+``hedge_small_delta``, ``rounding_residual``, ``mark_forward_carried``, ``leg_iv_mid`` and the ``books_<status>`` of
 :meth:`HedgeOverlay.classify_book`. Import cost: stdlib only (``bridges`` imports numpy when called).
 """
 
@@ -43,6 +43,7 @@ from dskit.pipeline.option_exposure import (
     HEDGE_OK_FORWARD,
     HEDGE_UNBOUNDED,
     IV_SOURCES,
+    IV_VENDOR_ELSE_MID,
     PLACEHOLDER_HEDGE_RATES,
     ForwardHedge,
     HardToBorrowProxy,
@@ -79,6 +80,8 @@ REFUSALS = (UNKNOWN_KIND, UNKNOWN_KEY, MISSING_KEY, RATIO_RANGE, MODE, PARAM_VAL
 #: Counter names (see the module docstring).
 RAW_UNITS_SNAP = 1e-9
 ROUNDING_RESIDUAL, SMALL_DELTA, MARK_CARRIED = "rounding_residual", "hedge_small_delta", "mark_forward_carried"
+#: ADR-0316 Amendment 2: a leg a ``vendor_else_mid`` hedge priced on its mid-implied vol (the quote had no vendor iv).
+LEG_IV_MID = "leg_iv_mid"
 BOOKS_PREFIX = "books_"
 #: Item and book statuses beside the ``LegGreeks`` refusal codes.
 STATUS_OK, STATUS_HTB, STATUS_UNBOUNDED = HEDGE_OK_FORWARD, HEDGE_HTB, HEDGE_UNBOUNDED
@@ -503,7 +506,9 @@ class FixedDeltaForwardHedge(HedgeOverlay):
     ----------
     params : dict
         The base keys of :class:`HedgeOverlay` plus ``delta_source`` (``"black76_chain_forward"``),
-        ``iv_source`` (``"vendor"`` or ``"mid"``) and ``rate`` (finite number).
+        ``iv_source`` (``"vendor"``, ``"mid"`` or ``"vendor_else_mid"``: the vendor iv when the quote
+        carries one, else the Black-76 vol implied by its mid on the forward; each such leg is counted
+        ``leg_iv_mid``) and ``rate`` (finite number).
 
     Examples
     --------
@@ -622,6 +627,8 @@ class FixedDeltaForwardHedge(HedgeOverlay):
                 self.counts[code] += 1
                 out.append(self._entry(0.0, code, flagged))
                 continue
+            if self.params["iv_source"] == IV_VENDOR_ELSE_MID and any(q.get("iv") is None for q in item["quotes"]):
+                self.counts[LEG_IV_MID] += sum(q.get("iv") is None for q in item["quotes"])
             if self.params["mode"] == "program" and abs(delta) / context["multiplier"] < self.params["small_delta"]:
                 self.counts[SMALL_DELTA] += 1
                 out.append(self._entry(0.0, STATUS_OK, flagged, delta))

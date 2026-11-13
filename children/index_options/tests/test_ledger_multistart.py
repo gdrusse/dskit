@@ -417,8 +417,8 @@ from test_ledger_studies import FAST_LOCAL_FORMULATIONS, _PROGRAM_BLOCK  # noqa:
 
 #: The two hedge kinds of ADR-0316, both ``program`` mode: the fixed entry hedge held to expiry, and the same entry
 #: re-struck every session (the owner's defaults: ratio 1.0 when hedged, 252 re-hedge sessions a year).
-STATIC_BLOCK = dict(_PROGRAM_BLOCK)
-DYNAMIC_BLOCK = {**_PROGRAM_BLOCK, "kind": "daily_delta_forward", "rehedge_sessions_per_year": 252, "rehedge_paths": 4,
+STATIC_BLOCK = {**_PROGRAM_BLOCK, "iv_source": "vendor_else_mid"}
+DYNAMIC_BLOCK = {**STATIC_BLOCK, "kind": "daily_delta_forward", "rehedge_sessions_per_year": 252, "rehedge_paths": 4,
                  "rehedge_seed": 20261113}
 _HEDGED_BASES = {**MULTISTART3_FORMULATIONS, **FAST_LOCAL_FORMULATIONS,
                  "kelly050_ls_lp": LOCAL_FORMULATIONS["kelly050_ls_lp"],
@@ -931,3 +931,75 @@ def test_reserve_over_needs_a_breached_cap_and_restruck_growth_and_only_a_rebala
     assert daily.counts["rehedge_reserve_over"] == 1
     fixed = ledger_studies.ReplayHedge(study, HEDGED_FORMULATIONS["kelly075_ls_hedged_static_lp"]["hedge"], _PARITY)
     assert fixed.reserve_over([grown], breach) is None and "rehedge_reserve_over" not in fixed.counts
+
+
+# --- ADR-0316 Amendment 2: the hedged ids price their legs on the quote layout the real runs read --------------------
+
+def _real_layout(world, layout):
+    """``world`` with its chain rows in a real run's layout: ``index`` = the MIO packet's quote index (no vol column at
+    all), ``archive`` = the onboarded Theta archive (the vendor vol under ``implied_volatility``, no ``iv`` key)."""
+    params, inputs = world
+    for row in inputs["X"]["chain"]:
+        iv = row.pop("iv")
+        if layout == "archive":
+            row["implied_volatility"] = iv
+    return params, inputs
+
+
+def test_the_twelve_ids_take_the_vendor_iv_else_the_mid_implied_vol():
+    assert {m["hedge"]["iv_source"] for m in HEDGED_FORMULATIONS.values()} == {"vendor_else_mid"}
+    assert {k: v for k, v in STATIC_BLOCK.items() if k != "iv_source"} == {
+        k: v for k, v in _PROGRAM_BLOCK.items() if k != "iv_source"}
+
+
+@pytest.mark.parametrize("layout", ["index", "archive"])
+def test_on_the_real_layout_a_vendor_block_hedges_nothing_and_the_guard_counts_and_logs_the_week(layout, caplog):
+    """The defect of the first real hedged run: every leg ``leg_no_iv``, every twin missing, the unhedged base traded."""
+    import logging
+
+    world = _real_layout(_hedged_world(), layout)
+    params, inputs, arm, study = _hedged_study("kelly075_ls_hedged_static_lp", world, {"iv_source": "vendor"})
+    with caplog.at_level(logging.WARNING, logger="index_options.ledger_studies"):
+        result = study._method(arm, None)
+    week, counts = result["decisions"][0], result["hedge"]["counts"]
+    assert counts["leg_no_iv"] == counts["leg_no_iv_excluded"] > 0 and "leg_iv_mid" not in counts
+    assert counts["weeks_all_legs_no_iv"] == week["hedge"]["excluded"]["weeks_all_legs_no_iv"] == 1
+    assert not any(leg[4] for book in week["books"] for leg in _legs(book))
+    assert any("HEDGE GUARD weeks_all_legs_no_iv" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("layout", ["index", "archive"])
+@pytest.mark.parametrize("name", ["kelly075_ls_hedged_static_lp", "kelly075_ls_hedged_dynamic_lp"])
+def test_on_the_real_layout_the_hedged_ids_price_from_the_mid_and_choose_hedged_twins(layout, name):
+    params, inputs, arm, study = _hedged_study(name, _real_layout(_hedged_world(), layout))
+    result = study._method(arm, None)
+    week, counts = result["decisions"][0], result["hedge"]["counts"]
+    # Only the two sides of the 100 call, quoted under its intrinsic value (no Black-76 vol fits), lack an iv.
+    assert counts["leg_no_iv"] == week["hedge"]["excluded"]["leg_no_iv_excluded"] == 2
+    assert counts["leg_iv_mid"] > 0 and "weeks_all_legs_no_iv" not in counts
+    hedged = [leg for book in week["books"] for leg in _legs(book) if leg[4]]
+    assert hedged and all(trade["hedge"]["units"] != 0 for trade in result["trades"])
+    again = _hedged_study(name, _real_layout(_hedged_world(), layout))[3]._method(arm, None)  # certificates read the clock
+    assert (again["trades"], again["curve"], again["hedge"]) == (result["trades"], result["curve"], result["hedge"])
+    assert [w.get("selection") for w in again["decisions"]] == [w.get("selection") for w in result["decisions"]]
+    assert study._method(arm, None, recorded=result) == result, "the recorded route replays it exactly"
+
+
+@pytest.mark.parametrize("layout", ["fixture", "index", "archive"])
+def test_the_program_hedge_prices_each_leg_as_the_replay_hedge_does(layout):
+    """Replay parity: a hedged id's candidate entries equal the replay hedge's (ADR-0312 A1 S3) for the same legs: the
+    vendor iv where the quote carries one, else the mid-implied vol the real replay runs used (``iv_source: "mid"``)."""
+    world = _hedged_world() if layout == "fixture" else _real_layout(_hedged_world(), layout)
+    _, _, _, study = _hedged_study("kelly075_ls_hedged_static_lp", world)
+    program = ledger_studies.ReplayHedge(study, STATIC_BLOCK, _PARITY, optional=True)
+    source = "vendor" if layout == "fixture" else "mid"
+    replay = ledger_studies.ReplayHedge(study, {**_REPLAY_BLOCK, "iv_source": source}, _PARITY)
+    day, expiry = "2019-01-02", "2019-02-01"
+    legs = [{"right": r["right"], "strike": r["strike"], "sign": sign}
+            for r in program._chain("X", day, expiry) for sign in (1, -1)]
+    forward, _ = program.forward("X", day, expiry, 1.)
+    mine = program._entries("X", expiry, 1., day, forward, legs)
+    theirs = replay._entries("X", expiry, 1., day, forward, legs)
+    assert [(e["status"], e["delta_f_sh"], e["units"]) for e in mine] == [
+        (e["status"], e["delta_f_sh"], e["units"]) for e in theirs]
+    assert sum(e["status"] == "ok" for e in mine) > len(mine) // 2
