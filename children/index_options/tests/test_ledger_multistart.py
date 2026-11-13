@@ -410,13 +410,16 @@ def test_a_calendar_day_without_a_bar_inside_the_window_is_unsettleable():
 
 
 # --- ADR-0316: the hedge inside the search (static and daily re-struck), on new ids --------------------------------
+# Amendment 1 (owner rulings 2026-11-13): hedging is optional contract by contract and the search decides; the daily
+# hedge is scored on seeded path scenarios; a re-struck reserve over the cap blocks new admissions.
 
 from test_ledger_studies import FAST_LOCAL_FORMULATIONS, _PROGRAM_BLOCK  # noqa: E402
 
 #: The two hedge kinds of ADR-0316, both ``program`` mode: the fixed entry hedge held to expiry, and the same entry
-#: re-struck every session.
+#: re-struck every session (the owner's defaults: ratio 1.0 when hedged, 252 re-hedge sessions a year).
 STATIC_BLOCK = dict(_PROGRAM_BLOCK)
-DYNAMIC_BLOCK = {**_PROGRAM_BLOCK, "kind": "daily_delta_forward", "rehedge_sessions_per_year": 252}
+DYNAMIC_BLOCK = {**_PROGRAM_BLOCK, "kind": "daily_delta_forward", "rehedge_sessions_per_year": 252, "rehedge_paths": 4,
+                 "rehedge_seed": 20261113}
 _HEDGED_BASES = {**MULTISTART3_FORMULATIONS, **FAST_LOCAL_FORMULATIONS,
                  "kelly050_ls_lp": LOCAL_FORMULATIONS["kelly050_ls_lp"],
                  "kelly075_ls_lp": {**LOCAL_FORMULATIONS["kelly050_ls_lp"],
@@ -428,8 +431,12 @@ HEDGED_FORMULATIONS = {
     for kind, block_ in (("static", STATIC_BLOCK), ("dynamic", DYNAMIC_BLOCK))}
 
 
-def _hedged_world():
-    """The program-hedge world with a kelly history; one decision week, every strike of the 2019-02-01 expiry."""
+def _hedged_world(cheap_call=True):
+    """The program-hedge world with a kelly history; one decision week, every strike of the 2019-02-01 expiry.
+
+    ``cheap_call`` prices the 100 call far under parity on the decision and fill sessions, which makes the hedged
+    synthetic forward (sold 100 put, bought 100 call, sold stock) the best book; without it the chain is fair.
+    """
     from datetime import date, timedelta
 
     params, inputs = _program_world()
@@ -446,16 +453,22 @@ def _hedged_world():
     params["decision_weeks"] = ["2019-01-02"]
     _for_kelly(params)
     for row in inputs["X"]["chain"]:
-        if row["date"] in ("2019-01-02", "2019-01-03") and row["strike"] == 100 and row["type"] == "call":
+        if (cheap_call and row["date"] in ("2019-01-02", "2019-01-03") and row["strike"] == 100
+                and row["type"] == "call"):
             row["bid"], row["ask"] = .15, .16
     return params, inputs
 
 
-def _hedged_run(name, monkeypatch=None):
-    params, inputs = _hedged_world()
+def _hedged_study(name, world, block=None):
+    params, inputs = world
     arm = {"id": name, **copy.deepcopy(HEDGED_FORMULATIONS[name])}
+    arm["hedge"].update(block or {})
     params.update(methods=[arm], hedge_parity=dict(_PARITY), locked_method_ids=list(FORMULATIONS))
-    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    return params, inputs, arm, ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+
+
+def _hedged_run(name, monkeypatch=None, cheap_call=True, block=None):
+    params, inputs, arm, study = _hedged_study(name, _hedged_world(cheap_call), block)
     seen = []
     if monkeypatch is not None:
         from dskit.pipeline.libs.pyomo import TransportActionScore
@@ -468,6 +481,16 @@ def _hedged_run(name, monkeypatch=None):
     return params, inputs, arm, study, study._method(arm, None), seen
 
 
+def _legs(book):
+    return [(leg["right"], leg["strike"], leg["sign"], leg["quantity"], leg.get("hedged", False)) for leg in book["legs"]]
+
+
+def _option_pnl(trade, level):
+    return trade["credit"] + 100 * sum(
+        leg["sign"] * leg["quantity"] * max((leg["strike"] - level) if leg["right"] == "put" else (level - leg["strike"]), 0.)
+        for leg in trade["legs"])
+
+
 def test_the_hedged_formulations_are_their_bases_plus_the_block_and_validate_on_new_ids():
     assert sorted(HEDGED_FORMULATIONS) == sorted(
         f"kelly{f}_ls{v}_hedged_{k}_lp" for f in ("050", "075") for v in ("", "_fast", "_multistart3")
@@ -475,7 +498,8 @@ def test_the_hedged_formulations_are_their_bases_plus_the_block_and_validate_on_
     for name, method in HEDGED_FORMULATIONS.items():
         base = name.replace("_hedged_static_lp", "_lp").replace("_hedged_dynamic_lp", "_lp")
         assert {k: v for k, v in method.items() if k != "hedge"} == _HEDGED_BASES[base]
-        assert method["hedge"]["mode"] == "program"
+        assert method["hedge"]["mode"] == "program" and method["hedge"]["ratio"] == 1.0
+        assert method["hedge"].get("rehedge_sessions_per_year", 252) == 252
         params, _ = _hedged_world()
         params.update(methods=[{"id": name, **method}], hedge_parity=dict(_PARITY), locked_method_ids=list(FORMULATIONS))
         ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
@@ -488,7 +512,7 @@ def test_the_hedged_formulations_are_their_bases_plus_the_block_and_validate_on_
         ledger_studies.WeeklyOptionPortfolioStudy._hedge_configuration(params)
 
 
-@pytest.mark.parametrize("name", ["kelly075_ls_multistart3_hedged_static_lp", "kelly050_ls_fast_hedged_static_lp"])
+@pytest.mark.parametrize("name", ["kelly075_ls_hedged_static_lp", "kelly050_ls_fast_hedged_static_lp"])
 def test_the_search_scores_the_hedged_program_and_the_chosen_book_fills_with_its_hedge(monkeypatch, name):
     from dskit.pipeline.option_structures import structure_max_loss
 
@@ -501,7 +525,8 @@ def test_the_search_scores_the_hedged_program_and_the_chosen_book_fills_with_its
     hedge = book["program_hedge"]
     # The scenario payoff carries the hedge: every joint term is the hedged loss row (-u_i (S - F_0) beside the option).
     groups, metadata, _ = study._prepare("2019-01-02")
-    _, hmeta, _, _ = ledger_studies.ReplayHedge(study, arm["hedge"], _PARITY).candidates(groups, metadata, 100)
+    _, hmeta, _, _ = ledger_studies.ReplayHedge(study, arm["hedge"], _PARITY, optional=True).candidates(
+        groups, metadata, 100)
     units, reference = hmeta[0]["program_hedge"]["units"], hmeta[0]["program_hedge"]["reference"]
     assert any(units) and reference == hedge["reference"]
     assert group["losses"][0] == study._loss_row(hmeta[0]["items"], group["grid"][0], 100, (units, reference))
@@ -509,6 +534,9 @@ def test_the_search_scores_the_hedged_program_and_the_chosen_book_fills_with_its
     assert group["linear_rows"] == [{"coefficients": group["linear_rows"][0]["coefficients"], "upper": 0.}]
     scenario = next(s for s in program["utility"]["joint"] if s["id"] != "market:0")
     assert set(scenario["terms"]) == {group["id"]}
+    # The search took the cheap synthetic forward HEDGED and sold further puts unhedged, in one book.
+    assert {leg[4] for leg in _legs(book)} == {True, False}
+    assert all(leg[:3] == ("put", leg[1], -1) for leg in _legs(book) if not leg[4])
     # The hedged reserve is the program's: the book's reserve is its hedged maximum loss, inside the shared cap.
     held = week["selection"]["quantities"][0]
     raw = sum(u * q for u, q in zip(units, held))
@@ -518,27 +546,87 @@ def test_the_search_scores_the_hedged_program_and_the_chosen_book_fills_with_its
                               hedge=(hedge["units_raw"], reference))
     assert book["reserve"] >= loss - 1e-6 and book["reserve"] <= program["caps"][0]["upper"] + 1e-6
     assert week["selection"]["reserves"][0] == pytest.approx(book["reserve"], abs=1e-3)
-    # The fill applies exactly the hedge the search chose: the decision units, truncated once, struck at the fill forward.
+    # The fill applies exactly the hedge the search chose: the HEDGED legs' decision units, truncated once, at the fill forward.
     trade, = result["trades"]
-    assert trade["hedge"]["status"] == "ok" and trade["hedge"]["units"] == math.trunc(raw)
+    assert trade["hedge"]["status"] == "ok" and trade["hedge"]["units"] == math.trunc(round(raw, 9)) != 0
     assert trade["hedge"]["raw"] == pytest.approx(raw, abs=1e-9) and "rehedges" not in trade["hedge"]
+    only = sum(u * q for u, q, item in zip(units, held, hmeta[0]["items"]) if item.get("hedged"))
+    assert only == raw, "an unhedged leg carries no units"
     level = next(row["close"] for row in inputs["X"]["bars"] if row["date"] == trade["close_date"])
     rates, u, f = trade["hedge"]["rates"], trade["hedge"]["units"], trade["hedge"]["reference"]
     costs = abs(u) * (2 * rates["hedge_fee_per_share"] + (f + level) * rates["hedge_half_spread_bps"] / 1e4)
-    options = trade["credit"] + 100 * sum(
-        leg["sign"] * leg["quantity"] * max((leg["strike"] - level) if leg["right"] == "put" else (level - leg["strike"]), 0.)
-        for leg in trade["legs"])
-    assert trade["pnl"] == pytest.approx(options + u * (level - f) - costs)
+    assert trade["pnl"] == pytest.approx(_option_pnl(trade, level) + u * (level - f) - costs)
 
 
-def test_the_hedged_search_differs_from_the_replay_pairing_which_scores_the_unhedged_program(monkeypatch):
-    _, _, _, _, hedged, seen = _hedged_run("kelly075_ls_multistart3_hedged_static_lp", monkeypatch)
-    params, inputs = _hedged_world()
-    base = {"id": "kelly075_ls_multistart3_lp", **copy.deepcopy(MULTISTART3_FORMULATIONS["kelly075_ls_multistart3_lp"])}
-    params["methods"] = [base]
-    plain = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(base, None)
-    assert seen[-1]["groups"][0]["losses"] != seen[0]["groups"][0]["losses"]
-    assert plain["decisions"][0]["selection"]["quantities"] != hedged["decisions"][0]["selection"]["quantities"]
+def test_every_contract_is_offered_unhedged_and_as_a_hedged_twin_and_the_two_are_exclusive(monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+
+    name = "kelly075_ls_hedged_static_lp"
+    params, inputs, arm, study, result, seen = _hedged_run(name, monkeypatch)
+    program = next(p for p in seen if "utility" in p)
+    group, = program["groups"]
+    (base,), (meta,), _ = study._prepare("2019-01-02")
+    n = len(base["capacity"])
+    hedge = ledger_studies.ReplayHedge(study, arm["hedge"], _PARITY, optional=True)
+    (wide,), (hmeta,), refusals, _ = hedge.candidates([base], [meta], 100)
+    twins = hmeta["hedge_twins"]
+    assert twins == n and len(group["capacity"]) == 2 * n and not refusals   # every item of this chain can be hedged
+    # the first n columns are the unhedged group, bit for bit; the twins repeat the contracts with ``hedged: True``
+    assert group["credit"][:n] == base["credit"] and group["capacity"] == base["capacity"] * 2
+    assert [row[:n] for row in group["losses"]] == base["losses"]
+    assert [row[:n] for row in wide["reserve_rows"][:len(base["reserve_rows"])]] == base["reserve_rows"]
+    assert group["linear_rows"][0]["coefficients"][:n] == base["linear_rows"][0]["coefficients"]
+    assert hmeta["items"][:n] == meta["items"] and all("hedged" not in item for item in meta["items"])
+    assert hmeta["items"][n:] == [{**item, "hedged": True} for item in meta["items"]]
+    assert hmeta["program_hedge"]["units"][:n] == [0.0] * n and all(hmeta["program_hedge"]["units"][n:])
+    assert hmeta["program_hedge"]["costs"][:n] == [0.0] * n and all(c > 0 for c in hmeta["program_hedge"]["costs"][n:])
+    # a contract is held once: against its twin, and against the other side in every hedged / unhedged combination
+    pairs = {tuple(sorted(pair)) for pair in group["exclusive"]}
+    for i in range(n):
+        assert (i, n + i) in pairs
+    for a, b in base["exclusive"]:
+        assert {(a, b), tuple(sorted((a, n + b))), tuple(sorted((n + a, b))), (n + a, n + b)} <= pairs
+    assert len(pairs) == len(group["exclusive"]) == n + 4 * len(base["exclusive"])
+    assert result["decisions"][0]["candidate_contracts"] == n // 2, "a twin is not a further candidate contract"
+    # a naked short put is feasible UNHEDGED; its hedged twin alone is unbounded above (sold stock), so it is refused
+    scorer = TransportActionScore(program, {"parity_tolerance": params["solver"]["parity_tolerance"]})
+    put = next(i for i, item in enumerate(meta["items"]) if (item["right"], item["sign"], item["strike"]) == ("put", -1, 100.))
+    one = lambda *held: [[1 if i in held else 0 for i in range(2 * n)]]            # noqa: E731
+    naked = scorer.evaluate(one(put))
+    assert naked["reserves"][0] == pytest.approx(100 * 100. - base["credit"][put])
+    with pytest.raises(ValueError):
+        scorer.evaluate(one(n + put))
+    with pytest.raises(ValueError, match="exclusive"):
+        scorer.evaluate(one(put, n + put))
+    # an optional hedge keeps a group it cannot hedge (no decision forward) and an item it cannot price, unhedged
+    monkeypatch.setattr(ledger_studies.ReplayHedge, "forward", lambda self, *a, **k: (None, "forward_unavailable"))
+    kept, kmeta, refusals, counts = ledger_studies.ReplayHedge(study, arm["hedge"], _PARITY, optional=True).candidates(
+        [base], [meta], 100)
+    assert kept == [base] and kmeta == [meta] and not refusals and counts == {"hedge_forward_unavailable": 1}
+
+
+@pytest.mark.parametrize("name", ["kelly075_ls_hedged_static_lp", "kelly075_ls_hedged_dynamic_lp"])
+def test_the_search_trades_a_naked_short_put_unhedged_when_that_is_the_better_book(name):
+    params, inputs, arm, study, result, _ = _hedged_run(name, cheap_call=False)      # a fair chain: no cheap synthetic
+    book, = result["decisions"][0]["books"]
+    assert _legs(book) == [("put", 100.0, -1, 5, False)], "sold puts, no leg hedged, nothing bought"
+    trade, = result["trades"]
+    assert trade["hedge"] == {"status": "unhedged_chosen", "units": 0} and not result["rejected"]
+    assert trade["reserve"] == pytest.approx(5 * 100 * 100. - trade["credit"])     # the unhedged maximum loss
+    level = next(row["close"] for row in inputs["X"]["bars"] if row["date"] == trade["close_date"])
+    assert trade["pnl"] == pytest.approx(_option_pnl(trade, level)) and result["pnl"] == pytest.approx(trade["pnl"])
+    assert result["hedge"]["counts"]["books_unhedged_chosen"] == 1
+    assert not any(k.startswith("rehedge") and v for k, v in result["hedge"]["counts"].items())
+    assert study._method(arm, None, recorded=result) == result
+
+
+def test_the_search_drops_the_hedge_when_its_cost_takes_the_edge_and_keeps_it_when_it_pays():
+    cheap = _hedged_run("kelly075_ls_hedged_static_lp")[4]
+    dear = _hedged_run("kelly075_ls_hedged_static_lp",
+                       block={"hedge_cost_source": "measured", "hedge_half_spread_bps": 400.0})[4]
+    assert any(leg[4] for leg in _legs(cheap["decisions"][0]["books"][0])) and cheap["trades"][0]["hedge"]["units"]
+    assert not any(leg[4] for leg in _legs(dear["decisions"][0]["books"][0]))
+    assert dear["trades"][0]["hedge"]["status"] == "unhedged_chosen"
 
 
 @pytest.mark.parametrize("name", sorted(HEDGED_FORMULATIONS))
@@ -549,7 +637,7 @@ def test_a_hedged_search_is_deterministic_and_replays_from_record_and_worker(nam
     again = _hedged_run(name)[4]                                   # a stage-one certificate's seconds read the clock
     assert again["trades"] == result["trades"] and again["curve"] == result["curve"]
     assert [w.get("selection") for w in again["decisions"]] == [w.get("selection") for w in result["decisions"]]
-    assert result["trades"] and result["trades"][0]["hedge"]["status"] == "ok"
+    assert result["trades"] and result["trades"][0]["hedge"]["status"] in ("ok", "unhedged_chosen")
     assert study._method(arm, None, recorded=result) == result
     claim = MIOMethodWorker.actions(result, study.weeks)
     replay = study._method(arm, None, derived=claim)
@@ -563,50 +651,137 @@ def test_a_hedged_search_is_deterministic_and_replays_from_record_and_worker(nam
 
 
 def test_the_dynamic_hedge_enters_as_the_static_one_and_charges_the_expected_rehedge_cost_in_the_program(monkeypatch):
-    _, _, _, _, static, first = _hedged_run("kelly075_ls_multistart3_hedged_static_lp", monkeypatch)
-    _, _, _, _, dynamic, second = _hedged_run("kelly075_ls_multistart3_hedged_dynamic_lp", monkeypatch)
+    _, _, _, _, static, first = _hedged_run("kelly075_ls_hedged_static_lp", monkeypatch)
+    _, _, _, _, dynamic, second = _hedged_run("kelly075_ls_hedged_dynamic_lp", monkeypatch)
     fixed, daily = first[0]["groups"][0], second[0]["groups"][0]
+    n = len(fixed["credit"]) // 2
     assert all(d <= f for d, f in zip(daily["credit"], fixed["credit"])) and daily["credit"] != fixed["credit"]
+    assert daily["credit"][:n] == fixed["credit"][:n], "an unhedged contract pays no re-hedge cost"
     # the same entry hedge: the loss rows (scenario payoffs) are the static ones; only the cost moved
     assert daily["losses"] == fixed["losses"] and daily["linear_rows"] == fixed["linear_rows"]
     a, b = static["trades"][0]["hedge"], dynamic["trades"][0]["hedge"]
-    if static["decisions"][0]["selection"]["quantities"] == dynamic["decisions"][0]["selection"]["quantities"]:
-        assert (a["units"], a["reference"]) == (b["units"], b["reference"])
+    assert static["decisions"][0]["selection"]["quantities"] == dynamic["decisions"][0]["selection"]["quantities"]
+    assert (a["units"], a["reference"]) == (b["units"], b["reference"]) and b["rehedges"] == []
+
+
+def test_the_dynamic_scenarios_are_the_static_moves_split_into_seeded_paths_carrying_the_rehedge_excess(monkeypatch):
+    name = "kelly075_ls_hedged_dynamic_lp"
+    _, _, _, _, _, first = _hedged_run("kelly075_ls_hedged_static_lp", monkeypatch)
+    params, inputs, arm, study, result, second = _hedged_run(name, monkeypatch)
+    static = next(p for p in first if "utility" in p)["utility"]["joint"]
+    program = next(p for p in second if "utility" in p)
+    joint, gid = program["utility"]["joint"], program["groups"][0]["id"]
+    week = result["decisions"][0]["kelly"]
+    paths = arm["hedge"]["rehedge_paths"]
+    cells = [(0., week["quiet"])] + [(m, week["weights"][str(m)]) for m in arm["kelly"]["moves"] if week["weights"][str(m)] > 0]
+    assert len(cells) > 2 and len(static) == len(cells)
+    assert week["rehedge_paths"] == {"paths": paths, "seed": arm["hedge"]["rehedge_seed"], "scenarios": len(joint)}
+    assert [s["id"] for s in joint] == [f"market:{m}:path{k}" for m, _ in cells for k in range(paths)]
+    assert [s["weight"] for s in joint] == [w / paths for _, w in cells for _ in range(paths)]
+    assert sum(s["weight"] for s in joint) == pytest.approx(1.)
+    # the hand calculation: every twin's term is its static term plus the path's re-hedge excess less the mean excess
+    groups, metadata, _ = study._prepare("2019-01-02")
+    hedge = ledger_studies.ReplayHedge(study, arm["hedge"], _PARITY, optional=True)
+    _, (meta,), _, _ = hedge.candidates(groups, metadata, 100)
+    ov, entries, n = hedge.overlay, meta["program_hedge"]["entries"], len(meta["items"]) // 2
+    beta, sigma, steps = week["betas"]["X"], week["sigma_daily"], hedge.overlay.sessions(meta["dte"])
+    assert steps == 21 and sigma > 0
+    excess = {}
+    for c, (move, _) in enumerate(cells):
+        for k, bridge in enumerate(ov.bridges(steps, (c,))):
+            levels = ov.path(meta["program_hedge"]["reference"], max(0., meta["spot"] * (1 + beta * move)),
+                             beta * sigma, bridge)
+            assert len(levels) == steps + 1
+            excess[c, k] = [ov.path_excess(e, levels, meta["dte"]) for e in entries]
+    mean = [sum(w / paths * excess[c, k][i] for c, (_, w) in enumerate(cells) for k in range(paths))
+            for i in range(2 * n)]
+    by_id = {s["id"]: s for s in joint}
+    flat = {s["id"]: s["terms"].get(gid, [0.] * 2 * n) for s in static}
+    seen_excess = set()
+    for c, (move, _) in enumerate(cells):
+        base = flat["market:0" if not c else f"market:{move}"]
+        for k in range(paths):
+            terms = by_id[f"market:{move}:path{k}"]["terms"][gid]
+            assert terms[:n] == pytest.approx(base[:n], abs=1e-9), "an unhedged contract has no path term"
+            assert all(x == 0.0 for x in excess[c, k][:n])
+            assert terms[n:] == pytest.approx([base[i] + excess[c, k][i] - mean[i] for i in range(n, 2 * n)], abs=1e-7)
+            seen_excess.add(round(excess[c, k][n], 6))
+    assert len(seen_excess) == len(cells) * paths, "every path re-hedges differently"
+    # the paths add dispersion, never edge: each contract's weighted mean term is zero, as the static scenarios' is
+    for i in range(2 * n):
+        assert sum(s["weight"] * s["terms"][gid][i] for s in joint) == pytest.approx(0., abs=1e-7)
+    # a hedge that never moves (the synthetic forward: put and call twins of one strike) has no excess beyond float order
+    put = next(i for i in range(n, 2 * n) if (meta["items"][i]["right"], meta["items"][i]["sign"], meta["items"][i]["strike"]) == ("put", -1, 100.))
+    call = next(i for i in range(n, 2 * n) if (meta["items"][i]["right"], meta["items"][i]["sign"], meta["items"][i]["strike"]) == ("call", 1, 100.))
+    assert max(abs(row[put]) for row in excess.values()) > 100.
+    # ... beyond its trade costs, which the program charges per item (gross): the two twins' re-hedge P&L cancels
+    assert all(-10. < row[put] + row[call] < 0. for row in excess.values())
+    free = type(ov)({**arm["hedge"], "hedge_cost_source": "measured", "hedge_fee_per_share": 0., "hedge_half_spread_bps": 0.})
+    levels = ov.path(meta["program_hedge"]["reference"], 90., beta * sigma, ov.bridges(steps, (1,))[0])
+    assert free.path_excess(entries[put], levels, meta["dte"]) == pytest.approx(
+        -free.path_excess(entries[call], levels, meta["dte"]), abs=1e-7)
+    assert abs(free.path_excess(entries[put], levels, meta["dte"])) > 10.
+    # determinism: the same program from a second study
+    assert _hedged_run(name, monkeypatch)[5][-1]["utility"]["joint"] == joint
+
+
+def test_the_path_scenarios_can_change_the_book_the_dynamic_search_chooses():
+    def world():
+        params, inputs = _hedged_world(cheap_call=False)
+        for row in inputs["X"]["chain"]:
+            if row["date"] in ("2019-01-02", "2019-01-03") and row["strike"] == 110 and row["type"] == "call":
+                row["bid"], row["ask"] = .15, .16
+        return params, inputs
+
+    books = {}
+    for kind in ("static", "dynamic"):
+        _, _, arm, study = _hedged_study(f"kelly075_ls_hedged_{kind}_lp", world())
+        result = study._method(arm, None)
+        books[kind] = _legs(result["decisions"][0]["books"][0])
+        assert ("call", 110.0, 1, 6, True) in books[kind], "a hedged long call: a hedge with gamma"
+        assert study._method(arm, None, recorded=result) == result
+    assert books["static"] != books["dynamic"]
 
 
 def test_the_dynamic_ledger_rehedges_every_session_from_the_days_delta_and_settles_every_trade():
     from dskit.pipeline.hedge_overlay import forward_leg_rehedged_value
 
-    params, inputs, arm, study, result, _ = _hedged_run("kelly075_ls_multistart3_hedged_dynamic_lp")
+    name = "kelly075_ls_multistart3_hedged_dynamic_lp"
+    params, inputs, arm, study, result, _ = _hedged_run(name, cheap_call=False)
     trade, = result["trades"]
     record = trade["hedge"]
     steps = record["rehedges"]
-    assert steps and all(trade["fill_date"] < s["date"] < trade["expiry"] for s in steps)
+    assert {leg[4] for leg in _legs(trade)} == {True, False}, "a book of hedged and unhedged legs"
+    assert len(steps) > 5 and all(trade["fill_date"] < s["date"] < trade["expiry"] for s in steps)
     assert [s["date"] for s in steps] == sorted(s["date"] for s in steps)
     held = record["units"]
-    hedge = ledger_studies.ReplayHedge(study, arm["hedge"], _PARITY)
+    hedge = ledger_studies.ReplayHedge(study, arm["hedge"], _PARITY, optional=True)
     legs = [leg for leg in trade["legs"] if leg["quantity"]]
+    hedged = [leg for leg in legs if leg.get("hedged")]
     rates = record["rates"]
     for step in steps:
-        # each step is the overlay's units on THAT session's chain and mark forward, traded from the units held
-        entries = hedge._entries("X", trade["expiry"], trade["factor"], step["date"], step["forward"], legs)
-        target = hedge.overlay.book_units(entries, [leg["quantity"] for leg in legs])
+        # each step is the overlay's units for the HEDGED legs on THAT session's chain and mark forward
+        entries = hedge._entries("X", trade["expiry"], trade["factor"], step["date"], step["forward"], hedged)
+        target = hedge.overlay.book_units(entries, [leg["quantity"] for leg in hedged])
         assert target["status"] == "ok" and step["units"] == target["units"] == math.trunc(target["raw"])
+        whole = hedge.overlay.book_units(hedge._book_entries("X", trade["expiry"], trade["factor"], step["date"],
+                                                             step["forward"], legs), [leg["quantity"] for leg in legs])
+        assert whole["units"] == step["units"]
         assert step["trade"] == step["units"] - held != 0
         assert step["cost"] == pytest.approx(abs(step["trade"]) * (
             rates["hedge_fee_per_share"] + step["forward"] * rates["hedge_half_spread_bps"] / 1e4))
+        assert step["reserve"] > 0                                 # the exact reserve after each re-strike is recorded
         held = step["units"]
+    assert steps[-1]["reserve"] == trade["reserve"] and record["fill_reserve"] > 0
     level = next(row["close"] for row in inputs["X"]["bars"] if row["date"] == trade["close_date"])
-    options = trade["credit"] + 100 * sum(
-        leg["sign"] * leg["quantity"] * max((leg["strike"] - level) if leg["right"] == "put" else (level - leg["strike"]), 0.)
-        for leg in trade["legs"])
-    assert trade["pnl"] == pytest.approx(options + forward_leg_rehedged_value(record, level))
+    assert trade["pnl"] == pytest.approx(_option_pnl(trade, level) + forward_leg_rehedged_value(record, level))
     assert trade["pnl"] >= -trade["reserve"]                       # the re-struck reserve still bounds the settlement
     counts = result["hedge"]["counts"]
     assert counts["rehedges"] == len(steps) and counts["rehedge_shares"] == sum(abs(s["trade"]) for s in steps)
+    assert "rehedge_reserve_over" not in counts
     assert result["pnl"] == pytest.approx(trade["pnl"])            # the shared ledger reconciled the re-hedged trade
-    # every daily mark carries the re-hedges to date: the last open mark plus the last session's move is the settlement
     assert all(row["equity"] > 0 for row in result["curve"])
+    assert study._method(arm, None, recorded=result) == result
 
 
 def test_a_static_hedged_book_whose_hedge_cannot_attach_does_not_fill():
@@ -614,7 +789,7 @@ def test_a_static_hedged_book_whose_hedge_cannot_attach_does_not_fill():
     for row in inputs["X"]["chain"]:
         if row["date"] == "2019-01-03":
             row["iv"] = 0.3
-    name = "kelly075_ls_multistart3_hedged_static_lp"
+    name = "kelly075_ls_hedged_static_lp"
     arm = {"id": name, **copy.deepcopy(HEDGED_FORMULATIONS[name])}
     params.update(methods=[arm], hedge_parity=dict(_PARITY), locked_method_ids=list(FORMULATIONS))
     study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
@@ -625,3 +800,134 @@ def test_a_static_hedged_book_whose_hedge_cannot_attach_does_not_fill():
     finally:
         ledger_studies.ReplayHedge._decision_book = real
     assert not result["trades"] and result["rejected"][0]["reason"] == "hedge_unattached:leg_no_iv"
+
+
+# --- ADR-0316 Amendment 1, ruling 2: a re-struck reserve over the cap blocks new admissions, never closes a book -----
+
+def _forced_restrike(monkeypatch, start, shares):
+    """From session ``start`` on, every re-strike targets ``shares`` more than the day's delta asks for.
+
+    The synthetic forward the search holds has a constant delta, so nothing would re-strike it; the forced target runs
+    the real :meth:`ReplayHedge.rehedge` (the trade, its cost, the exact re-derived reserve) on an under-hedged book.
+    """
+    from dskit.pipeline.hedge_overlay import HedgeOverlay
+
+    state = {"day": None}
+    rehedge, book_units = ledger_studies.ReplayHedge.rehedge, HedgeOverlay.book_units
+
+    def spy(self, books, day, charge=None):
+        state["day"] = day
+        try:
+            return rehedge(self, books, day, charge)
+        finally:
+            state["day"] = None
+
+    def forced(self, entries, quantities):
+        out = book_units(self, entries, quantities)
+        if state["day"] is not None and state["day"] >= start and out["status"] == "ok":
+            out = {**out, "units": out["units"] + shares}
+        return out
+    monkeypatch.setattr(ledger_studies.ReplayHedge, "rehedge", spy)
+    monkeypatch.setattr(HedgeOverlay, "book_units", forced)
+
+
+def _two_week_world(deposit=None):
+    """The hedged world deciding both weeks; ``deposit`` funds a second expiry's chain so week two has a book to fill."""
+    from datetime import date
+
+    from dskit.pipeline.option_pricing import black76
+
+    params, inputs = _hedged_world()
+    del params["decision_weeks"]
+    if deposit is None:
+        return params, inputs
+    params["clocks"]["entry_end_before"] = "2019-01-09"
+    params["deposit"], params["deposit_every_days"] = deposit, 5
+    spots, expiry = {row["date"]: row["close"] for row in inputs["X"]["bars"]}, "2019-02-08"
+    row = {"symbol": "X", "expiration": expiry, "bid_size": 10, "ask_size": 10, "basis_factor": 1., "iv": 0.3}
+    inputs["X"]["chain"].append({**row, "date": expiry, "type": "put", "strike_raw": 90., "strike": 90., "bid": .05,
+                                 "ask": .06, "underlying_price": spots[expiry]})
+    for day in sorted(spots):
+        if not "2019-01-07" <= day < expiry:
+            continue
+        years = (date.fromisoformat(expiry) - date.fromisoformat(day)).days / 365
+        for right in ("call", "put"):
+            for strike in (95., 100., 105., 110., 115.):
+                mid = black76(right, spots[day] * 1.001, strike, 0.3, years)
+                inputs["X"]["chain"].append({**row, "date": day, "type": right, "strike_raw": strike, "strike": strike,
+                                             "bid": mid * .99, "ask": mid * 1.01, "underlying_price": spots[day]})
+    for context in inputs["X"]["contexts"]:
+        if context["quote_date"] == "2019-01-07":
+            context["spot"] = spots["2019-01-07"]
+    return params, inputs
+
+
+def test_a_restruck_reserve_over_the_cap_blocks_the_next_week_is_counted_and_never_closes_the_book(monkeypatch):
+    name = "kelly075_ls_hedged_dynamic_lp"
+    _, _, arm, study = _hedged_study(name, _two_week_world())
+    calm = study._method(arm, None)
+    assert [w["status"] for w in calm["decisions"]] == ["selected", "no_entry_fill_session"]
+    assert "rehedge_reserve_over" not in calm["hedge"]["counts"] and calm["trades"][0]["hedge"]["rehedges"] == []
+    _forced_restrike(monkeypatch, "2019-01-04", 100)
+    _, inputs, arm, study = _hedged_study(name, _two_week_world())
+    result = study._method(arm, None)
+    first, second = result["decisions"]
+    trade, = result["trades"]
+    step, = trade["hedge"]["rehedges"]
+    # the EXACT reserve after the re-strike: an under-hedged synthetic is long 100 shares, which can go to zero
+    assert step["date"] == "2019-01-04" and step["trade"] == 100
+    growth = step["reserve"] - trade["hedge"]["fill_reserve"]
+    assert growth == pytest.approx(100 * step["forward"], rel=.02) and trade["reserve"] == step["reserve"]
+    assert step["reserve"] > second["funding"], "the open reserve is over the funding the cap allows"
+    # the week admits nothing, says why, and the block is counted
+    assert second["status"] == "rehedge_reserve_over" and "books" not in second
+    assert second["rehedge_reserve_over"] == {
+        "date": "2019-01-07", "open_reserve": pytest.approx(step["reserve"]), "reserve_growth": pytest.approx(growth),
+        "shortfall": pytest.approx(step["reserve"] - second["funding"]), "blocked": []}
+    assert second["open_reserve"] == pytest.approx(step["reserve"])
+    assert result["hedge"]["counts"]["rehedge_reserve_over"] == 1
+    # never force-closed: the book is held to its expiry at the re-struck units and settles inside its reserve
+    assert trade["close_date"] == trade["expiry"] and trade["hedge"]["units"] == -1000 and step["units"] == -900
+    assert trade["pnl"] >= -trade["reserve"] and not result["rejected"]
+    assert study._method(arm, None, recorded=result) == result
+
+
+def test_a_reserve_that_grows_between_the_decision_and_the_fill_blocks_the_fill(monkeypatch):
+    name = "kelly075_ls_hedged_dynamic_lp"
+    _, _, arm, study = _hedged_study(name, _two_week_world(30000.))
+    calm = study._method(arm, None)
+    assert [w["status"] for w in calm["decisions"]] == ["selected", "selected"] and len(calm["trades"]) == 2
+    # week two's own choice: a naked short put, unhedged, beside week one's hedged synthetic
+    assert _legs(calm["decisions"][1]["books"][0]) == [("put", 100.0, -1, 3, False)]
+    assert [t["hedge"]["status"] for t in calm["trades"]] == ["ok", "unhedged_chosen"]
+    _forced_restrike(monkeypatch, "2019-01-08", 400)                # the fill session of week two
+    _, _, arm, study = _hedged_study(name, _two_week_world(30000.))
+    result = study._method(arm, None)
+    first, second = result["decisions"]
+    assert second["status"] == "selected" and second["books"] == calm["decisions"][1]["books"]
+    trade, = result["trades"]
+    blocked, = result["rejected"]
+    assert blocked["id"] == second["books"][0]["id"] and blocked["reason"] == "rehedge_reserve_over"
+    assert blocked["status"] == "unfilled"
+    over = second["rehedge_reserve_over"]
+    assert over["date"] == "2019-01-08" and over["blocked"] == [blocked["id"]]
+    assert over["open_reserve"] == pytest.approx(trade["hedge"]["rehedges"][0]["reserve"]) and over["open_reserve"] > 90000.
+    assert over["shortfall"] == pytest.approx(over["open_reserve"] - 90000.)
+    assert result["hedge"]["counts"]["rehedge_reserve_over"] == 1
+    assert trade["close_date"] == trade["expiry"] and trade["pnl"] >= -trade["reserve"]
+    assert study._method(arm, None, recorded=result) == result
+
+
+def test_reserve_over_needs_a_breached_cap_and_restruck_growth_and_only_a_rebalancing_hedge():
+    params, inputs, arm, study = _hedged_study("kelly075_ls_hedged_dynamic_lp", _hedged_world())
+    daily = ledger_studies.ReplayHedge(study, arm["hedge"], _PARITY, optional=True)
+    grown = {"reserve": 700., "hedge": {"fill_reserve": 500., "rehedges": [{"reserve": 400.}, {"reserve": 700.}]}}
+    plain = {"reserve": 300., "hedge": {"status": "unhedged_chosen", "units": 0}}
+    breach, room = [{"members": ["X"], "upper": -50.}], [{"members": ["X"], "upper": 50.}]
+    assert daily.reserve_over([grown, plain], breach) == {"open_reserve": 1000., "reserve_growth": 200., "shortfall": 50.}
+    assert daily.reserve_over([grown, plain], room) is None, "inside the cap nothing is blocked"
+    shrunk = {"reserve": 450., "hedge": {"fill_reserve": 500., "rehedges": [{"reserve": 450.}]}}
+    assert daily.reserve_over([shrunk, plain], breach) is None, "a breach the re-strikes did not grow is the cap's own"
+    assert daily.counts["rehedge_reserve_over"] == 1
+    fixed = ledger_studies.ReplayHedge(study, HEDGED_FORMULATIONS["kelly075_ls_hedged_static_lp"]["hedge"], _PARITY)
+    assert fixed.reserve_over([grown], breach) is None and "rehedge_reserve_over" not in fixed.counts

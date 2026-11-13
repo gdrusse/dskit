@@ -1351,6 +1351,7 @@ dskit/pipeline/
 │                      (structure_max_loss), HardToBorrowProxy, carry_costs; parity forwards are inputs
 │                      DailyDeltaForwardHedge (ADR-0316): the same entry, re-struck each session by the caller; the program's
 │                      expected re-hedge cost (item_cost) and the re-hedged leg's settle/mark (forward_leg_rehedged_value)
+│                      (A1): seeded Brownian-bridge paths (bridges, path) and the re-hedge excess along one (path_excess)
 ├── false_signal.py    per-signal false-signal probability (ADR-0152):
 │                      SignalEvidence + FalseSignalEstimator ->
 │                      pi_hat and a widened pi_widened (NOT a bound);

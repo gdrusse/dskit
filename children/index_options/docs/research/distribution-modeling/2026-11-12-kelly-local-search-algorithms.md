@@ -430,7 +430,7 @@ The owner paired `kelly050_ls_lp` and `kelly075_ls_lp` with the sealed **replay*
 
 ### 4.1 The hedge inside the search (ADR-0316, 2026-11-13)
 
-The ids `*_hedged_static_lp` and `*_hedged_dynamic_lp` put the hedge in the program instead (`hedge.mode: "program"`). Each candidate item carries its fixed-ratio forward units, so the scorer's scenarios, expected profit, dispersion charge, reserve rows and cap are the hedged ones and the search only reaches books that are feasible as hedged. The fill applies the same units (truncated once). The dynamic kind (`daily_delta_forward`) is re-struck every session in the ledger from that session's delta; the program models it as the static entry hedge plus an expected re-hedge cost, an approximation stated in the ADR. The search code (sections 2 and 3) is unchanged.
+The ids `*_hedged_static_lp` and `*_hedged_dynamic_lp` put the hedge in the program instead (`hedge.mode: "program"`). Each candidate item carries its fixed-ratio forward units, so the scorer's scenarios, expected profit, dispersion charge, reserve rows and cap are the hedged ones and the search only reaches books that are feasible as hedged. The fill applies the same units (truncated once). The dynamic kind (`daily_delta_forward`) is re-struck every session in the ledger from that session's delta; the program models it as the static entry hedge plus an expected re-hedge cost, and (Amendment 1) scores it on seeded path scenarios that carry the re-hedge P&L and costs along each path. Hedging is the search's choice per contract (Amendment 1): every candidate is offered unhedged and as a hedged twin, the two exclusive, so a naked short put may be sold unhedged. The search code (sections 2 and 3) is unchanged.
 
 ---
 

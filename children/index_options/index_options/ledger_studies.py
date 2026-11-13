@@ -1388,6 +1388,10 @@ class ReplayHedge:
     mark_rule : str
         ``"parity"`` (the day's parity forward excluding the book's strikes, carry-ratio fallback flagged) or
         ``"carry_ratio"`` (every mark at ``S_t x F_fill / S_fill``: the robustness read).
+    optional : bool
+        ADR-0316 Amendment 1 (the hedged local search): every candidate contract is offered unhedged AND hedged
+        (:meth:`widen`), the two exclusive, and only a leg the search took hedged (``hedged: True``) carries units
+        at the fill and at every re-strike; a book with no hedged leg fills unhedged (``unhedged_chosen``).
 
     Examples
     --------
@@ -1399,6 +1403,10 @@ class ReplayHedge:
     """
 
     MARK_RULES = ("parity", "carry_ratio")
+    #: ADR-0316 Amendment 1: the status of a filled book the search chose to trade without a hedge.
+    UNHEDGED = "unhedged_chosen"
+    #: ADR-0316 Amendment 1: counted when the re-struck open reserve is over the shared cap and blocks an admission.
+    RESERVE_OVER = "rehedge_reserve_over"
 
     @classmethod
     def validate_block(cls, block, parity):
@@ -1412,11 +1420,14 @@ class ReplayHedge:
         if problems:
             raise ValueError("hedge_parity_invalid: " + "; ".join(problems))
 
-    def __init__(self, study, block, parity, *, mark_rule="parity"):
+    def __init__(self, study, block, parity, *, mark_rule="parity", optional=False):
         self.validate_block(block, parity)
         if mark_rule not in self.MARK_RULES:
             raise ValueError(f"mark_rule must be one of {list(self.MARK_RULES)}, got {mark_rule!r}")
         self.study, self.block, self.mark_rule = study, dict(block), mark_rule
+        # ADR-0316 Amendment 1: the search decides, item by item, whether a contract is traded hedged (a leg with
+        # ``hedged: True``) or not; only the hedged legs carry units.
+        self.optional = bool(optional)
         self.missing = set()                                # (book id, day) marks on a carried-forward level
         self.overlay = HedgeOverlay.from_method({"hedge": self.block})
         self.forwards = ParityForwards(study, parity)
@@ -1461,6 +1472,19 @@ class ReplayHedge:
             context["closes"] = closes
         return self.overlay.units(items, context)
 
+    @staticmethod
+    def _plain():
+        """Return the entry of a contract traded WITHOUT its hedge: no units, no cost, never a reason to leave a book unhedged."""
+        return {"units": 0.0, "target": 0.0, "status": "ok", "hard_to_borrow": False, "delta_f_sh": None,
+                "rehedge_turnover": 0.0}
+
+    def _book_entries(self, symbol, expiry, factor, day, forward, legs):
+        """Return :meth:`_entries` for a BOOK's legs: with an optional hedge only the legs taken hedged are priced and carry units."""
+        if not self.optional:
+            return self._entries(symbol, expiry, factor, day, forward, legs)
+        priced = iter(self._entries(symbol, expiry, factor, day, forward, [leg for leg in legs if leg.get("hedged")]))
+        return [next(priced) if leg.get("hedged") else self._plain() for leg in legs]
+
     def _decision_book(self, book, legs):
         """Return ``(book units, None)`` from the decision session's forward delta, else ``(None, code)``."""
         symbol, expiry, factor = book["symbol"], book["expiry"], book["factor"]
@@ -1469,7 +1493,7 @@ class ReplayHedge:
         if forward is None:
             return None, source
         self.counts["forward_spot"] += source != ParityForward.SOURCE_PARITY
-        entries = self._entries(symbol, expiry, factor, decision, forward, legs)
+        entries = self._book_entries(symbol, expiry, factor, decision, forward, legs)
         hedged = self.overlay.book_units(entries, [leg["quantity"] for leg in legs])
         # What the program charged: every item's own units, not their net (ADR-0312 A1 section 5).
         hedged["gross"] = math.fsum(abs(e["units"] * leg["quantity"]) for e, leg in zip(entries, legs, strict=True))
@@ -1494,6 +1518,10 @@ class ReplayHedge:
         refused (``insufficient_eligible_legs``). The rest of each group is rewritten by :meth:`rewrite`. At ratio 0
         the hedge is inert: nothing is excluded and nothing is rewritten. The input lists are never mutated (the
         prepared groups are cached across methods).
+
+        With an OPTIONAL hedge (ADR-0316 Amendment 1) nothing is removed: every item stays as its unhedged self and
+        each item that can be hedged gains a hedged twin (:meth:`widen`), so the counters say which items have no
+        hedged twin and a group without a decision forward stays, unhedged (``hedge_forward_unavailable``).
         """
         week = Counter()
         if self.block["ratio"] == 0:
@@ -1503,8 +1531,12 @@ class ReplayHedge:
             symbol, decision, expiry, factor = meta["symbol"], meta["decision_date"], meta["expiry"], meta["factor"]
             forward, source = self.forward(symbol, decision, expiry, factor)
             if forward is None:
-                refusals.append({"symbol": symbol, "expiry": expiry, "reason": "hedge_" + source})
                 week["hedge_forward_unavailable"] += 1
+                if self.optional:                               # no hedged twin can be priced: the group stays unhedged
+                    kept_groups.append(group)
+                    kept_meta.append(meta)
+                else:
+                    refusals.append({"symbol": symbol, "expiry": expiry, "reason": "hedge_" + source})
                 continue
             self.counts["forward_spot"] += source != ParityForward.SOURCE_PARITY
             legs = [{"right": i["right"], "strike": i["strike"], "sign": i["sign"]} for i in meta["items"]]
@@ -1518,10 +1550,13 @@ class ReplayHedge:
                 if entry["status"] == "hedge_hard_to_borrow":
                     htb_groups.add(group["id"])
                     names.add(symbol)
-            if not keep:
+            if self.optional:
+                group, meta, entries = self.widen(group, meta, entries, [i for i in keep if entries[i]["units"]])
+            elif not keep:
                 refusals.append({"symbol": symbol, "expiry": expiry, "reason": "insufficient_eligible_legs"})
                 continue
-            group, meta, entries = self.restrict(group, meta, entries, keep)
+            else:
+                group, meta, entries = self.restrict(group, meta, entries, keep)
             group, meta = self.rewrite(group, meta, entries, forward, mult)
             kept_groups.append(group)
             kept_meta.append(meta)
@@ -1547,6 +1582,32 @@ class ReplayHedge:
                "reserve_rows": [cut(row) for row in group["reserve_rows"]],
                "linear_rows": [{**row, "coefficients": cut(row["coefficients"])} for row in group["linear_rows"]]}
         return out, {**meta, "items": cut(meta["items"])}, cut(entries)
+
+    def widen(self, group, meta, entries, hedged):
+        """Return ``(group, meta, entries)`` with a HEDGED twin appended for each item at positions ``hedged`` (ADR-0316 A1).
+
+        The first ``n`` columns are the group as it was and carry no units (the unhedged contracts, a naked short
+        put included); column ``n + k`` repeats item ``hedged[k]`` with ``hedged: True`` and its entry. A contract
+        and its twin are exclusive, and so is every pair the two sides of one contract already made (bought
+        against sold, in each hedged and unhedged combination), so a book holds a contract once, hedged or not.
+        ``meta["hedge_twins"]`` is the number of twins (they are not further candidates).
+        """
+        n = len(group["capacity"])
+        plain = [self._plain() for _ in entries]
+        if not hedged:
+            return group, meta, plain
+        twin = {i: n + k for k, i in enumerate(hedged)}
+        col = lambda row: [*row, *(row[i] for i in hedged)]                          # noqa: E731
+        pairs = [list(pair) for pair in group["exclusive"]] + [[i, twin[i]] for i in hedged]
+        for a, b in group["exclusive"]:
+            pairs.extend(pair for pair in ([twin.get(a), b], [a, twin.get(b)], [twin.get(a), twin.get(b)])
+                         if None not in pair)
+        out = {**group, "credit": col(group["credit"]), "capacity": col(group["capacity"]),
+               "losses": [col(row) for row in group["losses"]], "exclusive": pairs,
+               "reserve_rows": [col(row) for row in group["reserve_rows"]],
+               "linear_rows": [{**row, "coefficients": col(row["coefficients"])} for row in group["linear_rows"]]}
+        items = [*meta["items"], *({**meta["items"][i], "hedged": True} for i in hedged)]
+        return out, {**meta, "items": items, "hedge_twins": len(hedged)}, [*plain, *(entries[i] for i in hedged)]
 
     def rewrite(self, group, meta, entries, reference, mult):
         """Return the hedged ``(group, meta)``: losses, reserve rows, slope row, netted floor rows and credit net of costs.
@@ -1578,9 +1639,64 @@ class ReplayHedge:
         # calibration values the hedged direction part with it (ADR-0313 B1), never with the block's ratio.
         ratios = [min(1.0, max(0.0, -u / e["delta_f_sh"])) if u and e.get("delta_f_sh") else 0.0
                   for u, e in zip(units, entries, strict=True)]
-        return rewritten, {**meta, "program_hedge": {"units": units, "reference": reference, "costs": costs,
-                                                   "ratios": ratios,
-                                                   "margin_fraction": ov.params["margin_fraction"]}}
+        program = {"units": units, "reference": reference, "costs": costs, "ratios": ratios,
+                   "margin_fraction": ov.params["margin_fraction"]}
+        if ov.REBALANCES:
+            program["entries"] = entries                     # ADR-0316 A1: what :meth:`path_scenarios` re-strikes
+        return rewritten, {**meta, "program_hedge": program}
+
+    def path_scenarios(self, terms, moves, weights, quiet, betas, sigma_daily, metadata):
+        """Return the kelly joint scenarios of a daily re-struck hedge: each move split into seeded PATHS (ADR-0316 A1).
+
+        The static scenarios (:meth:`WeeklyOptionPortfolioStudy._centred_scenarios`) see the entry hedge at the
+        move's terminal price only. Here each modelled move, and the quiet cell, becomes ``rehedge_paths`` scenarios
+        of equal weight: the market's log path is a Brownian bridge from 0 to the move's ``log(1 + move)`` with the
+        basket's session vol ``sigma_daily`` (the vol the move weights were built from), one bridge per (cell, path)
+        shared by every name and expiry; a name's forward follows it scaled by its beta, from the decision forward
+        to the move's shocked spot ``max(0, spot (1 + beta move))`` (the terminal price of ``terms``), over the
+        overlay's ``sessions(dte)``. A hedged item's profit in a path is its static profit in that move plus
+        :meth:`~dskit.pipeline.hedge_overlay.DailyDeltaForwardHedge.path_excess` (the re-hedge P&L and every
+        re-hedge trade's cost along the path); an unhedged item's is its static profit. Each item's deviations
+        are then centred on their weighted mean as the static scenarios are: the EXPECTED re-hedge cost is
+        already in the credit (``item_cost``) and re-striking a hedge has no expected P&L on a driftless path, so
+        the paths add dispersion and never edge. Without a modelled move, a positive vol or a re-struck item the
+        static scenarios are returned unchanged.
+        """
+        import numpy as np
+
+        ov, study = self.overlay, self.study
+        static = study._centred_scenarios(terms, moves, weights, quiet)
+        modelled = [move for move in moves if weights[str(move)] > 0]
+        hedged = [m for m in metadata if any("rehedge" in e for e in (m.get("program_hedge") or {}).get("entries", ()))]
+        if not (ov.REBALANCES and modelled and hedged and number_ok(sigma_daily) and sigma_daily > 0):
+            return static
+        paths = ov.params["rehedge_paths"]
+        cells = [(0., quiet), *((move, weights[str(move)]) for move in modelled)]
+        total = quiet + sum(weights[str(move)] for move in modelled)
+        bridges = {}
+        excess = {m["id"]: np.zeros((len(cells), paths, len(m["items"]))) for m in hedged}
+        for meta in hedged:
+            program, beta, steps = meta["program_hedge"], betas[meta["symbol"]], ov.sessions(meta["dte"])
+            for c, (move, _weight) in enumerate(cells):
+                if (c, steps) not in bridges:
+                    bridges[c, steps] = ov.bridges(steps, (c,))
+                end = max(0., meta["spot"] * (1. + beta * move))
+                for k, bridge in enumerate(bridges[c, steps]):
+                    levels = ov.path(program["reference"], end, beta * sigma_daily, bridge)
+                    excess[meta["id"]][c, k] = [ov.path_excess(e, levels, meta["dte"]) for e in program["entries"]]
+        deviations = []                                     # per cell: {group id: (paths, items) profit deviation}
+        for c, (move, _weight) in enumerate(cells):
+            cell = {}
+            for key, base in terms[0.].items():
+                row = np.asarray(base) - np.asarray(terms[move][key]) if c else np.zeros(len(base))
+                cell[key] = row[None, :] + (excess[key][c] if key in excess else np.zeros((paths, len(base))))
+            deviations.append(cell)
+        centre = {key: sum(weight * deviations[c][key].mean(axis=0) for c, (_m, weight) in enumerate(cells)) / total
+                  for key in terms[0.]}
+        return [{"id": f"market:{move}:path{k}", "weight": weight / paths,
+                 "terms": {key: (rows[k] - centre[key]).tolist() for key, rows in deviations[c].items()
+                           if c or (rows[k] - centre[key]).any()}}
+                for c, (move, weight) in enumerate(cells) for k in range(paths)]
 
     def attach(self, book, day, charge=None):
         """Hedge a filled ``book`` (filled on ``day``) or record why not; sets ``book["hedge"]``.
@@ -1594,6 +1710,11 @@ class ReplayHedge:
         mult = study.params["bridge"]["solver"]["multiplier"]
         legs = [leg for leg in book["legs"] if leg["quantity"]]
         record = book["hedge"] = {"status": None, "units": 0}
+        if self.optional and not any(leg.get("hedged") for leg in legs):
+            # ADR-0316 Amendment 1: the search took every contract of this book unhedged; it fills as it is.
+            record["status"] = self.UNHEDGED
+            ov.counts[BOOKS_PREFIX + self.UNHEDGED] += 1
+            return
         hedged, code = self._decision_book(book, legs)
         reference, source = self.forward(symbol, day, expiry, factor, {leg["strike"] for leg in legs})
         if hedged is None or reference is None:
@@ -1630,6 +1751,8 @@ class ReplayHedge:
                           program_cost_usd=self._rule(record).carry_costs(
                               hedged["gross"], hedged["decision_forward"], hedged["decision_forward"], days)["trade_costs"])
         book.update(reserve=max(reserve + allowance, ov.book_floor(units, reference)), max_loss=loss)
+        if ov.REBALANCES:
+            record["fill_reserve"] = book["reserve"]         # what :meth:`reserve_over` measures the re-struck growth from
 
     def rehedge(self, books, day, charge=None):
         """Re-strike each open hedged book to ``day``'s delta (ADR-0316); a no-op for a hedge that never rebalances.
@@ -1659,7 +1782,7 @@ class ReplayHedge:
                 continue
             forward = level[0]                               # the day's mark forward (carry-ratio when flagged)
             self.counts["rehedge_forward_carried"] += level[1]
-            target = ov.book_units(self._entries(symbol, expiry, factor, day, forward, legs),
+            target = ov.book_units(self._book_entries(symbol, expiry, factor, day, forward, legs),
                                    [leg["quantity"] for leg in legs])
             if target["status"] != "ok":
                 self.counts["rehedge_held_" + target["status"]] += 1
@@ -1673,8 +1796,9 @@ class ReplayHedge:
                 self.counts["rehedge_held_unbounded"] += 1
                 continue
             trade = units - held
-            record["rehedges"].append({"date": day, "units": units, "forward": forward, "trade": trade,
-                                       "cost": forward_leg_one_way_cost(record, trade, forward)})
+            step = {"date": day, "units": units, "forward": forward, "trade": trade,
+                    "cost": forward_leg_one_way_cost(record, trade, forward)}
+            record["rehedges"].append(step)
             self.counts["rehedges"] += 1
             self.counts["rehedge_shares"] += abs(trade)
             credit = book["credit"] + forward_leg_rehedged_value(record, forward, day)
@@ -1682,6 +1806,28 @@ class ReplayHedge:
             reserve = self.study._floor(max(0., loss, -credit), charge or self.study._charge({}), book["legs"], mult)
             allowance = forward_leg_one_way_cost(record, units, 2.0 * forward)
             book.update(reserve=max(reserve + allowance, ov.book_floor(units, forward)), max_loss=loss)
+            step["reserve"] = book["reserve"]                # the exact reserve after this re-strike (never capped)
+
+    def reserve_over(self, books, limits):
+        """Return why the re-struck open reserve blocks a new admission, else ``None`` (ADR-0316 Amendment 1).
+
+        A re-strike re-derives a book's reserve exactly, so the open reserve can grow in life past what the program
+        reserved. While a shared limit of ``limits`` is breached (``upper`` below zero: the open reserve exceeds
+        the funding the cap allows) and the open books' re-struck reserves sum above their fill reserves, nothing
+        new is admitted: the caller records the returned ``{"open_reserve", "reserve_growth", "shortfall"}`` and the
+        block is counted (``rehedge_reserve_over``). Nothing is closed or resized.
+        """
+        if not self.overlay.REBALANCES:
+            return None
+        shortfall = max((-limit["upper"] for limit in limits), default=0.)
+        books = list(books)
+        growth = math.fsum(step["reserve"] - book["hedge"]["fill_reserve"] for book in books
+                           for step in (book.get("hedge") or {}).get("rehedges", [])[-1:])
+        if shortfall <= 1e-5 or growth <= 0:
+            return None
+        self.counts[self.RESERVE_OVER] += 1
+        return {"open_reserve": math.fsum(book["reserve"] for book in books), "reserve_growth": growth,
+                "shortfall": shortfall}
 
     def rehedge_excess(self, book, level, day=None):
         """Return what the re-hedges added to a book's fixed leg: settled at ``level``, or marked on ``day`` at ``level``."""
@@ -2886,6 +3032,11 @@ class WeeklyOptionPortfolioStudy:
     _HEDGE_UNATTACHED = "hedge_unattached"
 
     @staticmethod
+    def _candidate_contracts(groups, metadata):
+        """Return the week's candidate contracts: two sides a contract, a hedged twin (ADR-0316 A1) not a further one."""
+        return sum((len(g["capacity"])-m.get("hedge_twins", 0))//2 for g, m in zip(groups, metadata, strict=True))
+
+    @staticmethod
     def _hedged_search(method):
         """Return whether ``method`` searches the HEDGED program (ADR-0315 Amendment 3).
 
@@ -3972,7 +4123,7 @@ class WeeklyOptionPortfolioStudy:
             if not math.isfinite(reserve) or abs(reserve-selection["reserves"][i]) > .001:
                 raise ValueError("selected physical-domain reserve parity failed")
             books.append({k: v for k, v in meta.items()
-                          if k not in ("items", "projection", "cdf_noise_raised", "program_hedge")})
+                          if k not in ("items", "projection", "cdf_noise_raised", "program_hedge", "hedge_twins")})
             if program is not None:
                 books[-1]["program_hedge"] = {"units_raw": raw, "reference": program["reference"], "cost_usd": cost}
             books[-1].update(legs=legs, credit=credit, reserve=reserve, max_loss=loss,
@@ -4752,7 +4903,8 @@ class WeeklyOptionPortfolioStudy:
             if "hedge" in present:
                 if self.adjustments:
                     raise ValueError("hedge_split_unsupported: a hedged run takes no split adjustment")
-                hedge = ReplayHedge(self, method["hedge"], p["hedge_parity"])
+                # ADR-0316 Amendment 1: in the hedged search the hedge is optional, contract by contract.
+                hedge = ReplayHedge(self, method["hedge"], p["hedge_parity"], optional=self._hedged_search(method))
             if "calibration" in present:
                 calibrated = CalibratedEdge(self, method)
             if "exposure_limits" in present:
@@ -4815,7 +4967,7 @@ class WeeklyOptionPortfolioStudy:
                     else:
                         if hedge is not None:
                             hedge.attach(filled, day, charge)
-                            if hedged_search and filled["hedge"]["status"] != "ok":
+                            if hedged_search and filled["hedge"]["status"] not in ("ok", ReplayHedge.UNHEDGED):
                                 # ADR-0315 Amendment 3: the search chose the hedged book; without its forward leg it
                                 # is another position, so the options do not fill either (all or none).
                                 reason = f"{self._HEDGE_UNATTACHED}:{filled['hedge']['status']}"
@@ -4833,6 +4985,13 @@ class WeeklyOptionPortfolioStudy:
                                         for b in survivors)
                         survivors = []
                 limits = self._limits(account, method, pending["components"])
+                over = hedge.reserve_over(account.open.values(), limits) if hedge is not None and survivors else None
+                if over is not None:
+                    # ADR-0316 Amendment 1: the re-struck open reserve is over the cap, so nothing new is admitted.
+                    pending["record"][ReplayHedge.RESERVE_OVER] = {"date": day, **over,
+                                                                   "blocked": [b["id"] for b in survivors]}
+                    rejected.extend({**b, "status": "unfilled", "reason": ReplayHedge.RESERVE_OVER} for b in survivors)
+                    survivors = []
                 if survivors and not account.admit(day, survivors, limits):
                     rejected.extend({**b, "status": "unfilled", "reason": "repriced_shared_cap"} for b in survivors)
                 pending = None
@@ -4874,7 +5033,7 @@ class WeeklyOptionPortfolioStudy:
                     components = self._components(day) if method["component_fraction"] is not None else {"groups": []}
                     limits = self._limits(account, method, components)
                     record = {"date": day, "candidate_books": len(groups),
-                              "candidate_contracts": sum(len(g["capacity"])//2 for g in groups),
+                              "candidate_contracts": self._candidate_contracts(groups, metadata),
                               "eligible_by_symbol": dict(Counter(m["symbol"] for m in metadata)),
                               "refusals": refusals, "components": components, "funding": account.funding,
                               "open_reserve": sum(b["reserve"] for b in account.open.values())}
@@ -4930,7 +5089,7 @@ class WeeklyOptionPortfolioStudy:
                             groups, metadata = [groups[i] for i in kept], [metadata[i] for i in kept]
                             # The counts are of the candidates the week can trade, after the drop.
                             record.update(candidate_books=len(groups),
-                                          candidate_contracts=sum(len(g["capacity"])//2 for g in groups),
+                                          candidate_contracts=self._candidate_contracts(groups, metadata),
                                           eligible_by_symbol=dict(Counter(m["symbol"] for m in metadata)))
                             if self.pairs is not None:
                                 record["eligible_by_pair"] = dict(Counter(m["pair_id"] for m in metadata))
@@ -4953,7 +5112,12 @@ class WeeklyOptionPortfolioStudy:
                         # ADR-0300: the sizer's risk inputs are read before stage 1, as the kelly estimate is, so a week
                         # it cannot size solves nothing.
                         record["sizer"] = self._sizer_inputs(day, method, account)
-                    if any(lim["upper"] < -1e-5 for lim in limits):
+                    over = hedge.reserve_over(account.open.values(), limits) if hedge is not None else None
+                    if over is not None:
+                        # ADR-0316 Amendment 1: the re-struck open reserve is over the cap: the week admits nothing.
+                        record[ReplayHedge.RESERVE_OVER] = {"date": day, **over, "blocked": []}
+                        record["status"] = ReplayHedge.RESERVE_OVER
+                    elif any(lim["upper"] < -1e-5 for lim in limits):
                         record["status"] = "existing_cap_breach_cash"
                     elif (self.clocks and (day == self.calendar[-1]
                           or self.calendar[self.calendar.index(day)+1] >= self.clocks["entry_end_before"])):
@@ -5009,6 +5173,16 @@ class WeeklyOptionPortfolioStudy:
                                 "aggregate": {meta["id"]: meta["symbol"] for meta in metadata},
                                 "joint": self._centred_scenarios(terms, kelly["moves"], record["kelly"]["weights"],
                                                                  record["kelly"]["quiet"])}
+                            if hedged_search and hedge.overlay.REBALANCES:
+                                # ADR-0316 Amendment 1: a daily re-struck hedge is scored on seeded PATHS per move, so
+                                # the re-hedge P&L and costs along each path are in the scenarios the objective sizes on.
+                                program["utility"]["joint"] = hedge.path_scenarios(
+                                    terms, kelly["moves"], record["kelly"]["weights"], record["kelly"]["quiet"],
+                                    estimate["betas"], record["kelly"]["sigma_daily"], metadata)
+                                record["kelly"]["rehedge_paths"] = {
+                                    "paths": hedge.overlay.params["rehedge_paths"],
+                                    "seed": hedge.overlay.params["rehedge_seed"],
+                                    "scenarios": len(program["utility"]["joint"])}
                         local_week = None
                         if local is not None:
                             # ADR-0307: the one-stage program above is only SCORED (never built as a model): the week

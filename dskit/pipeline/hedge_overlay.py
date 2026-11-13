@@ -18,7 +18,9 @@ every formulation and, detached, leaves every output byte-identical.
   cash-settled forward struck at a parity forward the caller supplies.
 * :class:`DailyDeltaForwardHedge` - the same hedge re-struck each session to the day's delta (ADR-0316):
   the caller records every re-hedge on the leg (``rehedges``) and :func:`forward_leg_rehedged_value` settles
-  and marks the path; inside a program the item is charged its EXPECTED re-hedge cost (``item_cost``).
+  and marks the path; inside a program the item is charged its EXPECTED re-hedge cost (``item_cost``) and a
+  scenario carries what re-striking adds along a seeded forward path (``bridges``, ``path``, ``path_excess``;
+  ADR-0316 Amendment 1).
 
 Sign and units: held shares, negative is sold; ``u_i = -ratio x forward delta`` with the delta read from
 ``LegGreeks`` (``delta_f_sh``, never re-derived), and ONE net quantity per book
@@ -28,7 +30,7 @@ rule, the hard-to-borrow proxy and the hedged maximum loss are imported (``Stati
 ``HardToBorrowProxy``, ``structure_max_loss``). Every refusal is a stable code (:data:`REFUSALS`) that
 starts its message. Counted, never silent: the ``LegGreeks`` codes, ``hedge_hard_to_borrow``,
 ``hedge_small_delta``, ``rounding_residual``, ``mark_forward_carried`` and the ``books_<status>`` of
-:meth:`HedgeOverlay.classify_book`. Import cost: stdlib only.
+:meth:`HedgeOverlay.classify_book`. Import cost: stdlib only (``bridges`` imports numpy when called).
 """
 
 import math
@@ -642,35 +644,50 @@ class DailyDeltaForwardHedge(FixedDeltaForwardHedge):
     the leg's ``rehedges``; :func:`forward_leg_rehedged_value` settles and marks the path. Nothing here reads a
     chain or a calendar.
 
-    Inside a program the path is unknown, so an item is charged its EXPECTED re-hedge cost beside the entry and
-    exit trades (:meth:`item_cost`). The model, stated once: the delta moves by gamma times the forward's move,
+    Inside a program the realized path is unknown. An item is charged its EXPECTED re-hedge cost beside the entry
+    and exit trades (:meth:`item_cost`). The model, stated once: the delta moves by gamma times the forward's move,
     the forward's session move is normal with the leg's implied vol, gamma and vol stay at their decision values::
 
         turnover_i = ratio x sum_legs |gamma_F,leg| x F x iv_leg x sqrt(2 / pi) x days x sqrt(N) / 365
 
     (``N`` = ``rehedge_sessions_per_year``, ``gamma_F`` the delta's change per dollar of FORWARD), charged one fee
-    and one half-spread per share at the decision forward. It is an approximation: gamma grows toward expiry near
-    the strike, the delta also drifts with time, and the path-dependent P&L of re-hedging (zero in expectation on a
-    driftless path) is not a scenario of the program, which sees the ENTRY hedge's payoff only.
+    and one half-spread per share at the decision forward.
+
+    The path-dependent P&L of re-striking (gamma scalping) is a SCENARIO quantity (ADR-0316 Amendment 1). The
+    caller draws forward paths (:meth:`bridges` gives ``rehedge_paths`` seeded standard Brownian bridges in
+    antithetic pairs, :meth:`path` turns one into session levels between a start and an end level) and
+    :meth:`path_excess` returns what re-striking one contract of the item along a path adds to its fixed entry
+    leg: the delta is Black-76 at each session's level with the leg's decision iv and the time left
+    (``sessions(days)`` re-hedge sessions between the decision and expiry), the held segments, every re-hedge
+    trade's cost and the closing trade are :func:`forward_leg_rehedged_value`'s (the ledger's own arithmetic) on
+    the item's UNTRUNCATED units. Approximations: iv frozen at the decision, per-item (gross) trades, no
+    truncation, the entry struck at the decision forward.
 
     Parameters
     ----------
     params : dict
-        The keys of :class:`FixedDeltaForwardHedge` plus ``rehedge_sessions_per_year`` (number > 0).
+        The keys of :class:`FixedDeltaForwardHedge` plus ``rehedge_sessions_per_year`` (number > 0),
+        ``rehedge_paths`` (even int >= 2: the paths per scenario, drawn as antithetic pairs) and ``rehedge_seed``
+        (int >= 0).
 
     Examples
     --------
-    The expected turnover and the cost a program charges one contract::
+    The expected turnover, the cost a program charges one contract and one path's re-hedge excess::
 
         overlay = DailyDeltaForwardHedge({**fixed_block, "kind": "daily_delta_forward",
-                                          "rehedge_sessions_per_year": 252})
-        entry = overlay.units([item], context)[0]      # carries "rehedge_turnover" (shares)
+                                          "rehedge_sessions_per_year": 252, "rehedge_paths": 4, "rehedge_seed": 1})
+        entry = overlay.units([item], context)[0]      # carries "rehedge_turnover" (shares) and "rehedge"
         overlay.item_cost(entry, context["forward"], 30)
+        bridge = overlay.bridges(overlay.sessions(30), (0,))[0]
+        levels = overlay.path(context["forward"], 95.0, 0.01, bridge)
+        overlay.path_excess(entry, levels, 30)         # dollars per contract beside the fixed leg
     """
 
     KIND = "daily_delta_forward"
     REBALANCES = True
-    _EXTRA_PARAMS = ("rehedge_sessions_per_year",)
+    _EXTRA_PARAMS = ("rehedge_sessions_per_year", "rehedge_paths", "rehedge_seed")
+    #: The lowest level a simulated path may reach, as a fraction of its start (a price must stay positive).
+    PATH_FLOOR = 1e-6
 
     @classmethod
     def _check(cls, problems, params):
@@ -679,28 +696,117 @@ class DailyDeltaForwardHedge(FixedDeltaForwardHedge):
             value = params["rehedge_sessions_per_year"]
             if not (number_ok(value) and value > 0):
                 problems.append(_coded(PARAM_VALUE, f"rehedge_sessions_per_year must be a number > 0, got {value!r}"))
+        if "rehedge_paths" in params:
+            value = params["rehedge_paths"]
+            if type(value) is not int or value < 2 or value % 2:
+                problems.append(_coded(PARAM_VALUE, f"rehedge_paths must be an even int >= 2, got {value!r}"))
+        if "rehedge_seed" in params:
+            value = params["rehedge_seed"]
+            if type(value) is not int or value < 0:
+                problems.append(_coded(PARAM_VALUE, f"rehedge_seed must be an int >= 0, got {value!r}"))
 
-    def _turnover(self, greeks, item, forward, context):
-        """Return the item's expected re-hedge turnover in shares per contract PER CALENDAR DAY to expiry (ratio applied)."""
-        total = []
+    def _rehedge_inputs(self, greeks, item, forward, context):
+        """Return ``(turnover, legs)`` of one item: expected re-hedged shares per contract PER CALENDAR DAY (ratio
+        applied) and each leg's ``(right, strike, signed multiplier, iv)`` for :meth:`path_excess`; ``(0.0, None)``
+        when a leg cannot be priced."""
+        total, legs = [], []
         for (right, sign), strike, quote in zip(item["legs"], item["strikes"], item["quotes"], strict=True):
             leg = {"right": right, "strike": strike, "sign": sign, "quantity": 1, "expiry": item["expiry"]}
             row, code = greeks.of(leg, quote, forward, context["spot"], context["day"])
             if code is not None:
-                return 0.0
+                return 0.0, None
             gamma_f = row["gamma_sh"] * (context["spot"] / forward) ** 2
             total.append(gamma_f * forward * row["iv"])
+            legs.append((right, strike, sign * context["multiplier"], row["iv"]))
         per_day = math.sqrt(2.0 / math.pi) * math.sqrt(self.params["rehedge_sessions_per_year"]) / 365.0
-        return self.params["ratio"] * abs(math.fsum(total)) * per_day
+        return self.params["ratio"] * abs(math.fsum(total)) * per_day, legs
 
     def units(self, items, context):
-        """Return the parent's entries, each with ``rehedge_turnover``: expected re-hedged shares per contract per calendar day."""
+        """Return the parent's entries, each with ``rehedge_turnover`` (expected re-hedged shares per contract per
+        calendar day) and, for a hedged item, ``rehedge`` (``legs`` and ``reference``: what :meth:`path_excess` reads)."""
         entries = super().units(items, context)
         greeks, forward = self._greeks(context), _positive_forward(context)
         for item, entry in zip(items, entries, strict=True):
-            hedged = entry["status"] == STATUS_OK and entry["units"]
-            entry["rehedge_turnover"] = self._turnover(greeks, item, forward, context) if hedged else 0.0
+            entry["rehedge_turnover"] = 0.0
+            if entry["status"] == STATUS_OK and entry["units"]:
+                turnover, legs = self._rehedge_inputs(greeks, item, forward, context)
+                entry["rehedge_turnover"] = turnover
+                if legs is not None:
+                    entry["rehedge"] = {"legs": legs, "reference": forward}
         return entries
+
+    def sessions(self, days):
+        """Return the re-hedge sessions in ``days`` calendar days: ``max(1, round(days x N / 365))``."""
+        return max(1, int(round(days * self.params["rehedge_sessions_per_year"] / 365.0)))
+
+    def bridges(self, steps, key=()):
+        """Return ``rehedge_paths`` standard Brownian bridges over ``steps`` sessions, in antithetic pairs.
+
+        Each is ``[B_0 .. B_steps]`` with ``B_0 = B_steps = 0`` and unit-variance session increments before the
+        pin: ``B_j = W_j - (j / steps) W_steps``. The draws are ``numpy.random.default_rng([rehedge_seed, *key])``
+        standard normals, so a longer bridge of the same ``key`` shares the shorter one's increments (one market
+        path, pinned at each horizon); path ``2k + 1`` is the mirror of path ``2k``. Nothing reads the clock.
+        """
+        import numpy as np
+
+        if type(steps) is not int or steps < 1:
+            raise ValueError(f"steps must be an int >= 1, got {steps!r}")
+        rng = np.random.default_rng([self.params["rehedge_seed"], *key])
+        out = []
+        for _ in range(self.params["rehedge_paths"] // 2):
+            walk = np.concatenate(([0.0], np.cumsum(rng.standard_normal(steps))))
+            bridge = (walk - np.arange(steps + 1) / steps * walk[-1]).tolist()
+            bridge[-1] = 0.0
+            out.extend((bridge, [0.0 - b for b in bridge]))
+        return out
+
+    def path(self, start, end, vol, bridge):
+        """Return the session levels of one path from ``start`` to ``end``: a geometric bridge with session vol ``vol``.
+
+        ``F_j = start x exp((j / n) ln(end / start) + vol x B_j)``, so the first level is ``start`` and the last
+        ``end``; an ``end`` below ``PATH_FLOOR x start`` (a move to zero) ends at that floor, since a trade needs
+        a positive price. ``vol`` may be negative (a name that moves against the market mirrors the bridge).
+        """
+        if not (number_ok(start) and start > 0 and number_ok(end) and end >= 0 and number_ok(vol)):
+            raise ValueError(f"a path needs a positive start, an end >= 0 and a finite vol, got {start!r}, {end!r}, {vol!r}")
+        last = max(end, self.PATH_FLOOR * start)
+        drift, n = math.log(last / start), len(bridge) - 1
+        levels = [start * math.exp(j / n * drift + vol * b) for j, b in enumerate(bridge)]
+        levels[0], levels[-1] = start, last
+        return levels
+
+    def path_units(self, entry, level, years):
+        """Return one contract's units at ``level`` with ``years`` left: ``-ratio x`` the Black-76 forward delta at the leg's decision iv."""
+        from dskit.pipeline.option_pricing import black76_delta
+
+        rate = self.params["rate"]
+        delta = math.fsum(scale * black76_delta(right, level, strike, iv, years, rate)
+                          for right, strike, scale, iv in entry["rehedge"]["legs"])
+        return 0.0 - self.params["ratio"] * delta
+
+    def path_excess(self, entry, levels, days):
+        """Return what re-striking one contract along ``levels`` adds to its fixed entry leg, in dollars (ADR-0316 A1).
+
+        ``levels`` are the session levels ``[F_0 .. F_n]`` (``F_0`` the entry's decision forward, ``F_n`` the
+        settlement level); the hedge is re-struck on sessions ``1 .. n-1`` to :meth:`path_units` with
+        ``days / 365 x (n - j) / n`` years left. The value is :func:`forward_leg_rehedged_value` of that leg less
+        :func:`forward_leg_net_settle` of the entry units held throughout, both at ``F_n`` at this overlay's rates:
+        the held segments ``(u_j - u_0)(F_{j+1} - F_j)``, less every re-hedge trade's cost and the difference of
+        the closing trades. Zero for an entry that is not hedged.
+        """
+        if "rehedge" not in entry:
+            return 0.0
+        n, years = len(levels) - 1, days / 365.0
+        record = {"units": entry["units"], "reference": levels[0], "days": days,
+                  "rates": {k: self.params[k] for k in ("hedge_fee_per_share", "hedge_half_spread_bps")}}
+        fixed = forward_leg_net_settle(record, levels[-1])
+        held, steps = entry["units"], []
+        for j in range(1, n):
+            units = self.path_units(entry, levels[j], years * (n - j) / n)
+            steps.append({"date": j, "units": units, "forward": levels[j],
+                          "cost": forward_leg_one_way_cost(record, units - held, levels[j])})
+            held = units
+        return forward_leg_rehedged_value({**record, "rehedges": steps}, levels[-1]) - fixed
 
     def item_cost(self, entry, reference, days):
         """Return the entry and exit trades of the item's units plus one trade of its expected re-hedge turnover over ``days``."""

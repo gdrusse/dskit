@@ -565,7 +565,7 @@ def test_forward_spot_delta_invalid_inputs(units, forward, spot):
 
 # --- ADR-0316: the daily re-struck hedge (DailyDeltaForwardHedge) and the re-hedged leg's value -------------------
 
-DAILY = {**BLOCK, "kind": "daily_delta_forward", "rehedge_sessions_per_year": 252}
+DAILY = {**BLOCK, "kind": "daily_delta_forward", "rehedge_sessions_per_year": 252, "rehedge_paths": 4, "rehedge_seed": 7}
 RATES = {"hedge_fee_per_share": 0.005, "hedge_half_spread_bps": 5.0}
 
 
@@ -577,7 +577,12 @@ def test_the_daily_kind_is_the_fixed_hedge_plus_one_param_and_the_fixed_kind_nev
     daily = HedgeOverlay.from_method({"hedge": DAILY})
     assert isinstance(daily, ho.DailyDeltaForwardHedge) and daily.REBALANCES is True
     assert FixedDeltaForwardHedge.REBALANCES is False and NullHedgeOverlay.REBALANCES is False
-    assert set(ho.DailyDeltaForwardHedge.params_tuple()) == set(BLOCK) | {"rehedge_sessions_per_year"}
+    assert set(ho.DailyDeltaForwardHedge.params_tuple()) == set(BLOCK) | {
+        "rehedge_sessions_per_year", "rehedge_paths", "rehedge_seed"}
+    for key, values in (("rehedge_paths", (0, 1, 3, 4.0, True, "4")), ("rehedge_seed", (-1, 1.0, True, "7"))):
+        for bad in values:
+            with pytest.raises(ConfigError, match="hedge_param_value"):
+                ho.DailyDeltaForwardHedge({**DAILY, key: bad})
     for bad in (0, -1, True, "252", float("nan")):
         with pytest.raises(ConfigError, match="hedge_param_value"):
             ho.DailyDeltaForwardHedge({**DAILY, "rehedge_sessions_per_year": bad})
@@ -590,7 +595,9 @@ def test_the_daily_kind_is_the_fixed_hedge_plus_one_param_and_the_fixed_kind_nev
 def test_the_daily_entry_is_the_fixed_entry_and_the_fixed_item_cost_is_the_old_expression():
     fixed, daily = FixedDeltaForwardHedge(block()), ho.DailyDeltaForwardHedge(DAILY)
     mine, theirs = fixed.units([item()], CONTEXT)[0], daily.units([item()], CONTEXT)[0]
-    assert {k: v for k, v in theirs.items() if k != "rehedge_turnover"} == mine and "rehedge_turnover" not in mine
+    assert {k: v for k, v in theirs.items() if k not in ("rehedge_turnover", "rehedge")} == mine
+    assert "rehedge_turnover" not in mine and "rehedge" not in mine
+    assert theirs["rehedge"] == {"legs": [("call", 100.0, MULT, VOL)], "reference": FORWARD}
     old = fixed.costs([{"units": mine["units"], "reference": FORWARD}], FORWARD, 30)["trade_costs"]
     assert fixed.item_cost(mine, FORWARD, 30) == old            # bit for bit: the program's old per-item cost
 
@@ -630,3 +637,69 @@ def test_a_leg_with_no_rehedge_settles_as_the_fixed_leg():
     assert ho.forward_leg_rehedged_value({**record, "rehedges": []}, 448.0) == pytest.approx(fixed)
     assert ho.forward_leg_one_way_cost(record, 0, 100.0) == 0.0
     assert ho.forward_leg_one_way_cost(record, -4, 100.0) == pytest.approx(_one_way(4, 100.0))
+
+
+# --- ADR-0316 Amendment 1: the re-hedge P&L of a path (seeded bridges, session levels, the excess by hand) ---------
+
+def test_the_bridges_are_seeded_antithetic_pinned_and_share_their_increments_across_horizons():
+    daily = ho.DailyDeltaForwardHedge(DAILY)
+    first, mirror, third, fourth = daily.bridges(5, (2,))
+    assert len(first) == 6 and first[0] == first[-1] == 0.0 and any(first[1:-1])
+    assert mirror == [0.0 - b for b in first] and fourth == [0.0 - b for b in third] and third != first
+    assert daily.bridges(5, (2,)) == [first, mirror, third, fourth]            # nothing reads the clock
+    assert daily.bridges(5, (3,))[0] != first                                  # the key names the scenario
+    assert ho.DailyDeltaForwardHedge({**DAILY, "rehedge_seed": 8}).bridges(5, (2,))[0] != first
+    assert len(ho.DailyDeltaForwardHedge({**DAILY, "rehedge_paths": 2}).bridges(5, (2,))) == 2
+    # one market path pinned at each horizon: the unpinned walk of the longer bridge starts with the shorter one's
+    longer = daily.bridges(8, (2,))[0]
+    walk = lambda b: [b[j] - b[j - 1] for j in range(1, len(b))]             # noqa: E731
+    short, long_ = walk(first), walk(longer)
+    assert [a - short[0] for a in short[:4]] == pytest.approx([b - long_[0] for b in long_[:4]])
+    with pytest.raises(ValueError, match="steps"):
+        daily.bridges(0)
+
+
+def test_a_path_is_a_geometric_bridge_between_its_ends_and_a_move_to_zero_stops_at_the_floor():
+    daily = ho.DailyDeltaForwardHedge(DAILY)
+    levels = daily.path(100.0, 121.0, 0.02, [0.0, 1.0, 0.0])
+    assert levels == [100.0, pytest.approx(100.0 * math.exp(0.5 * math.log(1.21) + 0.02)), 121.0]
+    assert daily.path(100.0, 121.0, -0.02, [0.0, 1.0, 0.0])[1] == pytest.approx(110.0 * math.exp(-0.02))
+    assert daily.path(100.0, 0.0, 0.0, [0.0, 0.0])[-1] == pytest.approx(100.0 * daily.PATH_FLOOR)
+    assert daily.sessions(30) == 21 and daily.sessions(1) == 1 and daily.sessions(0) == 1
+    with pytest.raises(ValueError, match="path"):
+        daily.path(0.0, 100.0, 0.01, [0.0, 0.0])
+
+
+def test_the_rehedge_excess_of_a_tiny_path_is_the_segments_less_every_trade_by_hand():
+    from dskit.pipeline.option_pricing import black76_delta
+
+    daily = ho.DailyDeltaForwardHedge({**DAILY, "ratio": 0.5})
+    entry_ = daily.units([item()], CONTEXT)[0]                 # a long call: the hedge is short shares
+    u0 = entry_["units"]
+    levels = [FORWARD, 104.0, 97.0, 101.0]                     # three sessions: re-struck on sessions 1 and 2
+    years = 30 / 365
+    u1 = -0.5 * MULT * black76_delta("call", 104.0, 100.0, VOL, years * 2 / 3, 0.0)
+    u2 = -0.5 * MULT * black76_delta("call", 97.0, 100.0, VOL, years * 1 / 3, 0.0)
+    assert daily.path_units(entry_, 104.0, years * 2 / 3) == pytest.approx(u1) and u1 < u0 < u2 < 0
+    pnl = (u1 - u0) * (97.0 - 104.0) + (u2 - u0) * (101.0 - 97.0)
+    costs = _one_way(u1 - u0, 104.0) + _one_way(u2 - u1, 97.0) + _one_way(u2, 101.0) - _one_way(u0, 101.0)
+    assert daily.path_excess(entry_, levels, 30) == pytest.approx(pnl - costs)
+    # the ledger's own arithmetic: the re-hedged leg's value less the fixed leg's, at the overlay's rates
+    record = {"units": u0, "reference": FORWARD, "days": 30, "rates": RATES}
+    steps = [{"date": 1, "units": u1, "forward": 104.0, "cost": _one_way(u1 - u0, 104.0)},
+             {"date": 2, "units": u2, "forward": 97.0, "cost": _one_way(u2 - u1, 97.0)}]
+    assert daily.path_excess(entry_, levels, 30) == pytest.approx(
+        ho.forward_leg_rehedged_value({**record, "rehedges": steps}, 101.0) - ho.forward_leg_net_settle(record, 101.0))
+    # a short-gamma hedge (a sold call's) loses what the long-gamma one makes on the same chop, before costs
+    sold = daily.units([item((("call", -1),), (100.0,))], CONTEXT)[0]
+    assert daily.path_excess(sold, levels, 30) == pytest.approx(-pnl - costs)
+    # one session, or an entry without a hedge, re-strikes nothing
+    assert daily.path_excess(entry_, [FORWARD, 101.0], 30) == pytest.approx(0.0, abs=1e-9)
+    assert daily.path_excess(daily.units([item()], {**CONTEXT, "closes": WILD})[0], levels, 30) == 0.0
+
+
+def test_the_first_path_units_are_the_entry_units_the_ledger_fills():
+    daily = ho.DailyDeltaForwardHedge(DAILY)
+    for legs, strikes in (((("call", 1),), (100.0,)), ((("put", -1),), (95.0,)), ((("call", 1), ("put", -1)), (105.0, 95.0))):
+        entry_ = daily.units([item(legs, strikes)], CONTEXT)[0]
+        assert daily.path_units(entry_, FORWARD, 30 / 365) == pytest.approx(entry_["units"], rel=1e-12)
