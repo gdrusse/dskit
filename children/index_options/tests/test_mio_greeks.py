@@ -2153,9 +2153,10 @@ def test_raw_stock_preserves_forward_offset(world):
 
 
 @pytest.mark.parametrize("factor", [.5, 2.])
-def test_raw_stock_adjusted_basis_is_raw_share_invariant(world, factor):
+@pytest.mark.parametrize("explicit", [False, True])
+def test_raw_stock_adjusted_basis_is_raw_share_invariant(world, factor, explicit):
     run_dir, out_dir, inputs = _raw_stock_case(world)
-    before = _raw_stock_run(run_dir, out_dir, inputs)
+    before = _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=explicit)
     table = json.loads((run_dir/"result.json").read_text())
     for row in inputs["stock_bars"]:
         if row["symbol"] == "BLK":
@@ -2176,7 +2177,7 @@ def test_raw_stock_adjusted_basis_is_raw_share_invariant(world, factor):
     chain["pin"]["files"][chain["files"]["BLK"]] = _sha(path)
     table["results"][0]["result"]["trades"][0]["factor"] = factor
     (run_dir/"result.json").write_text(json.dumps(table, sort_keys=True))
-    after = _raw_stock_run(run_dir, out_dir, inputs)
+    after = _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=explicit)
     assert after["trades"] == before["trades"]
     assert after["daily"] == before["daily"]
 
@@ -2310,7 +2311,8 @@ def test_raw_stock_bad_settlement_calendar_before_price_reads(world, monkeypatch
         _raw_stock_run(run_dir, out_dir, inputs)
 
 
-def test_raw_stock_postseal_settlement_tail_is_date_only(world, monkeypatch):
+@pytest.mark.parametrize("explicit", [False, True])
+def test_raw_stock_postseal_settlement_tail_is_date_only(world, monkeypatch, explicit):
     run_dir, out_dir, inputs = _raw_stock_case(world)
     sessions = sorted({row["date"] for row in inputs["stock_bars"]})
     original = mio_greeks.ChainQuotes.chain
@@ -2322,11 +2324,196 @@ def test_raw_stock_postseal_settlement_tail_is_date_only(world, monkeypatch):
         return original(self, symbol, day, expiry)
 
     monkeypatch.setattr(mio_greeks.ChainQuotes, "chain", chain)
-    baseline = _raw_stock_run(run_dir, out_dir, inputs)
+    baseline = _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=explicit)
     baseline_reads = quote_reads.copy()
     quote_reads.clear()
     inputs["settlement_sessions"] = sessions + ["2021-07-01", "2021-07-02"]
-    out = _raw_stock_run(run_dir, out_dir, inputs)
+    out = _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=explicit)
     assert out["daily"] == baseline["daily"]
     assert out["trades"] == baseline["trades"]
     assert quote_reads == baseline_reads and quote_reads
+
+
+def test_raw_stock_explicit_missing_quote_withholds_next_open(world, monkeypatch):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    original = mio_greeks.ChainQuotes.chain
+    monkeypatch.setattr(mio_greeks.ChainQuotes, "chain",
+                        lambda self, symbol, day, expiry: [] if day == "2021-04-14"
+                        else original(self, symbol, day, expiry))
+    out = _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=True)
+    row = next(r for r in out["daily"] if r["date"] == "2021-04-14")
+    assert None in row["residual_delta_sh"].values()
+    assert all(t["date"] != "2021-04-15" for t in out["trades"])
+
+
+@pytest.mark.parametrize("update,reason", [
+    ({"bid": -1.}, "unusable_quote"),
+    ({"iv": None}, "leg_no_iv"),
+    ({"basis_factor": 2.}, "held_quote_basis"),
+    ({"strike": None}, "malformed_quote_identity"),
+    ({"duplicate": True}, "duplicate_quote"),
+])
+def test_raw_stock_invalid_present_leg_takes_priority(world, monkeypatch, update, reason):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    original = mio_greeks.ChainQuotes.chain
+
+    def gap(self, symbol, day, expiry):
+        rows = original(self, symbol, day, expiry)
+        if day == "2021-04-14":
+            rows = ([rows[0], rows[0], *rows[2:]] if update.get("duplicate")
+                    else [{**rows[0], **update}, *rows[2:]])
+        return rows
+
+    monkeypatch.setattr(mio_greeks.ChainQuotes, "chain", gap)
+    with pytest.raises(GreeksRefusal, match=reason):
+        _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=True)
+
+
+def test_raw_stock_missing_leg_in_one_book_withholds_entire_symbol(world, monkeypatch):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    original = mio_greeks.MIODailyStockHedge._load_books
+
+    def books(self, raw):
+        [book] = original(self, raw)
+        return [book, {**book,
+                       "legs": [{**book["legs"][0], "strike": 12345.}]}]
+
+    monkeypatch.setattr(mio_greeks.MIODailyStockHedge, "_load_books", books)
+    out = _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=True)
+    rows = [r for r in out["daily"] if None in r["residual_delta_sh"].values()]
+    assert rows and out["trades"] == []
+    assert len(out["summary"]["availability"]["unavailable_close_signals"]) == len(rows)
+
+
+def test_raw_stock_unheld_unpriced_action_keeps_session(world):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    bar = inputs["stock_bars"][0]
+    bar.update(basis_factor=None, execution_price=None, close=None)
+    inputs["coverage"]["corporate_actions"] = [
+        {"date": bar["date"], "symbol": bar["symbol"], "kind": "unsupported_action_no_anchor"}]
+    out = _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=True)
+    assert out["daily"][0]["date"] == bar["date"]
+    assert out["daily"][0]["residual_delta_sh"][bar["symbol"]] == 0.
+    assert out["summary"]["availability"]["unavailable_prices"] == [
+        {"date": bar["date"], "symbol": bar["symbol"], "reason": "unsupported_action_no_anchor"}]
+    del inputs["stock_bars"][0]
+    with pytest.raises(GreeksRefusal, match="incomplete daily stock grid"):
+        _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=True)
+
+
+@pytest.mark.parametrize("update", [
+    {"bid": 0., "bid_size": 0, "ask_size": 0},
+    {"bid": .01, "ask": 1.},
+    {"bid": .05, "ask": .05},
+])
+def test_explicit_availability_values_nonexecutable_held_quotes(world, monkeypatch, update):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    original = mio_greeks.ChainQuotes.chain
+    monkeypatch.setattr(mio_greeks.ChainQuotes, "chain",
+                        lambda self, *key: [{**r, **update} for r in original(self, *key)])
+    out = _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=True)
+    assert not out["summary"]["availability"]["unavailable_close_signals"]
+
+
+def test_explicit_availability_zero_vendor_iv_is_unknown(world, monkeypatch):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    original = mio_greeks.ChainQuotes.chain
+    monkeypatch.setattr(mio_greeks.ChainQuotes, "chain",
+                        lambda self, symbol, day, expiry:
+                        [{**r, "iv": 0.} if day == "2021-04-14" else r
+                         for r in original(self, symbol, day, expiry)])
+    out = _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=True)
+    unavailable = out["summary"]["availability"]["unavailable_close_signals"]
+    assert len(unavailable) == 1
+    assert unavailable[0]["reason"] == "zero_vendor_iv"
+
+
+@pytest.mark.parametrize("update,reason", [
+    ({"bid": True}, "unusable_quote"), ({"ask": 0.}, "unusable_quote"),
+    ({"bid": 10., "ask": 1.}, "unusable_quote"),
+    ({"ask_size": -1}, "unusable_quote"), ({"bid_size": False}, "unusable_quote"),
+    ({"iv": False}, "leg_no_iv"), ({"iv": -1.}, "leg_no_iv"),
+    ({"iv": float("nan")}, "leg_no_iv"), ({"iv": float("inf")}, "leg_no_iv"),
+    ({"iv": 1e-20}, "leg_no_iv"),
+])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_zero_iv_does_not_mask_corrupt_sibling(world, monkeypatch, update, reason, reverse):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    original = mio_greeks.ChainQuotes.chain
+    original_load = mio_greeks.MIODailyStockHedge._load_books
+
+    def load(self, raw):
+        books = original_load(self, raw)
+        if reverse:
+            for book in books:
+                book["legs"].reverse()
+        return books
+
+    def chain(self, symbol, day, expiry):
+        rows = original(self, symbol, day, expiry)
+        if day == "2021-04-14":
+            rows = [{**rows[0], **update}, {**rows[1], "iv": 0.}, *rows[2:]]
+        return rows
+
+    monkeypatch.setattr(mio_greeks.MIODailyStockHedge, "_load_books", load)
+    monkeypatch.setattr(mio_greeks.ChainQuotes, "chain", chain)
+    with pytest.raises(GreeksRefusal, match=reason):
+        _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=True)
+
+
+def test_held_valuation_keeps_parity_strict(world, monkeypatch):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    original = mio_greeks.ChainQuotes.chain
+    leg_quotes = []
+    parity_rows = []
+    original_leg = mio_greeks.LegGreeks.of
+    original_parity = mio_greeks.ParityForward.from_chain
+
+    def chain(self, *key):
+        return [{**r, "bid": 0., "ask": 4., "iv": .3, "bid_size": 0, "ask_size": 0}
+                for r in original(self, *key)]
+
+    def leg(self, position, quote, *args):
+        if quote is not None:
+            leg_quotes.append((quote["bid"], quote["ask"], quote["iv"]))
+        return original_leg(self, position, quote, *args)
+
+    def parity(self, rows, *args):
+        parity_rows.extend(rows)
+        return original_parity(self, rows, *args)
+
+    monkeypatch.setattr(mio_greeks.ChainQuotes, "chain", chain)
+    monkeypatch.setattr(mio_greeks.LegGreeks, "of", leg)
+    monkeypatch.setattr(mio_greeks.ParityForward, "from_chain", parity)
+    out = _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=True)
+    assert leg_quotes and set(leg_quotes) == {(0., 4., .3)}
+    assert parity_rows == []
+    assert not out["summary"]["availability"]["unavailable_close_signals"]
+    with pytest.raises(GreeksRefusal, match="stock_greeks"):
+        _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=False)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("missing", [False, True])
+def test_unknown_book_does_not_mask_corrupt_same_symbol_book(world, monkeypatch, reverse, missing):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    original_load = mio_greeks.MIODailyStockHedge._load_books
+    original_chain = mio_greeks.ChainQuotes.chain
+
+    def load(self, raw):
+        [book] = original_load(self, raw)
+        books = [{**book, "legs": [leg]} for leg in book["legs"]]
+        return books[::-1] if reverse else books
+
+    def chain(self, symbol, day, expiry):
+        rows = original_chain(self, symbol, day, expiry)
+        if day != "2021-04-14":
+            return rows
+        corrupted = {**rows[0], "iv": None}
+        return [corrupted, *rows[2:]] if missing else [
+            corrupted, {**rows[1], "iv": 0.}, *rows[2:]]
+
+    monkeypatch.setattr(mio_greeks.MIODailyStockHedge, "_load_books", load)
+    monkeypatch.setattr(mio_greeks.ChainQuotes, "chain", chain)
+    with pytest.raises(GreeksRefusal, match="leg_no_iv"):
+        _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=True)

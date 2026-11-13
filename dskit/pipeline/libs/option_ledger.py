@@ -1516,6 +1516,10 @@ class DailyStockHedge(Node):
         name_cap_usd and gross_cap_usd, positive integer settlement_lag_sessions.
         Optional defer_unpaid_dividends permits unknown pay dates as None;
         those entitlements remain nonspendable receivables through report close.
+        Optional explicit_availability requires boolean signal_available and
+        price_available on every market row. An unavailable close signal has a
+        null delta and withholds the symbol's next-open order. Prices may be
+        null only on declared unsupported_action_no_anchor rows with no exposure.
 
     Examples
     --------
@@ -1555,7 +1559,8 @@ class DailyStockHedge(Node):
     role = "transform"
     outputs = ("trades", "daily", "summary")
     _PARAMS = ("ratio", "fee_per_share", "half_spread_bps", "capital_charge_rate",
-               "name_cap_usd", "gross_cap_usd", "settlement_lag_sessions", "defer_unpaid_dividends")
+               "name_cap_usd", "gross_cap_usd", "settlement_lag_sessions", "defer_unpaid_dividends",
+               "explicit_availability")
     _INPUTS = ("sessions", "symbols", "decision_dates", "coverage", "cash", "market", "dividends")
     _MARKET_FIELDS = ("date", "symbol", "delta_sh", "active", "known_at",
                       "execution_price", "close")
@@ -1578,9 +1583,9 @@ class DailyStockHedge(Node):
         reject_unknown_params(problems, params, cls._PARAMS)
         for name in cls._PARAMS:
             value = params.get(name)
-            if name == "defer_unpaid_dividends":
+            if name in ("defer_unpaid_dividends", "explicit_availability"):
                 if type(params.get(name, False)) is not bool:
-                    problems.append("defer_unpaid_dividends must be boolean")
+                    problems.append(f"{name} must be boolean")
                 continue
             if name == "settlement_lag_sessions":
                 check_int_param(problems, name, value, ge=1)
@@ -1658,6 +1663,7 @@ class DailyStockHedge(Node):
                         or isinstance(coverage["corporate_actions"], list))):
             raise ValueError("daily_stock: unsupported or incomplete corporate actions")
         actions = {}
+        unpriced_events = set()
         for event in ([] if coverage["corporate_actions"] == "none" else coverage["corporate_actions"]):
             self._schema(event, ("symbol", "date", "kind"))
             self._date(event["date"])
@@ -1666,6 +1672,8 @@ class DailyStockHedge(Node):
                     or event["symbol"] in actions.get(event["date"], [])):
                 raise ValueError("daily_stock: invalid corporate action")
             actions.setdefault(event["date"], []).append(event["symbol"])
+            if event["kind"] == "unsupported_action_no_anchor":
+                unpriced_events.add((event["date"], event["symbol"]))
         cash = {}
         for row in inputs["cash"]:
             self._schema(row, ("date", "free_cash"))
@@ -1678,16 +1686,32 @@ class DailyStockHedge(Node):
         if set(cash) != set(sessions):
             raise ValueError("daily_stock: incomplete cash grid")
         market = {}
+        explicit = self.params.get("explicit_availability", False)
+        fields = (*self._MARKET_FIELDS, "signal_available", "price_available") if explicit else self._MARKET_FIELDS
         for row in inputs["market"]:
-            self._schema(row, self._MARKET_FIELDS)
+            reason_field = explicit and isinstance(row, dict) and "unavailable_signal_reasons" in row
+            self._schema(row, (*fields, "unavailable_signal_reasons") if reason_field else fields)
+            signal = row.get("signal_available", True)
+            priced = row.get("price_available", True)
+            delta = row["delta_sh"]
+            if reason_field:
+                reasons = row["unavailable_signal_reasons"]
+                if (signal is not False or not isinstance(reasons, list) or not reasons
+                        or any(r not in ("absent_held_quote", "zero_vendor_iv") for r in reasons)
+                        or len(set(reasons)) != len(reasons)):
+                    raise ValueError("daily_stock: invalid market signal reasons")
             day, symbol = row["date"], row["symbol"]
             self._date(day)
             known = self._date(row["known_at"])
             if (not isinstance(symbol, str) or day not in sessions or symbol not in symbols
                     or (day, symbol) in market or known > self._date(day)
-                    or type(row["active"]) is not bool or not number_ok(row["delta_sh"])
-                    or (not row["active"] and row["delta_sh"] != 0)
-                    or not price_ok(row["execution_price"]) or not price_ok(row["close"])):
+                    or type(row["active"]) is not bool
+                    or type(signal) is not bool or type(priced) is not bool
+                    or (signal and (not number_ok(delta) or (not row["active"] and delta != 0)))
+                    or (not signal and (delta is not None or not row["active"]))
+                    or (priced and (not price_ok(row["execution_price"]) or not price_ok(row["close"])))
+                    or (not priced and (row["execution_price"] is not None or row["close"] is not None))
+                    or (explicit and priced == ((day, symbol) in unpriced_events))):
                 raise ValueError("daily_stock: invalid market grid or late exposure")
             market[day, symbol] = dict(row)
         if len(market) != len(sessions)*len(symbols):
@@ -1706,6 +1730,8 @@ class DailyStockHedge(Node):
                     or (symbol, ex_day) in seen
                     or not number_ok(row["amount"]) or row["amount"] < 0):
                 raise ValueError("daily_stock: invalid dividend event")
+            if explicit and (ex_day, symbol) in unpriced_events and row["amount"] != 0:
+                raise ValueError("daily_stock: unavailable price conversion for dividend")
             seen.add((symbol, ex_day))
             dividends.setdefault(ex_day, []).append(dict(row))
         for events in dividends.values():
@@ -1747,19 +1773,24 @@ class DailyStockHedge(Node):
                                 "execution_price": price, "cost_usd": cost,
                                 "settlement_date": due})
 
+    def _target(self, row):
+        """Return the integer target, or None when the close signal is absent."""
+        delta = row["delta_sh"]
+        return None if delta is None else math.floor(max(0., -self.params["ratio"]*delta))
+
     def _rebalance(self, state, index, sessions, symbols, market, baseline):
         """Sell toward prior-close targets, then buy within cash and risk caps."""
         day, prior = sessions[index], sessions[index-1]
-        targets = {s: math.floor(max(0., -self.params["ratio"]*market[prior, s]["delta_sh"]))
-                   for s in symbols}
+        targets = {s: self._target(market[prior, s]) for s in symbols}
         prices = {s: market[day, s]["execution_price"] for s in symbols}
-        for symbol in symbols:
+        candidates = [s for s in symbols if targets[s] is not None and prices[s] is not None]
+        for symbol in candidates:
             change = min(0, targets[symbol]-state["shares"][symbol])
             self._fill(state, symbol, change, prices[symbol], index, sessions, baseline, prior)
-        for symbol in symbols:
+        for symbol in candidates:
             held = state["shares"][symbol]
             price = prices[symbol]
-            gross = math.fsum(state["shares"][s]*prices[s] for s in symbols)
+            gross = math.fsum(state["shares"][s]*prices[s] for s in symbols if state["shares"][s])
             available = baseline+state["cash"]
             per_share = price+self._cost(1, price)
             name_room = max(0, math.floor(self.params["name_cap_usd"]/price)-held)
@@ -1793,11 +1824,31 @@ class DailyStockHedge(Node):
                  "costs": 0., "capital": 0., "dividends": 0., "trades": [],
                  "non_settlement_dates": excluded}
         daily = []
+        explicit = self.params.get("explicit_availability", False)
+        unavailable_signals, suppressed_opens, unavailable_prices = [], [], []
         for index, day in enumerate(sessions):
+            prior = sessions[index-1] if index else None
             for symbol in actions.get(day, []):
                 prior_active = index > 0 and market[sessions[index-1], symbol]["active"]
                 if state["shares"][symbol] or prior_active or market[day, symbol]["active"]:
                     raise ValueError("daily_stock: unsupported corporate action exposure")
+                if not market[day, symbol].get("price_available", True):
+                    if prior and day not in decisions and self._target(market[prior, symbol]):
+                        raise ValueError("daily_stock: unavailable execution price for candidate trade")
+                    unavailable_prices.append({"date": day, "symbol": symbol,
+                                               "reason": "unsupported_action_no_anchor"})
+            if explicit:
+                for symbol in symbols:
+                    if not market[day, symbol]["signal_available"]:
+                        for reason in market[day, symbol].get("unavailable_signal_reasons", ("absent_held_quote",)):
+                            unavailable_signals.append({"date": day, "symbol": symbol, "reason": reason})
+                    if prior and not market[prior, symbol]["signal_available"]:
+                        suppressed_opens.append({"date": day, "symbol": symbol, "signal_date": prior,
+                                                 "reason": "scheduled_no_trade" if day in decisions
+                                                 else "absent_prior_close_signal",
+                                                 **({"signal_reasons": market[prior, symbol]["unavailable_signal_reasons"]}
+                                                    if "unavailable_signal_reasons" in market[prior, symbol]
+                                                    else {})})
             for event in dividends.get(day, []):
                 amount = state["shares"][event["symbol"]]*event["amount"]
                 state["pending"].append({"kind": "dividend", "due": event["pay_date"],
@@ -1808,7 +1859,8 @@ class DailyStockHedge(Node):
             if index:
                 prior = sessions[index-1]
                 elapsed = (self._date(day)-self._date(prior)).days
-                prior_value = math.fsum(state["shares"][s]*market[prior, s]["close"] for s in symbols)
+                prior_value = math.fsum(state["shares"][s]*market[prior, s]["close"]
+                                        for s in symbols if state["shares"][s])
                 charge = prior_value*self.params["capital_charge_rate"]*elapsed/DAYS_PER_YEAR
                 state["cash"] -= charge
                 state["capital"] += charge
@@ -1816,7 +1868,8 @@ class DailyStockHedge(Node):
                 raise ValueError("daily_stock: insufficient settled cash")
             if index and day not in decisions:
                 self._rebalance(state, index, settlement, symbols, market, cash[day])
-            values = {s: state["shares"][s]*market[day, s]["close"] for s in symbols}
+            values = {s: state["shares"][s]*market[day, s]["close"]
+                      if state["shares"][s] else 0. for s in symbols}
             gross = math.fsum(values.values())
             sales = math.fsum(p["amount"] for p in state["pending"] if p["kind"] == "sale")
             dividend_due = math.fsum(p["amount"] for p in state["pending"] if p["kind"] == "dividend")
@@ -1827,7 +1880,8 @@ class DailyStockHedge(Node):
                           "available_cash": cash[day]+state["cash"], "sale_receivables": sales,
                           "dividend_receivables": dividend_due, "inventory_usd": gross,
                           "stock_pnl_usd": nav, "shares": dict(state["shares"]),
-                          "residual_delta_sh": {s: market[day, s]["delta_sh"]+state["shares"][s]
+                          "residual_delta_sh": {s: (None if market[day, s]["delta_sh"] is None
+                                                   else market[day, s]["delta_sh"]+state["shares"][s])
                                                 for s in symbols},
                           "name_cap_breaches": [s for s in symbols if values[s] > self.params["name_cap_usd"]],
                           "gross_cap_breach": gross > self.params["gross_cap_usd"]})
@@ -1839,4 +1893,11 @@ class DailyStockHedge(Node):
                             "sale_receivables": daily[-1]["sale_receivables"],
                             "dividend_receivables": daily[-1]["dividend_receivables"],
                             "params": dict(self.params),
+                            **({"availability": {
+                                "unavailable_close_signals": unavailable_signals,
+                                "suppressed_opens": suppressed_opens,
+                                "unavailable_prices": unavailable_prices,
+                                "cash_allocation": ("Other names use alphabetical cash and caps. "
+                                                    "Skipped orders reserve no cash, so other fills can change."),
+                            }} if explicit else {}),
                             "meaning": "incremental marked stock sleeve; economic benefit unproven"}}
