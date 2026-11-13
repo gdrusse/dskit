@@ -249,6 +249,24 @@ def test_the_book_quantity_truncates_toward_zero(raw, whole):
     assert book["units"] == whole and isinstance(book["units"], int) and book["status"] == "ok"
 
 
+@pytest.mark.parametrize("raw, whole", [(3 - 1e-12, 3), (3 + 1e-12, 3), (-3 + 1e-12, -3), (3 - 1e-6, 2)])
+def test_the_fill_snaps_a_raw_within_float_order_of_a_whole_share(raw, whole):
+    book = FixedDeltaForwardHedge(block()).book_units([entry(raw)], [1])
+    assert book["units"] == whole
+
+
+def test_the_rehedge_turnover_of_a_spread_nets_the_signed_leg_gammas():
+    daily = ho.DailyDeltaForwardHedge(DAILY)
+    legs, strikes = (("call", 1), ("call", -1)), (100.0, 100.0)
+    spread = daily.units([item(legs, strikes)], CONTEXT)[0]
+    assert spread["rehedge_turnover"] == pytest.approx(0.0, abs=1e-12)     # identical strikes: gammas cancel
+    legs, strikes = (("call", 1), ("call", -1)), (100.0, 110.0)
+    net = daily.units([item(legs, strikes)], CONTEXT)[0]["rehedge_turnover"]
+    long_ = daily.units([item((("call", 1),), (100.0,))], CONTEXT)[0]["rehedge_turnover"]
+    short = daily.units([item((("call", 1),), (110.0,))], CONTEXT)[0]["rehedge_turnover"]
+    assert net == pytest.approx(abs(long_ - short)) and net < long_ + short
+
+
 def test_the_book_nets_item_units_times_quantities_then_truncates_once():
     overlay = FixedDeltaForwardHedge(block())
     # per-item rounding would give -3 - 2 + 2 = ... ; the net -3.6 - 2.6 + 2.4 = -3.8 truncates once to -3

@@ -75,6 +75,7 @@ COST_BELOW_FLOOR = "hedge_cost_below_floor"
 REFUSALS = (UNKNOWN_KIND, UNKNOWN_KEY, MISSING_KEY, RATIO_RANGE, MODE, PARAM_VALUE,
             OVERRIDES_FORMULATION, REBALANCE_NOT_SUPPORTED, COST_BELOW_FLOOR)
 #: Counter names (see the module docstring).
+RAW_UNITS_SNAP = 1e-9
 ROUNDING_RESIDUAL, SMALL_DELTA, MARK_CARRIED = "rounding_residual", "hedge_small_delta", "mark_forward_carried"
 BOOKS_PREFIX = "books_"
 #: Item and book statuses beside the ``LegGreeks`` refusal codes.
@@ -321,7 +322,7 @@ class HedgeOverlay(ABC):
         """Return the level the hedge settles against, a positive forward the context supplies."""
 
     def book_units(self, entries, quantities):
-        """Return the book's ONE net quantity ``{"units", "raw", "status"}``, truncated toward zero.
+        """Return the book's ONE net quantity ``{"units", "raw", "status"}``, truncated toward zero after snapping within 1e-9 of a whole share.
 
         ``raw = sum_i target_i x q_i``; ``units = trunc(raw)`` (``raw`` itself when ``round_units`` is
         false). A book with an item that could not be priced is left unhedged whole (units 0, that
@@ -332,7 +333,12 @@ class HedgeOverlay(ABC):
         if unpriced:
             return {"units": 0, "raw": 0.0, "status": unpriced[0]}
         raw = math.fsum(e["target"] * q for e, q in zip(entries, quantities, strict=True))
-        held = math.trunc(raw) if self.params["round_units"] else raw
+        if self.params["round_units"]:
+            # one rule for program, check and fill: a raw within float order of a whole share is that share
+            raw = float(round(raw)) if abs(raw - round(raw)) < RAW_UNITS_SNAP else raw
+            held = math.trunc(raw)
+        else:
+            held = raw
         if held < 0 and any(e["hard_to_borrow"] for e in entries):
             return {"units": 0, "raw": 0.0, "status": STATUS_HTB}
         self.counts[ROUNDING_RESIDUAL] += abs(raw - held)
@@ -683,9 +689,9 @@ class DailyDeltaForwardHedge(FixedDeltaForwardHedge):
             if code is not None:
                 return 0.0
             gamma_f = row["gamma_sh"] * (context["spot"] / forward) ** 2
-            total.append(abs(gamma_f) * forward * row["iv"])
+            total.append(gamma_f * forward * row["iv"])
         per_day = math.sqrt(2.0 / math.pi) * math.sqrt(self.params["rehedge_sessions_per_year"]) / 365.0
-        return self.params["ratio"] * math.fsum(total) * per_day
+        return self.params["ratio"] * abs(math.fsum(total)) * per_day
 
     def units(self, items, context):
         """Return the parent's entries, each with ``rehedge_turnover``: expected re-hedged shares per contract per calendar day."""
