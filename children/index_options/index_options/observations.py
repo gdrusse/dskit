@@ -715,6 +715,20 @@ class MIOPacketInputs(StudyNode):
         from dskit.pipeline.base import value_hash
         return value_hash(self.params["study"]["domain"]["sources"])
 
+    @staticmethod
+    def cache_base():
+        """The host's shared dskit cache directory: ``$XDG_CACHE_HOME/dskit`` (absolute), else ``~/.cache/dskit``.
+
+        The quote-index cache (``sqlite-parquet-index``) and the study's prepared-week and LP-screen caches
+        (``WeeklyOptionPortfolioStudy(cache_root=...)``, ADR-0307 Amendment 2) live under it.
+        """
+        import os
+        from pathlib import Path
+
+        cache_home = os.environ.get("XDG_CACHE_HOME")
+        base = Path(cache_home) if cache_home and Path(cache_home).is_absolute() else Path.home() / ".cache"
+        return base / "dskit"
+
     def run(self, ctx, inputs):
         """Read and verify the claimed packet, sharing identical quote indexes.
 
@@ -731,7 +745,6 @@ class MIOPacketInputs(StudyNode):
             Bounded inputs and their source/plan provenance.
         """
         from dskit.pipeline.base import value_hash
-        import os
         from pathlib import Path
         from .mio_contract import MIOStudyContract
 
@@ -744,10 +757,7 @@ class MIOPacketInputs(StudyNode):
         study = self.params["study"]
         if ctx is not None and getattr(ctx, "run_dir", None):
             quote_root = Path(ctx.run_dir) / "artifacts" / "mio-quotes"
-            cache_home = os.environ.get("XDG_CACHE_HOME")
-            cache_base = (Path(cache_home) if cache_home and Path(cache_home).is_absolute()
-                          else Path.home() / ".cache")
-            reuse_root = cache_base / "dskit" / "sqlite-parquet-index"
+            reuse_root = self.cache_base() / "sqlite-parquet-index"
         else:
             import tempfile
             quote_root = Path(tempfile.mkdtemp(prefix="mio-quote-index-")) / "artifacts" / "mio-quotes"

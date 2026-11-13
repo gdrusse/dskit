@@ -520,8 +520,9 @@ class MIOMethodWorker:
         ``attempt`` (int >= 1), ``work_dir`` (absolute; quote indexes and
         progress go here), ``out`` (absolute action-file path), optional
         ``unit`` (free-form identity carried into the action file),
-        ``reuse_root`` (same-device index cache root or null) and
-        ``host`` (a label; defaults to the hostname).
+        ``reuse_root`` (same-device index cache root or null; its parent
+        also holds the study's prepared-week and LP-screen caches, ADR-0307
+        Amendment 2) and ``host`` (a label; defaults to the hostname).
 
     Examples
     --------
@@ -751,7 +752,9 @@ class MIOMethodWorker:
         for data in bounded["inputs"].values():
             data["chain_index"]["source_pin"] = identity["pins"]["chain"]
         params = {**d["params"], "selected_pairs": d["pairs"], "clocks": bounded["clocks"]}
-        weekly = WeeklyOptionPortfolioStudy(params, bounded["inputs"], adjustments=bounded.get("adjustments"))
+        weekly = WeeklyOptionPortfolioStudy(params, bounded["inputs"], adjustments=bounded.get("adjustments"),
+                                            cache_root=Path(reuse).parent if reuse and Path(reuse).is_absolute()
+                                            else None)
         started = time.perf_counter()
         try:
             result = weekly._method(method, lambda mid, done, total, status: self._progress(done, total, status))

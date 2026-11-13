@@ -16,6 +16,17 @@ if str(CHILD_ROOT) not in sys.path:
     sys.path.insert(0, str(CHILD_ROOT))
 
 
+@pytest.fixture(autouse=True)
+def _no_shared_value_cache(monkeypatch):
+    """Keep the shared prepared-week and LP-screen caches (ADR-0307 Amendment 2) out of every test by default.
+
+    A packet run with a run directory would otherwise share weeks through the host's cache across tests, and a
+    test that monkeypatches a producer the cache key cannot see would read another test's week. The cache's own
+    tests remove the switch.
+    """
+    monkeypatch.setenv("DSKIT_MIO_VALUE_CACHE", "off")
+
+
 @pytest.fixture
 def child_root():
     return CHILD_ROOT

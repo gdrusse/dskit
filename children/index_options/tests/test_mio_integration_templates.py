@@ -382,6 +382,71 @@ def test_an_instantiated_hedged_program_arm_runs_to_completion(study, tmp_path, 
     assert totals["closed_trades"] == 1
     assert totals["pnl_usd"] == pytest.approx(trade["pnl"], abs=.005)
 
+@pytest.mark.slow
+@pytest.mark.parametrize("study", ["hedged_program"], indirect=True)
+def test_the_packet_route_shares_prepared_weeks_between_live_replay_and_a_rerun(study, tmp_path, monkeypatch,  # noqa: F811
+                                                                                capsys, caplog):
+    """ADR-0307 Amendment 2 through the owner's entry point: the live and replay passes share the host cache, a
+    second run of the same packet reads every week back, and both receipts carry the same results."""
+    import logging
+    import re
+    from dskit.pipeline.__main__ import cmd_run
+    from dskit.pipeline.document import load_document
+    from dskit.pipeline.driver import RunAttestation, resolve_json_artifact
+    from dskit.pipeline.study_protocol import ExposureRegistry
+
+    monkeypatch.delenv("DSKIT_MIO_VALUE_CACHE", raising=False)
+    cache_home = tmp_path / "cache-home"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_home))
+
+    def strip(value):
+        if isinstance(value, dict):
+            return {k: strip(v) for k, v in value.items() if k != "seconds"}
+        return [strip(v) for v in value] if isinstance(value, list) else value
+
+    def cache_lines():
+        found = []
+        for record in caplog.records:
+            match = re.search(r"value caches: live (\{.*\}), replay (\{.*\})$", record.getMessage())
+            if match:
+                found.append((json.loads(match.group(1)), json.loads(match.group(2))))
+        caplog.clear()
+        return found
+
+    caplog.set_level(logging.INFO)
+    receipts, weeks, counts = [], None, []
+    for attempt in ("first", "second"):
+        own = copy.deepcopy(study)  # one registry per run: a packet is claimed once per registry
+        own["registry"]["path"] = str(tmp_path / f"{attempt}-exposure.sqlite")
+        ExposureRegistry(own["registry"]).initialize(
+            own["packets"], [{"start": "2019-01-01", "end_before": "2020-01-01", "evidence": "synthetic prior use"}],
+            "2020-01-01")
+        document = instantiate(load(PLANS / "hedged-program-arm.template.json"), base_document(own),
+                               name=f"cache-{attempt}", output_root=str(tmp_path / attempt))
+        path = tmp_path / f"{attempt}.json"
+        path.write_text(json.dumps(document))
+        assert cmd_run(str(path), "2019-02-09") == 0, capsys.readouterr().out
+        run_dir = max((d for d in (tmp_path / attempt).rglob("*")
+                       if (d / "carry.json").exists() or (d / "report.md").exists()), key=lambda d: len(d.parts))
+        receipt = resolve_json_artifact(run_dir, RunAttestation(run_dir).attested_output(
+            "close_packet", "receipt", load_document(str(path)).hash))
+        assert all(r["status"] == "completed" and r["replay_parity"] for r in receipt["results"]), \
+            [(r.get("id"), r["status"], r.get("error")) for r in receipt["results"]]
+        receipts.append(json.dumps(strip(receipt["results"]), sort_keys=True))
+        counts.append(cache_lines())
+        if weeks is None:
+            weeks = sorted((cache_home / "dskit" / "mio-prepared-week").glob("??/*.pkl.gz"))
+            assert weeks, "the live pass stored no prepared week"
+    assert receipts[0] == receipts[1]
+    week = "mio-prepared-week"
+    # First run: every replay pass reads the live pass's weeks back.
+    assert counts[0] and all(replay[week]["hit"] > 0 and replay[week]["stored"] == 0 for _live, replay in counts[0])
+    # Second run: nothing is prepared again, live or replay, and no entry is added.
+    assert counts[1] and all(side[week]["stored"] == 0 and side[week]["refused"] == 0 and side[week]["hit"] > 0
+                             for pair in counts[1] for side in pair)
+    assert sorted((cache_home / "dskit" / "mio-prepared-week").glob("??/*.pkl.gz")) == weeks
+
+
 def test_timing_pair_can_opt_into_the_same_full_packet_seal(study):  # noqa: F811
     from index_options.mio_contract import MIOStudyContract
 

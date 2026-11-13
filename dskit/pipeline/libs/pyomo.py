@@ -4518,11 +4518,50 @@ class TransportPortfolioSolve(PyomoSolve):
             raise ValueError(f"group LP relaxation failed: {result.message}")
         return float(-result.fun), np.asarray(result.x[:n], dtype=float)
 
+    #: Optional :class:`dskit.pipeline.value_cache.VerifiedValueCache` of whole-screen group LP bounds. None (the
+    #: default) solves every group's LP; a caller that sets it gets the same bounds bit for bit, read back for a
+    #: program whose checked groups, this module's source, the LP functions and the runtime versions are unchanged.
+    screen_cache = None
+
+    def _screen_key(self, groups):
+        """The screen cache key of ``groups``, or None when the LP functions are not this module's own."""
+        import sys
+        from dskit.pipeline.value_cache import key_digest, plain_digest, runtime_versions, source_digest
+
+        here = TransportPortfolioSolve.__dict__
+        if (here.get("_group_lp_bound") is not _SCREEN_LP_FUNCTIONS[0]
+                or here.get("_group_lp_relaxation") is not _SCREEN_LP_FUNCTIONS[1]
+                or type(self)._group_lp_bound is not TransportPortfolioSolve._group_lp_bound):
+            return None  # a replaced bound function (a test double, a subclass) is never cached
+        return key_digest("transport-group-lp-bounds/1", source_digest([sys.modules[__name__].__file__]),
+                          runtime_versions("numpy", "scipy", "highspy"), plain_digest(groups))
+
+    def _screen_bounds(self, groups):
+        """Each group's :meth:`_group_lp_bound`, read from :attr:`screen_cache` when the same program was screened."""
+        from dskit.pipeline.value_cache import MISS, PlainValueError
+
+        cache = self.screen_cache
+        key = None
+        if cache is not None:
+            try:
+                key = self._screen_key(groups)
+            except PlainValueError:
+                key = None  # a program holding non-plain values is screened, never cached
+            if key is not None:
+                found = cache.load(key)
+                if (found is not MISS and isinstance(found, list) and len(found) == len(groups)
+                        and all(type(b) is float for b in found)):
+                    return found
+        bounds = [self._group_lp_bound(group) for group in groups]
+        if key is not None:
+            cache.store(key, bounds)
+        return bounds
+
     def _screen_metadata(self, groups):
         """Return the shared screen decision and its bound metadata."""
         screen = self.params.get("group_screen", "none")
         if screen == "lp":
-            bounds = [self._group_lp_bound(group) for group in groups]
+            bounds = self._screen_bounds(groups)
             # A tolerance, not a strict zero: LP noise of 1e-8 must not change
             # which groups a replay keeps across solver builds.
             active = [i for i, bound in enumerate(bounds)
@@ -5786,6 +5825,12 @@ class TransportPortfolioSolve(PyomoSolve):
                       "candidate": {k: v for k, v in chosen.items() if k != "certificates"},
                       "certificates": chosen["certificates"]}
         return {"selection": chosen}
+
+
+#: The screen's own LP functions as defined above; :meth:`TransportPortfolioSolve._screen_key` caches only these.
+_SCREEN_LP_FUNCTIONS = (TransportPortfolioSolve.__dict__["_group_lp_bound"],
+                        TransportPortfolioSolve.__dict__["_group_lp_relaxation"])
+
 
 class _TransportActionInfeasible(ValueError):
     """A quantity vector fails a declared transport constraint."""

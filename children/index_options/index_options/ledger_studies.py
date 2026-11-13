@@ -2483,9 +2483,22 @@ class WeeklyOptionPortfolioStudy:
     _WEEK_NOT_SELECTED = "week_not_selected"
     _FILL_SIZINGS = ("all_or_none", "available_size")
     _AVAILABLE_SIZE = "available_size"
+    #: Shared prepared-week cache (ADR-0307 Amendment 2): the namespaces under ``cache_root`` and their byte bounds.
+    PREPARED_CACHE = "mio-prepared-week"
+    SCREEN_CACHE = "transport-lp-screen"
+    PREPARED_CACHE_MAX_BYTES = 16 << 30
+    SCREEN_CACHE_MAX_BYTES = 1 << 30
+    #: Setting this environment variable to ``off`` disables both caches in every study (a run then recomputes all).
+    CACHE_SWITCH = "DSKIT_MIO_VALUE_CACHE"
 
-    def __init__(self, params, inputs, *, adjustments=None, method_inputs=None):
+    def __init__(self, params, inputs, *, adjustments=None, method_inputs=None, cache_root=None, cache_log=None):
+        """Bind the study's inputs; ``cache_root`` (absolute) enables the shared prepared-week and LP-screen caches.
+
+        The caches only ever return what this code would recompute from the same inputs (see :meth:`_prepare`); a
+        miss, a mismatch or a refused entry recomputes. ``cache_log`` receives one warning per refused entry.
+        """
         import copy
+        import os
         from datetime import date
         from dskit.pipeline.libs.option_ledger import StandardSplitAdjustment
 
@@ -2599,6 +2612,26 @@ class WeeklyOptionPortfolioStudy:
         if "decision_weeks" in p and self._decision_week(p["decision_weeks"]) not in self.weeks:
             raise ValueError("decision_weeks_invalid: the listed date is not one of the study's decision weeks")
         self._prepared_cache, self._component_cache, self._beta_cache = {}, {}, {}
+        self._prepared_store = self._screen_store = self._prepare_identity = None
+        if cache_root is not None and os.environ.get(self.CACHE_SWITCH, "").lower() != "off":
+            from dskit.pipeline.value_cache import VerifiedValueCache
+            self._prepared_store = VerifiedValueCache(cache_root, self.PREPARED_CACHE,
+                                                      max_bytes=self.PREPARED_CACHE_MAX_BYTES, log=cache_log)
+            self._screen_store = VerifiedValueCache(cache_root, self.SCREEN_CACHE,
+                                                    max_bytes=self.SCREEN_CACHE_MAX_BYTES, log=cache_log)
+
+    def cache_counts(self):
+        """Hits, misses, refusals and stores of the two shared caches (empty when disabled); never part of a result."""
+        return {store.namespace: dict(store.counts)
+                for store in (self._prepared_store, self._screen_store) if store is not None}
+
+    def _solver(self, solver_params):
+        """A ``TransportPortfolioSolve`` that reads and fills this study's LP-screen cache, when one is enabled."""
+        from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+        solver = TransportPortfolioSolve("portfolio", solver_params)
+        if self._screen_store is not None:
+            solver.screen_cache = self._screen_store
+        return solver
 
     @classmethod
     def validate_configuration(cls, params, *, tail_end_before=None):
@@ -3445,13 +3478,98 @@ class WeeklyOptionPortfolioStudy:
         return {"betas": self._fit_betas(returns, finite, count), "observations": count,
                 "dropped": dropped, "names": finite}
 
+    def _prepare_identity_now(self):
+        """The prepared-week key's fixed part, or None when a producing function is not this code's own.
+
+        It names the code (every source file of this package and of ``dskit.pipeline``, so any edit is a new key),
+        the runtime versions and every study parameter but ``methods`` (the bridge, clocks, pairs and node
+        parameters that :meth:`_prepare_week` reads; the methods never reach it).
+        """
+        from pathlib import Path
+        import dskit.pipeline
+        from dskit.pipeline.base import value_hash
+        from dskit.pipeline.value_cache import runtime_versions, source_digest
+
+        own = WeeklyOptionPortfolioStudy.__dict__
+        if (any(own.get(name) is not original for name, original in _PREPARE_FUNCTIONS.items())
+                or any(getattr(type(self), name) is not getattr(WeeklyOptionPortfolioStudy, name)
+                       for name in _PREPARE_FUNCTIONS)
+                or any(getattr(node._prepare, "__func__", None) is not _NODE_PREPARE
+                       or type(node).CDF_NOISE != _AllQuotedOptionContext.CDF_NOISE
+                       for node in self._nodes.values())
+                or _SQLiteQuoteView.__dict__.get("iter_for") is not _QUOTE_ITER_FOR):
+            return None  # a replaced producer (a test double, a subclass) is recomputed, never cached
+        if self._prepare_identity is None:
+            pipeline = Path(dskit.pipeline.__file__).parent
+            files = [*Path(__file__).parent.glob("*.py"), *pipeline.glob("*.py"), *(pipeline/"libs").glob("*.py")]
+            self._prepare_identity = [source_digest(files), runtime_versions("numpy", "scipy"),
+                                      value_hash({k: v for k, v in self.params.items() if k != "methods"})]
+        return self._prepare_identity
+
+    def _prepared_key(self, day):
+        """The content key of ``day``'s prepared week, or None when the week is not cacheable.
+
+        Beside the fixed part it digests, per symbol in order, everything :meth:`_prepare_week` reads for the day:
+        every context row of the day (a superset of the eligible ones), their forecast rows, the day's basis factor
+        and the quotes: the SQLite index's verified content digest, or the day's in-memory quote rows.
+        """
+        from dskit.pipeline.value_cache import key_digest
+
+        if self._prepared_store is None:
+            return None
+        identity = self._prepare_identity_now()
+        if identity is None:
+            return None
+        parts = []
+        for symbol in self.params["symbols"]:
+            contexts = [[e, c] for (d, e), c in self._contexts[symbol].items() if d == day]
+            forecasts = [[e, self._forecasts[symbol][day, e]] for e, _c in contexts
+                         if (day, e) in self._forecasts[symbol]]
+            view = self._quotes[symbol]
+            quotes = ({"sqlite_sha256": view.index.digest} if isinstance(view, _SQLiteQuoteView)
+                      else {"rows": [[list(k), r] for k, r in self._by_day[symbol].get(day, {}).items()]})
+            parts.append([symbol, contexts, forecasts, self._factors[symbol].get(day), quotes])
+        try:
+            return key_digest("mio-prepared-week/1", identity, day, parts)
+        except (TypeError, ValueError):
+            return None  # a non-JSON or non-finite input is recomputed, never cached
+
+    @staticmethod
+    def _prepared_shape(found):
+        return (type(found) is tuple and len(found) == 3 and all(type(part) is list for part in found)
+                and all(type(g) is dict for g in found[0]) and all(type(m) is dict for m in found[1]))
+
     def _prepare(self, day):
+        """Collect every eligible expiry and strike using only date-D rows (:meth:`_prepare_week`), once per content.
+
+        With a shared cache (``cache_root``) the week is read back from a content-addressed, digest-verified entry
+        keyed by :meth:`_prepared_key`, so the replay pass and later runs of the same quarter do not re-project
+        the quotes: the value is the exact object :meth:`_prepare_week` returned (types, floats and sharing kept).
+        Any miss, refusal or uncacheable week recomputes; a computed week is stored before anyone can mutate it.
+        """
+        from dskit.pipeline.value_cache import MISS
+
+        if day in self._prepared_cache:
+            return self._prepared_cache[day]
+        key = self._prepared_key(day)
+        result = MISS
+        if key is not None:
+            result = self._prepared_store.load(key)
+            if result is not MISS and not self._prepared_shape(result):
+                result = MISS
+        if result is MISS:
+            result = self._prepare_week(day)
+            if key is not None:
+                self._prepared_store.store(key, result)
+        # Keep only the latest date; past weekly matrices can be recomputed.
+        self._prepared_cache = {day: result}
+        return result
+
+    def _prepare_week(self, day):
         """Collect every eligible expiry and strike using only date-D rows."""
         from datetime import date
         import numpy as np
 
-        if day in self._prepared_cache:
-            return self._prepared_cache[day]
         groups, metadata, refusals = [], [], []
         for symbol in self.params["symbols"]:
             node = self._nodes[symbol]
@@ -3514,10 +3632,7 @@ class WeeklyOptionPortfolioStudy:
                     metadata[-1]["cdf_noise_raised"] = projection["cdf_noise_raised"]
                 if self.pairs is not None:
                     metadata[-1]["pair_id"] = self._pair(symbol, day, expiry)
-        result = groups, metadata, refusals
-        # Keep only the latest date; past weekly matrices can be recomputed.
-        self._prepared_cache = {day: result}
-        return result
+        return groups, metadata, refusals
 
     def _group_scale(self, method, group, meta):
         """Return the group's W1 scale: the spot, or the spot x the row's reference_scale when asked."""
@@ -4021,7 +4136,7 @@ class WeeklyOptionPortfolioStudy:
             # ADR-0307 Amendment 1: stage one's own time limit (the integer program is never built here).
             solver_params = {**solver_params, "solver_options": {**solver_params.get("solver_options", {}),
                                                                  "time_limit": search["stage1_time_limit"]}}
-        solver = TransportPortfolioSolve("portfolio", solver_params)
+        solver = self._solver(solver_params)
         if derived is not None:
             claim = derived["stage1"]
             if not isinstance(claim, dict) or set(claim) != {"actions", "certificates"}:
@@ -4690,7 +4805,7 @@ class WeeklyOptionPortfolioStudy:
                         solver_params = p["solver"]
                         if kelly is not None and any(key in kelly for key in ("max_groups", *self._KELLY_STRATEGY_KEYS)):
                             solver_params = self._kelly_solver_params(p["solver"], kelly)
-                        solver = TransportPortfolioSolve("portfolio", solver_params)
+                        solver = self._solver(solver_params)
                         program = {"groups": configured,
                                    "caps": self._caps(self._limits(account, method, components, solve=True), metadata)}
                         if shock is not None:
@@ -4953,6 +5068,13 @@ class WeeklyOptionPortfolioStudy:
         return document
 
 
+#: The prepared week's producers as defined here; a study caches its weeks only while every one is still in place.
+_PREPARE_FUNCTIONS = {name: WeeklyOptionPortfolioStudy.__dict__[name]
+                      for name in ("_prepare", "_prepare_week", "_prepared_key", "_loss_row", "_pair")}
+_NODE_PREPARE = _AllQuotedOptionContext._prepare
+_QUOTE_ITER_FOR = _SQLiteQuoteView.__dict__["iter_for"]
+
+
 if __name__ == "__main__":
     sys.exit(main())
 
@@ -5181,8 +5303,13 @@ class MIOPacketStudy(StudyNode):
 
         plan, registry, permit, bounded, provenance, params = self.validate_intake(ctx, inputs)
         d = self.params["study"]["domain"]
+        # ADR-0307 Amendment 2: a run with a run directory shares the prepared weeks and LP screens, content-keyed,
+        # between its live pass, its replay pass and later runs on this host (the quote-index cache's home).
+        from .observations import MIOPacketInputs
+        cache_root = (MIOPacketInputs.cache_base() if ctx is not None and getattr(ctx, "run_dir", None) else None)
         study = WeeklyOptionPortfolioStudy(params, bounded["inputs"], adjustments=bounded.get("adjustments"),
-                                          method_inputs=bounded.get("method_inputs"))
+                                          method_inputs=bounded.get("method_inputs"),
+                                          cache_root=cache_root, cache_log=self.log)
         results = []
         packet_id = permit.get("packet_id", permit.get("id"))
         def event(payload):
@@ -5210,10 +5337,15 @@ class MIOPacketStudy(StudyNode):
                 def replayed(result):
                     replay_study = WeeklyOptionPortfolioStudy(params, bounded["inputs"],
                                                              adjustments=bounded.get("adjustments"),
-                                                             method_inputs=bounded.get("method_inputs"))
+                                                             method_inputs=bounded.get("method_inputs"),
+                                                             cache_root=cache_root, cache_log=self.log)
                     try:
                         replay = replay_study._method(method, None, recorded=result)
                         replay_study.close_quote_indexes(verify=True)
+                        if cache_root is not None:
+                            self.log.info("MIO method %s value caches: live %s, replay %s", method["id"],
+                                          json.dumps(study.cache_counts(), sort_keys=True),
+                                          json.dumps(replay_study.cache_counts(), sort_keys=True))
                     except (QuoteIndexIntegrityError, RecordedCheckRefusal):
                         raise
                     except ValueError as exc:  # the exact replay refused the file's result
