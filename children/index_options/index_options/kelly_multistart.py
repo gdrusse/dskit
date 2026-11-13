@@ -491,7 +491,7 @@ class KellyMultiStart(KellyLocalSearch):
         groups = self.scorer.groups
         record = {"start_kind": "multistart", "start_value": best_values[0], "end_value": end_value,
                   "start_contracts": int(start_q.sum()), "end_contracts": int(best_q.sum()),
-                  "moves": total, "evaluations": self.evaluations, "prepare_evaluations": prepared, "local_optimum": bool(best_done),
+                  "moves": total, "evaluations": self.evaluations, "local_optimum": bool(best_done),
                   "budget_exhausted": exhausted, "restarts": 0, "restarts_skipped": 0, "move_counts": counts,
                   "multistart": {"seed": self.params["seed"], "declared": json.loads(json.dumps(self.multi)),
                                  "lp_live": sum(1 for b in bounds if b > self.tol),
@@ -503,6 +503,7 @@ class KellyMultiStart(KellyLocalSearch):
                                  "chosen_kind": None if chosen is None else starts[chosen][0],
                                  "cash_floor": bool(floor)}}
         if stats is not None:
+            record["prepare_evaluations"] = prepared
             kinds = {}
             for row in stats:
                 tally = kinds.setdefault(row["kind"], {"starts": 0, "feasible": 0, "repaired": 0, "emptied": 0})
