@@ -274,3 +274,125 @@ def test_an_amended_week_records_its_repairs_is_deterministic_and_replays_from_r
     # The registered declaration on the same world is untouched by the amendment's fields.
     old = _result()[4]["decisions"][0]["kelly"]["local"]["multistart"]
     assert not set(old) & {"starts_repaired", "starts_emptied", "starts_distinct", "start_kinds", "start_stats"}
+
+
+# --- ADR-0315 Amendment 2: settleable candidates only, on new ids ----------------------------------------------
+
+def _multistart3(fraction):
+    base = _multistart2(fraction)
+    return {**base, "kelly": {**base["kelly"], "settleable_only": True}}
+
+
+#: ADR-0315 Amendment 2: the Amendment 1 methods with ``kelly.settleable_only`` on NEW ids; the ids above are frozen.
+MULTISTART3_FORMULATIONS = {"kelly050_ls_multistart3_lp": _multistart3(.5),
+                            "kelly075_ls_multistart3_lp": _multistart3(.75)}
+MULTISTART3_HEDGED = {name.removesuffix("_lp")+"_replay_hedge_lp": {**method, "hedge": dict(_REPLAY_BLOCK)}
+                      for name, method in MULTISTART3_FORMULATIONS.items()}
+
+
+def _settleable_world(settleable, basis=None):
+    """The Amendment 1 world, optionally with ``settleable_only`` and a study whose basis series ``basis`` edits."""
+    params, data, method = _world(MULTISTART2_SEARCH)
+    if settleable:
+        method["kelly"]["settleable_only"] = True
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    if basis is not None:
+        basis(study._factors)
+    return params, data, method, study
+
+
+def _changed(name, start="2019-01-15"):
+    """A basis edit: ``name``'s factor halves from ``start`` on (after the first week's fill, before its expiry)."""
+    def edit(factors):
+        for day in factors[name]:
+            if day >= start:
+                factors[name][day] = .5
+    return edit
+
+
+def _dropped_at(name, day):
+    def edit(factors):
+        del factors[name][day]
+    return edit
+
+
+def test_the_settleable_formulations_validate_on_new_ids_and_differ_from_amendment_one_only_by_the_key():
+    assert not set(MULTISTART3_FORMULATIONS) & (set(MULTISTART2_FORMULATIONS) | set(MULTISTART_FORMULATIONS))
+    assert not set(MULTISTART3_HEDGED) & (set(MULTISTART2_HEDGED) | set(MULTISTART_HEDGED))
+    for name, method in MULTISTART3_FORMULATIONS.items():
+        old = MULTISTART2_FORMULATIONS[name.replace("multistart3", "multistart2")]
+        assert "settleable_only" not in old["kelly"] and method["kelly"]["settleable_only"] is True
+        assert {**method, "kelly": {k: v for k, v in method["kelly"].items() if k != "settleable_only"}} == old
+        params, _inputs = _weekly_portfolio_fixture()
+        params["methods"] = [{"id": name, **method}]
+        _for_kelly(params)
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    for name, method in MULTISTART3_HEDGED.items():
+        params, _inputs = _weekly_portfolio_fixture()
+        params["methods"] = [{"id": name, **method}]
+        _for_kelly(params)
+        params.update(hedge_parity=dict(_PARITY), locked_method_ids=list(FORMULATIONS))
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params, tail_end_before="2021-07-01")
+
+
+@pytest.mark.parametrize("value", [False, 1, None, "true"])
+def test_a_settleable_only_that_is_not_true_is_refused(value):
+    params, _data, method = _world(MULTISTART2_SEARCH)
+    method["kelly"]["settleable_only"] = value
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_without_the_key_a_book_whose_basis_changes_before_expiry_is_selected_and_cannot_settle():
+    _params, _data, method, study = _settleable_world(False)
+    name = study._method(method, None)["decisions"][0]["books"][0]["symbol"]
+    _params, _data, method, study = _settleable_world(False, _changed(name))
+    with pytest.raises(ValueError, match="unsettleable selected book"):
+        study._method(method, None)
+
+
+@pytest.mark.parametrize("edit", [_changed, lambda name: _changed(name, "2019-02-01"),
+                                  lambda name: _dropped_at(name, "2019-02-01")],
+                         ids=["change_before_expiry", "change_on_expiry", "no_factor_on_expiry"])
+def test_with_the_key_an_unsettleable_group_is_refused_before_the_solve_and_never_selected(edit):
+    _params, _data, method, study = _settleable_world(False)
+    plain = study._method(method, None)
+    name = plain["decisions"][0]["books"][0]["symbol"]
+    params, data, method, study = _settleable_world(True, edit(name))
+    result = study._method(method, None)
+    first = result["decisions"][0]
+    assert first["status"] == "selected" and first["books"], "the other names still trade"
+    assert all(book["symbol"] != name for week in result["decisions"] for book in week.get("books", []))
+    assert all(trade["symbol"] != name for trade in result["trades"])
+    assert {"symbol": name, "expiry": "2019-02-01", "reason": "unsettleable_expiry"} in first["refusals"]
+    assert first["candidate_books"] == plain["decisions"][0]["candidate_books"]-1
+    assert name not in first["eligible_by_symbol"]
+    assert all(name not in group for group in first["kelly"]["local"]["multistart"]["lp_groups"])
+    # Deterministic, and the record replays on the same basis series.
+    again = _settleable_world(True, edit(name))[3]
+    assert again._method(method, None) == result
+    assert _settleable_world(True, edit(name))[3]._method(method, None, recorded=result) == result
+
+
+def test_with_the_key_and_nothing_unsettleable_the_week_is_amendment_ones():
+    _params, _data, method, study = _settleable_world(False)
+    plain = study._method(method, None)
+    _params, _data, method, study = _settleable_world(True)
+    result = study._method(method, None)
+    assert result["method"]["kelly"]["settleable_only"] is True and "settleable_only" not in plain["method"]["kelly"]
+    assert {k: v for k, v in result.items() if k != "method"} == {k: v for k, v in plain.items() if k != "method"}
+
+
+def test_a_pinned_split_keeps_its_candidates_settleable():
+    from types import SimpleNamespace
+    from datetime import date
+
+    _params, _data, _method, study = _settleable_world(True)
+    name = study.params["symbols"][0]
+    meta = {"symbol": name, "decision_date": "2019-01-02", "expiry": "2019-02-01", "factor": 1.}
+    assert study._settleable(meta)
+    _changed(name)(study._factors)
+    assert not study._settleable(meta)
+    study.adjustments = {name: SimpleNamespace(effective=date(2019, 1, 15), basis_before=1., basis_after=.5)}
+    assert study._settleable(meta)
+    assert not study._settleable({**meta, "expiry": "2031-01-01"}), "no bar on the expiry"

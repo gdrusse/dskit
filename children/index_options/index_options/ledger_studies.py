@@ -2364,7 +2364,10 @@ class WeeklyOptionPortfolioStudy:
         (kelly_multistart). ADR-0315 Amendment 1: multistart may add
         feasible_starts {singles, units, repair_contracts}: infeasible
         starts are repaired instead of dropped and the best single
-        contracts and unit books are starts too. The FAST variant (ADR-0307 Amendment 1)
+        contracts and unit books are starts too. ADR-0315 Amendment 2: a
+        kelly block may add settleable_only (true): candidates whose expiry
+        has no bar or whose basis factor changes before expiry are refused
+        (unsettleable_expiry) before the week is solved. The FAST variant (ADR-0307 Amendment 1)
         may add, each opt-in: stage1_time_limit (seconds > 0, stage one's
         HiGHS time limit in place of the document's), incumbent_start (bool:
         a stage one stopped at its limit WITH an incumbent starts the climb
@@ -2419,7 +2422,12 @@ class WeeklyOptionPortfolioStudy:
                    "gap", "time_limit"}
     #: An optional kelly key (ADR-0301): ``max_groups`` keeps, of the ``lp`` screen's survivors, only that many with
     #: the largest standalone relaxed value before the joint growth program is built (the solver's group_screen_keep).
-    _KELLY_OPTIONAL_KEYS = {"max_groups", "accept_uncertified", "search", "warm_start", "local_search"}
+    _KELLY_OPTIONAL_KEYS = {"max_groups", "accept_uncertified", "search", "warm_start", "local_search",
+                            "settleable_only"}
+    #: ADR-0315 Amendment 2: ``settleable_only`` (only ``true``) drops, before anything else reads the week, every
+    #: candidate whose book could not be carried to its expiry on the decision's basis (:meth:`_settleable`); each is
+    #: refused ``unsettleable_expiry``. Absent means the candidate set is untouched, byte for byte.
+    _UNSETTLEABLE = "unsettleable_expiry"
     #: ADR-0302: ``search`` ({iterations, neighbourhood, node_limit, seed}) runs the relax_fix strategy's deterministic
     #: incumbent local search (the solver's ``utility_search``); ``warm_start`` ({node_limit}) certifies a week the
     #: action limit would decline from its complete incumbent under that node budget (``utility_warm_start``). Each
@@ -3001,6 +3009,7 @@ class WeeklyOptionPortfolioStudy:
         return (isinstance(kelly, dict) and set(kelly)-cls._KELLY_OPTIONAL_KEYS == cls._KELLY_KEYS
                 and ("max_groups" not in kelly or (type(kelly["max_groups"]) is int and kelly["max_groups"] >= 1))
                 and ("accept_uncertified" not in kelly or type(kelly["accept_uncertified"]) is bool)
+                and ("settleable_only" not in kelly or kelly["settleable_only"] is True)
                 and cls._kelly_strategy_valid(kelly)
                 and cls._local_search_valid(kelly)
                 and number_ok(kelly["fraction"]) and 0 < kelly["fraction"] <= 1
@@ -3276,6 +3285,34 @@ class WeeklyOptionPortfolioStudy:
     def _active_position(book):
         """Return the held terms, leaving entry terms intact for audit and fees."""
         return book.get("active_legs", book["legs"]), book.get("active_factor", book["factor"])
+
+    def _settleable(self, meta):
+        """Return whether a candidate's book can be marked and settled on its decision basis (ADR-0315 Amendment 2).
+
+        The ledger's own conditions, asked before the solve: the expiry has a bar and a basis factor equal to the
+        book's (:meth:`_settlements`), and no session between the decision and the expiry observes another basis
+        (:meth:`_ledger_pass`). A pinned split event of the name moves the expected basis from its effective day on,
+        as :meth:`_apply_adjustments` converts the book. This reads the basis series AFTER the decision date: it
+        only removes candidates, never prices one.
+        """
+        symbol, start, expiry, factor = meta["symbol"], meta["decision_date"], meta["expiry"], meta["factor"]
+        factors, event = self._factors[symbol], self.adjustments.get(symbol)
+
+        def same(day):
+            converted = (event is not None and start < event.effective.isoformat() <= day
+                         and math.isclose(factor, event.basis_before, rel_tol=1e-9))
+            return math.isclose(factors.get(day, math.nan), event.basis_after if converted else factor, rel_tol=1e-9)
+
+        return (expiry in self._bars[symbol] and same(expiry)
+                and all(same(day) for day in factors if start < day < expiry))
+
+    def _settleable_candidates(self, groups, metadata):
+        """Return ``(groups, metadata, refusals)`` without the candidates :meth:`_settleable` refuses."""
+        kept = [i for i, meta in enumerate(metadata) if self._settleable(meta)]
+        held = set(kept)
+        refusals = [{"symbol": meta["symbol"], "expiry": meta["expiry"], "reason": self._UNSETTLEABLE}
+                    for i, meta in enumerate(metadata) if i not in held]
+        return [groups[i] for i in kept], [metadata[i] for i in kept], refusals
 
     def _apply_adjustments(self, account, day, charge):
         """Convert every affected open book before today's account activity."""
@@ -4685,6 +4722,10 @@ class WeeklyOptionPortfolioStudy:
                               "status": self._WEEK_NOT_SELECTED}
                 else:
                     groups, metadata, refusals = self._prepare(day)
+                    if (self._kelly(method) or {}).get("settleable_only"):
+                        # ADR-0315 Amendment 2: per method and outside _prepare, so the shared prepared week is untouched.
+                        groups, metadata, excluded = self._settleable_candidates(groups, metadata)
+                        refusals = [*refusals, *excluded]
                     week_cal = adjusts = None
                     if calibrated is not None:
                         warm = calibrated.week_warm(day)
