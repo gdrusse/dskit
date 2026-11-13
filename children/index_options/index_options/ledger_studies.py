@@ -3290,7 +3290,7 @@ class WeeklyOptionPortfolioStudy:
         """Return whether a candidate's book can be marked and settled on its decision basis (ADR-0315 Amendment 2).
 
         The ledger's own conditions, asked before the solve: the expiry has a bar and a basis factor equal to the
-        book's (:meth:`_settlements`), and no session between the decision and the expiry observes another basis
+        book's (:meth:`_settlements`), and no session between the decision and the expiry observes another basis or lacks a bar
         (:meth:`_ledger_pass`). A pinned split event of the name moves the expected basis from its effective day on,
         as :meth:`_apply_adjustments` converts the book. This reads the basis series AFTER the decision date: it
         only removes candidates, never prices one.
@@ -3303,8 +3303,10 @@ class WeeklyOptionPortfolioStudy:
                          and math.isclose(factor, event.basis_before, rel_tol=1e-9))
             return math.isclose(factors.get(day, math.nan), event.basis_after if converted else factor, rel_tol=1e-9)
 
-        return (expiry in self._bars[symbol] and same(expiry)
-                and all(same(day) for day in factors if start < day < expiry))
+        bars = self._bars[symbol]
+        return (expiry in bars and same(expiry)
+                and all(same(day) for day in factors if start < day < expiry)
+                and all(day in bars for day in self.calendar if start < day <= expiry))
 
     def _settleable_candidates(self, groups, metadata):
         """Return ``(groups, metadata, refusals)`` without the candidates :meth:`_settleable` refuses."""

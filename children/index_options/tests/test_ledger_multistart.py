@@ -396,3 +396,13 @@ def test_a_pinned_split_keeps_its_candidates_settleable():
     study.adjustments = {name: SimpleNamespace(effective=date(2019, 1, 15), basis_before=1., basis_after=.5)}
     assert study._settleable(meta)
     assert not study._settleable({**meta, "expiry": "2031-01-01"}), "no bar on the expiry"
+
+
+def test_a_calendar_day_without_a_bar_inside_the_window_is_unsettleable():
+    _params, _data, _method, study = _settleable_world(True)
+    name = study.params["symbols"][0]
+    meta = {"symbol": name, "decision_date": "2019-01-02", "expiry": "2019-02-01", "factor": 1.}
+    assert study._settleable(meta)
+    day = next(d for d in study.calendar if "2019-01-02" < d < "2019-02-01")
+    del study._bars[name][day]
+    assert not study._settleable(meta), "the ledger pass indexes every calendar bar in the window"
