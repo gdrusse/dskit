@@ -1,33 +1,32 @@
 # RE-ENTRY - index_options
 
-Updated 2026-11-11 by GPT-6.1 Sol.
+Updated 2026-11-13 by GPT-6.1 Sol.
 
 ## Now
 
-- **Frozen method and main.** ADR-0313 replay-hedge Kelly search is frozen at `c65039fe`. Main `68952329` includes exact G5 timing authority and the prior handoff; 91 post-merge focused tests passed. The nine A0010 formulations and Path remain locked.
-- **Live WSL queue.** 2019Q4 and 2020Q1 base packets are attested. Base 2021Q1 PID `265559` is active; the same supervisor runs Q2 after its attested close. An unrelated sized 2021Q1 PID `274373` is temporarily stopped for shared-memory safety. Terra-cleared `adr0313-resume-sized-q1-v4-20261111.service` resumes it only after the whole base queue and resource gates pass. Do not use its paused wall time as performance evidence.
-- **G5 timing.** Terra independently published approval SHA-256s: clean March `c492e6cc...`, prospective 2019Q4/2020Q1 `38d39841...`. Terra-cleared `adr0313-g5-timing-dispatch-v4-20261111.service` waits for base and sized work, exact mounts, and resources, then runs the six clean jobs before 48 prospective jobs. No G5 timing job has started. The prior March replay's I/O-contaminated wall is excluded.
-- **Other gates.** BookGreeks 2019Q4/2020Q1 is attested; Q1/Q2 pending templates are on D and Terra-cleared as pending only. ADR-0311 Stage5 v5 operator approval `1cbc4d70...` received independent Terra conditional clearance; it runs alone after base, sized and G5, with fresh gates. Stage6 waits actual Stage5 terminal receipt and outputs. Four-quarter assessment R6 pending bundle has two Terra lenses at zero Critical/Major but is not launch-cleared; G1/G5 and final evidence remain outstanding.
+- ADR-0314 daily stock replay is frozen on main at `82bf83d2`; the operational v11 bundle and final queues were independently cleared by Luna and Terra. The stock sleeve uses saved option books and a daily next-open share hedge; it never re-solves options.
+- All eight ADR-0307 Kelly 050/075 option-only baselines were reattested across 2019Q4, 2020Q1, 2021Q1 and 2021Q2. All eight stock arms were attempted under unchanged v11 policy: five completed with 218 fills total; 2019Q4-075 and both 2020Q1 arms are funding-infeasible at the exact settled-cash guard. They are not Z/time-outs.
+- The owner comparison is [on D:](D:/dskit-stock-hedge-owner-20261113/owner-eight-comparison.html), SHA256 `a2d9162626e3eb651d9de0587d6d23430637f09b4cebd5726a8d0e19915e077f`. [Final verification](/home/russell/mnt/adr0313-research/daily-stock-4q/final-stock-eight-verification.json) SHA256 `5750b14fb6a7bf4497198fa134f096b568c893ca8b8dd25499cc81bbb0d61143` binds all eight receipts and 45 completed output files. The owner reported a separate Claude multistart2 hedge run was wrong; it shares the pinned hedge_overlay.py blob. The economic comparison is provisional until the cause and ADR-0307 impact are scoped.
+- The final queue is terminal with no five-hour events or active lane worker. Its completion SHA256 is `3915bca7f3a835deadaa49ac5ad8ad07c22a62da44492a16a183d3b5d79496a7`; the transient OS exit remains independently unknown. No Claude process was stopped by this lane.
 
 ## Next
 
-1. Monitor base Q1 then Q2, the v4 resume and G5 services, and fresh Windows/WSL/C:/D: headroom. If a service fails, inspect metadata-only receipts and re-review before retrying; do not duplicate a running job.
-2. After Q1/Q2 attested closes, activate and independently review their BookGreeks jobs. Derive 2021Q1/Q2 G5 weeks from attested status-only base+twin evidence, freeze new timing bundles, and obtain Terra exact-hash review/dispatch approval.
-3. Complete G5 timing, run reviewed Stage5 then Stage6 with terminal/output hashes, then activate and run the four-quarter Kelly assessment after every declared gate. Update this note with real receipts and post-run checks.
+1. Scope the owner-reported Claude multistart2 hedge defect against the shared overlay and ADR-0307 baseline before treating the comparison as decision evidence. Preserve all pinned results.
+2. Owner decides whether a separately named cash-feasible stock policy is worth proposing for the three infeasible arms. Any funding, cap or cost change needs an ADR, synthetic failing tests and independent Luna/Terra review.
+3. Keep unrelated ADR-0313/0315 work in its own reviewed lane. Recheck WSL/Windows/C:/D: resources before any further compute.
 
 ## Blocked / owner decisions
 
-- Shared RAM and serial timing policy prevent another heavy WSL launch during the current base work. C: remains about 16 GiB free; recheck, do not infer future headroom.
-- A0006 wording, hedge costs, parity-forward mark, hard-to-borrow unreadable window, origin_two shrinkage, E1b, gross-share hedge cost, stale test_configs manifest, and prior instantiator sign-off remain owner items.
+- Unresolved shared hedge-overlay defect scope; funding policy for three infeasible stock sleeves; A0006 wording; placeholder hedge costs; parity-forward mark versus spot; hard-to-borrow unreadable window; origin_two shrinkage; E1b; gross-share hedge cost; stale test_configs manifest; and prior instantiator sign-off. This run decides none of them.
 
 ## Read first
 
-- [ADR-0313 and G5 amendments](../../../docs/architecture/decision-log.md)
+- [ADR-0314 amendments](../../../docs/architecture/decision-log.md)
 - [Locked Path](decisioning/path.csv)
-- [MIO queue runbook](plans/mio-parallel/RUNBOOK.md)
+- [Owner comparison](D:/dskit-stock-hedge-owner-20261113/owner-eight-comparison.html)
+- [Final verification](/home/russell/mnt/adr0313-research/daily-stock-4q/final-stock-eight-verification.json)
 
 ## Do not
 
-- Edit the nine A0010 formulations or Path; keep DEVELOPMENT_SEAL at `2021-07-01`.
-- Open protected economics, forecasts, scores, or run logs; no 2022-2023 MIO economics before the owner's three picks, and no 2024+ data.
-- Launch a four-quarter arm before G1/G5 and independent Terra clearance. Respect WSL/Windows memory and C:/D: disk gates.
+- Edit Path or the nine A0010 formulations; unseal 2022-2023 economics before the owner's three picks; use 2024+ data; view forecasts or scores.
+- Use the provisional comparison as decision evidence until the shared hedge issue is scoped. Do not relabel a funding-infeasible arm as complete or Z, or infer OS exit zero from archived protocol completion.
