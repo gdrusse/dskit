@@ -2330,3 +2330,70 @@ def test_raw_stock_postseal_settlement_tail_is_date_only(world, monkeypatch):
     assert out["daily"] == baseline["daily"]
     assert out["trades"] == baseline["trades"]
     assert quote_reads == baseline_reads and quote_reads
+
+
+def test_raw_stock_explicit_missing_quote_withholds_next_open(world, monkeypatch):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    original = mio_greeks.ChainQuotes.chain
+    monkeypatch.setattr(mio_greeks.ChainQuotes, "chain",
+                        lambda self, symbol, day, expiry: [] if day == "2021-04-14"
+                        else original(self, symbol, day, expiry))
+    out = _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=True)
+    row = next(r for r in out["daily"] if r["date"] == "2021-04-14")
+    assert None in row["residual_delta_sh"].values()
+    assert all(t["date"] != "2021-04-15" for t in out["trades"])
+
+
+@pytest.mark.parametrize("update,reason", [
+    ({"bid": 0.}, "unusable_quote"),
+    ({"iv": None}, "leg_no_iv"),
+    ({"basis_factor": 2.}, "held_quote_basis"),
+    ({"strike": None}, "malformed_quote_identity"),
+    ({"duplicate": True}, "duplicate_quote"),
+])
+def test_raw_stock_invalid_present_leg_takes_priority(world, monkeypatch, update, reason):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    original = mio_greeks.ChainQuotes.chain
+
+    def gap(self, symbol, day, expiry):
+        rows = original(self, symbol, day, expiry)
+        if day == "2021-04-14":
+            rows = ([rows[0], rows[0], *rows[2:]] if update.get("duplicate")
+                    else [{**rows[0], **update}, *rows[2:]])
+        return rows
+
+    monkeypatch.setattr(mio_greeks.ChainQuotes, "chain", gap)
+    with pytest.raises(GreeksRefusal, match=reason):
+        _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=True)
+
+
+def test_raw_stock_missing_leg_in_one_book_withholds_entire_symbol(world, monkeypatch):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    original = mio_greeks.MIODailyStockHedge._load_books
+
+    def books(self, raw):
+        [book] = original(self, raw)
+        return [book, {**book,
+                       "legs": [{**book["legs"][0], "strike": 12345.}]}]
+
+    monkeypatch.setattr(mio_greeks.MIODailyStockHedge, "_load_books", books)
+    out = _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=True)
+    rows = [r for r in out["daily"] if None in r["residual_delta_sh"].values()]
+    assert rows and out["trades"] == []
+    assert len(out["summary"]["availability"]["unavailable_close_signals"]) == len(rows)
+
+
+def test_raw_stock_unheld_unpriced_action_keeps_session(world):
+    run_dir, out_dir, inputs = _raw_stock_case(world)
+    bar = inputs["stock_bars"][0]
+    bar.update(basis_factor=None, execution_price=None, close=None)
+    inputs["coverage"]["corporate_actions"] = [
+        {"date": bar["date"], "symbol": bar["symbol"], "kind": "unsupported_action_no_anchor"}]
+    out = _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=True)
+    assert out["daily"][0]["date"] == bar["date"]
+    assert out["daily"][0]["residual_delta_sh"][bar["symbol"]] == 0.
+    assert out["summary"]["availability"]["unavailable_prices"] == [
+        {"date": bar["date"], "symbol": bar["symbol"], "reason": "unsupported_action_no_anchor"}]
+    del inputs["stock_bars"][0]
+    with pytest.raises(GreeksRefusal, match="incomplete daily stock grid"):
+        _raw_stock_run(run_dir, out_dir, inputs, explicit_availability=True)

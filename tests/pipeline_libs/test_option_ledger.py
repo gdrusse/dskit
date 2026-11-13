@@ -1334,3 +1334,80 @@ def test_daily_stock_insufficient_eligible_tail_only_refuses_trade(ctx):
     for row in inputs["market"]:
         row.update(delta_sh=0., active=False)
     assert _daily_stock_run(ctx, inputs)["trades"] == []
+
+
+def _availability_market(inputs):
+    for row in inputs["market"]:
+        row.update(signal_available=True, price_available=True)
+
+
+def test_daily_stock_unknown_close_preserves_inventory_until_known_zero(ctx):
+    inputs = _daily_stock_inputs()
+    inputs["settlement_sessions"] = inputs["sessions"] + ["2020-03-09", "2020-03-10"]
+    _availability_market(inputs)
+    for row in inputs["market"][1:3]:
+        row.update(active=True, signal_available=False, delta_sh=None)
+    inputs["dividends"] = [{"symbol": "ABC", "ex_date": "2020-03-04",
+                            "pay_date": "2020-03-05", "amount": 2}]
+    out = _daily_stock_run(ctx, inputs, explicit_availability=True)
+    assert [(r["date"], r["shares"]) for r in out["trades"]] == [
+        ("2020-03-03", 5), ("2020-03-06", -5)]
+    assert out["daily"][2]["residual_delta_sh"] == {"ABC": None}
+    assert out["daily"][2]["inventory_usd"] == 550
+    assert out["summary"]["dividend_income_usd"] == 10
+    assert out["daily"][3]["residual_delta_sh"] == {"ABC": 5}
+
+
+@pytest.mark.parametrize("update", [
+    {"signal_available": 1}, {"price_available": 1},
+    {"signal_available": False}, {"signal_available": False, "delta_sh": None},
+    {"delta_sh": None}, {"delta_sh": float("nan")},
+    {"price_available": False}, {"execution_price": None}, {"close": None},
+])
+def test_daily_stock_rejects_contradictory_availability(ctx, update):
+    inputs = _daily_stock_inputs(deltas=(0,)*5)
+    _availability_market(inputs)
+    inputs["market"][1].update(update)
+    with pytest.raises(ValueError, match="market"):
+        _daily_stock_run(ctx, inputs, explicit_availability=True)
+
+
+@pytest.mark.parametrize("exposure", [None, "stock", "prior", "current", "candidate", "dividend"])
+def test_daily_stock_unpriced_action_exposure(ctx, exposure):
+    inputs = _daily_stock_inputs(deltas=(0,)*5)
+    _availability_market(inputs)
+    row = inputs["market"][2]
+    row.update(price_available=False, execution_price=None, close=None)
+    inputs["coverage"]["corporate_actions"] = [
+        {"symbol": "ABC", "date": row["date"], "kind": "unsupported_action_no_anchor"}]
+    if exposure == "stock":
+        inputs["market"][0].update(delta_sh=-1, active=True)
+    elif exposure in ("prior", "current"):
+        inputs["market"][1 if exposure == "prior" else 2].update(
+            active=True, signal_available=False, delta_sh=None)
+    elif exposure == "candidate":
+        inputs["market"][1].update(active=True, delta_sh=-1)
+    elif exposure == "dividend":
+        inputs["dividends"] = [{"symbol": "ABC", "ex_date": row["date"],
+                                "pay_date": row["date"], "amount": 1}]
+    if exposure:
+        with pytest.raises(ValueError, match="corporate action|unavailable"):
+            _daily_stock_run(ctx, inputs, explicit_availability=True)
+    else:
+        out = _daily_stock_run(ctx, inputs, explicit_availability=True)
+        assert len(out["daily"]) == len(inputs["sessions"])
+        assert out["daily"][2]["inventory_usd"] == 0
+
+
+def test_daily_stock_skipped_name_leaves_cash_for_alphabetical_candidates(ctx):
+    inputs = _daily_stock_inputs(deltas=(-10, -10, -10, -10, -10))
+    inputs["symbols"] += ["XYZ"]
+    _availability_market(inputs)
+    inputs["market"] += [{**row, "symbol": "XYZ"} for row in inputs["market"]]
+    inputs["market"][0].update(signal_available=False, delta_sh=None)
+    out = _daily_stock_run(ctx, inputs, explicit_availability=True)
+    assert [(t["symbol"], t["shares"]) for t in out["trades"]] == [("XYZ", 10)]
+    assert out["summary"]["availability"]["suppressed_opens"] == [
+        {"date": "2020-03-03", "symbol": "ABC", "signal_date": "2020-03-02",
+         "reason": "absent_prior_close_signal"}]
+    assert "other fills can change" in out["summary"]["availability"]["cash_allocation"]

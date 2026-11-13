@@ -937,3 +937,12 @@ replay these dates are 2019-10-14 and 2019-11-11; other approved quarters use an
 empty list. The Nth eligible date strictly after execution is the settlement
 date. Insufficient eligible tails refuse actual trades. The raw adapter binds
 this date-only input in its projection hash; legacy omitted/empty behavior agrees.
+
+ADR-0314 Amendment 7: set raw_stock=true and explicit_availability=true to
+withhold the symbol's entire close signal if a raw held quote is absent.
+Present unusable held quotes refuse. The next open skips both sides for that
+symbol. Other names use alphabetical funding and caps with no cash reservation
+for skipped orders, so their fills can change. An unsupported-action row
+without a factor can remain only if stock inventory, prior/current exposure
+and a candidate trade are all absent. A nonzero unconvertible dividend refuses.
+The summary records unavailable signals, prices and affected opens.

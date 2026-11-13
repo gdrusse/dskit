@@ -54,7 +54,7 @@ from dskit.pipeline.node import JsonArtifact, atomic_write, check_int_param
 from dskit.pipeline.hedge_overlay import forward_leg_net_settle, forward_leg_spot_delta
 from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL
 from dskit.pipeline.option_exposure import (
-    STOCK_HEDGE_NOTE, BookGreeksReport, ParityForward, StaticDeltaHedge)
+    STOCK_HEDGE_NOTE, BookGreeks, BookGreeksReport, LegGreeks, ParityForward, StaticDeltaHedge)
 from dskit.pipeline.records import number_ok
 from dskit.pipeline.option_structures import structure_payoff
 
@@ -991,6 +991,9 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
         Raw mode requires basis_factor on every stock bar and SHA256 identities
         named stock, dividends and events in input_provenance. These identities
         are publisher attestations; the adapter hashes the full supplied projection.
+        Optional explicit_availability requires raw_stock. Only absent held raw
+        quotes withhold a close signal. Unsupported unanchored actions require
+        explicit null price and factor fields and zero affected exposure.
 
     Examples
     --------
@@ -1002,7 +1005,8 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
     """
 
     _CHILD_PARAMS = (*MIOGreeksDiagnostics._CHILD_PARAMS, "stock_hedge")
-    _PARAMS = (*MIOGreeksDiagnostics._PARAMS, "stock_hedge", "raw_stock", "quote_iv_field")
+    _PARAMS = (*MIOGreeksDiagnostics._PARAMS, "stock_hedge", "raw_stock", "quote_iv_field",
+               "explicit_availability")
     outputs = DailyStockHedge.outputs
 
     @classmethod
@@ -1030,12 +1034,17 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
             problems.append("daily stock replay requires vendor IV")
         if type(params.get("raw_stock", False)) is not bool:
             problems.append("raw_stock must be boolean")
+        explicit = params.get("explicit_availability", False)
+        if type(explicit) is not bool or (explicit and params.get("raw_stock") is not True):
+            problems.append("explicit_availability requires boolean opt-in and raw_stock")
         if params.get("quote_iv_field", "iv") not in ("iv", "implied_volatility"):
             problems.append("unsupported quote_iv_field")
         if not isinstance(params.get("stock_hedge"), dict):
             problems.append("stock_hedge must be an explicit policy")
         else:
             problems += DailyStockHedge.validate_params(params["stock_hedge"])
+            if "explicit_availability" in params["stock_hedge"]:
+                problems.append("configure explicit_availability on the adapter")
         return problems
 
     def _stock_day(self, day):
@@ -1142,13 +1151,64 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
     def _greeks_at(self, book, day, quotes, bars):
         """Screen held-leg quotes before the inherited forward and delta lookup."""
         rows = quotes.chain(book["symbol"], day, book["expiry"])
+        explicit = self.params.get("explicit_availability", False)
+        if explicit and any(
+                not isinstance(r, dict) or r.get("right") not in ("call", "put")
+                or not number_ok(r.get("strike")) or r["strike"] <= 0 for r in rows):
+            return None, "malformed_quote_identity"
         if ParityForward.duplicates(rows):
             return None, self.DUPLICATE_QUOTE
+        if explicit:
+            return self._available_greeks(book, day, rows, bars)
         try:
             rows = usable_parity_rows(rows, book["factor"], *self._quote_params, rescale=True)
         except (TypeError, ValueError, ArithmeticError):
             return None, "unusable_quote"
         return super()._greeks_at(book, day, SimpleNamespace(chain=lambda *_: rows), bars)
+
+    def _available_greeks(self, book, day, rows, bars):
+        """Distinguish raw absence from a defect in any present held quote."""
+        spot = self._spot(bars, book, day)
+        if spot is None:
+            return None, self.NO_SPOT
+        try:
+            screened = usable_parity_rows(rows, book["factor"], *self._quote_params, rescale=True)
+        except (TypeError, ValueError, ArithmeticError):
+            return None, "unusable_quote"
+
+        def matches(leg, candidates):
+            return [r for r in candidates if r["right"] == leg["right"] and
+                    math.isclose(r["strike"], leg["strike"], rel_tol=1e-9, abs_tol=1e-12)]
+
+        absent = False
+        forward, source = self._tools[ParityForward].from_chain(screened, spot)
+        found = []
+        for leg in book["legs"]:
+            raw = matches(leg, rows)
+            if not raw:
+                absent = True
+                continue
+            if len(raw) != 1:
+                return None, self.DUPLICATE_QUOTE
+            if not number_ok(raw[0].get("basis_factor")) or not math.isclose(
+                    raw[0]["basis_factor"], book["factor"], rel_tol=1e-9):
+                return None, "held_quote_basis"
+            good = matches(leg, screened)
+            if not good:
+                return None, "unusable_quote"
+            try:
+                greek, code = self._tools[LegGreeks].of(
+                    {**leg, "expiry": book["expiry"]}, good[0], forward, spot, day)
+            except (TypeError, ValueError, ArithmeticError):
+                return None, "unusable_quote"
+            if code:
+                return None, code
+            if not number_ok(greek["delta_sh"]):
+                return None, "unusable_quote"
+            found.append(greek)
+        if absent:
+            return None, "absent_held_quote"
+        return BookGreeks.sum(found, forward, source), None
 
     def _parity_rows(self, book, day, rows):
         """Use the same screened and basis-scaled rows as the held-leg lookup."""
@@ -1161,6 +1221,11 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
         if not isinstance(rows, list):
             raise GreeksRefusal("stock_inputs", "stock_bars must be rows")
         indexed = {}
+        explicit = self.params.get("explicit_availability", False)
+        actions = inputs["coverage"].get("corporate_actions")
+        events = actions if isinstance(actions, list) else []
+        unavailable = {(e["date"], e["symbol"]) for e in events
+                       if e["kind"] == "unsupported_action_no_anchor"} if explicit else set()
         for row in rows:
             fields = {"date", "symbol", "execution_price", "close"} | ({"basis_factor"} if raw else set())
             if not isinstance(row, dict) or set(row) != fields:
@@ -1168,10 +1233,16 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
             day = self._stock_day(row["date"])
             symbol = row["symbol"]
             factor = row.get("basis_factor", 1.)
+            if not isinstance(symbol, str) or symbol not in symbols or day not in sessions or (day, symbol) in indexed:
+                raise GreeksRefusal("stock_inputs", "duplicate, missing or mismatched raw close")
+            if (day, symbol) in unavailable:
+                if any(row[k] is not None for k in ("basis_factor", "execution_price", "close")):
+                    raise GreeksRefusal("stock_inputs", "inconsistent unavailable raw price")
+                indexed[day, symbol] = row
+                continue
             if not number_ok(factor) or factor <= 0:
                 raise GreeksRefusal("stock_inputs", "invalid raw basis factor")
-            if (not isinstance(symbol, str) or symbol not in symbols or day not in sessions
-                    or (day, symbol) in indexed or not number_ok(row["close"]) or row["close"] <= 0
+            if (not number_ok(row["close"]) or row["close"] <= 0
                     or not number_ok(bars.get(symbol, {}).get(day))
                     or (not raw and row["close"] != bars[symbol][day])
                     or (raw and not math.isclose(row["close"]*factor, bars[symbol][day],
@@ -1188,11 +1259,11 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
         self._owned()
         market, fallback = [], 0
         self._stock_quote_days = self._stock_forward_days = 0
-        actions = inputs["coverage"].get("corporate_actions")
-        events = actions if isinstance(actions, list) else []
         for i, day in enumerate(sessions):
             prior = sessions[max(0, i-1)]
             changed = {symbol for symbol in symbols if raw and i and
+                       indexed[day, symbol]["basis_factor"] is not None and
+                       indexed[prior, symbol]["basis_factor"] is not None and
                        indexed[day, symbol]["basis_factor"] != indexed[prior, symbol]["basis_factor"]}
             event_names = {e.get("symbol") for e in events if e.get("date") == day} | changed
             if any(book["symbol"] in event_names and book["fill_date"] <= day
@@ -1204,14 +1275,22 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
 
         for day in sessions:
             deltas = {symbol: [] for symbol in symbols}
+            active, unknown = set(), set()
             for book in books:
                 if book["fill_date"] <= day < book["expiry"]:
+                    symbol = book["symbol"]
+                    active.add(symbol)
+                    factor = indexed[day, symbol].get("basis_factor", 1.)
+                    if explicit and factor != book["factor"]:
+                        raise GreeksRefusal("stock_inputs", "held quote and raw stock basis disagree")
                     greeks, reason = self._greeks_at(book, day, quotes, bars)
+                    if explicit and reason == "absent_held_quote":
+                        unknown.add(symbol)
+                        continue
                     if reason:
                         raise GreeksRefusal("stock_greeks", reason)
                     fallback += greeks.forward_source == "spot"
                     self._stock_quote_days += 1
-                    factor = indexed[day, book["symbol"]].get("basis_factor", 1.)
                     if raw and factor != book["factor"]:
                         raise GreeksRefusal("stock_inputs", "held quote and raw stock basis disagree")
                     delta = greeks.delta_sh
@@ -1222,8 +1301,11 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
                     deltas[book["symbol"]].append(delta*factor/book["factor"])
             for symbol in symbols:
                 bar = {k: v for k, v in indexed[day, symbol].items() if k != "basis_factor"}
-                market.append({**bar, "delta_sh": math.fsum(deltas[symbol]),
-                               "active": bool(deltas[symbol]), "known_at": day})
+                signal = symbol not in unknown
+                market.append({**bar, "delta_sh": math.fsum(deltas[symbol]) if signal else None,
+                               "active": symbol in active, "known_at": day,
+                               **({"signal_available": signal, "price_available": (day, symbol) not in unavailable}
+                                  if explicit else {})})
         return market, fallback
 
     def run(self, ctx, inputs):
@@ -1269,7 +1351,10 @@ class MIODailyStockHedge(MIOGreeksDiagnostics):
         fill_days = {t["fill_date"] for t in trades}
         cash = [{"date": day, "free_cash": curve[max(0, i-1)]["funding"]-curve[max(0, i-1)]["reserve"]}
                 for i, day in enumerate(sessions)]
-        replay = DailyStockHedge(self.key, self.params["stock_hedge"]).run(ctx, {
+        stock_policy = self.params["stock_hedge"]
+        if self.params.get("explicit_availability", False):
+            stock_policy = {**stock_policy, "explicit_availability": True}
+        replay = DailyStockHedge(self.key, stock_policy).run(ctx, {
             "sessions": sessions, "symbols": symbols,
             "decision_dates": sorted(set(decisions) | fill_days),
             "cash": cash, "market": market,
