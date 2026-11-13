@@ -235,7 +235,7 @@ def test_starts_that_all_break_the_shared_cap_end_at_cash_and_amendment_1_finds_
     assert scorer.check_feasible(new["quantities"])["feasible"]
     assert record["end_value"] == pytest.approx(_exact(scorer, new["quantities"]), abs=1e-9)
     assert fixed["starts_feasible"] < fixed["starts"] and fixed["starts_repaired"] > 0
-    assert fixed["chosen_kind"] != "cash" and not fixed["cash_floor"]
+    assert not fixed["cash_floor"]     # cash now climbs first, so a tie may be won by its own climb
     best_single = max(row["value"] for row in fixed["start_stats"] if row["kind"] == "single")
     assert record["end_value"] >= best_single > 0.
 
@@ -350,3 +350,13 @@ def test_amendment_1_is_never_below_the_registered_search_on_the_synthetic_fixtu
     old = KellyMultiStart(scorer, PARAMS, MULTI).run_multistart()["record"]["end_value"]
     new = KellyMultiStart(scorer, PARAMS, MULTI2).run_multistart()
     assert new["record"]["end_value"] >= old-1e-9 and scorer.check_feasible(new["quantities"])["feasible"]
+
+
+def test_amendment_1_start_preparation_is_not_climb_budget_and_cash_is_climbed_first():
+    """A cap below the preparation cost must not starve the climbs; cash leads the climbs."""
+    scorer = _scorer(_stuck_program(0))
+    free = KellyMultiStart(scorer, NARROW, MULTI2).run_multistart()["record"]
+    prepared = free["prepare_evaluations"]
+    assert prepared > 0 and free["multistart"]["climbs"][0]["kind"] == "cash"
+    capped = KellyMultiStart(scorer, NARROW, {**MULTI2, "evaluations": max(1, prepared//2)}).run_multistart()["record"]
+    assert capped["prepare_evaluations"] == prepared and capped["moves"] > 0 and capped["end_value"] > 0.

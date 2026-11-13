@@ -450,13 +450,15 @@ class KellyMultiStart(KellyLocalSearch):
                 distinct.add(key)
                 order.append(i)
         order = order[:self.multi["climbed"]]
-        if stats is not None and 0 not in order:
-            order.append(0)     # Amendment 1: cash is always climbed too, so repaired starts never crowd it out
+        prepared = self.evaluations     # Amendment 1: start preparation (repairs, confirmations) is not climb budget
+        if stats is not None:
+            order = [0]+[i for i in order if i != 0]    # cash is climbed first, with a fixed 1/len(order) share
         counts = {"add": 0, "remove": 0, "swap": 0, "pair": 0}
         climbs, best, exhausted, total = [], None, False, 0
         budget = self.multi.get("evaluations")
         for n, i in enumerate(order):
-            stop = None if budget is None else self.evaluations+max(0, budget-self.evaluations)//(len(order)-n)
+            spent = self.evaluations-(prepared if stats is not None else 0)
+            stop = None if budget is None else self.evaluations+max(0, budget-spent)//(len(order)-n)
             first = cash.copy()
             for flat, quantity in climbable[i].items():
                 first[flat] = quantity
@@ -489,7 +491,7 @@ class KellyMultiStart(KellyLocalSearch):
         groups = self.scorer.groups
         record = {"start_kind": "multistart", "start_value": best_values[0], "end_value": end_value,
                   "start_contracts": int(start_q.sum()), "end_contracts": int(best_q.sum()),
-                  "moves": total, "evaluations": self.evaluations, "local_optimum": bool(best_done),
+                  "moves": total, "evaluations": self.evaluations, "prepare_evaluations": prepared, "local_optimum": bool(best_done),
                   "budget_exhausted": exhausted, "restarts": 0, "restarts_skipped": 0, "move_counts": counts,
                   "multistart": {"seed": self.params["seed"], "declared": json.loads(json.dumps(self.multi)),
                                  "lp_live": sum(1 for b in bounds if b > self.tol),
