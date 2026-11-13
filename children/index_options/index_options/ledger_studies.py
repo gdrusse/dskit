@@ -2361,7 +2361,10 @@ class WeeklyOptionPortfolioStudy:
         instead of start (restarts 0): no stage one is solved; the starts
         are the program's per-group LP books, rounded and combined, and
         the best climbs (with a pair add move) trade, never below cash
-        (kelly_multistart). The FAST variant (ADR-0307 Amendment 1)
+        (kelly_multistart). ADR-0315 Amendment 1: multistart may add
+        feasible_starts {singles, units, repair_contracts}: infeasible
+        starts are repaired instead of dropped and the best single
+        contracts and unit books are starts too. The FAST variant (ADR-0307 Amendment 1)
         may add, each opt-in: stage1_time_limit (seconds > 0, stage one's
         HiGHS time limit in place of the document's), incumbent_start (bool:
         a stage one stopped at its limit WITH an incumbent starts the climb

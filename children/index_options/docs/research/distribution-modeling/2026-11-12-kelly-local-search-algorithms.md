@@ -406,6 +406,17 @@ The recorded route reruns the search and refuses in these cases:
 2. A different `seed`, `starts_digest` or `chosen_start` (`ledger_studies.py@711107ab:4124-4131`).
 3. Any other difference, refused by the whole-result comparison.
 
+### 3.9 Amendment 1: feasible starts (`multistart2` ids)
+
+On real weeks every rounded LP start broke the shared reserve cap, so only cash was climbed and it could not leave. The optional block `multistart.feasible_starts = {singles, units, repair_contracts}` (ADR-0315 Amendment 1; registered `{32, true, 64}` on `kelly050_ls_multistart2_lp`, `kelly075_ls_multistart2_lp` and their `_replay_hedge_lp` twins) changes four things:
+
+- An infeasible start is halved until feasible or at most `repair_contracts` contracts, then repaired by greedy removal (section 2.10's repair).
+- Extra starts follow the `starts` list: the best single contract of each of the `singles` best groups by exact value from cash, and one contract per leg of each kept LP book.
+- Single-move estimates use the exact one-contract charge change; the pair shortlist keeps the first-order estimate.
+- Equal books are climbed once and cash is always climbed.
+
+The record adds `starts_repaired`, `starts_emptied`, `starts_distinct`, `start_kinds` and `start_stats`. Without the block the search is section 3 unchanged.
+
 ---
 
 ## 4. Replay-hedge pairing (hedged variants)

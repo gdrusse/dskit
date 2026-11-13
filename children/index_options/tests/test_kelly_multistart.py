@@ -186,3 +186,167 @@ def test_an_evaluation_budget_caps_the_climbs_deterministically():
     assert runs[0]["record"]["budget_exhausted"]
     assert scorer.check_feasible(runs[0]["quantities"])["feasible"]
     assert runs[0]["record"]["end_value"] >= runs[0]["record"]["multistart"]["cash_value"]
+
+
+# --- ADR-0315 Amendment 1: feasible starts ---------------------------------------------------------------------
+
+FEASIBLE = {"singles": 8, "units": True, "repair_contracts": 16}
+MULTI2 = {**MULTI, "feasible_starts": FEASIBLE}
+#: A two-item add shortlist, as narrow against this fixture as 64 is against a production week's 144,000 items.
+NARROW = {**PARAMS, "adds_evaluated": 2}
+
+
+def _stuck_program(seed=2):
+    """The defect of the real 2021 weeks in small: every LP start breaks the shared cap, and cash cannot leave.
+
+    The shared reserve cap is far below any rounded LP book. Group ``G0`` pays sixty times the others on the same
+    reserve, so its contracts lead the add shortlist on marginal utility while their own dispersion charge (which the
+    first-order estimate drops at cash) makes each of them lose; the contracts that do beat cash sit behind them.
+    """
+    program = _program(n_groups=4, n_pairs=2, seed=seed, capacity=8, reserve_cap=60., joint=False)
+    group = program["groups"][0]
+    group["losses"] = (np.asarray(group["losses"])*60.).tolist()
+    group["credit"] = [c*60. for c in group["credit"]]
+    return program
+
+
+def test_the_feasible_starts_block_is_validated():
+    assert KellyMultiStart.validate_multistart(PARAMS, MULTI2) == []
+    for block in (None, {}, {**FEASIBLE, "extra": 1}, {**FEASIBLE, "singles": -1}, {**FEASIBLE, "singles": 1.},
+                  {**FEASIBLE, "units": 1}, {**FEASIBLE, "repair_contracts": 0}, {**FEASIBLE, "repair_contracts": True},
+                  {k: v for k, v in FEASIBLE.items() if k != "units"}):
+        assert KellyMultiStart.validate_multistart(PARAMS, {**MULTI, "feasible_starts": block}), block
+
+
+@pytest.mark.parametrize("seed", [0, 2])
+def test_starts_that_all_break_the_shared_cap_end_at_cash_and_amendment_1_finds_the_positive_book(seed):
+    """ADR-0315 as registered: one feasible start (cash), no move, objective exactly cash. Amendment 1 on the same
+    program and budgets repairs the starts and trades a positive book the scorer accepts."""
+    scorer = _scorer(_stuck_program(seed))
+    old = KellyMultiStart(scorer, NARROW, MULTI).run_multistart()
+    multi = old["record"]["multistart"]
+    assert multi["starts"] > 1 and multi["starts_feasible"] == 1 and multi["chosen_kind"] == "cash"
+    assert old["record"]["end_value"] == multi["cash_value"] == 0. and old["record"]["moves"] == 0
+    assert not any(q for group in old["quantities"] for q in group) and not multi["cash_floor"]
+    assert KellyLocalSearch(scorer, NARROW).run(None)["record"]["end_value"] == 0.     # ADR-0307 from cash: stuck too
+    new = KellyMultiStart(scorer, NARROW, MULTI2).run_multistart()
+    record, fixed = new["record"], new["record"]["multistart"]
+    assert record["end_value"] > 1. and any(q for group in new["quantities"] for q in group)
+    assert scorer.check_feasible(new["quantities"])["feasible"]
+    assert record["end_value"] == pytest.approx(_exact(scorer, new["quantities"]), abs=1e-9)
+    assert fixed["starts_feasible"] < fixed["starts"] and fixed["starts_repaired"] > 0
+    assert fixed["chosen_kind"] != "cash" and not fixed["cash_floor"]
+    best_single = max(row["value"] for row in fixed["start_stats"] if row["kind"] == "single")
+    assert record["end_value"] >= best_single > 0.
+
+
+def test_amendment_1_records_what_became_of_every_start():
+    scorer = _scorer(_stuck_program())
+    search = KellyMultiStart(scorer, NARROW, MULTI2)
+    multi = search.run_multistart()["record"]["multistart"]
+    stats = multi["start_stats"]
+    assert len(stats) == multi["starts"] and stats[0] == {"kind": "cash", "contracts": 0, "status": "feasible",
+                                                          "halvings": 0, "removed": 0, "kept": 0, "value": 0.}
+    assert [row["kind"] for row in stats] == sorted((row["kind"] for row in stats),
+                                                    key=["cash", "group", "union", "random", "single", "unit"].index)
+    assert {"single", "unit"} <= {row["kind"] for row in stats}
+    for status, count in (("feasible", multi["starts_feasible"]), ("repaired", multi["starts_repaired"]),
+                          ("emptied", multi["starts_emptied"])):
+        assert sum(row["status"] == status for row in stats) == count
+        assert sum(tally[status] for tally in multi["start_kinds"].values()) == count
+    for row in stats:
+        assert (row["value"] is None) == (row["status"] == "emptied") and row["kept"] <= row["contracts"]
+        if row["status"] == "feasible":
+            assert row["kept"] == row["contracts"] and not row["halvings"] and not row["removed"]
+        if row["status"] == "repaired":
+            assert 0 < row["kept"] < row["contracts"] and (row["halvings"] or row["removed"])
+        if row["kind"] == "single":
+            assert row["contracts"] == 1 and row["status"] == "feasible" and row["value"] > 0.
+    # Cash is always climbed; a book is climbed once however many starts end at it.
+    climbs = multi["climbs"]
+    assert any(c["kind"] == "cash" for c in climbs) and len(climbs) <= MULTI["climbed"]+1
+    assert multi["starts_distinct"] <= multi["starts"]-multi["starts_emptied"]
+    assert len({c["start"] for c in climbs}) == len(climbs)
+
+
+def test_a_repaired_start_is_a_book_the_scorer_accepts_and_scores_the_same():
+    scorer = _scorer(_stuck_program())
+    search = KellyMultiStart(scorer, NARROW, MULTI2)
+    bounds, books = search.lp_books()
+    kept, starts = search.starts(bounds, books)
+    cash = np.zeros(search.N, dtype=np.int64)
+    search._load(cash)
+    repaired = 0
+    for _kind, start in starts[1:]:
+        assert search._trial(start) is None
+        book, value, halvings, removed = search._made_feasible(start)
+        assert not search.q.any()                                    # cash is loaded again
+        if not book:
+            assert value is None
+            continue
+        repaired += 1
+        assert all(0 < v <= start[k] for k, v in book.items()) and (halvings or removed)
+        nested = search._nested(np.array([book.get(i, 0) for i in range(search.N)]))
+        assert scorer.check_feasible(nested)["feasible"]
+        assert value == pytest.approx(_exact(scorer, nested), abs=1e-9) == pytest.approx(search._trial(book), abs=1e-9)
+    assert repaired
+
+
+def test_the_single_starts_are_the_exact_best_contract_of_each_group_from_cash():
+    scorer = _scorer(_stuck_program())
+    search = KellyMultiStart(scorer, NARROW, {**MULTI, "feasible_starts": {**FEASIBLE, "singles": 3}})
+    search._load(np.zeros(search.N, dtype=np.int64))
+    exact = {i: search._trial({i: 1}) for i in range(search.N)}
+    best = {}
+    for i, value in exact.items():
+        g = int(search.gid[i])
+        if value is not None and value > 1e-9*search.w0 and (g not in best or value > exact[best[g]]):
+            best[g] = i
+    expected = sorted(best.values(), key=lambda i: -exact[i])[:3]
+    assert [next(iter(s)) for s in search._singles()] == expected and expected
+    off = KellyMultiStart(scorer, NARROW, {**MULTI, "feasible_starts": {**FEASIBLE, "singles": 0, "units": False}})
+    bounds, books = off.lp_books()
+    kept, starts = off.starts(bounds, books)
+    off._load(np.zeros(off.N, dtype=np.int64))
+    assert off.extra_starts(kept, books, starts) == starts
+    only_units = KellyMultiStart(scorer, NARROW, {**MULTI, "feasible_starts": {**FEASIBLE, "singles": 0}})
+    only_units._load(np.zeros(only_units.N, dtype=np.int64))
+    units = only_units.extra_starts(kept, books, [])
+    assert [k for k, _s in units] == ["unit"]*len(units) and all(set(s.values()) == {1} for _k, s in units)
+
+
+def test_amendment_1_is_deterministic_and_leaves_the_registered_search_alone():
+    """Two runs and two instances agree; without the block the record has none of the new fields, the start list is
+    the amended list's prefix, and the estimates are ADR-0307's own."""
+    import json
+
+    program = _stuck_program()
+    first = KellyMultiStart(_scorer(program), NARROW, MULTI2).run_multistart()
+    search = KellyMultiStart(_scorer(program), NARROW, MULTI2)
+    for again in (search.run_multistart(), search.run_multistart()):
+        assert again["quantities"] == first["quantities"] and again["record"] == first["record"]
+    assert json.loads(json.dumps(first["record"])) == first["record"]
+    plain = KellyMultiStart(_scorer(program), NARROW, MULTI)
+    old = plain.run_multistart()["record"]["multistart"]
+    new = first["record"]["multistart"]
+    assert set(new)-set(old) == {"starts_repaired", "starts_emptied", "starts_distinct", "start_kinds", "start_stats"}
+    assert "feasible_starts" not in old["declared"] and old["starts_digest"] != new["starts_digest"]
+    bounds, books = plain.lp_books()
+    kept, starts = plain.starts(bounds, books)
+    assert search.starts(bounds, books) == (kept, starts)
+    search._load(np.zeros(search.N, dtype=np.int64))
+    assert search.extra_starts(kept, books, starts)[:len(starts)] == starts
+    plain._load(np.zeros(plain.N, dtype=np.int64))
+    for mine, theirs in zip(plain._estimates(), KellyLocalSearch._estimates(plain)):
+        assert (mine == theirs).all()
+    assert not hasattr(plain, "add_spread")
+
+
+@pytest.mark.parametrize("seed", range(4))
+@pytest.mark.parametrize("cap", [30., 120., 5000.])
+def test_amendment_1_is_never_below_the_registered_search_on_the_synthetic_fixtures(seed, cap):
+    """Cash is always climbed and the pair shortlist is unchanged, so these fixtures lose nothing; not a theorem."""
+    scorer = _scorer(_program(n_groups=6, n_pairs=3, seed=seed, capacity=8, reserve_cap=cap))
+    old = KellyMultiStart(scorer, PARAMS, MULTI).run_multistart()["record"]["end_value"]
+    new = KellyMultiStart(scorer, PARAMS, MULTI2).run_multistart()
+    assert new["record"]["end_value"] >= old-1e-9 and scorer.check_feasible(new["quantities"])["feasible"]

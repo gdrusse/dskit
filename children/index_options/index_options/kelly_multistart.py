@@ -20,6 +20,22 @@ while the climb takes about a second and is almost pure removal. :class:`KellyMu
   each fail a linear row or do not beat cash alone). The best end book wins (ties to the earlier climb).
 * **Cash floor.** A book scoring below cash is never traded: the week trades cash instead and says so.
 
+Amendment 1 (opt-in ``multistart.feasible_starts``; absent means the behaviour above, byte for byte). On real weeks
+the per-group LP books ignore the shared caps and the wealth floor and hold hundreds of contracts, so EVERY rounded
+start was infeasible, only cash was climbed, and cash could not leave (the add shortlist's first-order charge is zero
+at cash, so it ranked on marginal utility alone). With the block declared:
+
+* **Repair.** An infeasible start is not dropped: it is halved (``ceil(q/2)`` per leg) while it is infeasible and holds
+  more than ``repair_contracts``, cut to its ``repair_contracts`` largest legs, and then repaired by ADR-0307
+  Amendment 1's greedy removal (:meth:`KellyLocalSearch._repaired`). A start repaired to nothing is dropped.
+* **Extra starts** (appended after the ``starts`` list, so that list and its order are unchanged): ``singles`` best
+  single contracts from cash, at most one a group over ALL groups, by the EXACT one-contract objective (feasible and
+  strictly above cash); and, with ``units``, one contract of every leg of each kept group's LP book.
+* **Estimates.** The shortlists' charge estimate is the exact one-contract charge change (ADR-0307's first-order form
+  drops ``slope x own^2``, a name's whole first charge). Estimates still only rank; the exact trial decides.
+* Starts that end at the same book are climbed once, and cash is always climbed as well. The record adds the
+  per-start outcomes.
+
 Determinism (replay parity): the starts are a function of the program, the declaration and ``seed`` (a
 ``numpy.random.default_rng``); nothing reads the clock. The record carries the seed, a SHA-256 digest of every start
 in order, the chosen start and its end book, so a replay that re-derives a different start list or choice refuses.
@@ -31,7 +47,7 @@ import time
 
 import numpy as np
 
-from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+from dskit.pipeline.libs.pyomo import TransportPortfolioSolve, tangent_utility
 
 from .kelly_local import KellyLocalSearch
 
@@ -54,6 +70,9 @@ class KellyMultiStart(KellyLocalSearch):
         climbs, shared evenly over the climbs still to run and checked at move boundaries, so a count not a clock),
         ``pairs_evaluated`` (int >= 0, the pair-add shortlist; 0 turns the move
         off) and ``scales`` (a nonempty list of distinct numbers in (0, 1], the rounding fractions, in order).
+        Optional ``feasible_starts`` (ADR-0315 Amendment 1): ``{"singles": int >= 0, "units": bool,
+        "repair_contracts": int >= 1}``: repair infeasible starts instead of dropping them, add the best single
+        contracts and the unit books as starts, and rank moves by their exact charge change.
 
     Examples
     --------
@@ -69,7 +88,11 @@ class KellyMultiStart(KellyLocalSearch):
 
     MULTISTART_KEYS = ("top_groups", "starts", "climbed", "pairs_evaluated", "scales")
     #: Optional key: a deterministic cap on exact trials across all climbs (a count, never a clock).
-    OPTIONAL_KEYS = ("evaluations",)
+    OPTIONAL_KEYS = ("evaluations", "feasible_starts")
+    #: The keys of the optional ``feasible_starts`` block (ADR-0315 Amendment 1), all required when it is declared.
+    FEASIBLE_KEYS = ("singles", "units", "repair_contracts")
+    #: An LP book's leg is held by a unit start when its relaxed quantity exceeds this.
+    LEG = 1e-9
     #: Draws per random start slot before the generator gives up on finding a new combination.
     DRAWS = 20
 
@@ -89,6 +112,13 @@ class KellyMultiStart(KellyLocalSearch):
         if "evaluations" in multistart and (type(multistart["evaluations"]) is not int
                                             or multistart["evaluations"] < 1):
             return ["multistart evaluations must be an int >= 1"]
+        if "feasible_starts" in multistart:
+            block = multistart["feasible_starts"]
+            if (not isinstance(block, dict) or set(block) != set(cls.FEASIBLE_KEYS)
+                    or type(block["singles"]) is not int or block["singles"] < 0 or type(block["units"]) is not bool
+                    or type(block["repair_contracts"]) is not int or block["repair_contracts"] < 1):
+                return [f"multistart feasible_starts needs exactly {list(cls.FEASIBLE_KEYS)}: singles an int >= 0, "
+                        "units a bool, repair_contracts an int >= 1"]
         floors = {"top_groups": 1, "starts": 2, "climbed": 1, "pairs_evaluated": 0}
         defects = [f"multistart {key} must be an int >= {floor}" for key, floor in floors.items()
                    if type(multistart[key]) is not int or multistart[key] < floor]
@@ -104,6 +134,43 @@ class KellyMultiStart(KellyLocalSearch):
             raise ValueError("; ".join(defects))
         super().__init__(scorer, params)
         self.multi = json.loads(json.dumps(multistart))
+        self.feasible = self.multi.get("feasible_starts")
+
+    # --- the estimates (ADR-0315 Amendment 1) ------------------------------------------------------------------
+
+    def _load(self, q):
+        """ADR-0307's load; with ``feasible_starts`` it also caches every item's one-contract spread changes."""
+        if self.feasible is not None:
+            self.add_spread, self.remove_spread = np.zeros(self.N), np.zeros(self.N)
+        super()._load(q)
+
+    def _refresh_group(self, g):
+        """ADR-0307's refresh; with ``feasible_starts``, also the group's spread after one more or one fewer contract
+        of each item (the measure evaluated on every such book at once), less its current spread."""
+        super()._refresh_group(g)
+        if self.feasible is not None and g in self.key_of:
+            a, b = self.off[g], self.off[g+1]
+            measure, pay, rows = self.measure[g], self.pay[g][:, None], self.pay_rows[g]
+            self.add_spread[a:b] = measure.price*measure.columns(pay+rows)-self.spread[g]
+            self.remove_spread[a:b] = measure.price*measure.columns(pay-rows)-self.spread[g]
+
+    def _estimates(self):
+        """ADR-0307's estimates; with ``feasible_starts``, the charge part is the EXACT one-contract charge change.
+
+        ADR-0307's charge estimate ``2 x slope x S x own`` is first order in the name's spread ``S``: it is zero for
+        the first contract of a name, whose whole charge ``slope x own^2`` it drops, so at cash it ranks adds on
+        marginal utility alone. Here the name's charge is recomputed with the group's exact spread after the move
+        (cached per group), so a hedging leg is credited and a first contract is charged. The utility part stays
+        first order. Estimates rank; they never decide.
+        """
+        if self.feasible is None:
+            return super()._estimates()
+        marginal = self.D @ (self.w0*self.weights*tangent_utility(self.W, self.w0, self.gamma)[1])
+        total = np.append(self.keytot, 0.)[self.item_key]
+        slope = self.slopes_ext[self.item_key]
+        added = slope*((total+self.add_spread)**2-total**2)
+        removed = slope*(total**2-(total+self.remove_spread)**2)
+        return marginal-added, removed-marginal
 
     # --- the pair add move -------------------------------------------------------------------------------------
 
@@ -117,7 +184,9 @@ class KellyMultiStart(KellyLocalSearch):
         limit = self.multi["pairs_evaluated"]
         if not limit:
             return []
-        add_gain, _remove_gain = self._estimates()
+        # Always ADR-0307's first-order estimate: a spread's legs hedge each other's charge, so a pair is led and
+        # ranked without the single-contract charge that Amendment 1's estimate puts on each leg alone.
+        add_gain, _remove_gain = KellyLocalSearch._estimates(self)
         eligible = (self.q < self.cap) & ~self._blocked()
         ids = np.flatnonzero(eligible)
         lead = ids[np.lexsort((self.rank[ids], -add_gain[ids]))[:self.params["adds_evaluated"]]]
@@ -225,6 +294,110 @@ class KellyMultiStart(KellyLocalSearch):
             push("random", {k: v for i, pick in zip(chosen, picks) for k, v in rounded[kept[i], scales[pick]].items()})
         return kept, out
 
+    # --- feasible starts (ADR-0315 Amendment 1) ----------------------------------------------------------------
+
+    def _unit(self, g, book):
+        """Return one group's LP book at one contract a leg (of two exclusive sides the larger relaxed one survives)."""
+        a = self.off[g]
+        held = (book > self.LEG) & (self.cap[a:self.off[g+1]] > 0)
+        for x, y in self.scorer.groups[g]["exclusive"]:
+            if held[x] and held[y]:
+                held[y if book[x] >= book[y] else x] = False
+        return {int(a+i): 1 for i in np.flatnonzero(held)}
+
+    def _singles(self):
+        """Return the best single-contract starts FROM THE LOADED CASH STATE, at most one a group, best first.
+
+        Every item's one-contract objective is computed exactly at once (at cash a contract's spread is its own, so
+        the charge is ``slope x own^2``); only contracts that fit every rule and beat cash strictly are kept, and
+        each is confirmed by the exact trial. Ties break by item rank.
+        """
+        limit = self.feasible["singles"]
+        if not limit:
+            return []
+        slack = np.full(self.G, np.inf)
+        for c, members in enumerate(self.cap_members):
+            slack[members] = np.minimum(slack[members], self.cap_up[c]+self.tol-self.capsum[c])
+        fits = (self.cap > 0) & self.lin_ok & (self.dres <= slack[self.gid])
+        if self.K:
+            fits &= ((self.jtot[None, :]+self.J) <= self.j_up+self.tol).all(axis=1)
+        ids = np.flatnonzero(fits)
+        wealth = self.W[None, :]+self.D[ids]
+        ids, wealth = ids[(wealth >= self.lo-self.tol).all(axis=1)], wealth[(wealth >= self.lo-self.tol).all(axis=1)]
+        if not len(ids):
+            return []
+        values = (self.w0*(tangent_utility(wealth, self.w0, self.gamma)[0] @ self.weights)
+                  - self.slopes_ext[self.item_key[ids]]*self.own[ids]**2)
+        keep = values > self.value()+self.IMPROVEMENT*self.w0
+        ids, values = ids[keep], values[keep]
+        out, groups = [], set()
+        for i in np.lexsort((self.rank[ids], -values)):
+            flat = int(ids[i])
+            if int(self.gid[flat]) in groups:
+                continue
+            groups.add(int(self.gid[flat]))
+            if self._trial({flat: 1}) is not None:
+                out.append({flat: 1})
+                if len(out) == limit:
+                    break
+        return out
+
+    def extra_starts(self, kept, books, starts):
+        """Return ``starts`` plus Amendment 1's single and unit starts (new books only), from the loaded cash state."""
+        out, seen = list(starts), {tuple(sorted(start.items())) for _kind, start in starts}
+        extras = [("single", start) for start in self._singles()]
+        if self.feasible["units"]:
+            extras += [("unit", self._unit(g, books[g])) for g in kept]
+        for kind, start in extras:
+            key = tuple(sorted(start.items()))
+            if key not in seen:
+                seen.add(key)
+                out.append((kind, dict(key)))
+        return out
+
+    def _made_feasible(self, start):
+        """Return ``(book, value, halvings, removed)`` of one infeasible start repaired from cash; cash is reloaded.
+
+        The book is halved (``ceil(q/2)`` a leg) while it is infeasible and holds more than ``repair_contracts``, cut
+        to its ``repair_contracts`` largest legs (ties by item rank), then repaired by greedy removal. ``book`` is
+        empty and ``value`` None when nothing feasible is left.
+        """
+        limit = self.feasible["repair_contracts"]
+        book, halvings, value = dict(start), 0, None
+        while value is None and sum(book.values()) > limit:
+            halved = {flat: (quantity+1)//2 for flat, quantity in book.items()}
+            if halved == book:
+                break
+            book, halvings = halved, halvings+1
+            value = self._trial(book)
+        if value is not None:
+            return book, value, halvings, 0
+        before = sum(book.values())
+        if before > limit:
+            legs = sorted(book, key=lambda flat: (-book[flat], int(self.rank[flat])))[:limit]
+            book = {flat: book[flat] for flat in sorted(legs)}
+        first = np.zeros(self.N, dtype=np.int64)
+        for flat, quantity in book.items():
+            first[flat] = quantity
+        q, removed = self._repaired(first)
+        removed += before-int(first.sum())
+        book = {int(flat): int(q[flat]) for flat in np.flatnonzero(q)}
+        value = self.value() if book else None
+        self._load(np.zeros(self.N, dtype=np.int64))
+        return book, value, halvings, removed
+
+    def _feasible_books(self, starts, scores):
+        """Return ``(books, scores, stats)``: every start's climbable book, its exact value and what was done to it."""
+        books, values, stats = [], [], []
+        for (kind, start), score in zip(starts, scores):
+            book, value, halvings, removed = (start, score, 0, 0) if score is not None else self._made_feasible(start)
+            status = "feasible" if score is not None else "repaired" if book else "emptied"
+            books.append(book)
+            values.append(value)
+            stats.append({"kind": kind, "contracts": int(sum(start.values())), "status": status,
+                          "halvings": halvings, "removed": removed, "kept": int(sum(book.values())), "value": value})
+        return books, values, stats
+
     @staticmethod
     def digest(starts):
         """Return the SHA-256 of the ordered start list (kinds and sparse books), the replay's start fingerprint."""
@@ -261,16 +434,31 @@ class KellyMultiStart(KellyLocalSearch):
         cash = np.zeros(self.N, dtype=np.int64)
         self._load(cash)
         cash_value = self.value()
+        if self.feasible is not None:
+            starts = self.extra_starts(kept, books, starts)
         scores = [cash_value if not start else self._trial(start) for _kind, start in starts]
         feasible = [i for i, v in enumerate(scores) if v is not None]
-        order = sorted(feasible, key=lambda i: (-scores[i], i))[:self.multi["climbed"]]
+        climbable, stats = [start for _kind, start in starts], None
+        if self.feasible is not None:
+            # Amendment 1: an infeasible start is repaired, not dropped; starts ending at one book are climbed once.
+            climbable, scores, stats = self._feasible_books(starts, scores)
+        ranked, order, distinct = sorted((i for i, v in enumerate(scores) if v is not None),
+                                         key=lambda i: (-scores[i], i)), [], set()
+        for i in ranked:
+            key = tuple(sorted(climbable[i].items())) if stats is not None else i
+            if key not in distinct:
+                distinct.add(key)
+                order.append(i)
+        order = order[:self.multi["climbed"]]
+        if stats is not None and 0 not in order:
+            order.append(0)     # Amendment 1: cash is always climbed too, so repaired starts never crowd it out
         counts = {"add": 0, "remove": 0, "swap": 0, "pair": 0}
         climbs, best, exhausted, total = [], None, False, 0
         budget = self.multi.get("evaluations")
         for n, i in enumerate(order):
             stop = None if budget is None else self.evaluations+max(0, budget-self.evaluations)//(len(order)-n)
             first = cash.copy()
-            for flat, quantity in starts[i][1].items():
+            for flat, quantity in climbable[i].items():
                 first[flat] = quantity
             self._load(first)
             values, kinds, done = self._climb(stop)
@@ -296,7 +484,7 @@ class KellyMultiStart(KellyLocalSearch):
             raise ValueError("the multi-start search's score differs from the exact recompute of its selection")
         start_q = cash.copy()
         if chosen is not None:
-            for flat, quantity in starts[chosen][1].items():
+            for flat, quantity in climbable[chosen].items():
                 start_q[flat] = quantity
         groups = self.scorer.groups
         record = {"start_kind": "multistart", "start_value": best_values[0], "end_value": end_value,
@@ -312,6 +500,16 @@ class KellyMultiStart(KellyLocalSearch):
                                  "climbs": climbs, "chosen_start": chosen,
                                  "chosen_kind": None if chosen is None else starts[chosen][0],
                                  "cash_floor": bool(floor)}}
+        if stats is not None:
+            kinds = {}
+            for row in stats:
+                tally = kinds.setdefault(row["kind"], {"starts": 0, "feasible": 0, "repaired": 0, "emptied": 0})
+                tally["starts"] += 1
+                tally[row["status"]] += 1
+            record["multistart"].update(
+                starts_repaired=sum(1 for row in stats if row["status"] == "repaired"),
+                starts_emptied=sum(1 for row in stats if row["status"] == "emptied"),
+                starts_distinct=len(distinct), start_kinds=kinds, start_stats=stats)
         live = record["multistart"]["lp_live"]
         screen = {"rule": "lp", "candidates": self.G, "kept": live, "screened": self.G-live, "fallback": None}
         return {"quantities": nested, "selection": selection, "record": record, "values": best_values,

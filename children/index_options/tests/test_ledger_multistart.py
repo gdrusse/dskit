@@ -25,6 +25,23 @@ MULTISTART_FORMULATIONS = {"kelly050_ls_multistart_lp": _multistart(.5), "kelly0
 MULTISTART_HEDGED = {name.removesuffix("_lp")+"_replay_hedge_lp": {**method, "hedge": dict(_REPLAY_BLOCK)}
                      for name, method in MULTISTART_FORMULATIONS.items()}
 
+#: ADR-0315 Amendment 1: the same search with feasible starts (repair, single and unit starts, exact charge
+#: estimates) on NEW ids; the ids above are frozen and their declaration is untouched.
+MULTISTART2_SEARCH = {**MULTISTART_SEARCH,
+                      "multistart": {**MULTISTART_SEARCH["multistart"],
+                                     "feasible_starts": {"singles": 32, "units": True, "repair_contracts": 64}}}
+
+
+def _multistart2(fraction):
+    base = _multistart(fraction)
+    return {**base, "kelly": {**base["kelly"], "local_search": copy.deepcopy(MULTISTART2_SEARCH)}}
+
+
+MULTISTART2_FORMULATIONS = {"kelly050_ls_multistart2_lp": _multistart2(.5),
+                            "kelly075_ls_multistart2_lp": _multistart2(.75)}
+MULTISTART2_HEDGED = {name.removesuffix("_lp")+"_replay_hedge_lp": {**method, "hedge": dict(_REPLAY_BLOCK)}
+                      for name, method in MULTISTART2_FORMULATIONS.items()}
+
 
 def _world(search=None):
     """The overlapping two-week kelly world under a multi-start method."""
@@ -190,3 +207,70 @@ def test_the_hedged_multistart_arm_trades_the_same_books_and_replays_from_record
     replay = study._method(arm, None, derived=claim)
     assert replay["trades"] == hedged["trades"]
     assert study._method(arm, None, recorded=replay) == replay
+
+
+# --- ADR-0315 Amendment 1: the feasible-starts methods on new ids ----------------------------------------------
+
+def test_the_amended_formulations_validate_on_new_ids_and_the_registered_ones_are_unchanged():
+    assert MULTISTART_SEARCH == {"moves": 1000, "adds_evaluated": 64, "swaps_evaluated": 64, "restarts": 0,
+                                 "seed": 20261112,
+                                 "multistart": {"top_groups": 16, "starts": 128, "climbed": 8, "pairs_evaluated": 64,
+                                                "evaluations": 1000000, "scales": [1., .5, .25, .125]}}
+    assert sorted(MULTISTART_FORMULATIONS) == ["kelly050_ls_multistart_lp", "kelly075_ls_multistart_lp"]
+    assert not set(MULTISTART2_FORMULATIONS) & set(MULTISTART_FORMULATIONS)
+    assert not set(MULTISTART2_HEDGED) & set(MULTISTART_HEDGED)
+    for name, method in MULTISTART2_FORMULATIONS.items():
+        old = MULTISTART_FORMULATIONS[name.replace("multistart2", "multistart")]
+        search, was = method["kelly"]["local_search"], old["kelly"]["local_search"]
+        assert {k: v for k, v in search["multistart"].items() if k != "feasible_starts"} == was["multistart"]
+        assert search["multistart"]["feasible_starts"] == {"singles": 32, "units": True, "repair_contracts": 64}
+        assert {**method, "kelly": {**method["kelly"], "local_search": was}} == old
+        params, _inputs = _weekly_portfolio_fixture()
+        params["methods"] = [{"id": name, **method}]
+        _for_kelly(params)
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    for name, method in MULTISTART2_HEDGED.items():
+        params, _inputs = _weekly_portfolio_fixture()
+        params["methods"] = [{"id": name, **method}]
+        _for_kelly(params)
+        params.update(hedge_parity=dict(_PARITY), locked_method_ids=list(FORMULATIONS))
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params, tail_end_before="2021-07-01")
+
+
+@pytest.mark.parametrize("block", [None, {}, {"singles": 32, "units": True},
+                                   {"singles": -1, "units": True, "repair_contracts": 64},
+                                   {"singles": 32, "units": 1, "repair_contracts": 64},
+                                   {"singles": 32, "units": True, "repair_contracts": 0}])
+def test_a_malformed_feasible_starts_block_is_refused(block):
+    params, _data, _method = _world({"multistart": {**MULTISTART_SEARCH["multistart"], "feasible_starts": block}})
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_an_amended_week_records_its_repairs_is_deterministic_and_replays_from_record_and_worker():
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal
+    from index_options.mio_worker import MIOMethodWorker
+
+    params, data, method, study, result = _result(search=MULTISTART2_SEARCH)
+    week = result["decisions"][0]
+    multi = week["kelly"]["local"]["multistart"]
+    assert multi["declared"] == MULTISTART2_SEARCH["multistart"] and len(multi["start_stats"]) == multi["starts"]
+    assert set(multi) >= {"starts_repaired", "starts_emptied", "starts_distinct", "start_kinds", "start_stats"}
+    assert week["kelly"]["local"]["end_value"] >= multi["cash_value"] and "stage1" not in week
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None) == result
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, recorded=result) == result
+    forged = copy.deepcopy(result)
+    forged["decisions"][0]["kelly"]["local"]["multistart"]["start_stats"][0]["kept"] += 1
+    with pytest.raises(ValueError, match="differs from authoritative replay"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, recorded=forged)
+    claim = MIOMethodWorker.actions(result, study.weeks)
+    replay = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, derived=claim)
+    assert [w.get("selection") for w in replay["decisions"]] == [w.get("selection") for w in result["decisions"]]
+    day = next(iter(claim["decisions"]))
+    claim["decisions"][day]["actions"] = [[0]*len(row) for row in claim["decisions"][day]["actions"]]
+    if any(q for row in week["selection"]["quantities"] for q in row):
+        with pytest.raises(RecordedCheckRefusal, match="multi-start actions"):
+            ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, derived=claim)
+    # The registered declaration on the same world is untouched by the amendment's fields.
+    old = _result()[4]["decisions"][0]["kelly"]["local"]["multistart"]
+    assert not set(old) & {"starts_repaired", "starts_emptied", "starts_distinct", "start_kinds", "start_stats"}
