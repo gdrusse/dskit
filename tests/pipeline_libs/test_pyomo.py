@@ -6889,3 +6889,24 @@ def test_an_uncertified_incumbent_is_priced_so_live_recorded_and_derived_agree(m
     lowered["audit"] = {"check": "bound_below_value", "ratio": 100.0}     # the pre-amendment audit is refused
     with pytest.raises(ValueError, match="contradictory recorded incumbent audit"):
         node._recorded(program, lowered, certs)
+
+
+def test_a_priced_incumbent_whose_pricing_is_not_optimal_refuses_by_name_and_unfixes(monkeypatch):
+    """The extra pricing LP of an uncertified stage one is a refusal, not a crash or a silent unpriced record."""
+    from dataclasses import replace
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, SolveRecord, TransportPortfolioSolve
+
+    params, program = _loose_program()
+    audited = {**params, "incumbent_audit": "uncertified"}
+    real = SolveRecord.from_solve.__func__
+    calls = []
+
+    def from_solve(cls, model, results, name, seconds, *args, **kwargs):
+        out = real(cls, model, results, name, seconds, *args, **kwargs)
+        calls.append(out)
+        return replace(out, termination="infeasible") if seconds == 0. else out
+
+    monkeypatch.setattr(SolveRecord, "from_solve", classmethod(from_solve))
+    with pytest.raises(RecordedCheckRefusal, match="recorded actions could not be priced") as caught:
+        TransportPortfolioSolve("n", audited).run(None, program)
+    assert caught.value.check == "dual_pricing" and calls
