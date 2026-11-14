@@ -6794,3 +6794,98 @@ def test_incumbent_audit_is_declared(params, problem):
     assert TransportPortfolioSolve.validate_params(base) == []
     assert TransportPortfolioSolve.validate_params({**base, "incumbent_audit": "raise"}) == []
     assert any(problem in p for p in TransportPortfolioSolve.validate_params({**base, **params}))
+
+
+# -- ADR-0316 Amendment 4: a gap-stopped incumbent whose duals are not its integers' best -------------------------
+
+def _loose_duals(monkeypatch, delta=.3, below=.1):
+    """Load every dollar solve's incumbent with its W1 potentials ``delta`` above the best for its integers and its
+    bound ``below`` under the integers' exact value.
+
+    The shape HiGHS recorded on 2020Q1 ``kelly075_ls_fast_hedged_static_lp`` week 2020-02-18 (stopped at its
+    ``mip_rel_gap``): objective 5,530.98 and bound 5,622.31 for actions worth 5,669.0 (the exact audit and the
+    derived route's priced duals agree), a bound 46.7 and an objective 138.0 under them.
+    """
+    from dataclasses import replace
+    from pyomo.environ import value
+    from dskit.pipeline.libs.pyomo import SolveRecord, TransportPortfolioSolve
+
+    real_once, real_record = TransportPortfolioSolve._solve_once, TransportPortfolioSolve._build_solve_record
+
+    def once(self, solver, model, time_limit=None):
+        result = real_once(self, solver, model, time_limit)
+        if self._utility is None and not getattr(model, "_transport_no_incumbent", False):
+            model._exact_value = value(model.profit)
+            for name in [c.name for c in model.component_objects(descend_into=False) if c.name.startswith("transport_")]:
+                for potential in model.component(name).potential.values():
+                    potential.set_value(potential.value + delta)
+        return result
+
+    def record(solver, model, results, name, seconds):
+        out = real_record(solver, model, results, name, seconds)
+        exact = getattr(model, "_exact_value", None)
+        if exact is None or out.objective is None:
+            return out
+        return replace(out, bound=exact - below, gap=SolveRecord._gap(out.objective, exact - below))
+
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", once)
+    monkeypatch.setattr(TransportPortfolioSolve, "_build_solve_record", staticmethod(record))
+
+
+def _loose_program():
+    params = {"absolute_gap": 1., "relative_gap": 0., "parity_tolerance": .001, "timeout_policy": "return",
+              "solver_options": {"threads": 1}}
+    group = {"id": "g", "grid": [90., 100., 110.], "masses": [.25, .5, .25], "radius": .01, "scale": 100.,
+             "credit": [200.], "losses": [[1000.], [0.], [-1000.]], "capacity": [2], "exclusive": [],
+             "reserve_rows": [[800.]], "linear_rows": []}
+    return params, {"groups": [group], "caps": [{"groups": ["g"], "upper": 10000.}]}
+
+
+def test_an_unpriced_incumbent_still_refuses_under_raise(monkeypatch):
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
+
+    params, program = _loose_program()
+    _loose_duals(monkeypatch)
+    with pytest.raises(RecordedCheckRefusal, match="invalid primary dual/primal incumbent value") as caught:
+        TransportPortfolioSolve("raise", params).run(None, program)
+    assert (caught.value.check, caught.value.ratio) == ("bound_below_value", 100.0)
+
+
+def test_an_uncertified_incumbent_is_priced_so_live_recorded_and_derived_agree(monkeypatch):
+    """Before the amendment the live stage one recorded the solver's objective (0.3 under the actions' value) and the
+    derived route, pricing the same actions, refused ``certificate_objective`` at 300 x the tolerance; now the live
+    incumbent is priced as the derived route prices it, the bound below it is the audit, and all three routes agree."""
+    import json
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params, program = _loose_program()
+    audited = {**params, "incumbent_audit": "uncertified"}
+    clean = TransportPortfolioSolve("clean", audited).run(None, program)["selection"]
+    assert "timeout" not in clean and clean["value"] > 0
+    _loose_duals(monkeypatch)
+    node = TransportPortfolioSolve("live", audited)
+    selection = node.run(None, program)["selection"]
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in selection.pop("certificates")]
+    saved, certs = json.loads(json.dumps([selection, certificates]))
+    # the worker-derived route first: on 04bcdf47 it refused certificate_objective at 300 x the tolerance here
+    derived = TransportPortfolioSolve("derived", audited).derived(
+        program, TransportPortfolioSolve.actions(saved), certs)["selection"]
+    assert {k: v for k, v in derived.items() if k != "certificates"} == saved
+    assert selection["timeout"] == "incumbent_audit"
+    assert selection["audit"] == {"check": "certificate_bound", "ratio": 100.0}
+    candidate = selection["candidate"]
+    assert candidate["quantities"] == clean["quantities"]
+    assert candidate["value"] == pytest.approx(clean["value"]) == pytest.approx(candidate["model_value"])
+    assert certificates[0]["objective"] == pytest.approx(clean["value"]), "the priced value, not the loaded one"
+    assert node._recorded(program, saved, certs) == {**saved, "certificates": certs}
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, SolveRecord
+    forged = json.loads(json.dumps(certs))
+    forged[0]["objective"] -= .3                                  # the unpriced objective still refuses, by name
+    forged[0]["gap"] = SolveRecord._gap(forged[0]["objective"], forged[0]["bound"])
+    with pytest.raises(RecordedCheckRefusal, match="invalid primary solver certificate") as caught:
+        TransportPortfolioSolve("derived", audited).derived(program, TransportPortfolioSolve.actions(saved), forged)
+    assert (caught.value.check, caught.value.ratio) == ("certificate_objective", 300.0)
+    lowered = json.loads(json.dumps(saved))
+    lowered["audit"] = {"check": "bound_below_value", "ratio": 100.0}     # the pre-amendment audit is refused
+    with pytest.raises(ValueError, match="contradictory recorded incumbent audit"):
+        node._recorded(program, lowered, certs)

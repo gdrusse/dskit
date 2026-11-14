@@ -4460,7 +4460,9 @@ class WeeklyOptionPortfolioStudy:
         solver_params = p["solver"]
         if self._hedged_search(method) and solver_params.get("timeout_policy", "raise") == "return":
             # ADR-0316 Amendment 3: the hedged stage one is a start, never a traded selection; an incumbent whose
-            # value checks miss (a tolerance-sized float miss on the hedged rows) is an uncertified start, not a crash.
+            # value checks miss is an uncertified start, not a crash. Amendment 4: the incumbent is priced at its
+            # integers before it is recorded (the value every route recomputes), and a solver bound below that value
+            # (2020Q1 week 2020-02-18: 46.7 under it, the loaded duals 138.0 under it) is the start's named audit.
             solver_params = {**solver_params, "incumbent_audit": "uncertified"}
         if "stage1_time_limit" in search:
             # ADR-0307 Amendment 1: stage one's own time limit (the integer program is never built here).

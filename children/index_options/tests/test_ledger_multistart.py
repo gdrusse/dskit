@@ -1054,6 +1054,82 @@ def test_an_unhedged_fast_stage_one_still_refuses_a_value_miss(monkeypatch):
     assert caught.value.check == "model_over_audit"
 
 
+def _loose_stage_one(monkeypatch, delta=.3, below=.1):
+    """The 2020Q1 ``kelly075_ls_fast_hedged_static_lp`` week 2020-02-18 stage one (ADR-0316 Amendment 4) on the
+    synthetic world: HiGHS stopped at its gap with W1 potentials above the best for its integers (its objective 138.0
+    under the actions' exact value 5,669.0) and a bound 46.7 under that value; here ``delta`` and ``below``."""
+    from dataclasses import replace
+    from pyomo.environ import value
+    from dskit.pipeline.libs.pyomo import SolveRecord, TransportPortfolioSolve
+
+    real_once, real_record = TransportPortfolioSolve._solve_once, TransportPortfolioSolve._build_solve_record
+
+    def once(self, solver, model, time_limit=None):
+        result = real_once(self, solver, model, time_limit)
+        if self._utility is None and not getattr(model, "_transport_no_incumbent", False):
+            model._exact_value = value(model.profit)
+            for name in [c.name for c in model.component_objects(descend_into=False) if c.name.startswith("transport_")]:
+                for potential in model.component(name).potential.values():
+                    potential.set_value(potential.value + delta)
+        return result
+
+    def record(solver, model, results, name, seconds):
+        out = real_record(solver, model, results, name, seconds)
+        exact = getattr(model, "_exact_value", None)
+        if exact is None or out.objective is None:
+            return out
+        return replace(out, bound=exact - below, gap=SolveRecord._gap(out.objective, exact - below))
+
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", once)
+    monkeypatch.setattr(TransportPortfolioSolve, "_build_solve_record", staticmethod(record))
+
+
+@pytest.mark.parametrize("name", ["kelly075_ls_fast_hedged_static_lp", "kelly050_ls_fast_hedged_dynamic_lp",
+                                  "kelly075_ls_hedged_static_lp"])
+def test_a_hedged_stage_one_with_loose_duals_is_priced_and_agrees_on_every_route(monkeypatch, name):
+    """ADR-0316 Amendment 4. On 04bcdf47 the live week returned the ``bound_below_value`` envelope and the worker-derived
+    route, pricing the same stage-one actions, refused ``certificate_objective`` (ratio 300 here, 138,000 on the Mac).
+    Now the live stage one is priced as the derived route prices it, the bound under it is the audit, and the live,
+    recorded and derived routes agree; FAST climbs from the audited book to the clean run's selection."""
+    from index_options.mio_worker import MIOMethodWorker
+
+    *_, clean, _ = _hedged_run(name)
+    _loose_stage_one(monkeypatch)
+    params, inputs, arm, study, result, _ = _hedged_run(name)
+    claim = MIOMethodWorker.actions(result, study.weeks)
+    replay = study._method(arm, None, derived=claim)
+    assert replay["trades"] == result["trades"] and replay["decisions"][0]["books"] == result["decisions"][0]["books"]
+    assert study._method(arm, None, recorded=result) == result
+    assert study._method(arm, None, recorded=replay) == replay
+    week = result["decisions"][0]
+    local = week["kelly"]["local"]
+    tolerance = params["solver"]["parity_tolerance"]
+    assert local["stage1_audit"] == {"check": "certificate_bound", "ratio": float(f"{.1 / tolerance:.3g}")}
+    assert week["stage1"]["selection"]["audit"] == local["stage1_audit"]
+    stage1 = week["stage1"]["selection"]["candidate"]
+    assert stage1["model_value"] == pytest.approx(stage1["value"]), "the priced duals, not the loose ones"
+    assert week["stage1"]["certificates"][0]["objective"] == pytest.approx(stage1["value"])
+    if "_fast_" in name:
+        assert local["stage1_timeout"] == "incumbent_audit" and local["start_kind"] == "stage1_incumbent"
+        assert week["selection"]["quantities"] == clean["decisions"][0]["selection"]["quantities"]
+        assert result["trades"] == clean["trades"] and result["pnl"] == clean["pnl"]
+    else:
+        assert local["start_kind"] == "stage1_timeout_cash"
+
+
+def test_an_unhedged_fast_stage_one_with_loose_duals_still_refuses(monkeypatch):
+    """The unhedged FAST id keeps ``raise``: no pricing, and the bound under its incumbent's value refuses by name."""
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal
+
+    params, inputs = _hedged_world(True)
+    arm = {"id": "kelly050_ls_fast_lp", **copy.deepcopy(FAST_LOCAL_FORMULATIONS["kelly050_ls_fast_lp"])}
+    params.update(methods=[arm], locked_method_ids=list(FORMULATIONS))
+    _loose_stage_one(monkeypatch)
+    with pytest.raises(RecordedCheckRefusal, match="invalid primary dual/primal incumbent value") as caught:
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._method(arm, None)
+    assert caught.value.check == "bound_below_value"
+
+
 def _gap_day(inputs, day, jump):
     """The book's strikes have no row on ``day`` (the chain gap GME had on 2021-01-28 and 2021-02-24) while the spot,
     and the parity forward of the strikes left, jump by ``jump``."""

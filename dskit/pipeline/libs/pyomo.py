@@ -3967,10 +3967,12 @@ class TransportPortfolioSolve(PyomoSolve):
         further candidate restriction, so the certificate covers the kept
         program and the objective can only be lower than the unrestricted
         one. Replay re-derives it with the screen.
-        Optional incumbent_audit (ADR-0316 Amendment 3,
+        Optional incumbent_audit (ADR-0316 Amendments 3 and 4,
         :attr:`INCUMBENT_AUDITS`) is "raise" (default) or "uncertified"
-        (timeout_policy "return" only): an incumbent whose value checks miss
-        is returned as the ``incumbent_audit`` timeout envelope.
+        (timeout_policy "return" only): a dollar incumbent's continuous part
+        is priced at its integers before it is recorded, and an incumbent
+        whose bound or value checks miss is returned as the
+        ``incumbent_audit`` timeout envelope.
         Inputs contain
         groups (id, grid, masses, radius, scale, credit, losses, capacity,
         exclusive, reserve_rows, linear_rows), caps (groups, upper) and
@@ -4048,7 +4050,11 @@ class TransportPortfolioSolve(PyomoSolve):
     #: non-executable ``incumbent_audit`` timeout envelope, its audited book the ``candidate`` and the first miss
     #: (``check``, ``ratio``) in ``audit``: a caller that needs only a start (the hedged local search's stage one)
     #: keeps the book, a caller that trades the selection gets a timeout. Integrality, capacity, feasibility and
-    #: certificate refusals are unchanged.
+    #: certificate refusals are unchanged. ADR-0316 Amendment 4: under ``uncertified`` a dollar program's loaded
+    #: incumbent is PRICED before it is recorded (:meth:`_priced_incumbent`: its integers fixed, its duals solved
+    #: exactly as :meth:`derived` solves them for foreign actions), so the certificate objective is the value every
+    #: route recomputes; a solver bound below that value (``certificate_bound``) is then the envelope's first miss,
+    #: not a refusal. ``certificate_objective`` and ``certificate_fields`` still refuse.
     INCUMBENT_AUDITS = ("raise", "uncertified")
 
     #: ADR-0302: the keys of ``utility_search``, the deterministic incumbent local search of the relax_fix strategy
@@ -4837,7 +4843,35 @@ class TransportPortfolioSolve(PyomoSolve):
             return self._solve_relax_fix(solver, model)
         if getattr(self, "_utility", None) is not None:
             model._transport_outcome, model._transport_bound_source = "direct", "solver"
-        return self._solve_once(solver, model)
+        result = self._solve_once(solver, model)
+        if (getattr(self, "_utility", None) is None and self.params.get("incumbent_audit", "raise") == "uncertified"
+                and not getattr(model, "_transport_no_incumbent", False)):
+            self._priced_incumbent(model)
+        return result
+
+    def _priced_incumbent(self, model):
+        """Price a loaded dollar incumbent's continuous part at its integers (ADR-0316 Amendment 4).
+
+        A MIP stopped at its gap may load an incumbent whose duals (the W1 potentials, the reserves) are not the best
+        for its integer actions: ``model.profit`` there is below the actions' own value, and a replay that prices the
+        same actions (:meth:`derived`, which has no foreign duals) recomputes the larger value and refuses the
+        certificate. Here the actions are rounded (only when every one is within the incumbent check's 1e-5;
+        otherwise the incumbent is left as loaded for :meth:`extract` to refuse), fixed, priced by the one
+        :meth:`_price_duals` the derived route uses, and released, so the record's objective is the value every
+        route recomputes. The solver's bound, status and termination are kept as they were.
+        """
+        from pyomo.environ import value
+
+        raw = {key: value(model.x[key], exception=False) for key in model.x}
+        if any(not number_ok(v) or abs(v-round(v)) > 1e-5 for v in raw.values()):
+            return
+        for key, v in raw.items():
+            model.x[key].set_value(round(v))
+        try:
+            self._price_duals(model)
+        finally:
+            for key in model.x:
+                model.x[key].unfix()
 
     def _solve_once(self, solver, model, time_limit=None):
         """Offer a feasible cash start to a capable backend; ``time_limit`` overrides the configured one for this call."""
@@ -5745,10 +5779,11 @@ class TransportPortfolioSolve(PyomoSolve):
             raise ValueError("recorded cleanup disagrees with original actions")
         tol = self.params["parity_tolerance"]
         if timeout == "incumbent_audit":
-            misses = self._value_misses(audited["value"], selection["model_value"], certificate["objective"],
-                                        None if missing_bound else certificate["bound"], primary)
-            if (not isinstance(audit, dict) or audit != self._audit_miss(misses, tol)
-                    or (not missing_bound and certificate["bound"] < certificate["objective"]-tol)):
+            # ADR-0316 Amendment 4: the bound check leads the misses, exactly as :meth:`extract` sizes them.
+            misses = ([] if missing_bound else [("certificate_bound", certificate["objective"]-certificate["bound"])]
+                      ) + self._value_misses(audited["value"], selection["model_value"], certificate["objective"],
+                                             None if missing_bound else certificate["bound"], primary)
+            if not isinstance(audit, dict) or audit != self._audit_miss(misses, tol):
                 raise ValueError("contradictory recorded incumbent audit")
         elif (audited["value"] < -tol
                 or selection["model_value"] > audited["value"]+tol
@@ -5837,16 +5872,18 @@ class TransportPortfolioSolve(PyomoSolve):
                 or (not missing_bound and not number_ok(first.bound)) or not number_ok(raw_value)):
             raise RecordedCheckRefusal(message, "certificate_fields", "certificate")
         misses = [("certificate_objective", abs(first.objective-raw_value))]
-        if not missing_bound:
-            misses.append(("certificate_bound", first.objective-first.bound))
-        self._refuse_over_tolerance(message, misses, tol)
+        uncertified = self.params.get("incumbent_audit", "raise") == "uncertified"
+        bound_miss = [] if missing_bound else [("certificate_bound", first.objective-first.bound)]
+        # ADR-0316 Amendment 4: under ``uncertified`` a bound below the priced incumbent is the audit's first miss.
+        self._refuse_over_tolerance(message, misses + ([] if uncertified else bound_miss), tol)
         chosen = self._incumbent(model)
         cleanup = chosen["canonicalization"]
         model_value = value(model.profit)
         misses = self._value_misses(chosen["value"], model_value, first.objective,
                                     None if missing_bound else first.bound, cleanup)
         audit = None
-        if self.params.get("incumbent_audit", "raise") == "uncertified":
+        if uncertified:
+            misses = bound_miss + misses
             audit = self._audit_miss(misses, tol)
             if audit is not None:
                 self.log.warning("primary incumbent value check %s missed at %s x the parity tolerance: returned "
