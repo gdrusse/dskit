@@ -1003,3 +1003,106 @@ def test_the_program_hedge_prices_each_leg_as_the_replay_hedge_does(layout):
     assert [(e["status"], e["delta_f_sh"], e["units"]) for e in mine] == [
         (e["status"], e["delta_f_sh"], e["units"]) for e in theirs]
     assert sum(e["status"] == "ok" for e in mine) > len(mine) // 2
+
+
+# -- ADR-0316 Amendment 3: the two fast-hedged failures, reproduced on the synthetic world ------------------------
+
+def _model_over_audit(monkeypatch):
+    """Make the stage-one dollar program's audit 0.01 under its model (the solver's slack on the hedged loss rows)."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    real = TransportPortfolioSolve._incumbent
+
+    def slack(self, model):
+        out = real(self, model)
+        if self._utility is None:
+            out = {**out, "value": out["value"] - .01, "group_values": [v - .01 * (i == 0)
+                                                                         for i, v in enumerate(out["group_values"])]}
+        return out
+    monkeypatch.setattr(TransportPortfolioSolve, "_incumbent", slack)
+
+
+@pytest.mark.parametrize("name", ["kelly050_ls_fast_hedged_static_lp", "kelly075_ls_fast_hedged_dynamic_lp"])
+def test_a_hedged_stage_one_whose_value_check_misses_starts_the_climb_uncertified(monkeypatch, name):
+    """2020Q1 ``kelly075_ls_fast_hedged_static_lp`` week 8: ``invalid primary dual/primal incumbent value`` ended the
+    run. The hedged search's stage one is only a start: the miss becomes the ``incumbent_audit`` envelope, the climb
+    starts from the audited book, and the week, its replay and its derived route agree."""
+    *_, clean, _ = _hedged_run(name)
+    _model_over_audit(monkeypatch)
+    params, inputs, arm, study, result, _ = _hedged_run(name)
+    week = result["decisions"][0]
+    local = week["kelly"]["local"]
+    assert local["stage1_timeout"] == "incumbent_audit" and local["start_kind"] == "stage1_incumbent"
+    assert local["stage1_audit"] == {"check": "model_over_audit", "ratio": 10.0}
+    assert week["stage1"]["selection"]["audit"] == local["stage1_audit"]
+    assert week["selection"]["quantities"] == clean["decisions"][0]["selection"]["quantities"]
+    assert result["trades"] == clean["trades"] and result["pnl"] == clean["pnl"]
+    assert study._method(arm, None, recorded=result) == result
+
+
+def test_an_unhedged_fast_stage_one_still_refuses_a_value_miss(monkeypatch):
+    """The fix is the hedged search's: the unhedged FAST id keeps ADR-0307 Amendment 1's refusal, byte for byte."""
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal
+
+    params, inputs = _hedged_world(True)
+    arm = {"id": "kelly050_ls_fast_lp", **copy.deepcopy(FAST_LOCAL_FORMULATIONS["kelly050_ls_fast_lp"])}
+    params.update(methods=[arm], locked_method_ids=list(FORMULATIONS))
+    _model_over_audit(monkeypatch)
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    with pytest.raises(RecordedCheckRefusal, match="invalid primary dual/primal incumbent value") as caught:
+        study._method(arm, None)
+    assert caught.value.check == "model_over_audit"
+
+
+def _gap_day(inputs, day, jump):
+    """The book's strikes have no row on ``day`` (the chain gap GME had on 2021-01-28 and 2021-02-24) while the spot,
+    and the parity forward of the strikes left, jump by ``jump``."""
+    chain = inputs["X"]["chain"]
+    inputs["X"]["chain"] = [r for r in chain if not (r["date"] == day and r["strike"] in (95., 100., 105.))]
+    for r in inputs["X"]["chain"]:
+        if r["date"] == day:
+            r["underlying_price"] = r["underlying_price"] + jump
+            if r["type"] == "call":
+                r["bid"], r["ask"] = r["bid"] + jump, r["ask"] + jump
+    for r in inputs["X"]["bars"]:
+        if r["date"] == day:
+            r["close"] += jump
+
+
+def test_a_carried_option_mark_carries_its_forward_so_a_chain_gap_does_not_wipe_the_marked_account(monkeypatch):
+    """2021Q1 ``kelly050_ls_fast_hedged_static_lp``: ``nonpositive marked equity prevents flow-adjusted return``.
+
+    The synthetic forward book (sold 100 put, bought 100 call, 1,000 shares sold) loses its quotes on 2019-01-16 while
+    the spot jumps 80: the old ledger marked the options at the 15th's mid and the sold forward at the 16th's level, a
+    -80,000 mark on a 65,000 account that no settlement ever books. Marked as of one day, the run completes, its
+    trades and P&L are the gap-free run's and the gap day's equity is the day before's.
+    """
+    from dskit.pipeline.libs import option_ledger
+
+    name = "kelly050_ls_fast_hedged_static_lp"
+    *_, clean, _ = _hedged_run(name)
+    trade, = clean["trades"]
+    assert trade["hedge"]["units"] == -1000 and trade["fill_date"] < "2019-01-16" < trade["expiry"]
+
+    def gapped():
+        params, inputs = _hedged_world(True)
+        _gap_day(inputs, "2019-01-16", 80.)
+        return _hedged_study(name, (params, inputs))
+
+    real = option_ledger._FixedForwardHedge.__init__
+
+    def independent(self, *a, **k):                    # the ledger before the amendment
+        real(self, *a, **k)
+        self.with_legs = False
+    monkeypatch.setattr(option_ledger._FixedForwardHedge, "__init__", independent)
+    params, inputs, arm, study = gapped()
+    with pytest.raises(ValueError, match="nonpositive marked equity prevents flow-adjusted return: 2019-01-16"):
+        study._method(arm, None)
+    monkeypatch.undo()
+    params, inputs, arm, study = gapped()
+    result = study._method(arm, None)
+    assert result["trades"] == clean["trades"] and result["pnl"] == clean["pnl"]
+    curve = {row["date"]: row for row in result["curve"]}
+    assert curve["2019-01-16"]["equity"] == curve["2019-01-15"]["equity"] > 0
+    assert curve["2019-01-16"]["carried_books"] == 1
+    assert study._method(arm, None, recorded=result) == result

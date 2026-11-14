@@ -3967,6 +3967,10 @@ class TransportPortfolioSolve(PyomoSolve):
         further candidate restriction, so the certificate covers the kept
         program and the objective can only be lower than the unrestricted
         one. Replay re-derives it with the screen.
+        Optional incumbent_audit (ADR-0316 Amendment 3,
+        :attr:`INCUMBENT_AUDITS`) is "raise" (default) or "uncertified"
+        (timeout_policy "return" only): an incumbent whose value checks miss
+        is returned as the ``incumbent_audit`` timeout envelope.
         Inputs contain
         groups (id, grid, masses, radius, scale, credit, losses, capacity,
         exclusive, reserve_rows, linear_rows), caps (groups, upper) and
@@ -4037,7 +4041,15 @@ class TransportPortfolioSolve(PyomoSolve):
     outputs = ("selection",)
     _PARAMS = PyomoSolve._PARAMS + (
         "absolute_gap", "relative_gap", "parity_tolerance", "timeout_policy",
-        "group_screen", "group_screen_keep", "utility_solve", "utility_search", "utility_warm_start")
+        "group_screen", "group_screen_keep", "utility_solve", "utility_search", "utility_warm_start",
+        "incumbent_audit")
+    #: ADR-0316 Amendment 3: what a primary incumbent whose VALUE checks miss becomes. ``raise`` (the default, every
+    #: program before the amendment) refuses it; ``uncertified`` (timeout_policy ``return`` only) returns it as the
+    #: non-executable ``incumbent_audit`` timeout envelope, its audited book the ``candidate`` and the first miss
+    #: (``check``, ``ratio``) in ``audit``: a caller that needs only a start (the hedged local search's stage one)
+    #: keeps the book, a caller that trades the selection gets a timeout. Integrality, capacity, feasibility and
+    #: certificate refusals are unchanged.
+    INCUMBENT_AUDITS = ("raise", "uncertified")
 
     #: ADR-0302: the keys of ``utility_search``, the deterministic incumbent local search of the relax_fix strategy
     #: (``iterations`` neighbourhoods at most, each freeing ``neighbourhood`` groups and fixing every other group at its
@@ -4120,6 +4132,11 @@ class TransportPortfolioSolve(PyomoSolve):
             problems.append("timeout_policy must be raise or return")
         if policy == "return" and params.get("solver", DEFAULT_SOLVER) != "appsi_highs":
             problems.append("return timeout policy requires appsi_highs")
+        audit = params.get("incumbent_audit", "raise")
+        if not isinstance(audit, str) or audit not in cls.INCUMBENT_AUDITS:
+            problems.append("incumbent_audit must be raise or uncertified")
+        elif audit == "uncertified" and policy != "return":
+            problems.append("incumbent_audit uncertified requires timeout_policy return")
         screen = params.get("group_screen", "none")
         if not isinstance(screen, str) or screen not in ("none", "lp"):
             problems.append("group_screen must be none or lp")
@@ -5437,13 +5454,24 @@ class TransportPortfolioSolve(PyomoSolve):
 
     def _recorded(self, inputs, selection, certificates):
         """Recheck executable selections or explicit non-executable timeouts."""
+        import copy
         import json
         json.dumps([selection, certificates], allow_nan=False)
         if isinstance(selection, dict) and "timeout" in selection:
+            audited = selection.get("timeout") == "incumbent_audit"
             if (self.params.get("timeout_policy", "raise") != "return"
-                    or set(selection) != {"timeout", "candidate"}
-                    or selection["timeout"] not in ("gap", "missing_bound", "no_incumbent", "solver_error")):
+                    or set(selection) != ({"timeout", "candidate", "audit"} if audited else {"timeout", "candidate"})
+                    or selection["timeout"] not in ("gap", "missing_bound", "no_incumbent", "solver_error",
+                                                    "incumbent_audit")
+                    or (audited and (self.params.get("incumbent_audit", "raise") != "uncertified"
+                                     or selection["candidate"] is None))):
                 raise ValueError("invalid recorded timeout envelope")
+            if audited:
+                candidate = self._recorded_candidate(inputs, selection["candidate"], certificates,
+                                                     timeout="incumbent_audit", audit=selection["audit"])
+                return {"timeout": "incumbent_audit",
+                        "candidate": {k: v for k, v in candidate.items() if k != "certificates"},
+                        "audit": copy.deepcopy(selection["audit"]), "certificates": candidate["certificates"]}
             if selection["timeout"] in ("no_incumbent", "solver_error"):
                 if selection["candidate"] is not None:
                     raise ValueError("no-incumbent timeout has candidate actions")
@@ -5619,8 +5647,12 @@ class TransportPortfolioSolve(PyomoSolve):
             raise RecordedCheckRefusal("recorded actions could not be priced: "+str(priced.termination),
                                        "dual_pricing", "pricing")
 
-    def _recorded_candidate(self, inputs, selection, certificates, *, timeout=None):
-        """Use the same feasibility and valuation audit for every saved incumbent."""
+    def _recorded_candidate(self, inputs, selection, certificates, *, timeout=None, audit=None):
+        """Use the same feasibility and valuation audit for every saved incumbent.
+
+        ``timeout="incumbent_audit"`` (ADR-0316 Amendment 3) inverts the value checks: the recorded ``audit``
+        must be exactly the first miss this host sizes from the recorded floats, and nothing is refused for it.
+        """
         import copy
         import json
         from pyomo.environ import Constraint, Var
@@ -5640,7 +5672,9 @@ class TransportPortfolioSolve(PyomoSolve):
         statuses = (("ok", "warning") if certificate["termination"] == "optimal"
                     else ("ok", "warning", "aborted")
                     if certificate["termination"] == "maxTimeLimit" else ())
-        missing_bound = timeout == "missing_bound"
+        missing_bound = timeout == "missing_bound" or (timeout == "incumbent_audit" and isinstance(certificate, dict)
+                                                       and certificate.get("termination") == "maxTimeLimit"
+                                                       and certificate.get("bound") is None)
         numeric = ("objective", "seconds") if missing_bound else ("objective", "bound", "gap", "seconds")
         if (certificate["solver"] != self.params.get("solver", DEFAULT_SOLVER)
                 or certificate["status"] not in statuses
@@ -5710,7 +5744,13 @@ class TransportPortfolioSolve(PyomoSolve):
                 or audited["canonicalization"] != primary):
             raise ValueError("recorded cleanup disagrees with original actions")
         tol = self.params["parity_tolerance"]
-        if (audited["value"] < -tol
+        if timeout == "incumbent_audit":
+            misses = self._value_misses(audited["value"], selection["model_value"], certificate["objective"],
+                                        None if missing_bound else certificate["bound"], primary)
+            if (not isinstance(audit, dict) or audit != self._audit_miss(misses, tol)
+                    or (not missing_bound and certificate["bound"] < certificate["objective"]-tol)):
+                raise ValueError("contradictory recorded incumbent audit")
+        elif (audited["value"] < -tol
                 or selection["model_value"] > audited["value"]+tol
                 or abs(selection["model_value"]-certificate["objective"]-self._model_cleanup_gain(primary)) > tol
                 or (not missing_bound and (certificate["bound"] < certificate["objective"]-tol
@@ -5745,7 +5785,9 @@ class TransportPortfolioSolve(PyomoSolve):
         allowance = max(self.params["absolute_gap"], self.params["relative_gap"]*abs(audited["value"]))
         if selection["bound"] != certificate["bound"] or selection["gap"] != gap:
             raise ValueError("contradictory recorded dollar gap")
-        if timeout is not None:
+        if timeout == "incumbent_audit":
+            pass                                      # uncertified by its audit, whatever the gap
+        elif timeout is not None:
             if self._timeout_reason(certificate, audited["value"]) != timeout:
                 raise ValueError("recorded timeout was not uncertified")
         elif gap > allowance:
@@ -5801,11 +5843,16 @@ class TransportPortfolioSolve(PyomoSolve):
         chosen = self._incumbent(model)
         cleanup = chosen["canonicalization"]
         model_value = value(model.profit)
-        misses = [("incumbent_negative", -chosen["value"]), ("model_over_audit", model_value-chosen["value"]),
-                  ("cleanup_gain", abs(model_value-first.objective-self._model_cleanup_gain(cleanup)))]
-        if not missing_bound:
-            misses.append(("bound_below_value", chosen["value"]-first.bound))
-        self._refuse_over_tolerance("invalid primary dual/primal incumbent value", misses, tol)
+        misses = self._value_misses(chosen["value"], model_value, first.objective,
+                                    None if missing_bound else first.bound, cleanup)
+        audit = None
+        if self.params.get("incumbent_audit", "raise") == "uncertified":
+            audit = self._audit_miss(misses, tol)
+            if audit is not None:
+                self.log.warning("primary incumbent value check %s missed at %s x the parity tolerance: returned "
+                                 "uncertified (incumbent_audit)", audit["check"], audit["ratio"])
+        else:
+            self._refuse_over_tolerance("invalid primary dual/primal incumbent value", misses, tol)
         primary_quantities = [q.copy() for q in chosen["quantities"]]
         # Cash is constructively feasible. Preserve every strictly positive
         # profit; only zero or parity-sized negative noise is replaced.
@@ -5814,7 +5861,7 @@ class TransportPortfolioSolve(PyomoSolve):
         gap = None if missing_bound else max(0., first.bound-chosen["value"])
         allowance = max(self.params["absolute_gap"],
                         self.params["relative_gap"]*abs(chosen["value"]))
-        reason = self._timeout_reason(first.to_obj(), chosen["value"])
+        reason = "incumbent_audit" if audit is not None else self._timeout_reason(first.to_obj(), chosen["value"])
         if not reason and gap > allowance:
             raise RecordedCheckRefusal(f"uncertified primary objective: {first.termination}, gap={gap}",
                                        "gap", "gap", gap/allowance if allowance > 0 else None)
@@ -5825,8 +5872,31 @@ class TransportPortfolioSolve(PyomoSolve):
         if reason:
             chosen = {"timeout": reason,
                       "candidate": {k: v for k, v in chosen.items() if k != "certificates"},
+                      **({"audit": audit} if audit is not None else {}),
                       "certificates": chosen["certificates"]}
         return {"selection": chosen}
+
+    def _value_misses(self, audited, model_value, objective, bound, cleanup):
+        """The primary incumbent's value checks as ``(check, difference)``, in order (``bound`` None: no bound check).
+
+        ``cleanup`` is the incumbent's primary cleanup record. One list serves :meth:`extract` and the recorded
+        replay of an ``incumbent_audit`` envelope, so both size a miss on the same floats.
+        """
+        misses = [("incumbent_negative", -audited), ("model_over_audit", model_value-audited),
+                  ("cleanup_gain", abs(model_value-objective-self._model_cleanup_gain(cleanup)))]
+        if bound is not None:
+            misses.append(("bound_below_value", audited-bound))
+        return misses
+
+    @staticmethod
+    def _audit_miss(misses, tolerance):
+        """Return ``{"check", "ratio"}`` of the first miss over ``tolerance`` (the refusal's own sizing), else None."""
+        for check, difference in misses:
+            if difference > tolerance:
+                refusal = RecordedCheckRefusal.sized("invalid primary dual/primal incumbent value", check,
+                                                     difference, tolerance)
+                return {"check": check, "ratio": refusal.ratio}
+        return None
 
 
 #: The screen's own LP functions as defined above; :meth:`TransportPortfolioSolve._screen_key` caches only these.

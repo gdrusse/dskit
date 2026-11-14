@@ -4458,6 +4458,10 @@ class WeeklyOptionPortfolioStudy:
                   "caps": self._caps(self._limits(account, method, components, solve=True, stage1=True), metadata),
                   "joint_rows": self._shock_rows(start["shock"], betas, metadata, dollar_groups, mult, account.funding)}
         solver_params = p["solver"]
+        if self._hedged_search(method) and solver_params.get("timeout_policy", "raise") == "return":
+            # ADR-0316 Amendment 3: the hedged stage one is a start, never a traded selection; an incumbent whose
+            # value checks miss (a tolerance-sized float miss on the hedged rows) is an uncertified start, not a crash.
+            solver_params = {**solver_params, "incumbent_audit": "uncertified"}
         if "stage1_time_limit" in search:
             # ADR-0307 Amendment 1: stage one's own time limit (the integer program is never built here).
             solver_params = {**solver_params, "solver_options": {**solver_params.get("solver_options", {}),
@@ -4498,6 +4502,8 @@ class WeeklyOptionPortfolioStudy:
             local["start_kind"] = "stage1_timeout_cash"
         if "incumbent_start" in search:
             local["stage1_timeout"] = first["timeout"] if timed_out else None
+        if "audit" in first:
+            local["stage1_audit"] = dict(first["audit"])
         stage1_certificates = [{k: v for k, v in c.items() if k != "binding"} for c in first.get("certificates", [])]
         certificate = {"strategy_outcome": self._LOCAL_OUTCOME, "certified": False, "objective": local["end_value"],
                        "bound": None, "gap": None, "seconds": None, "bound_source": None}
@@ -4759,6 +4765,10 @@ class WeeklyOptionPortfolioStudy:
             ledger_params["hedge"] = {"rebalance": "fixed", "instrument": "forward", "round_units": False,
                                       "fee_per_share": first["hedge_fee_per_share"],
                                       "half_spread_bps": first["hedge_half_spread_bps"]}
+            if hedge.optional:
+                # ADR-0316 Amendment 3: the hedged search's books are marked as of one day (a carried option mark
+                # carries its forward); the replay-hedge ids keep the independent mark they were recorded under.
+                ledger_params["hedge"]["mark_carry"] = "with_legs"
             ledger_inputs["hedge_forwards"] = [row for index, b in enumerate(trades)
                                                for row in hedge.forward_rows(b, index)]
         ledger = OptionStructureLedger("ledger", ledger_params).run(None, ledger_inputs)
@@ -4773,10 +4783,16 @@ class WeeklyOptionPortfolioStudy:
                 level = self._bars[book["symbol"]][book["expiry"]]/book["factor"]
                 ledger["trades"][index]["pnl_usd"] += hedge.rehedge_excess(book, level)
                 path = hedge.path(book)
+                last = None
                 for mark in ledger["marks"]:
                     if mark["order_index"] == index:
-                        at = path[mark["date"]][0] if mark["date"] in path else level
-                        mark["pnl_usd"] += hedge.rehedge_excess(book, at, mark["date"])
+                        if hedge.optional and mark["carried"] and last is not None:
+                            excess = last                     # the legs carry their mark: so does the re-hedge
+                        else:
+                            at = path[mark["date"]][0] if mark["date"] in path else level
+                            excess = hedge.rehedge_excess(book, at, mark["date"])
+                        mark["pnl_usd"] += excess
+                        last = excess
         for book, row in zip(trades, ledger["trades"]):
             if row["status"] != "closed" or abs(row["pnl_usd"]-book["pnl"]) > 1e-6:
                 raise ValueError("shared ledger/chronological account PnL mismatch")
@@ -4810,7 +4826,9 @@ class WeeklyOptionPortfolioStudy:
             equity = snap["funding"]+open_pnl
             denominator = previous+snap["deposit"]
             if denominator <= 0 or equity <= 0:
-                raise ValueError("nonpositive marked equity prevents flow-adjusted return")
+                raise ValueError(f"nonpositive marked equity prevents flow-adjusted return: {snap['date']} equity "
+                                 f"{equity:.2f} = funding {snap['funding']:.2f} + open marks {open_pnl:.2f} "
+                                 f"({len(snap['open_ids'])} open, {carried} carried)")
             nav *= equity/denominator
             peak = max(peak, nav)
             drawdown = nav/peak-1.

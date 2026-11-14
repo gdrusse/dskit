@@ -86,6 +86,12 @@ ORDER_FIELDS = ("date", "symbol", "expiration", "strikes", "structure", "exit")
 FILLS = ("nbbo", "mid")
 #: The hedge rebalance rules.
 REBALANCES = ("daily", "every_n", "threshold", "fixed")
+#: ADR-0316 Amendment 3: how a forward hedge is marked on a day its option legs carry their last mark (no usable
+#: quote). ``independent`` (the default, every ledger before the amendment) marks the forward at the day's supplied
+#: level, so one row mixes yesterday's options with today's forward; ``with_legs`` carries the forward too (its
+#: last level, the row flagged ``mark_forward_carried``, counted ``hedge_held_with_legs``), so the book is marked
+#: as of one day. Settlement and exits are unchanged.
+MARK_CARRIES = ("independent", "with_legs")
 #: The hedge instruments: the underlying stock (default) or a cash-settled forward (``fixed`` only).
 INSTRUMENTS = ("stock", "forward")
 #: The order column a forward hedge adds: the book's HELD shares (negative = sold).
@@ -395,6 +401,15 @@ class _FixedForwardHedge(_Hedge):
         self.missing = 0
         self.carried = 0
         self.row_carried = False
+        self.with_legs = spec.get("mark_carry", "independent") == "with_legs"
+        self.held_with_legs = 0
+
+    def hold(self, day):
+        """ADR-0316 Amendment 3 (``mark_carry: with_legs``): the option legs carry their mark, so the forward does too."""
+        self.last_day = day
+        self.row_carried = True
+        self.carried += 1
+        self.held_with_legs += 1
 
     def priced(self, day):
         """Whether the child supplied a forward for ``day``."""
@@ -450,8 +465,11 @@ class _FixedForwardHedge(_Hedge):
 
     def record_fields(self):
         """Return the reference and the count of marks that used a fallback forward."""
-        return {"hedge_reference": self.reference, "mark_forward_carried": self.carried,
-                "hedge_forward_missing": self.missing}
+        out = {"hedge_reference": self.reference, "mark_forward_carried": self.carried,
+               "hedge_forward_missing": self.missing}
+        if self.with_legs:
+            out["hedge_held_with_legs"] = self.held_with_legs
+        return out
 
 
 class _Trade:
@@ -628,7 +646,9 @@ class _Trade:
         """Mark a non-closing day at the mid, carrying the last mark when it cannot."""
         quotes, reason = self._usable(day)
         under = self.chain.underlying(self.order.symbol, day)
-        if self.hedge:
+        if self.hedge and quotes is None and getattr(self.hedge, "with_legs", False):
+            self.hedge.hold(day)
+        elif self.hedge:
             self.hedge.accrue(day, under)
         if quotes is None:
             self.carried_days += 1
@@ -854,7 +874,7 @@ class OptionStructureLedger(Node):
                "hedge", "exit_zero_bid")
     _REQUIRED = ("chain_fields", "order_fields", "structures", "multiplier")
     _HEDGE_KEYS = ("rebalance", "every_n", "threshold", "rate", "fee_per_share", "instrument",
-                   "half_spread_bps", "round_units")
+                   "half_spread_bps", "round_units", "mark_carry")
 
     @staticmethod
     def _fields_problems(name, value, allowed, required):
@@ -946,6 +966,9 @@ class OptionStructureLedger(Node):
                 problems.append(f"hedge.half_spread_bps must be a number >= 0, got {bps!r}")
         if not isinstance(hedge.get("round_units", False), bool):
             problems.append(f"hedge.round_units must be a bool, got {hedge['round_units']!r}")
+        if "mark_carry" in hedge and (not forward or hedge["mark_carry"] not in MARK_CARRIES):
+            problems.append(f"hedge.mark_carry must be one of {list(MARK_CARRIES)} and is only for instrument "
+                            f"'forward', got {hedge['mark_carry']!r}")
         return problems
 
     @classmethod

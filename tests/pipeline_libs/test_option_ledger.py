@@ -1411,3 +1411,44 @@ def test_daily_stock_skipped_name_leaves_cash_for_alphabetical_candidates(ctx):
         {"date": "2020-03-03", "symbol": "ABC", "signal_date": "2020-03-02",
          "reason": "absent_prior_close_signal"}]
     assert "other fills can change" in out["summary"]["availability"]["cash_allocation"]
+
+
+def test_mark_carry_with_legs_marks_the_forward_as_of_the_day_its_option_legs_carry(ctx):
+    """ADR-0316 Amendment 3: a day with no usable leg quote carries the option mark; ``with_legs`` carries the forward.
+
+    The default (``independent``) marks the forward at the day's supplied level beside yesterday's option mark: here
+    the supplied forward doubles on the day the puts are unquoted (a live spot on a day the chain has no rows for the
+    book, GME 2021-01-28 / 2021-02-24 in the real archive), so the row books a loss the book never had.
+    """
+    chain, path = hedge_world(up_days=18, seed=5)
+    chain = [r for r in chain if not (r["date"] == day(10).isoformat() and r["right"] == "put")]
+    rows = forwards(path)
+    rows[10]["forward"] *= 2.0
+    old = runf(ctx, chain, [fixed_order()], rows)
+    new = runf(ctx, chain, [fixed_order()], rows, hedge={**FIXED, "mark_carry": "with_legs"})
+    ref = fwd(path, 0)
+    assert old["marks"][10]["carried"] and new["marks"][10]["carried"]
+    assert old["marks"][10]["hedge_pnl_usd"] == pytest.approx(UNITS * (2 * fwd(path, 10) - ref))
+    assert old["marks"][10]["pnl_usd"] < old["marks"][9]["pnl_usd"] - 4000.
+    assert new["marks"][10]["hedge_pnl_usd"] == new["marks"][9]["hedge_pnl_usd"]
+    assert new["marks"][10]["pnl_usd"] == new["marks"][9]["pnl_usd"] and new["marks"][10]["mark_forward_carried"]
+    assert [m for i, m in enumerate(old["marks"]) if i != 10] == [m for i, m in enumerate(new["marks"]) if i != 10]
+    counts = ("mark_forward_carried", "hedge_held_with_legs")
+    assert new["trades"][0]["hedge_held_with_legs"] == 1 and "hedge_held_with_legs" not in old["trades"][0]
+    assert new["trades"][0]["mark_forward_carried"] == old["trades"][0]["mark_forward_carried"] + 1
+    assert ({k: v for k, v in old["trades"][0].items() if k not in counts}
+            == {k: v for k, v in new["trades"][0].items() if k not in counts}), "settlement is unchanged"
+    # a day the legs quote is marked at the supplied forward under both rules
+    clean = runf(ctx, hedge_world(up_days=18, seed=5)[0], [fixed_order()], forwards(path),
+                 hedge={**FIXED, "mark_carry": "with_legs"})
+    assert clean["marks"] == runf(ctx, hedge_world(up_days=18, seed=5)[0], [fixed_order()], forwards(path))["marks"]
+
+
+@pytest.mark.parametrize("hedge,problem", [
+    ({**FIXED, "mark_carry": "sometimes"}, "mark_carry"),
+    ({"rebalance": "daily", "rate": RATE, "mark_carry": "with_legs"}, "mark_carry")])
+def test_mark_carry_is_a_forward_key_with_two_values(hedge, problem):
+    params = {**BASE, "contracts": 1, "order_fields": HEDGE_ORDER_FIELDS, "hedge": hedge}
+    assert any(problem in p for p in OptionStructureLedger.validate_params(params))
+    assert not any("mark_carry" in p for p in OptionStructureLedger.validate_params(
+        {**params, "hedge": {**FIXED, "mark_carry": "independent"}}))

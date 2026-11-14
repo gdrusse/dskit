@@ -6691,3 +6691,106 @@ def test_kelly_local_search_calibration_recentres_utility_screen_and_replay(monk
     saved = {k: v for k, v in envelope.items() if k != "certificates"}
     certificates = [{k: v for k, v in record.items() if k != "binding"} for record in envelope["certificates"]]
     assert solver._recorded(program, saved, certificates) == {**saved, "certificates": certificates}
+
+
+# -- ADR-0316 Amendment 3: an incumbent whose value check misses, under incumbent_audit "uncertified" ----------------
+
+def _slack_case(audit=None):
+    """A loaded one-action W1 incumbent whose dual potentials sit 0.01 under its loss rows (a solver's slack).
+
+    The model then claims 0.01 more than the exact audit: ``model_over_audit`` at ten times the 1e-3 tolerance, the
+    shape of the hedged stage-one refusal (2020Q1 ``kelly075_ls_fast_hedged_static_lp``).
+    """
+    from pyomo.environ import Constraint, Var, value
+    from dskit.pipeline.libs.pyomo import SolveRecord, TransportPortfolioSolve
+
+    params = {"absolute_gap": 1., "relative_gap": 0., "parity_tolerance": .001, "timeout_policy": "return",
+              "solver_options": {"threads": 1}}
+    if audit is not None:
+        params["incumbent_audit"] = audit
+    group = {"id": "g", "grid": [90., 100., 110.], "masses": [.25, .5, .25], "radius": .01, "scale": 100.,
+             "credit": [200.], "losses": [[1000.], [0.], [-1000.]], "capacity": [2], "exclusive": [],
+             "reserve_rows": [[800.]], "linear_rows": []}
+    program = {"groups": [group], "caps": [{"groups": ["g"], "upper": 10000.}]}
+    node = TransportPortfolioSolve("slack", params)
+    model = node.build_model(program, node.params)
+    model.x[0, 0].set_value(1)
+    node._price_duals(model)
+    for potential in model.transport_0.potential.values():
+        potential.set_value(potential.value - .01)
+    objective = value(model.profit)
+    counts = [sum(1 for _ in model.component_data_objects(c, active=True)) for c in (Var, Constraint)]
+    node.solve_record = SolveRecord("appsi_highs", "ok", "optimal", objective, objective + .5,
+                                    SolveRecord._gap(objective, objective + .5), .01, *counts, ())
+    return node, model, program
+
+
+def test_an_incumbent_value_miss_still_refuses_by_default():
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal
+
+    node, model, _ = _slack_case()
+    with pytest.raises(RecordedCheckRefusal, match="invalid primary dual/primal incumbent value") as caught:
+        node.extract(model, None)
+    assert caught.value.check == "model_over_audit" and caught.value.ratio == 10.0
+
+
+def test_incumbent_audit_uncertified_returns_the_audited_book_as_a_timeout_envelope_and_replays_it():
+    import json
+
+    node, model, program = _slack_case("uncertified")
+    selection = node.extract(model, None)["selection"]
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in selection.pop("certificates")]
+    assert selection["timeout"] == "incumbent_audit" and "quantities" not in selection
+    assert selection["audit"] == {"check": "model_over_audit", "ratio": 10.0}
+    candidate = selection["candidate"]
+    assert candidate["quantities"] == [[1]] and candidate["value"] == pytest.approx(candidate["model_value"] - .01)
+    assert candidate["gap"] == pytest.approx(.51) and candidate["gap"] < node.params["absolute_gap"], \
+        "certified by its gap alone, uncertified by its audit"
+    recorded = json.loads(json.dumps([selection, certificates]))
+    assert node._recorded(program, *recorded) == {**selection, "certificates": certificates}
+    # the recorded audit must be the miss this host sizes from the recorded floats
+    for forged in ({"check": "model_over_audit", "ratio": 9.0}, {"check": "cleanup_gain", "ratio": 10.0}):
+        bad = json.loads(json.dumps(selection))
+        bad["audit"] = forged
+        with pytest.raises(ValueError, match="contradictory recorded incumbent audit"):
+            node._recorded(program, bad, certificates)
+    healthy = json.loads(json.dumps(selection))
+    healthy["candidate"]["model_value"] = healthy["candidate"]["value"]        # no miss: nothing to be uncertified by
+    with pytest.raises(ValueError):
+        node._recorded(program, healthy, certificates)
+    missing = json.loads(json.dumps(selection))
+    del missing["audit"]
+    with pytest.raises(ValueError, match="invalid recorded timeout envelope"):
+        node._recorded(program, missing, certificates)
+    node.params.pop("incumbent_audit")                                           # a raise-policy host refuses it
+    with pytest.raises(ValueError, match="invalid recorded timeout envelope"):
+        node._recorded(program, selection, certificates)
+
+
+def test_incumbent_audit_without_a_miss_changes_nothing():
+    from pyomo.environ import value
+    from dskit.pipeline.libs.pyomo import SolveRecord
+
+    plain, model, _ = _slack_case()
+    audited, model2, _ = _slack_case("uncertified")
+    for node, m in ((plain, model), (audited, model2)):
+        node._price_duals(m)                                                     # tight potentials: no slack
+        objective = value(m.profit)
+        node.solve_record = SolveRecord("appsi_highs", "ok", "optimal", objective, objective + .5,
+                                        SolveRecord._gap(objective, objective + .5), .01,
+                                        node.solve_record.variables, node.solve_record.constraints, ())
+    assert plain.extract(model, None) == audited.extract(model2, None)
+    assert "timeout" not in plain.extract(model, None)["selection"]
+
+
+@pytest.mark.parametrize("params,problem", [
+    ({"incumbent_audit": "uncertified"}, "requires timeout_policy return"),
+    ({"incumbent_audit": "lenient", "timeout_policy": "return"}, "incumbent_audit must be"),
+    ({"incumbent_audit": True, "timeout_policy": "return"}, "incumbent_audit must be")])
+def test_incumbent_audit_is_declared(params, problem):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    base = {"absolute_gap": 1., "relative_gap": 0., "parity_tolerance": .001}
+    assert TransportPortfolioSolve.validate_params(base) == []
+    assert TransportPortfolioSolve.validate_params({**base, "incumbent_audit": "raise"}) == []
+    assert any(problem in p for p in TransportPortfolioSolve.validate_params({**base, **params}))
