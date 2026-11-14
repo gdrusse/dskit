@@ -1130,6 +1130,72 @@ def test_an_unhedged_fast_stage_one_with_loose_duals_still_refuses(monkeypatch):
     assert caught.value.check == "bound_below_value"
 
 
+def _stage_one_over_its_cap(monkeypatch, day, quantities, upper, offset=2.5e-7):
+    """The 2021Q1 ``kelly075_ls_fast_hedged_static_lp`` week 2021-03-01 stage one (ADR-0316 Amendment 5) on the
+    synthetic world: on ``day`` the stage one's cash cap is ``upper`` and HiGHS loads the integer ``quantities`` (per
+    group) each ``offset`` under its integer, so rounded they are over the cap by a tolerance-sized amount. The cap
+    binds on every route (live, recorded, derived), the load only where HiGHS solves."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    study_cls = ledger_studies.WeeklyOptionPortfolioStudy
+    real_week, real_limits, real_once = study_cls._local_search_week, study_cls._limits, TransportPortfolioSolve._solve_once
+    current = {}
+
+    def week(self, today, *args, **kwargs):
+        current["day"] = today
+        return real_week(self, today, *args, **kwargs)
+
+    def limits(self, account, method, components, solve=False, stage1=False):
+        out = real_limits(self, account, method, components, solve=solve, stage1=stage1)
+        return [{**out[0], "upper": upper}, *out[1:]] if stage1 and current.get("day") == day else out
+
+    def once(self, solver, model, time_limit=None):
+        result = real_once(self, solver, model, time_limit)
+        if self.params.get("incumbent_audit") == "uncertified" and current.get("day") == day:
+            for (i, j) in model.x:
+                q = quantities[i][j]
+                model.x[i, j].set_value(q-offset if q else 0)
+        return result
+
+    monkeypatch.setattr(study_cls, "_local_search_week", week)
+    monkeypatch.setattr(study_cls, "_limits", limits)
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", once)
+
+
+@pytest.mark.parametrize("name", ["kelly075_ls_fast_hedged_static_lp", "kelly075_ls_hedged_static_lp"])
+def test_a_hedged_stage_one_over_its_cap_once_rounded_is_audited_and_agrees_on_every_route(monkeypatch, name):
+    """ADR-0316 Amendment 5. On dcad5605 the live stage one's pricing LP (the rounded integers fixed, 2e-4 over the
+    cash cap) raised appsi's "no solution can be loaded" and the method failed. Now it is the incumbent_audit
+    envelope with check action_rows on the live, recorded and derived routes; FAST climbs from the audited book to
+    the clean run's selection, trades and P&L, the ls id from cash."""
+    from index_options.mio_worker import MIOMethodWorker
+
+    *_, clean, _ = _hedged_run(name)
+    first = clean["decisions"][0]
+    start = first["stage1"]["selection"]
+    start = start.get("candidate") or start
+    assert sum(map(sum, start["primary_quantities"])) > 0, "the synthetic stage one must hold a book"
+    reserve = sum(start["reserves"])
+    _stage_one_over_its_cap(monkeypatch, first["date"], start["primary_quantities"], reserve-2e-4)
+    params, inputs, arm, study, result, _ = _hedged_run(name)
+    week = result["decisions"][0]
+    local = week["kelly"]["local"]
+    tolerance = params["solver"]["parity_tolerance"]
+    assert week["stage1"]["selection"]["timeout"] == "incumbent_audit"
+    assert local["stage1_audit"]["check"] == "action_rows"
+    assert local["stage1_audit"]["ratio"] == pytest.approx(2e-4/tolerance, rel=1e-3)
+    assert week["stage1"]["selection"]["candidate"]["primary_quantities"] == start["primary_quantities"]
+    assert study._method(arm, None, recorded=result) == result
+    replay = study._method(arm, None, derived=MIOMethodWorker.actions(result, study.weeks))
+    assert replay["trades"] == result["trades"] and replay["decisions"][0]["kelly"]["local"] == local
+    if "_fast_" in name:
+        assert local["stage1_timeout"] == "incumbent_audit" and local["start_kind"] == "stage1_incumbent"
+        assert week["selection"]["quantities"] == first["selection"]["quantities"]
+        assert result["trades"] == clean["trades"] and result["pnl"] == clean["pnl"]
+    else:
+        assert local["start_kind"] == "stage1_timeout_cash"
+
+
 def _gap_day(inputs, day, jump):
     """The book's strikes have no row on ``day`` (the chain gap GME had on 2021-01-28 and 2021-02-24) while the spot,
     and the parity forward of the strikes left, jump by ``jump``."""

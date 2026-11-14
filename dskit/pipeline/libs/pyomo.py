@@ -4054,7 +4054,8 @@ class TransportPortfolioSolve(PyomoSolve):
     #: incumbent is PRICED before it is recorded (:meth:`_priced_incumbent`: its integers fixed, its duals solved
     #: exactly as :meth:`derived` solves them for foreign actions), so the certificate objective is the value every
     #: route recomputes; a solver bound below that value (``certificate_bound``) is then the envelope's first miss,
-    #: not a refusal. ``certificate_objective`` and ``certificate_fields`` still refuse.
+    #: not a refusal. ``certificate_objective`` and ``certificate_fields`` still refuse. ADR-0316 Amendment 5: integers
+    #: the pricing LP finds infeasible are priced apart from their action rows and audited ``action_rows``.
     INCUMBENT_AUDITS = ("raise", "uncertified")
 
     #: ADR-0302: the keys of ``utility_search``, the deterministic incumbent local search of the relax_fix strategy
@@ -4858,7 +4859,9 @@ class TransportPortfolioSolve(PyomoSolve):
         certificate. Here the actions are rounded (only when every one is within the incumbent check's 1e-5;
         otherwise the incumbent is left as loaded for :meth:`extract` to refuse), fixed, priced by the one
         :meth:`_price_duals` the derived route uses, and released, so the record's objective is the value every
-        route recomputes. The solver's bound, status and termination are kept as they were.
+        route recomputes. The solver's bound, status and termination are kept as they were. Rounded integers the
+        pricing LP finds infeasible (a tolerance-sized amount over a row) are priced apart from their rows
+        (:meth:`_price_apart`, ADR-0316 Amendment 5).
         """
         from pyomo.environ import value
 
@@ -5671,15 +5674,70 @@ class TransportPortfolioSolve(PyomoSolve):
             results = self._resolve_solver().solve(model)
         except RuntimeError as exc:
             # appsi raises instead of returning when the fixed actions are infeasible. Only a utility program
-            # converts it (its foreign actions can breach the wealth floor); a dollar program keeps the raise.
-            if self._utility is None:
+            # converts it (its foreign actions can breach the wealth floor); a dollar program keeps the raise, except
+            # under incumbent_audit "uncertified" (ADR-0316 Amendment 5), whose actions are priced apart from their
+            # action rows and judged on those rows by the scorer.
+            if self._utility is not None:
+                raise RecordedCheckRefusal("recorded actions could not be priced: infeasible",
+                                           "dual_pricing", "pricing") from exc
+            if self.params.get("incumbent_audit", "raise") != "uncertified":
                 raise
-            raise RecordedCheckRefusal("recorded actions could not be priced: infeasible",
-                                       "dual_pricing", "pricing") from exc
+            results = self._price_apart(model)
         priced = SolveRecord.from_solve(model, results, name, 0.)
         if priced.termination != "optimal":
             raise RecordedCheckRefusal("recorded actions could not be priced: "+str(priced.termination),
                                        "dual_pricing", "pricing")
+
+    #: ADR-0316 Amendment 5: the audit check of an incumbent whose fixed actions the pricing LP found infeasible.
+    ACTION_ROWS_CHECK = "action_rows"
+
+    def _price_apart(self, model):
+        """Price a dollar program's fixed actions with its action rows deactivated (ADR-0316 Amendment 5).
+
+        ``model.rows`` holds every row of a dollar program, and each reads only the actions, the exclusive sides and
+        the reserves (exclusivity, reserve rows, linear rows, shared caps, joint rows). None of those variables is in
+        the profit, so with the actions fixed the priced optimum (the W1 potentials, the risk charges) is the same
+        with or without those rows; only their feasibility is lost. HiGHS judges that feasibility at its own LP
+        tolerance, the scorer (:meth:`_incumbent`) at ``parity_tolerance``: integers rounded a tolerance-sized amount
+        over a cap are feasible to the scorer and infeasible to the fixed LP (2021Q1
+        ``kelly075_ls_fast_hedged_static_lp``, week 2021-03-01). The rows are restored whatever happens, and the model
+        is marked ``_transport_priced_apart`` so :meth:`extract` returns the ``incumbent_audit`` envelope with check
+        :attr:`ACTION_ROWS_CHECK`. A second infeasibility is refused as ``dual_pricing``.
+        """
+        self.log.warning("fixed actions infeasible to the pricing LP at its own tolerance: priced apart from their "
+                         "action rows, which the scorer judges (incumbent_audit %s)", self.ACTION_ROWS_CHECK)
+        model.rows.deactivate()
+        try:
+            results = self._resolve_solver().solve(model)
+        except RuntimeError as exc:
+            raise RecordedCheckRefusal("recorded actions could not be priced: infeasible apart from their rows",
+                                       "dual_pricing", "pricing") from exc
+        finally:
+            model.rows.activate()
+        model._transport_priced_apart = True
+        return results
+
+    def _rows_audit(self, quantities):
+        """Return the :attr:`ACTION_ROWS_CHECK` audit of integer ``quantities`` (the actions as priced, before any
+        cleanup), or None when no action row is over its upper bound (then no row explains the infeasibility).
+
+        The excess is the scorer's own arithmetic (:meth:`TransportActionScore.row_excess`), sized against
+        ``parity_tolerance`` as every audit miss is, so a live solve, a recorded replay and a derived route agree on it.
+        """
+        tolerance = self.params["parity_tolerance"]
+        excess = TransportActionScore(self._program(), {"parity_tolerance": tolerance}).row_excess(quantities)
+        if not excess > 0:
+            return None
+        refusal = RecordedCheckRefusal.sized("invalid primary dual/primal incumbent value", self.ACTION_ROWS_CHECK,
+                                             excess, tolerance)
+        return {"check": self.ACTION_ROWS_CHECK, "ratio": refusal.ratio}
+
+    def _action_quantities(self, model):
+        """The integer actions set on ``model`` per group, zeros for a screened-out group."""
+        from pyomo.environ import value
+
+        return [[int(round(value(model.x[i, j]))) for j in range(len(g["capacity"]))] if i in self._active
+                else [0]*len(g["capacity"]) for i, g in enumerate(self._groups)]
 
     def _recorded_candidate(self, inputs, selection, certificates, *, timeout=None, audit=None):
         """Use the same feasibility and valuation audit for every saved incumbent.
@@ -5773,12 +5831,21 @@ class TransportPortfolioSolve(PyomoSolve):
                 continue
             for j, quantity in enumerate(group):
                 model.x[i, j].set_value(quantity)
+        apart = (timeout == "incumbent_audit" and isinstance(audit, dict)
+                 and audit.get("check") == self.ACTION_ROWS_CHECK)
+        priced_actions = self._action_quantities(model) if apart else None   # before the cleanup moves them
         audited = self._incumbent(model)
         if (audited["quantities"] != selection["primary_quantities"]
                 or audited["canonicalization"] != primary):
             raise ValueError("recorded cleanup disagrees with original actions")
         tol = self.params["parity_tolerance"]
-        if timeout == "incumbent_audit":
+        if apart:
+            # ADR-0316 Amendment 5: an action_rows audit is exactly this host's excess of the actions over their rows
+            # (only under uncertified, and never for actions inside every row).
+            if (self.params.get("incumbent_audit", "raise") != "uncertified"
+                    or audit != self._rows_audit(priced_actions)):
+                raise ValueError("contradictory recorded incumbent audit")
+        elif timeout == "incumbent_audit":
             # ADR-0316 Amendment 4: the bound check leads the misses, exactly as :meth:`extract` sizes them.
             misses = ([] if missing_bound else [("certificate_bound", certificate["objective"]-certificate["bound"])]
                       ) + self._value_misses(audited["value"], selection["model_value"], certificate["objective"],
@@ -5876,13 +5943,24 @@ class TransportPortfolioSolve(PyomoSolve):
         bound_miss = [] if missing_bound else [("certificate_bound", first.objective-first.bound)]
         # ADR-0316 Amendment 4: under ``uncertified`` a bound below the priced incumbent is the audit's first miss.
         self._refuse_over_tolerance(message, misses + ([] if uncertified else bound_miss), tol)
+        apart = uncertified and getattr(model, "_transport_priced_apart", False)
+        priced_actions = self._action_quantities(model) if apart else None   # before the cleanup moves them
         chosen = self._incumbent(model)
         cleanup = chosen["canonicalization"]
         model_value = value(model.profit)
         misses = self._value_misses(chosen["value"], model_value, first.objective,
                                     None if missing_bound else first.bound, cleanup)
         audit = None
-        if uncertified:
+        if apart:
+            # ADR-0316 Amendment 5: actions the scorer accepts but the pricing LP found infeasible are the audit
+            # (action_rows leads every miss); an infeasibility no action row explains is refused.
+            audit = self._rows_audit(priced_actions)
+            if audit is None:
+                raise RecordedCheckRefusal("recorded actions could not be priced: infeasible within their rows",
+                                           "dual_pricing", "pricing")
+            self.log.warning("primary incumbent priced apart from its action rows, over them at %s x the parity "
+                             "tolerance: returned uncertified (incumbent_audit)", audit["ratio"])
+        elif uncertified:
             misses = bound_miss + misses
             audit = self._audit_miss(misses, tol)
             if audit is not None:
@@ -6051,6 +6129,38 @@ class TransportActionScore:
 
         return [float(max(0., *(np.asarray(group["reserve_rows"]) @ action)))
                 for group, action in zip(self.groups, quantities)]
+
+    def row_excess(self, quantities):
+        """Return the most any linear row, shared reserve cap or joint row exceeds its upper bound at ``quantities``.
+
+        Parameters
+        ----------
+        quantities : list of list of int
+            One in-range nonnegative integer per action and group. Exclusivity is not checked: these are the actions
+            as an integer solve set them, before any cleanup of a costly round trip.
+
+        Returns
+        -------
+        float
+            The largest ``activity - upper`` (negative when every row has room, ``-inf`` with no row), each activity
+            computed exactly as :meth:`_feasible_quantities` computes it (ADR-0316 Amendment 5).
+        """
+        import numpy as np
+
+        if not isinstance(quantities, (list, tuple)) or len(quantities) != len(self.groups) or any(
+                not isinstance(action, (list, tuple)) or len(action) != len(group["capacity"])
+                or any(type(q) is not int or q < 0 or q > cap for q, cap in zip(action, group["capacity"]))
+                for group, action in zip(self.groups, quantities)):
+            raise ValueError("quantities must be in-range nonnegative integers")
+        excess = [float(np.dot(row["coefficients"], action))-row["upper"]
+                  for group, action in zip(self.groups, quantities) for row in group["linear_rows"]]
+        reserves = self._reserves(quantities)
+        reserve_by_id = {group["id"]: reserves[index] for index, group in enumerate(self.groups)}
+        excess.extend(sum(reserve_by_id[key] for key in cap["groups"])-cap["upper"] for cap in self.caps)
+        index = {group["id"]: i for i, group in enumerate(self.groups)}
+        excess.extend(sum(float(np.dot(coefficients, quantities[index[key]]))
+                          for key, coefficients in row["terms"].items())-row["upper"] for row in self.joint)
+        return max(excess, default=float("-inf"))
 
     def _feasible_quantities(self, quantities):
         """Validate shape and constraints; return normalized quantities and reserves."""

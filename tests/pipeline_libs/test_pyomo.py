@@ -6910,3 +6910,158 @@ def test_a_priced_incumbent_whose_pricing_is_not_optimal_refuses_by_name_and_unf
     with pytest.raises(RecordedCheckRefusal, match="recorded actions could not be priced") as caught:
         TransportPortfolioSolve("n", audited).run(None, program)
     assert caught.value.check == "dual_pricing" and calls
+
+
+# -- ADR-0316 Amendment 5: rounded integers a tolerance-sized amount over a cap ------------------------------------
+
+def _over_cap_program(upper=1600.-2e-4, tolerance=.001, audit="uncertified"):
+    """``_loose_program``'s group (800 of reserve a contract, two at most) under a cap ``upper``: two contracts are
+    2e-4 over the default cap, 0.2 x the parity tolerance, inside the scorer's tolerance and outside HiGHS's."""
+    params, program = _loose_program()
+    params = {**params, "parity_tolerance": tolerance, "incumbent_audit": audit}
+    return params, {**program, "caps": [{"groups": ["g"], "upper": upper}]}
+
+
+def _on_the_cap(monkeypatch, x=1.99999975):
+    """Load every dollar solve's incumbent with its one action at ``x``, within HiGHS's integrality tolerance of 2
+    and exactly on the cap (its reserve 800 x ``x``): rounded to 2, the action is over the cap. The shape of 2021Q1
+    ``kelly075_ls_fast_hedged_static_lp`` week 2021-03-01, whose priced integers HiGHS found infeasible."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    real_once = TransportPortfolioSolve._solve_once
+
+    def once(self, solver, model, time_limit=None):
+        result = real_once(self, solver, model, time_limit)
+        if self._utility is None and not getattr(model, "_transport_no_incumbent", False):
+            model.x[0, 0].set_value(x)
+            model.reserve[0].set_value(800.*x)
+        return result
+
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", once)
+
+
+def _pricing_infeasible(monkeypatch, apart_too=False):
+    """Make every pricing solve (the actions fixed) with the action rows active end with appsi's no-solution raise,
+    and with them deactivated too when ``apart_too``."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    real = TransportPortfolioSolve._resolve_solver
+
+    def resolve(self):
+        solver = real(self)
+        inner = solver.solve
+
+        def solve(model, *args, **kwargs):
+            if any(v.fixed for v in model.x.values()) and (apart_too or model.rows.active):
+                raise RuntimeError(_APPSI_NO_SOLUTION)
+            return inner(model, *args, **kwargs)
+
+        solver.solve = solve
+        return solver
+
+    monkeypatch.setattr(TransportPortfolioSolve, "_resolve_solver", resolve)
+
+
+def test_row_excess_is_the_feasibility_checks_own_arithmetic():
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+
+    _, program = _over_cap_program()
+    scorer = TransportActionScore(program, {"parity_tolerance": .001})
+    assert scorer.row_excess([[2]]) == 1600.-(1600.-2e-4)
+    assert scorer.row_excess([[1]]) == 800.-(1600.-2e-4)
+    assert scorer.evaluate([[2]])["quantities"] == [[2]]             # inside the scorer's tolerance
+    with pytest.raises(ValueError, match="in-range nonnegative integers"):
+        scorer.row_excess([[3]])
+
+
+def test_rounded_actions_over_a_cap_are_priced_apart_and_audited_on_every_route(monkeypatch, caplog):
+    """ADR-0316 Amendment 5. On dcad5605 the stage one's pricing LP (the rounded actions fixed) raised appsi's
+    "no solution can be loaded" and the method failed (2021Q1 week 2021-03-01). Now the actions are priced apart
+    from their rows, the scorer accepts them inside its tolerance, and the week is the incumbent_audit envelope with
+    check action_rows, which the recorded replay and the derived route reproduce."""
+    import logging
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params, program = _over_cap_program()
+    clean = TransportPortfolioSolve("clean", params).run(None, _over_cap_program(upper=10000.)[1])["selection"]
+    assert "timeout" not in clean and clean["quantities"] == [[2]]
+    _on_the_cap(monkeypatch)
+    node = TransportPortfolioSolve("live", params)
+    with caplog.at_level(logging.WARNING):
+        selection = node.run(None, program)["selection"]
+    assert "priced apart from their action rows" in caplog.text
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in selection.pop("certificates")]
+    saved, certs = json.loads(json.dumps([selection, certificates]))
+    assert selection["timeout"] == "incumbent_audit"
+    assert selection["audit"] == {"check": "action_rows", "ratio": .2}
+    candidate = selection["candidate"]
+    assert candidate["quantities"] == candidate["primary_quantities"] == [[2]]
+    assert candidate["value"] == pytest.approx(clean["value"]) == pytest.approx(candidate["model_value"])
+    assert certs[0]["objective"] == pytest.approx(clean["value"]), "priced at the rounded actions"
+    assert node._recorded(program, saved, certs) == {**saved, "certificates": certs}
+    derived = TransportPortfolioSolve("derived", params).derived(
+        program, TransportPortfolioSolve.actions(saved), certs)["selection"]
+    assert {k: v for k, v in derived.items() if k != "certificates"} == saved
+
+
+def test_an_action_rows_audit_is_refused_when_forged_or_claimed_inside_the_rows(monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params, program = _over_cap_program()
+    _on_the_cap(monkeypatch)
+    selection = TransportPortfolioSolve("live", params).run(None, program)["selection"]
+    certs = json.loads(json.dumps([{k: v for k, v in c.items() if k != "binding"}
+                                   for c in selection.pop("certificates")]))
+    saved = json.loads(json.dumps(selection))
+    forged = {**saved, "audit": {"check": "action_rows", "ratio": .3}}
+    with pytest.raises(ValueError, match="contradictory recorded incumbent audit"):
+        TransportPortfolioSolve("replay", params)._recorded(program, forged, certs)
+    roomy = _over_cap_program(upper=1600.+1.)[1]          # the same actions inside every row: no excess to claim
+    with pytest.raises(ValueError, match="contradictory recorded incumbent audit"):
+        TransportPortfolioSolve("replay", params)._recorded(roomy, saved, certs)
+    with pytest.raises(ValueError, match="invalid recorded timeout envelope"):
+        TransportPortfolioSolve("replay", {**params, "incumbent_audit": "raise"})._recorded(program, saved, certs)
+
+
+def test_actions_over_a_cap_by_more_than_the_tolerance_still_refuse_by_name(monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params, program = _over_cap_program(tolerance=1e-5)      # 2e-4 over is 20 x this tolerance
+    _on_the_cap(monkeypatch)
+    with pytest.raises(ValueError, match="quantities violate shared reserve cap"):
+        TransportPortfolioSolve("live", params).run(None, program)
+
+
+def test_a_pricing_infeasibility_no_action_row_explains_refuses_by_name(monkeypatch):
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
+
+    params, program = _over_cap_program(upper=10000.)
+    _pricing_infeasible(monkeypatch)
+    with pytest.raises(RecordedCheckRefusal, match="infeasible within their rows") as caught:
+        TransportPortfolioSolve("live", params).run(None, program)
+    assert caught.value.check == "dual_pricing"
+
+
+def test_a_pricing_infeasibility_apart_from_the_rows_refuses_by_name(monkeypatch):
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
+
+    params, program = _over_cap_program()
+    _on_the_cap(monkeypatch)
+    _pricing_infeasible(monkeypatch, apart_too=True)
+    with pytest.raises(RecordedCheckRefusal, match="infeasible apart from their rows") as caught:
+        TransportPortfolioSolve("live", params).run(None, program)
+    assert caught.value.check == "dual_pricing"
+
+
+def test_without_uncertified_a_dollar_pricing_infeasibility_still_raises(monkeypatch):
+    """Every other dollar program keeps appsi's raise on actions its pricing LP finds infeasible (the derived route)."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params, program = _over_cap_program()
+    _on_the_cap(monkeypatch)
+    selection = TransportPortfolioSolve("live", params).run(None, program)["selection"]
+    certs = json.loads(json.dumps([{k: v for k, v in c.items() if k != "binding"}
+                                   for c in selection.pop("certificates")]))
+    actions = TransportPortfolioSolve.actions(json.loads(json.dumps(selection)))
+    with pytest.raises(RuntimeError, match="no solution can be loaded"):
+        TransportPortfolioSolve("raise", {**params, "incumbent_audit": "raise"}).derived(program, actions, certs)
