@@ -79,8 +79,10 @@ using that session's quotes (a decision on Monday fills on Tuesday).
     whole day's batch is refused together; nothing partial survives.
   - `invalid_stressed_fill_price` (stress only): a shocked price was not positive.
   - Before any order exists, a ticker can be skipped with a candidate reason:
-    `no_eligible_forecast_expiry`, `insufficient_eligible_legs` or
-    `missing spot, scale or basis`. These are listed apart from refusals.
+    `no_eligible_forecast_expiry`, `insufficient_eligible_legs`,
+    `missing spot, scale or basis` or, when the bridge sets `require_fitted`,
+    `method_not_fitted` for a forecast marked `fitted: false`.
+    These are listed apart from refusals; malformed fitted flags still fail the run.
 - **Fee**: a per-contract charge at entry (0.65 dollars in the 2019 documents).
   Expiry carries none.
 - **Premium**: the cash for the legs alone. **Credit** is what the account
