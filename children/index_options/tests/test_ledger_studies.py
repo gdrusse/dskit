@@ -1716,6 +1716,37 @@ def test_weekly_portfolio_full_pipeline_and_future_isolation():
 
 
 
+@pytest.mark.parametrize("fitted_indices", [(1,), (), (0, 1)])
+def test_weekly_portfolio_require_fitted_records_unfitted_candidates(fitted_indices):
+    """Unfitted expiries refuse locally; fitted dates still trade or all stay cash."""
+    params, inputs = _weekly_portfolio_fixture()
+    params["bridge"]["require_fitted"] = True
+    for i, forecast in enumerate(inputs["X"]["forecasts"]):
+        forecast["fitted"] = i in fitted_indices
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    dates = ("2019-01-02", "2019-01-07")
+    reasons = [(d["date"], r["reason"]) for d in result["decisions"] if d["date"] in dates
+               for r in d.get("refusals", [])]
+    assert reasons == [(day, "method_not_fitted") for i, day in enumerate(dates)
+                       if i not in fitted_indices]
+    assert {b["decision_date"] for b in result["trades"]} == {
+        day for i, day in enumerate(dates) if i in fitted_indices}
+
+
+@pytest.mark.parametrize("require_fitted", [False, True])
+@pytest.mark.parametrize("flag", [None, 0, 1, "false", "missing"])
+def test_weekly_portfolio_invalid_fitted_flag_still_aborts(require_fitted, flag):
+    """Skipping a valid unfitted candidate must not conceal malformed input."""
+    params, inputs = _weekly_portfolio_fixture()
+    params["bridge"]["require_fitted"] = require_fitted
+    if flag == "missing":
+        inputs["X"]["forecasts"][0].pop("fitted")
+    else:
+        inputs["X"]["forecasts"][0]["fitted"] = flag
+    with pytest.raises(ValueError, match="method_not_fitted|invalid fitted flag"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()
+
+
 @pytest.mark.parametrize("source,field,value", [
     ("forecasts", "quote_date", "2020-01-02"),
     ("forecasts", "expiry", "2020-01-02"),

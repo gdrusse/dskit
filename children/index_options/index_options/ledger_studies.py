@@ -3912,7 +3912,10 @@ class WeeklyOptionPortfolioStudy:
                         forecast, context, day, expiry, day_quotes,
                         {day: self._factors[symbol].get(day)}, cdf_noise=node.CDF_NOISE)
                 except ValueError as exc:
-                    if str(exc) not in {"insufficient_eligible_legs", "missing spot, scale or basis"}:
+                    allowed = {"insufficient_eligible_legs", "missing spot, scale or basis"}
+                    if forecast.get("fitted") is False:
+                        allowed.add("method_not_fitted")
+                    if str(exc) not in allowed:
                         raise
                     refusals.append({"symbol": symbol, "expiry": expiry, "reason": str(exc)})
                     continue
