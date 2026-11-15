@@ -1255,3 +1255,110 @@ def test_a_fault_that_mutates_its_input_cannot_corrupt_the_band_or_later_faults(
                                      entry("m", "MissingFeatures", columns=MISSING)])
     pd.testing.assert_frame_equal(kept["band"], kept["before"])
     assert after["faults"][1] == alone
+
+
+# Helper-like names are valid user columns, never an implementation namespace.
+@pytest.mark.parametrize("helper", ["__row__", "__stale_source_date__", "f1__stale_source__", "__position__"])
+@pytest.mark.parametrize("role", ["feature", "other_feature", "metadata", "identity", "date"])
+@pytest.mark.parametrize("kind", ["stale", "missing", "scaled"])
+def test_faults_preserve_helper_like_column_names(helper, role, kind):
+    original = {"feature": "f1", "other_feature": "f2", "metadata": "other",
+                "identity": "symbol", "date": DATE}[role]
+    rename = {original: helper}
+    frame = toy().rename(columns=rename).loc[[12, 10, 14, 11, 13]]
+    frame.index.name = "observation"
+    before = frame.copy(deep=True)
+    identity, date = [rename.get(c, c) for c in IDENTITY], rename.get(DATE, DATE)
+    feature = rename.get("f1", "f1")
+    if kind == "stale":
+        fault = StaleFeatures(columns=[feature], sessions=1)
+        expected = frame.loc[[12, 11]].copy()
+        expected[feature] = [2., 1.]             # A day 3 takes day 2, A day 2 takes day 1.
+    elif kind == "missing":
+        fault = MissingFeatures(columns=[feature])
+        expected = frame.copy()
+        expected[feature] = np.nan
+    else:
+        fault = ScaledFeatures(columns=[feature], factor=3)
+        expected = frame.copy()
+        expected[feature] *= 3
+    actual = fault.apply(frame, identity, date)
+    pd.testing.assert_frame_equal(actual, expected)
+    pd.testing.assert_frame_equal(frame, before)
+
+
+def test_stale_handles_colliding_feature_suffixes_together():
+    frame = toy()
+    frame["f1__stale_source__"] = [10., 20., 30., 40., 60.]
+    frame["f1__stale_source____stale_source__"] = [100., 200., 300., 400., 600.]
+    frame["__row__"] = [101., 102., 103., 104., 106.]
+    frame["__stale_source_date__"] = [201., 202., 203., 204., 206.]
+    columns = ["f1", "f1__stale_source__", "f1__stale_source____stale_source__",
+               "__row__", "__stale_source_date__"]
+    before = frame.copy(deep=True)
+    expected = frame.loc[[11, 12]].copy()
+    expected[columns] = frame.loc[[10, 11], columns].to_numpy()
+    pd.testing.assert_frame_equal(StaleFeatures(columns=columns, sessions=1).apply(frame, IDENTITY, DATE),
+                                  expected)
+    pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize("helper", ["__row__", "__stale_source_date__", "f1__stale_source__", "__position__"])
+@pytest.mark.parametrize("identities", [[101, 102, 103], [2, 0, 1]])
+@pytest.mark.parametrize("order", [[2, 0], [0, 1, 2]])
+def test_pairing_preserves_helper_like_identity_names(helper, identities, order):
+    study = ForecastFaultStudy.__new__(ForecastFaultStudy)
+    study.config = {"study": {"identity": [helper, DATE]}}
+    band = pd.DataFrame({helper: identities, DATE: ["2001-02-01"] * 3,
+                         "f1": [10., 20., 30.]}, index=[70, -1, 900])
+    faulted = band.iloc[order].copy()
+    before, fault_before = band.copy(deep=True), faulted.copy(deep=True)
+    left, right = study._pair(band, faulted)
+    expected_left, expected_right = ([0, 2], [1, 0]) if order == [2, 0] else ([0, 1, 2], [0, 1, 2])
+    np.testing.assert_array_equal(left, expected_left)
+    np.testing.assert_array_equal(right, expected_right)
+    np.testing.assert_array_equal(band.iloc[left].to_numpy(), faulted.iloc[right].to_numpy())
+    pd.testing.assert_frame_equal(band, before)
+    pd.testing.assert_frame_equal(faulted, fault_before)
+
+
+@pytest.mark.parametrize("defect,match", [("duplicate", "repeated an identity"),
+                                         ("outside", "outside the evaluation band")])
+def test_pairing_with_helper_like_identity_still_refuses_invalid_rows(defect, match):
+    study = ForecastFaultStudy.__new__(ForecastFaultStudy)
+    study.config = {"study": {"identity": ["__position__", DATE]}}
+    band = pd.DataFrame({"__position__": [0, 1], DATE: ["2001-02-01"] * 2, "f1": [10., 20.]})
+    faulted = pd.concat([band, band.iloc[[0]]]) if defect == "duplicate" else band.copy()
+    if defect == "outside":
+        faulted.loc[0, "__position__"] = 999
+    with pytest.raises(IntegrityError, match=match):
+        study._pair(band, faulted)
+
+
+def test_helper_like_names_preserve_assessed_fault_statistics(fitted, tmp_path):
+    faults = [entry("stale", "StaleFeatures", columns=STALE, sessions=1),
+              entry("scale", "ScaledFeatures", columns=SCALED, factor=3),
+              entry("missing", "MissingFeatures", columns=MISSING)]
+    expected = stats(fitted, tmp_path, faults, output=str(tmp_path / "ordinary-study"))
+    rename = {"expiry": "__position__", "rv_5": "__row__", "ret_lag_0": "__stale_source_date__",
+              "momentum_5": "__row____stale_source__"}
+    cfg = copy.deepcopy(fitted)
+    frame = pd.read_parquet(cfg["panel"]).rename(columns=rename)
+    cfg["panel"] = str(tmp_path / "renamed-panel.parquet")
+    frame.to_parquet(cfg["panel"], index=False)
+    cfg["panel_sha256"] = AtomicFitStore.file_hash(cfg["panel"])
+    cfg["output"] = str(tmp_path / "renamed-fit")
+    cfg["study"]["identity"] = [rename.get(c, c) for c in cfg["study"]["identity"]]
+    for arm in cfg["arms"].values():
+        arm["features"] = [rename.get(c, c) for c in arm["features"]]
+    for fault in faults:
+        fault["params"]["columns"] = [rename.get(c, c) for c in fault["params"]["columns"]]
+    CDFExperiment(cfg).run("pooled")            # Same tiny synthetic training inputs under different column labels.
+    actual = stats(cfg, tmp_path, faults, output=str(tmp_path / "renamed-study"))
+    assert actual["clean"] == expected["clean"]
+    statistics = ("cdf_shift_mean", "cdf_shift_max", "score_change")
+    for got, want in zip(actual["faults"], expected["faults"], strict=True):
+        assert {k: v for k, v in got.items() if k not in statistics} == {
+            k: v for k, v in want.items() if k not in statistics}
+        for key in statistics:
+            assert got[key] == pytest.approx(want[key])

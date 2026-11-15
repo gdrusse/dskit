@@ -33,12 +33,6 @@ REFUSAL_CODES = ("infinite_input", "invalid_forecast", "no_paired_rows", "retain
 #: raises "invalid component forecast probabilities"); a test pins the two texts together.
 MONOTONE_TOLERANCE = 1e-12
 
-#: Column holding the date a stale row is taken from while its source is joined.
-_SOURCE = "__stale_source_date__"
-#: Suffix that keeps a source row's feature columns apart from the target row's.
-_SUFFIX = "__stale_source__"
-
-
 class FeatureFault(ABC):
     """An abstract, default-deny alteration of the input features of a forecast frame.
 
@@ -217,18 +211,19 @@ class StaleFeatures(FeatureFault):
         days = sorted(frame[date].unique())
         earlier = dict(zip(days[sessions:], days[:len(days) - sessions]))
         key = [c for c in identity if c != date]
+        # Fresh object labels stay outside the user column namespace, including feature suffixes.
+        source_date, position = object(), object()
+        source_columns = {c: object() for c in columns}
         left = frame[frame[date].isin(earlier)].copy()
-        left[_SOURCE] = left[date].map(earlier)
-        left["__row__"] = range(len(left))
-        source = frame[[*key, date, *columns]].rename(
-            columns={date: _SOURCE, **{c: c + _SUFFIX for c in columns}})
-        merged = left.merge(source, on=[*key, _SOURCE], how="inner", validate="many_to_one",
-                            suffixes=("", _SUFFIX))
-        merged = merged.sort_values("__row__")
+        left[source_date] = left[date].map(earlier)
+        left[position] = range(len(left))
+        source = frame[[*key, date, *columns]].rename(columns={date: source_date, **source_columns})
+        merged = left.merge(source, on=[*key, source_date], how="inner", validate="many_to_one")
+        merged = merged.sort_values(position)
         out = merged[list(frame.columns)].copy()
         for c in columns:
-            out[c] = merged[c + _SUFFIX].to_numpy()
-        out.index = left.index[merged["__row__"].to_numpy()]
+            out[c] = merged[source_columns[c]].to_numpy()
+        out.index = left.index[merged[position].to_numpy()]
         return out
 
 
@@ -454,14 +449,15 @@ class ForecastFaultStudy(CDFExperiment):
 
         keys = self.config["study"]["identity"]
         right = faulted[keys].reset_index(drop=True)
-        right["__position__"] = np.arange(len(right))
+        position = object()                    # Cannot overwrite a user identity column.
+        right[position] = np.arange(len(right))
         if right[keys].duplicated().any():
             raise IntegrityError("a fault repeated an identity")
         merged = band[keys].reset_index(drop=True).merge(right, on=keys, how="left")
-        found = merged["__position__"].notna().to_numpy()
+        found = merged[position].notna().to_numpy()
         if int(found.sum()) != len(right):
             raise IntegrityError("a fault produced rows outside the evaluation band")
-        return np.flatnonzero(found), merged["__position__"].to_numpy()[found].astype(int)
+        return np.flatnonzero(found), merged[position].to_numpy()[found].astype(int)
 
     @staticmethod
     def _count(value, n, extent):
