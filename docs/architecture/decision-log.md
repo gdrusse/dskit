@@ -37314,3 +37314,88 @@ Every Major after Phase 0 was one family: a rule or document knob that no test p
 - B, Nit: an aborted study leaves its lock file; dates compare as zero-padded ISO strings.
 
 *What the first real-data runs need.* (1) Owner decision 2, the criteria. (2) One v7 document per quarter-arm from `configs/mio-deployment-stress-template.json` with real pins, run from a clean checkout; Gate 0 then shows which formulations the replay accepts (split-adjusted books, Kelly and hedged methods are untested against real results). (3) Owner decision 3, then a study document for one open quarter (that quarter's fit document, its fold, `sealed_from` at the metric seal, the grid and weights from the child's forecast grid), run from a checkout whose pinned sources match the fit's pins. The child entry that assembles that document and applies a verdict to Decision B's statistics is not built.
+
+---
+
+## ADR-0296 - Device `auto` for the torch CDF estimators: one identity, per-cell device receipts (DRAFT, awaiting owner approval)
+
+**Status:** DRAFT. Not approved, not accepted. No code under this entry may merge until the owner approves it (AGENTS.md "ADR before code"; `docs/standards/working-agreement.md`; `docs/skills/skeptic-review.md` Phase 0). The number is provisional: ADR-0295 is already taken on branch `claude/full-span-rerun-20261105` (the ticker-list lock) and ADR-0294 on that branch and on `codex/quarterly-eligible-universe-20261104`; `origin/main` holds up to ADR-0293 and local `main` up to ADR-0289. 0296 was the next number free on every ref when this was written (`git for-each-ref`); renumber on a collision at merge. The uncommitted change on branch `claude/device-auto-20261105` was written before this entry existed; it is a candidate, to be kept, reworked or dropped on the owner's answer.
+
+**Context.** `TorchCDF` and `CDFExperiment` accept `device` of `cpu` or `cuda` only, and the capacity block of a committed zoo document names one (`cuda` in every committed strike-screen and zoo document). A second machine (the Mac, MPS; ADR-0284) or a machine without a GPU cannot run such a document without editing it, which re-hashes it and orphans its runs. The candidate adds `device: "auto"` (CUDA, then MPS, then CPU, resolved once per estimator) and an explicit `"mps"`. The hash of a document is its identity, so `auto` makes ONE identity cover cells that may be fitted and scored on different devices, and a cell's `fit/` and `scores/` shards are published once and skipped on resume. That is an identity and persistent-state contract.
+
+**Relation to ADR-0284 (two-host dispatch; entry on main, implementation parked per ADR-0284 on `docs/adr-two-host-runner`, a branch no longer present in this repo).** ADR-0284 notes that "a run records nothing about the host that produced it, yet CPU, CUDA and MPS give different floating-point results under one hash", and proposes a per-run `host.json` (item 5), a parity preflight (6) and a refusal to pair candidates from different hosts unless declared (7). None of it is built. This ADR is narrower and independent: it records the DEVICE per fit and per score shard inside the artifacts that already exist, because a host stamp per run cannot say which shard of a resumed cell ran where. It does not need `hosts.py`, `PathMap` or dispatch, and it does not pre-empt them. If ADR-0284 resumes, its `host.json` field "accelerator used" should be fed from these receipts, and its item 7 (refuse cross-host pairs) is a separate and stricter policy than this ADR's record-and-flag (below); the owner decides whether item 7 should read device receipts.
+
+**Decision (proposed).**
+
+1. **Resolution.** `TorchCDF` takes `device` as `auto`, `cuda`, `cuda:N`, `mps` or `cpu`; the `CDFExperiment.capacity` block takes `cpu`, `cuda`, `mps` or `auto` (no `cuda:N`). `auto` is resolved once per estimator at construction by `resolve_device` (CUDA, else MPS, else CPU). An explicit device is never substituted. An explicit `mps` that is unavailable is refused at construction; an explicit `cuda` keeps torch's own refusal at first use, as before. `BoostedTorchCDF`, `torch_ts.py` and the panel zoo are untouched.
+2. **Identity.** The document hash is unchanged by the machine: `auto` is hashed as the string `auto`. A document with an explicit device keeps every byte it produced before: no new key in `summary.json`, `metadata.json`, `state.json`, `link.json` or the status files, and equal weights bytes (checked on CUDA and CPU against main, see Verification).
+3. **Receipts, only for `auto`.** `metadata.json` of a fit records the requested and resolved device; `state.json` records `device_requested: "auto"` with the settings carrying the RESOLVED fit device; each score shard's `link.json` records the device it was scored on; `summary.json` records `{requested, fitted_on, scored_on: [sorted devices], mixed_devices}`; `status-<regime>-<worker>.json` records `devices`, `mixed_devices` and `mixed_cells` for the cells the worker passed, including verified-complete ones. A shard without a recorded device is reported `unknown`, never guessed.
+4. **Mixed devices: record and flag, not refuse.** A cell fitted on one device and resumed on another, or whose shards were scored on different devices, completes and is flagged `mixed_devices: true` (also a stderr warning). Rationale: a refusal would turn a machine change into a stuck queue under an identity that is meant to be machine-independent, and the flag lets any reader exclude or label such cells. A resume restores the checkpoint on the device `auto` now resolves to (the config's request wins over the checkpoint's recorded device); an explicit device restores exactly as before, strictly.
+5. **Checkpoint provenance survives a restore.** `load_checkpoint(path, device=...)` on an `auto` checkpoint keeps `device_requested`, the fit device and its settings through a re-save. A re-fit clears them. Provenance comes from the saved state, never from the `device=` of a restore: an explicit-device checkpoint restored with `device="auto"` stays explicit and is re-saved without `device_requested`, and byte-identical when `auto` resolves to the checkpoint's own device; if it resolves elsewhere, `settings.device` becomes the restore device, while the checkpoint stays explicit.
+6. **Refusals at construction, never per-cell permanent skips.** (a) `deterministic: true` on MPS, or on `auto` where it resolves to MPS (existing candidate rule, kept); (b) `deterministic: true` on `auto` where it resolves to CUDA without `CUBLAS_WORKSPACE_CONFIG` of `:4096:8` or `:16:8`; (c) a Gaussian-family `decision_log` term on MPS (`torch.special.log_ndtr` has no MPS kernel). (b) is `auto` only: an explicit `cuda` keeps its current behaviour, where each cell publishes a terminal `skipped` for that missing variable (open question Q1). Separately, `CDFExperiment._cell` re-raises an MPS-device failure instead of publishing a terminal skip, only on a regime whose device resolves to MPS: a `NotImplementedError`; a `TypeError` or `RuntimeError` whose text contains MPS as a whole word, any case (real MPS raises `TypeError: Cannot convert a MPS Tensor to float64 dtype`; a bare substring would also match "timestamps"); and a `RuntimeError` containing `Invalid buffer size` (real MPS raises it for `torch.empty(2**37)`). Every other error keeps the old skip, and on cuda and cpu nothing changes.
+7. **Equivalence digest.** For an explicit device the digest covers the device the estimator computes on, so it is not comparable across a cross-device restore (stated in the docstring). For `auto` it covers the device the weights were fitted on, so a restore elsewhere leaves it unchanged.
+
+**Numerics regime (what "the same document" means across devices).**
+
+- A different device is a different numerical run, not a rounding of the same one. Mini-batch shuffling (`randperm(device=...)`) and dropout draw from each device's own generator, so weights differ materially, results are comparable in distribution and never bit for bit. Observed on one tiny fit (3000 rows, 4 epochs, seed 11): last-epoch loss 0.47438 on CPU, 0.47470 on CUDA, 0.47412 on MPS.
+- MPS has no float64: compute is float32, targets and loss contexts are narrowed, and `y <= threshold` for an outcome within float32 rounding of a strike can fall on the other side than in float64. The epoch loss sum and the telemetry delta are summed in float64 on the host.
+- Restoring the SAME checkpoint on another device gives the same weights and predictions that agree to float arithmetic. Measured on the tiny fit: largest mixture-column difference 1.2e-7 CPU to CUDA and CUDA to CPU, 2.4e-7 CPU to MPS and MPS to CPU, against `MIXTURE_ATOL` of 1e-6 in `StrikeRegionScores._check_stored`. This is evidence for one small model, not a bound for a real cell.
+- `deterministic: true` is a CPU or CUDA guarantee only; MPS and `auto`-on-Mac refuse it. No mode that quietly skips MPS when determinism is requested is proposed.
+
+**Consequences.** One document runs on every machine and says afterwards where each part ran. Results under one hash can still come from different devices, so a reader that pools or pairs cells must read the receipts; this ADR does not make it. `StrikeRegionScores` restores with no device argument, so for an `auto` document it restores on the scoring machine's device, and its docstring is corrected to say so; it passes or refuses on the existing 1e-6 column rule and does not itself report the device (Q6). Source pins: committed documents such as `advanced-cdf-zoo.json` pin `dskit` source hashes, so any change to `predictive_cdf.py` or `cdf_experiment.py` needs the owner's re-pin before those documents run (Q8). The docstring edit in `children/index_options/index_options/strike_region_scores.py` also changes a pinned hash: the file's hash (`1473a272...` before) is named in some 59 MIO configs, review locks and the technical design under `children/index_options`, so it is part of the same re-pin question, with the locks (owner-only to re-issue) as well as the configs. `docs/standards/configuration.md` should say that `auto` is allowed and what it does not guarantee, once approved.
+
+**Merge order.** This change has 2 textual conflicts in `dskit/pipeline/libs/cdf_experiment.py` with `claude/full-span-rerun-20261105`, plus 1 each in `docs/architecture/decision-log.md` (an end-of-file append, expected) and `tests/pipeline_libs/test_cdf_experiment.py`. That branch also has its own capacity check in `cdf_experiment.py` (`cap["device"] not in ("cpu", "cuda")`, near line 198 there), which would reject `auto` and `mps` until it is ported to `DEVICE_KINDS` plus `AUTO_DEVICE`. This is resolved by merging this change after the full-span rerun and porting that check then. The conflict count is as reported to the author, not re-measured here.
+
+**Rejected.** Fallback from an unavailable explicit device (it would hide a misconfigured run); refusing a mixed-device cell (above); writing the resolved device into the config (re-hashes it); making `auto` the default (changes every untouched document).
+
+**Non-goals.** `torch_ts.py` (its three `cuda`-else-`cpu` rules stay: Q5), `BoostedTorchCDF`, ADR-0284's dispatch and host stamp, any determinism on MPS, any change to a locked document or `path.csv`.
+
+**Verification so far (candidate, uncommitted).** Explicit CUDA (with `CUBLAS_WORKSPACE_CONFIG=:4096:8`) and explicit CPU fits of one small model, run from `git archive main` and from the branch, produce identical `weights.pt` and `state.json` bytes. The mixed-device, re-save, refusal and explicit-keys behaviours are pinned in `tests/pipeline_libs/test_device_auto.py` and `test_cdf_experiment.py`. A small MPS run on the Mac fitted on `auto`, restored across CPU and MPS in both directions, and showed the refusals. Not verified: a full-size cell on any device, a Student-family or sequence-encoder fit on MPS beyond one small Student fit, multi-worker roll-up.
+
+**Open questions for the owner.**
+
+- Q1 Explicit `cuda` with `deterministic: true` and no `CUBLAS_WORKSPACE_CONFIG`: every committed zoo and strike-screen document is exactly this, and each cell is published as a permanent `skipped`. Refuse at construction too, as `auto` now does: (a) yes (recommended); (b) leave as is.
+- Q2 May a locked or confirmatory document use `auto`: (a) only explicit devices there, `auto` for exploration (recommended); (b) anywhere, with receipts.
+- Q3 Mixed-device cells: (a) record and flag (this draft); (b) pin the device in the cell on first use and refuse a resume on another; (c) refuse and require a fresh cell.
+- Q4 Pairing or pooling cells across devices (ADR-0284 item 7): (a) refuse unless declared; (b) allow, labelled by the receipts; (c) leave it to each reader.
+- Q5 `torch_ts.py`: (a) leave its `cuda`-else-`cpu` rules (this draft); (b) move them to `resolve_device`, which adds MPS to them.
+- Q6 `StrikeRegionScores`: show the restore device and the cell's fit and shard devices in its `summary.json` evidence: (a) yes; (b) no.
+- Q7 A roll-up of the per-worker status files into one experiment-level field: (a) a reader that merges them; (b) per-worker files are enough.
+- Q8 Re-pin of `source_hashes` in committed documents after the code change, covering `predictive_cdf.py`, `cdf_experiment.py` and `strike_region_scores.py` and the MIO configs and review locks that pin them (owner-only).
+- Q9 A Gaussian `decision_log` on MPS stays refused; the Student family trains it there. Alternative: a log-CDF written without `log_ndtr` for MPS, which is a numerics change and needs its own approval.
+### 2026-11-15 integration authorization and review status
+
+The draft above records the November 5 proposal and questions; its historical
+status and evidence are retained. On November 15 the owner instructed:
+"Check to see if code has been skeptic reviewed. If so, and applicable beyond
+adhoc, should be merged." This authorizes integration of the reusable device
+selection and receipts in proposed items 1-7, subject to current integration
+review; it does not retroactively approve the earlier implementation.
+
+The two historical full skeptic lenses found zero Critical/Major findings.
+Their minor fixes received a final scoped close-out. Tracked implementation
+and tests match reviewed snapshot `97d44caf3b261f63ec9b283565f14d67e0fb09e4`;
+the untracked device test was reconstructed byte-for-byte from the successful
+historical edits. The three subsequent ADR wording corrections are included.
+Actual reports and hash comparisons are retained in
+`/home/russell/storage-investigation/2026-11-15/worktree-closeout/`
+(`device-auto-historical-skeptic-records.json`,
+`device-auto-reviewed-snapshot-comparison.json` and
+`device-auto-untracked-review-proof.json`).
+
+The current integration preserves the later feature-only checkpoint probe,
+forecast methods and `raise_fit_errors` behavior. Two fresh final lenses on
+the immutable integrated candidate are still required; historical clearance
+is not clearance for the merge. Existing explicit-device defaults, locked
+documents, source pins and running jobs stay unchanged. The earlier questions
+remain future choices where they propose behavior beyond items 1-7; this
+integration does not select those alternatives or authorize real studies.
+
+Source-pin compatibility is deliberate: an experiment pinned to the earlier
+bytes of predictive_cdf.py, cdf_experiment.py or strike_region_scores.py refuses
+in this changed checkout. Keep its matching source checkout for continued
+evaluation; do not rewrite its document, receipts or saved-fit identity.
+Re-pinning creates a different document identity and is a separately authorized
+new study, not a migration of closed artifacts. Explicit-device checkpoints
+keep their format and restore behavior; ForecastFaultStudy continues to verify
+the original experiment identity and provenance before reading its saved fit.

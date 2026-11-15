@@ -1367,3 +1367,303 @@ def test_parameter_movement_is_known_without_telemetry(monkeypatch):
     assert moved.parameters_moved == [True, True] and moved.training_diagnostics == []
     monkeypatch.setattr(torch.optim.AdamW, "step", lambda self, closure=None: None)
     assert MixtureMLPCDF(**settings).fit(x, y, x[:4], y[:4]).parameters_moved == [False, False]
+
+
+def _machine(monkeypatch, cuda=False, mps=False):
+    import torch
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: mps)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda", "mps", "auto"])
+def test_capacity_accepts_every_device_kind(experiment_config, monkeypatch, device):
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    _machine(monkeypatch, mps=True)
+    experiment_config["training"]["deterministic"] = False   # MPS cannot be deterministic
+    experiment_config["capacity"]["pooled"]["device"] = device
+    CDFExperiment(experiment_config)
+
+
+def test_capacity_refuses_an_unknown_device_and_an_unavailable_explicit_mps(experiment_config, monkeypatch):
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    _machine(monkeypatch)
+    experiment_config["capacity"]["pooled"]["device"] = "tpu"
+    with pytest.raises(ValueError, match="invalid capacity settings"):
+        CDFExperiment(experiment_config)
+    experiment_config["capacity"]["pooled"]["device"] = "mps"
+    with pytest.raises(ValueError, match="MPS is not available"):
+        CDFExperiment(experiment_config)
+
+
+def test_deterministic_training_is_refused_at_construction_where_auto_means_mps(experiment_config, monkeypatch):
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    experiment_config["capacity"]["pooled"]["device"] = "auto"
+    experiment_config["training"]["deterministic"] = True
+    _machine(monkeypatch)
+    CDFExperiment(experiment_config)
+    _machine(monkeypatch, mps=True)
+    with pytest.raises(ValueError, match="deterministic"):
+        CDFExperiment(experiment_config)
+
+
+def test_auto_identity_is_the_document_hash_on_every_machine(experiment_config, monkeypatch):
+    from dskit.pipeline.base import value_hash
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    experiment_config["capacity"]["pooled"]["device"] = "auto"
+    experiment_config["training"]["deterministic"] = False   # MPS cannot be deterministic
+    identities = set()
+    for cuda, mps in ((False, False), (False, True), (True, True)):
+        _machine(monkeypatch, cuda, mps)
+        identities.add(CDFExperiment(experiment_config).identity)
+    assert identities == {value_hash(experiment_config)}
+
+
+CELL = "pooled/base/PatchTST/1/pooled"
+
+
+def _other_device_label(monkeypatch, label="cpu:0"):
+    """From here on every "auto" request resolves to a differently named, equally real CPU device."""
+    import torch
+    from dskit.pipeline.libs import predictive_cdf
+    original = predictive_cdf._MixtureParameterCDF._checked_device
+    monkeypatch.setattr(predictive_cdf._MixtureParameterCDF, "_checked_device", staticmethod(
+        lambda requested, deterministic: label if requested == "auto" else original(requested, deterministic)))
+    load = torch.load       # torch.load has no "cpu:0" location tag; the tensors are on the CPU either way
+    monkeypatch.setattr(torch, "load", lambda path, map_location=None, **kw: load(
+        path, map_location="cpu" if map_location == label else map_location, **kw))
+
+
+def _json(path):
+    import json
+    return json.loads(path.read_text())
+
+
+def test_auto_run_records_the_resolved_device_and_an_explicit_run_adds_nothing(
+        experiment_config, monkeypatch, capsys):
+    import json
+    from pathlib import Path
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    _machine(monkeypatch)
+    out = Path(experiment_config["output"])
+    explicit = json.loads(json.dumps(experiment_config))
+    explicit["output"] = str(out.parent/"explicit")
+    experiment_config["capacity"]["pooled"]["device"] = "auto"
+    CDFExperiment(experiment_config).run("pooled")
+    CDFExperiment(explicit).run("pooled")
+    assert "WARNING: auto cell used more than one device" not in capsys.readouterr().err   # one device: quiet
+    auto_root, plain_root = out/CELL, Path(explicit["output"])/CELL
+    summary = _json(auto_root/"completed/summary.json")
+    assert summary["settings"]["device"] == "auto"
+    assert summary["device"] == {"requested": "auto", "fitted_on": "cpu", "scored_on": ["cpu"],
+                                 "mixed_devices": False}
+    assert _json(auto_root/"fit/metadata.json")["device"] == {"requested": "auto", "resolved": "cpu"}
+    state = _json(auto_root/"fit/model/state.json")
+    assert state["settings"]["device"] == "cpu" and state["device_requested"] == "auto"
+    for ticker in ("AAA", "BBB"):
+        assert _json(auto_root/"scores"/ticker/"link.json")["device"] == "cpu"
+    status = _json(out/"status-pooled-0.json")
+    assert (status["devices"], status["mixed_devices"], status["mixed_cells"]) == (["cpu"], False, [])
+    # the explicit document: not one new key anywhere, in any artifact the run writes
+    plain = _json(plain_root/"completed/summary.json")
+    assert set(plain) == {"parameters", "settings", "groups", "diagnostics", "best_epochs", "total_epochs",
+                          "checkpoint"}
+    assert set(_json(plain_root/"fit/metadata.json")) == {
+        "medians", "features", "groups", "target_normalization", "elapsed_seconds", "band_counts",
+        "band_dates", "observed_fit_counts"}
+    assert set(_json(plain_root/"fit/model/state.json")) == set(state) - {"device_requested"}
+    for ticker in ("AAA", "BBB"):
+        assert set(_json(plain_root/"scores"/ticker/"link.json")) == {
+            "checkpoint", "n", "baseline_unseen_horizon_rows", "baseline_unseen_horizon_max_distance"}
+    status = _json(Path(explicit["output"])/"status-pooled-0.json")
+    assert set(status) == {"status", "updated"}
+
+
+def test_a_cell_fitted_and_part_scored_on_one_device_and_resumed_on_another_reports_both(
+        experiment_config, monkeypatch, capsys):
+    """The shard that was scored before the interruption keeps its device; the summary and status say so."""
+    from pathlib import Path
+    _machine(monkeypatch)
+    experiment_config["capacity"]["pooled"]["device"] = "auto"
+    exp, root = _interrupt_after_one_score(experiment_config, monkeypatch)
+    assert _json(root/"scores/AAA/link.json")["device"] == "cpu"
+    capsys.readouterr()
+    _other_device_label(monkeypatch)
+    exp.run("pooled")
+    assert f"WARNING: auto cell used more than one device: {root}\n" in capsys.readouterr().err
+    assert _json(root/"scores/AAA/link.json")["device"] == "cpu"           # untouched: it was skipped
+    assert _json(root/"scores/BBB/link.json")["device"] == "cpu:0"
+    summary = _json(root/"completed/summary.json")
+    assert summary["device"] == {"requested": "auto", "fitted_on": "cpu", "scored_on": ["cpu", "cpu:0"],
+                                 "mixed_devices": True}
+    status = _json(Path(experiment_config["output"])/"status-pooled-0.json")
+    assert status["status"] == "queue_exhausted"
+    assert status["devices"] == ["cpu", "cpu:0"] and status["mixed_devices"] is True
+    assert status["mixed_cells"] == [str(root)]
+    exp.run("pooled")      # a verified, already complete cell keeps being reported as mixed
+    assert _json(Path(experiment_config["output"])/"status-pooled-0.json")["mixed_devices"] is True
+
+
+def test_a_fit_resumed_on_another_device_than_it_was_fitted_is_flagged_even_with_one_scoring_device(
+        experiment_config, monkeypatch):
+    """The _fit resume branch: the fit and its checkpoint exist, nothing was scored, the machine differs."""
+    import shutil
+    from pathlib import Path
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    _machine(monkeypatch)
+    experiment_config["capacity"]["pooled"]["device"] = "auto"
+    exp = CDFExperiment(experiment_config)
+    exp.run("pooled")
+    root = Path(experiment_config["output"])/CELL
+    shutil.rmtree(root/"completed")
+    shutil.rmtree(root/"scores")
+    _other_device_label(monkeypatch)
+    seen = []
+    original = TorchCDF.load_checkpoint.__func__
+    monkeypatch.setattr(TorchCDF, "load_checkpoint", classmethod(
+        lambda cls, path, device=None: seen.append(device) or original(cls, path, device)))
+    monkeypatch.setattr(TorchCDF, "fit", lambda *a, **k: (_ for _ in ()).throw(AssertionError("refit")))
+    exp.run("pooled")
+    assert seen == ["auto"]                 # the config's request, not the checkpoint's recorded device
+    assert _json(root/"completed/summary.json")["device"] == {
+        "requested": "auto", "fitted_on": "cpu", "scored_on": ["cpu:0"], "mixed_devices": True}
+    assert {_json(root/"scores"/t/"link.json")["device"] for t in ("AAA", "BBB")} == {"cpu:0"}
+    status = _json(Path(experiment_config["output"])/"status-pooled-0.json")
+    assert (status["devices"], status["mixed_devices"]) == (["cpu", "cpu:0"], True)
+
+
+def test_an_explicit_resume_restores_with_its_own_device_and_records_nothing_new(
+        experiment_config, monkeypatch):
+    import shutil
+    from pathlib import Path
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    _machine(monkeypatch)
+    exp = CDFExperiment(experiment_config)
+    exp.run("pooled")
+    root = Path(experiment_config["output"])/CELL
+    shutil.rmtree(root/"completed")
+    shutil.rmtree(root/"scores")
+    seen = []
+    original = TorchCDF.load_checkpoint.__func__
+    monkeypatch.setattr(TorchCDF, "load_checkpoint", classmethod(
+        lambda cls, path, device=None: seen.append(device) or original(cls, path, device)))
+    exp.run("pooled")
+    assert seen == ["cpu"]
+    assert "device" not in _json(root/"completed/summary.json")
+    assert "device" not in _json(root/"scores/AAA/link.json")
+
+
+def test_a_shard_that_carries_no_device_is_reported_unknown_never_guessed():
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    link = {"checkpoint": "x", "n": 1}
+    assert CDFExperiment._shard_devices([link, {**link, "device": "cuda"}, {**link, "device": "cuda"}]) == [
+        "cuda", "unknown"]
+
+
+# ---- deterministic CUDA under "auto": refused where the machine cannot launch it ----
+
+def _auto_deterministic(config):
+    config["capacity"]["pooled"]["device"] = "auto"
+    config["training"]["deterministic"] = True
+
+
+def test_auto_resolving_to_cuda_refuses_deterministic_without_the_cublas_workspace(
+        experiment_config, monkeypatch):
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    _auto_deterministic(experiment_config)
+    _machine(monkeypatch, cuda=True)
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    with pytest.raises(ValueError, match="CUBLAS_WORKSPACE_CONFIG"):
+        CDFExperiment(experiment_config)
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    assert CDFExperiment(experiment_config).identity       # launched properly: fine
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":0:0")
+    with pytest.raises(ValueError, match="CUBLAS_WORKSPACE_CONFIG"):
+        CDFExperiment(experiment_config)
+
+
+def test_auto_that_resolves_to_cpu_needs_no_cublas_workspace(experiment_config, monkeypatch):
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    _auto_deterministic(experiment_config)
+    _machine(monkeypatch)
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    CDFExperiment(experiment_config)
+
+
+def test_explicit_cuda_keeps_its_construction_and_its_per_cell_skip_exactly_as_before(
+        experiment_config, monkeypatch):
+    """Pre-existing behaviour, pinned so a change to it is deliberate: it constructs, then each cell skips."""
+    from pathlib import Path
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    experiment_config["capacity"]["pooled"]["device"] = "cuda"
+    experiment_config["training"]["deterministic"] = True
+    _machine(monkeypatch, cuda=True)
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    exp = CDFExperiment(experiment_config)
+    exp.run("pooled")
+    reason = _json(Path(experiment_config["output"])/CELL/"skipped/reason.json")["reason"]
+    assert "CUBLAS_WORKSPACE_CONFIG" in reason
+
+
+# ---- MPS: an op the device lacks is a refusal, never a permanent skip ----
+
+def test_mps_gaussian_decision_log_is_refused_at_experiment_construction(experiment_config, monkeypatch):
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    experiment_config["training"]["deterministic"] = False
+    experiment_config["training"]["losses"].append({"kind": "decision_log", "weight": 1.})
+    for device in ("mps", "auto"):
+        experiment_config["capacity"]["pooled"]["device"] = device
+        _machine(monkeypatch, mps=True)
+        with pytest.raises(ValueError, match="decision_log.*MPS"):
+            CDFExperiment(experiment_config)
+    _machine(monkeypatch)                      # auto means CPU here: the document is fine
+    CDFExperiment(experiment_config)
+
+
+MPS_OP = NotImplementedError("The operator 'aten::foo' is not currently implemented for the MPS device.")
+
+
+@pytest.mark.parametrize("error", [
+    MPS_OP, RuntimeError("MPS backend out of memory"),
+    RuntimeError("Placeholder storage has not been allocated on MPS device!"),
+    RuntimeError("Invalid buffer size: 512.00 GiB"),         # real MPS: torch.empty(2**37, device="mps")
+    TypeError("Cannot convert a MPS Tensor to float64 dtype as the MPS framework doesn't support float64."),
+    TypeError("the mps device cannot do this"), RuntimeError("Mps failure")])
+@pytest.mark.parametrize("device", ["mps", "auto"])
+def test_an_mps_op_failure_raises_instead_of_publishing_a_terminal_skip(
+        experiment_config, monkeypatch, device, error):
+    from pathlib import Path
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    experiment_config["training"]["deterministic"] = False
+    experiment_config["capacity"]["pooled"]["device"] = device
+    _machine(monkeypatch, mps=True)
+    exp = CDFExperiment(experiment_config)
+    monkeypatch.setattr(CDFExperiment, "_choose", lambda *a, **k: (_ for _ in ()).throw(error))
+    with pytest.raises(type(error), match=str(error)[:20]):
+        exp.run("pooled")
+    assert not (Path(experiment_config["output"])/CELL/"skipped").exists()
+
+
+@pytest.mark.parametrize("device, mps, cuda, error", [
+    ("cpu", False, False, MPS_OP),                           # off MPS the same error is the old visible skip
+    ("auto", False, False, MPS_OP),
+    ("cpu", False, False, RuntimeError("Invalid buffer size: 512.00 GiB")),
+    ("cpu", False, False, TypeError("Cannot convert a MPS Tensor to float64 dtype")),
+    ("cpu", True, False, RuntimeError("MPS backend out of memory")),   # an MPS machine, but this regime is CPU
+    ("cuda", True, True, TypeError("Cannot convert a MPS Tensor to float64 dtype")),
+    ("auto", False, True, RuntimeError("Invalid buffer size: 1.00 GiB")),   # auto resolves to CUDA here
+    ("mps", True, False, ValueError("nonfinite loss")),      # on MPS only the device's own failures change
+    ("mps", True, False, RuntimeError("some other runtime failure")),
+    ("mps", True, False, RuntimeError("bad timestamps in the panel")),   # "mps" inside a word is not MPS
+    ("mps", True, False, TypeError("timestamps must be datetime-like")),
+    ("mps", True, False, TypeError("invalid buffer size: 512.00 GiB")),   # the buffer phrase is RuntimeError only
+    ("mps", True, False, AssertionError("MPS parity"))])    # AssertionError stays a visible skip
+def test_everything_else_is_still_a_visible_skip(experiment_config, monkeypatch, device, mps, cuda, error):
+    from pathlib import Path
+    from dskit.pipeline.libs.cdf_experiment import CDFExperiment
+    experiment_config["training"]["deterministic"] = False
+    experiment_config["capacity"]["pooled"]["device"] = device
+    _machine(monkeypatch, cuda, mps)
+    exp = CDFExperiment(experiment_config)
+    monkeypatch.setattr(CDFExperiment, "_choose", lambda *a, **k: (_ for _ in ()).throw(error))
+    exp.run("pooled")
+    assert _json(Path(experiment_config["output"])/CELL/"skipped/reason.json")["reason"] == str(error)

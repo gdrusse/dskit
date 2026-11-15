@@ -36,7 +36,8 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "DiscreteCDFGrid", "MeanPreservingCDFGrid", "TorchCDF", "BoostedTorchCDF", "DecisionRegionScores",
            "OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel", "NominalStrikeMasses",
            "MixtureLossSpec", "mixture_family", "MIXTURE_FAMILY_KINDS",
-           "mlp_stack", "MLP_ACTIVATIONS", "mixture_parts", "CurveMoments"]
+           "mlp_stack", "MLP_ACTIVATIONS", "mixture_parts", "CurveMoments",
+           "AUTO_DEVICE", "DEVICE_KINDS", "resolve_device"]
 
 # Gauss-Legendre points per sub-piece: ONE constant serves the Torch wing and
 # CRPS terms (training) and the numpy curve rule (evaluation), so a loss and the
@@ -72,6 +73,95 @@ def _quadrature_tensors(dtype, device):
         _QUADRATURE_TENSORS[key] = tuple(
             torch.as_tensor(a, dtype=dtype, device=device) for a in _gauss_legendre(_QUADRATURE_NODES))
     return _QUADRATURE_TENSORS[key]
+
+
+#: The device request that means "the best one this machine has", resolved once per estimator.
+AUTO_DEVICE = "auto"
+#: The concrete device kinds the torch mixture estimators accept, in ``AUTO_DEVICE``'s order of preference.
+DEVICE_KINDS = ("cuda", "mps", "cpu")
+
+
+def resolve_device(requested):
+    """Return the concrete torch device a ``device`` request names on this machine.
+
+    ``"auto"`` picks CUDA when it is available, else MPS, else CPU, and is
+    resolved by the caller once, so a fit never changes device midway. Any other
+    request is returned unchanged and stays strict: an explicit device that is
+    not available is an error where it is first used, never a silent fallback.
+
+    Parameters
+    ----------
+    requested : str
+        ``"auto"`` or an explicit torch device string (``"cpu"``, ``"cuda"``,
+        ``"cuda:1"``, ``"mps"``).
+
+    Returns
+    -------
+    str
+        ``requested`` for an explicit device, else ``"cuda"``, ``"mps"`` or ``"cpu"``.
+
+    Examples
+    --------
+    ::
+
+        resolve_device("cpu")   # "cpu", always
+        resolve_device("auto")  # "cuda" on a GPU box, "mps" on Apple silicon, else "cpu"
+    """
+    if requested != AUTO_DEVICE:
+        return requested
+    import torch
+    if torch.cuda.is_available():
+        return "cuda"
+    mps = getattr(torch.backends, "mps", None)
+    return "mps" if mps is not None and mps.is_available() else "cpu"
+
+
+def _is_mps(device):
+    """Say whether a device string names Apple's Metal backend, which has no float64."""
+    return isinstance(device, str) and device.startswith("mps")
+
+
+class _DeviceLossSum:
+    """Epoch loss sum accumulated in float64 on the training device: one host read at the end."""
+
+    def __init__(self, device):
+        import torch
+        self._total = torch.zeros((), dtype=torch.float64, device=device)
+
+    def add(self, loss, rows):
+        """Add one mini-batch's mean ``loss`` over ``rows`` rows, without a host read."""
+        self._total += loss.detach().double()*rows
+
+    def value(self):
+        """Return the sum as a Python float."""
+        return self._total.item()
+
+
+class _HostLossSum(_DeviceLossSum):
+    """The MPS epoch loss sum: MPS has no float64, so the terms are summed in float64 on the CPU.
+
+    Each step keeps its device scalar (no host read per step); the epoch end
+    moves them across once and adds them in float64.
+    """
+
+    def __init__(self, device):
+        self._terms, self._rows = [], []
+
+    def add(self, loss, rows):
+        self._terms.append(loss.detach())
+        self._rows.append(rows)
+
+    def value(self):
+        import torch
+        if not self._terms:
+            return 0.
+        terms = torch.stack(self._terms).cpu().double()
+        return float((terms*torch.tensor(self._rows, dtype=torch.float64)).sum())
+
+
+def _loss_sum(device):
+    """Return the epoch loss accumulator for a device: float64 on it, or on the host for MPS."""
+    return (_HostLossSum if _is_mps(device) else _DeviceLossSum)(device)
 
 
 class CDFThresholdAudit:
@@ -3104,6 +3194,44 @@ class _MixtureParameterCDF(CDFEstimator):
             raise ValueError("invalid patience: an integer >= 1 or absent")
         return patience
 
+    @staticmethod
+    def _checked_device(requested, deterministic):
+        """Return the concrete device for a request, refusing what this machine cannot honour.
+
+        ``"auto"`` is resolved here, once (CUDA, else MPS, else CPU). An explicit
+        ``"mps"`` that is not available is refused rather than run elsewhere;
+        explicit CUDA keeps torch's own error at first use, as before.
+        Deterministic training is refused on MPS: torch's deterministic-algorithms
+        switch and the cuDNN flags do not constrain Metal kernels, so the run
+        would claim a guarantee nothing enforces.
+        """
+        device = resolve_device(requested)
+        if _is_mps(device):
+            import torch
+            mps = getattr(torch.backends, "mps", None)
+            if mps is None or not mps.is_available():
+                raise ValueError("device mps requested but MPS is not available")
+            if deterministic:
+                raise ValueError("deterministic training is not supported on MPS: "
+                                 "Metal kernels carry no determinism guarantee")
+        return device
+
+    def _was_auto(self):
+        """Say whether the weights were fitted under ``"auto"``.
+
+        A fitted estimator answers by its own request. A restored one answers by what its checkpoint
+        recorded, never by the ``device=`` of the restore: an ``"auto"`` checkpoint restored with an
+        explicit device stays auto, and an explicit one restored with ``"auto"`` stays explicit, so
+        that re-saving neither forgets nor invents what it was and where it was fitted.
+        """
+        if self.restored:
+            return self.checkpoint_request == AUTO_DEVICE
+        return self.device_requested == AUTO_DEVICE
+
+    def _wide(self, tensor):
+        """Return a float64 copy of a tensor; MPS has no float64, so it is made on the host."""
+        return tensor.cpu().double() if _is_mps(self.device) else tensor.double()
+
     def _refuse_head_inputs(self):
         """Refuse task columns that would also enter the model as plain inputs."""
         if self.head_features and (self.feature_indices is None
@@ -3112,9 +3240,26 @@ class _MixtureParameterCDF(CDFEstimator):
                              "feature_indices: a task column routes its head and is never "
                              "a plain input")
 
+    def check_deterministic_environment(self):
+        """Refuse deterministic CUDA training in a process launched without a fixed cuBLAS workspace.
+
+        Nothing to check for a non-deterministic estimator or a device other than CUDA. The fit
+        applies this rule when it starts; a caller that cannot afford the refusal arriving later
+        (an experiment whose cells would each be skipped for it) calls it up front.
+
+        Raises
+        ------
+        ValueError
+            ``deterministic`` on a CUDA device with ``CUBLAS_WORKSPACE_CONFIG`` not ``:4096:8`` or
+            ``:16:8`` in the environment the process was launched with.
+        """
+        import os
+        if (self.deterministic and self.device.startswith("cuda")
+                and os.environ.get("CUBLAS_WORKSPACE_CONFIG") not in (":4096:8", ":16:8")):
+            raise ValueError("deterministic CUDA requires CUBLAS_WORKSPACE_CONFIG before launch")
+
     def _deterministic_context(self):
         from contextlib import contextmanager
-        import os
         import torch
 
         @contextmanager
@@ -3122,9 +3267,7 @@ class _MixtureParameterCDF(CDFEstimator):
             if not self.deterministic:
                 yield
                 return
-            if (self.device.startswith("cuda")
-                    and os.environ.get("CUBLAS_WORKSPACE_CONFIG") not in (":4096:8", ":16:8")):
-                raise ValueError("deterministic CUDA requires CUBLAS_WORKSPACE_CONFIG before launch")
+            self.check_deterministic_environment()
             old_algorithms = torch.are_deterministic_algorithms_enabled()
             old_cudnn = getattr(torch.backends.cudnn, "deterministic", False)
             old_benchmark = getattr(torch.backends.cudnn, "benchmark", False)
@@ -3203,7 +3346,25 @@ class MixtureMLPCDF(_MixtureParameterCDF):
     seeds : list of int
         Independently fitted networks, averaged as a mixture, never best-seed selected.
     device : str
-        Explicit torch device. CUDA failure refuses instead of silently using CPU.
+        ``"cuda"``, ``"mps"`` or ``"cpu"`` is strict: a device that is not there is an
+        error, never a silent CPU run. ``"auto"`` resolves once, at construction, to
+        CUDA if available, else MPS, else CPU; ``device`` then holds the resolved
+        device and ``device_requested`` what was asked.
+
+        A different device is a different numerical run, not a rounding of the same one.
+        Mini-batch shuffling (``torch.randperm(device=...)``) and dropout draw from each
+        device's own random generator, so the same seed gives different batches and masks on
+        CUDA, MPS and CPU and the fitted weights differ materially, not by float noise;
+        the results are comparable in distribution, never bit for bit. MPS in addition
+        has no float64: the compute dtype there is float32 (targets and loss contexts are
+        narrowed), so predictions carry that rounding, and a label such as
+        ``y <= threshold`` for an outcome within float32 rounding of a strike can fall on
+        the other side than in float64, which changes a decision loss's target for that row.
+        ``deterministic=True`` is refused on MPS (and on ``"auto"`` where it resolves to
+        MPS), as Metal kernels carry no determinism guarantee. A Gaussian ``decision_log`` term
+        is refused on MPS (``torch.special.log_ndtr`` is not implemented there). The hot paths
+        are only checked on TorchCDF and this class; ``torch.cuda`` features (graphs, cache
+        release) stay CUDA-only.
     learning_rate, weight_decay, min_scale : float
         Optimizer controls and positive standardized scale floor.
     activation, dropout, head_features : str, float, list or None
@@ -3260,7 +3421,9 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         self.training_telemetry = training_telemetry
         self.patience = self._checked_patience(patience)
         self.components, self.hidden, self.epochs = components, tuple(widths), epochs
-        self.batch_size, self.seeds, self.device = batch_size, seeds, device
+        self.batch_size, self.seeds = batch_size, seeds
+        self.device_requested, self.device = device, self._checked_device(device, deterministic)
+        self.fit_device, self.checkpoint_request, self.restored = self.device, None, False
         self.learning_rate, self.weight_decay, self.min_scale = learning_rate, weight_decay, min_scale
         self.activation, self.dropout = activation, dropout
         self.head_features = head_features
@@ -3407,6 +3570,8 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         from sklearn.preprocessing import StandardScaler
 
         self._checkpoint_ready = False
+        # this fit, here, is the new provenance
+        self.fit_device, self.checkpoint_request, self.restored = self.device, None, False
         self._validate_x(cal_x)
         self._features(cal_x)
         heads = self._heads(x)
@@ -3441,17 +3606,18 @@ class MixtureMLPCDF(_MixtureParameterCDF):
             for _ in range(self.epochs):
                 order = torch.randperm(len(xx), device=self.device)
                 # Epoch sums stay on the device: one host read per epoch, not three per step.
-                total = torch.zeros((), dtype=torch.float64, device=self.device)
+                # MPS has no float64: its sum is made on the host (see ``_HostLossSum``).
+                total = _loss_sum(self.device)
                 fault = torch.zeros((), dtype=torch.int64, device=self.device)
                 for start in range(0, len(xx), self.batch_size):
                     ix = order[start:start+self.batch_size]
                     loss, code = stepper.run(ix)
                     optimizer.step()
                     steps += 1
-                    total += loss.detach().double()*len(ix)
+                    total.add(loss, len(ix))
                     fault = torch.where(fault == 0, code, fault)
                 self._refuse_fault(fault)
-                losses.append(total.item()/len(xx))
+                losses.append(total.value()/len(xx))
                 if stop is not None and stop.exhausted(self._monitor_loss(model, monitor), model):
                     break
             else:
@@ -3466,7 +3632,7 @@ class MixtureMLPCDF(_MixtureParameterCDF):
                 self.best_epochs.append(stop.best_epoch)
             self.parameters_moved.append(any(not torch.equal(p.detach(), v) for p, v in zip(model.parameters(), initial)))
             if self.training_telemetry:
-                delta = sum((p.detach()-v).abs().double().square().sum().item()
+                delta = sum(self._wide((p.detach()-v).abs()).square().sum().item()
                             for p, v in zip(model.parameters(), initial))**.5
                 self.training_diagnostics.append({"parameters": parameter_count,
                     "optimizer_steps": steps, "parameter_delta_l2": delta,
@@ -3530,14 +3696,35 @@ class MixtureMLPCDF(_MixtureParameterCDF):
                  "losses": self.losses, "monitor_losses": self.monitor_losses,
                  "best_epochs": self.best_epochs,
                  "diagnostics": self.training_diagnostics}
+        if self._was_auto():
+            # The settings carry the RESOLVED device the weights were fitted on (also after a restore
+            # elsewhere); this marks that the request was "auto", so a restore on another machine
+            # resolves afresh. Absent for an explicit device: those checkpoints are byte-identical
+            # to what they always were.
+            state["device_requested"] = AUTO_DEVICE
         torch.save([m.state_dict() for m in self.models], temp/"weights.pt")
         state["weights_sha256"] = hashlib.sha256((temp/"weights.pt").read_bytes()).hexdigest()
         (temp/"state.json").write_text(json.dumps(state, allow_nan=False))
         os.rename(temp, path)
 
     @classmethod
-    def load_checkpoint(cls, path):
-        """Restore the same estimator type, refusing modified tensor payloads."""
+    def load_checkpoint(cls, path, device=None):
+        """Restore the same estimator type, refusing modified tensor payloads.
+
+        Parameters
+        ----------
+        path : path-like
+            A checkpoint directory from ``save_checkpoint``.
+        device : str or None
+            Where to restore. Absent: the checkpoint's own device, strictly, unless
+            it was fitted with ``device="auto"``, which resolves again on this
+            machine. A given value (``"auto"`` or explicit) overrides either, so a
+            checkpoint fitted on one device restores on another; weights are mapped
+            to the restore device. The device it was fitted on stays in
+            ``fit_device``. Weights are the same numbers on any device, but
+            predictions from a different device agree only to that device's
+            floating-point arithmetic.
+        """
         cls._check_checkpoint_support()
         import numpy as np
         import torch
@@ -3550,7 +3737,13 @@ class MixtureMLPCDF(_MixtureParameterCDF):
             raise ValueError("checkpoint weights hash mismatch")
         if not state["settings"].get("head_features"):
             state["settings"]["head_features"] = None
+        fit_device = state["settings"].get("device")
+        request = device if device is not None else state.get("device_requested")
+        if request is not None:
+            state["settings"]["device"] = request
         model = cls(**state["settings"])
+        model.fit_device, model.checkpoint_request = fit_device, state.get("device_requested")
+        model.restored = True
         model.scaler = StandardScaler()
         for key, value in state["scaler"].items():
             setattr(model.scaler, key, np.asarray(value))
@@ -3572,10 +3765,16 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         return model
 
     def _equivalence_settings(self):
-        """Return the settings the equivalence digest covers."""
+        """Return the settings the equivalence digest covers.
+
+        ``device`` is the device the estimator computes on, so an explicit-device estimator restored
+        with a different ``device=`` reports the restore device. An ``"auto"`` estimator (or one restored
+        from an ``"auto"`` checkpoint) reports the device its weights were fitted on instead.
+        """
         settings = {"components": self.components, "hidden": self.hidden,
                     "epochs": self.epochs, "batch_size": self.batch_size,
-                    "seeds": list(self.seeds), "device": self.device,
+                    "seeds": list(self.seeds),
+                    "device": self.fit_device if self._was_auto() else self.device,
                     "learning_rate": self.learning_rate,
                     "weight_decay": self.weight_decay, "min_scale": self.min_scale,
                     "activation": self.activation, "dropout": self.dropout,
@@ -3598,7 +3797,16 @@ class MixtureMLPCDF(_MixtureParameterCDF):
         return settings
 
     def _equivalence_state(self):
-        """Digest effective preprocessing and every fitted network tensor."""
+        """Digest effective preprocessing and every fitted network tensor.
+
+        The digest covers the settings, including ``device``, and the bytes of every tensor. For an
+        explicit-device estimator ``device`` is where it computes, so a digest taken after restoring on
+        another device (``load_checkpoint(path, device=...)``) is not comparable with the digest taken
+        where it was fitted: a cross-device restore changes the digest though the weights are the same
+        numbers. An ``"auto"`` estimator digests the device it was fitted on, so a restore elsewhere
+        leaves it unchanged; predictions made on another device still agree only to that device's
+        floating-point arithmetic, which no digest of the weights can show.
+        """
         import numpy as np
         digest = hashlib.sha256()
         settings = self._equivalence_settings()
@@ -4133,6 +4341,8 @@ class _MixtureFamily(ABC):
     _KEYS = frozenset({"kind"})
     #: A component's variance divided by its squared scale.
     variance_factor = 1.
+    #: Whether ``standard_log_cdf`` runs on the MPS device (a family built on an op MPS lacks says no).
+    log_cdf_runs_on_mps = True
 
     def __init__(self, config):
         if (not isinstance(config, dict) or set(config) != self._KEYS
@@ -4192,6 +4402,8 @@ class _GaussianFamily(_MixtureFamily):
     """Gaussian components; the legacy NLL and decision expressions, unchanged."""
 
     KIND = "gaussian"
+    #: ``torch.special.log_ndtr`` has no MPS kernel: it raises NotImplementedError there.
+    log_cdf_runs_on_mps = False
 
     def standard_cdf(self, t):
         import torch
@@ -4359,6 +4571,10 @@ class _CDFLossTerm(ABC):
         """Count eligible rows in the full training context, for minibatch scaling."""
         return self.eligible(context).sum()
 
+    def mps_problem(self):
+        """Return why this term cannot train on the MPS device, or ``None`` when it can."""
+        return None
+
     @abstractmethod
     def values(self, y, logw, mu, sigma, context):
         """Return per-row (values, eligible) for one minibatch."""
@@ -4397,6 +4613,12 @@ class _CDFDecisionBrier(_CDFLossTerm):
 
 
 class _CDFDecisionLog(_CDFDecisionBrier):
+    def mps_problem(self):
+        if self.family.log_cdf_runs_on_mps:
+            return None
+        return (f"decision_log with the {self.family.KIND} family is not supported on MPS: "
+                "torch.special.log_ndtr is not implemented for the MPS device")
+
     def values(self, y, logw, mu, sigma, context):
         import torch
         thresholds, weights = context["thresholds"], context["weights"]
@@ -4519,6 +4741,18 @@ class _CompositeLossCDF:
             self.family_config or {"kind": self._DEFAULT_FAMILY})
         self._terms = [self._LOSSES[term["kind"]](self.family) for term in losses]
 
+    def _refuse_mps_ops(self):
+        """Refuse, at construction, a loss term whose torch ops the MPS device lacks.
+
+        Called by an estimator whose device is MPS (explicit or resolved from ``"auto"``), so the
+        failure is a refusal up front, never a NotImplementedError inside a fit that a queue would
+        record as that cell's permanent skip.
+        """
+        for term in self._terms:
+            problem = term.mps_problem()
+            if problem:
+                raise ValueError(problem)
+
     def _curve(self, weights, means, scales):
         return self.family.curve(weights, means, scales)
 
@@ -4562,16 +4796,28 @@ class _CompositeLossCDF:
             self._fit_context = self._cal_context = None
             self._normalization_cache = None
 
+    def _wide_dtype(self):
+        """Return the training compute dtype: float64, or float32 on MPS, which has no float64."""
+        import torch
+        return torch.float32 if _is_mps(self.device) else torch.float64
+
     def _target_tensor(self, y):
         import torch
-        return torch.tensor(y[:, None], dtype=torch.float64, device=self.device)
+        return torch.tensor(y[:, None], dtype=self._wide_dtype(), device=self.device)
+
+    def _context_tensor(self, value):
+        """Return one context array on the device: unchanged, except MPS narrows floats to float32."""
+        import numpy as np
+        import torch
+        if _is_mps(self.device) and np.issubdtype(np.asarray(value).dtype, np.floating):
+            return torch.as_tensor(value, dtype=torch.float32, device=self.device)
+        return torch.as_tensor(value, device=self.device)
 
     def _context_tensors(self, scorer, x, kind, rows):
         """Return one row set's context as tensors, refusing an unattached or empty one."""
-        import torch
         if scorer is None or len(scorer.inventory) != len(x):
             raise ValueError(f"identity-keyed {kind} context was not attached")
-        context = {key: torch.as_tensor(value, device=self.device) for key, value
+        context = {key: self._context_tensor(value) for key, value
                    in self._context_arrays(scorer).items()}
         for term_config, term in zip(self.loss_config, self._terms):
             if not term.population_count(context) > 0:
@@ -4845,6 +5091,8 @@ class TorchCDF(_CompositeLossCDF, MixtureMLPCDF):
         if not isinstance(encoder, dict) or encoder.get("kind") not in self._ENCODERS:
             raise ValueError("unknown CDF encoder")
         self._set_composite(losses, family)
+        if _is_mps(self.device):
+            self._refuse_mps_ops()
         self.encoder_config = copy.deepcopy(encoder)
         self.encoder = self._ENCODERS[encoder["kind"]](self.encoder_config)
 
@@ -4909,6 +5157,10 @@ class TorchCDF(_CompositeLossCDF, MixtureMLPCDF):
                  "stopped_by_patience": self.patience is not None,
                  "peak_cuda_allocated_bytes": (torch.cuda.max_memory_allocated(self.device)
                                                if self.device.startswith("cuda") else 0)}
+        if self._was_auto():
+            # Only an "auto" request records its outcome; explicit-device documents keep their bytes.
+            state["device"] = {"requested": AUTO_DEVICE, "resolved": self.device,
+                               "fitted_on": self.fit_device}
         if self.family_config is not None:
             state["family"] = self.family_config
         if self.head_features:

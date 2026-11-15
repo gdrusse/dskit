@@ -10,6 +10,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -17,7 +18,8 @@ import time
 
 from dskit.pipeline.base import value_hash
 from dskit.pipeline.node import atomic_write
-from dskit.pipeline.libs.predictive_cdf import ChronologicalCDFStudy, HorizonEmpiricalCDF, TorchCDF
+from dskit.pipeline.libs.predictive_cdf import (
+    AUTO_DEVICE, DEVICE_KINDS, ChronologicalCDFStudy, HorizonEmpiricalCDF, TorchCDF, resolve_device)
 
 __all__ = ["AtomicFitStore", "CDFExperiment", "IntegrityError"]
 NODE_KINDS = ()
@@ -197,7 +199,7 @@ class CDFExperiment:
                     or not 0 < cap["per_row"] < float("inf")
                     or not cap["head_widths"]
                     or any(type(v) is not int or v < 1 for v in cap["head_widths"])
-                    or cap["device"] not in ("cpu", "cuda")
+                    or cap["device"] not in (*DEVICE_KINDS, AUTO_DEVICE)
                     or (regime == "pooled" and not 0 < cap["head_per_row"] < float("inf"))):
                 raise ValueError("invalid capacity settings")
         for candidate in candidates:
@@ -206,8 +208,16 @@ class CDFExperiment:
                     or (candidate["skip_reason"] is not None
                         and (not isinstance(candidate["skip_reason"], str) or not candidate["skip_reason"]))):
                 raise ValueError("invalid candidate adapters/skip reason")
-        # Constructor validation catches unknown Torch knobs before queue execution.
-        TorchCDF(encoder={"kind": "mlp"}, device="cpu", **config["training"])
+        # Constructor validation catches unknown Torch knobs before queue execution, and with each
+        # regime's own device: an unavailable explicit "mps", a deterministic MPS run and a Gaussian
+        # decision_log on MPS are refused here, not skipped cell by cell. "auto" resolves on this machine
+        # only for the check; every fit resolves again.
+        for cap in config["capacity"].values():
+            probe = TorchCDF(encoder={"kind": "mlp"}, device=cap["device"], **config["training"])
+            if cap["device"] == AUTO_DEVICE:
+                # A machine-independent identity must not skip, for good, the cells of a machine that
+                # lacks the cuBLAS workspace. An explicit "cuda" keeps what it always did: refuse per cell.
+                probe.check_deterministic_environment()
         baseline = config["study"]["models"][config["study"]["reference_model"]]
         if baseline["class"] != "dskit.pipeline.libs.predictive_cdf:HorizonEmpiricalCDF":
             raise ValueError("this experiment requires the horizon empirical reference")
@@ -471,7 +481,10 @@ class CDFExperiment:
             metadata = json.loads((path/"metadata.json").read_text())
             if medians != metadata["medians"]:
                 raise IntegrityError("training imputation changed on resume")
-            model = TorchCDF.load_checkpoint(path/"model")
+            # The config's device decides where a resume restores: an "auto" fit resolves again here,
+            # so a checkpoint fitted on CUDA resumes on MPS or CPU; an explicit device is the same one
+            # the identity already pins.
+            model = TorchCDF.load_checkpoint(path/"model", device=params["device"])
             return model, arrays, record
         model = TorchCDF(**params)
         model.validate_encoder(len(arm["features"]))
@@ -494,10 +507,14 @@ class CDFExperiment:
                          {k: [b[k].min(), b[k].max()] for k in (s["date"], s["end"])})
                         for b in bands],
                     "observed_fit_counts": bands[0][arm["features"]].notna().sum().to_dict()}
+        if params["device"] == AUTO_DEVICE:
+            # What "auto" resolved to is part of the receipt; a document with an explicit device keeps
+            # the metadata bytes it always had.
+            metadata["device"] = {"requested": AUTO_DEVICE, "resolved": model.device}
         with tempfile.TemporaryDirectory(dir=path.parent) as temp:
             checkpoint = Path(temp)/"model"
             model.save_checkpoint(checkpoint)
-            restored = TorchCDF.load_checkpoint(checkpoint)
+            restored = TorchCDF.load_checkpoint(checkpoint, device=model.device)
             # Checkpoint round-trip uses only fixed fit/cal features, never evaluation rows.
             probe = np.concatenate((arrays[0][:4], arrays[1][:3]), axis=0)
             np.testing.assert_allclose(model.curve(probe).cdf([-.5, 0., .5]),
@@ -547,10 +564,19 @@ class CDFExperiment:
                 raise IntegrityError("nonfinite paired scores/forecast")
             buffer = io.BytesIO()
             scores.to_parquet(buffer, index=False)
-            store.publish({"scores.parquet": buffer.getvalue(),
-                           "link.json": self.json_bytes({"checkpoint": checkpoint_hash, "n": len(scores),
-                                         "baseline_unseen_horizon_rows": unseen_rows,
-                                         "baseline_unseen_horizon_max_distance": unseen_distance})})
+            link = {"checkpoint": checkpoint_hash, "n": len(scores),
+                    "baseline_unseen_horizon_rows": unseen_rows,
+                    "baseline_unseen_horizon_max_distance": unseen_distance}
+            if model.device_requested == AUTO_DEVICE:
+                # A shard is scored once and then skipped on every resume, so the device it was scored on
+                # is written with it; a cell resumed on another machine is told apart shard by shard.
+                link["device"] = model.device
+            store.publish({"scores.parquet": buffer.getvalue(), "link.json": self.json_bytes(link)})
+
+    @staticmethod
+    def _shard_devices(links):
+        """Return the sorted devices the score shards' ``link.json`` records name; one without is ``unknown``."""
+        return sorted({link.get("device", "unknown") for link in links})
 
     @staticmethod
     def _nearest_fitted_horizons(fitted, queried):
@@ -638,10 +664,20 @@ class CDFExperiment:
             params, count = self._choose(arm, candidate, regime, groups, admission)
             model, arrays, record = self._fit(root/"fit", identity, params, bands, arm, groups, regime)
             self._score(root, identity, record, model, arrays, bands, groups)
-            complete.publish({"summary.json": self.json_bytes({"parameters": count, "settings": params,
+            summary = {"parameters": count, "settings": params,
                 "groups": groups, "diagnostics": model.training_diagnostics,
                 "best_epochs": model.best_epochs, "total_epochs": [len(v) for v in model.losses],
-                "checkpoint": value_hash(record)})})
+                "checkpoint": value_hash(record)}
+            if params["device"] == AUTO_DEVICE:
+                # "settings" keeps the request as written. The receipt says where the weights were fitted
+                # and every device a shard was scored on (a cell resumed elsewhere has several); a cell
+                # that used more than one is flagged, never refused.
+                scored = self._shard_devices(json.loads((root/"scores"/g/"link.json").read_text())
+                                             for g in groups)
+                summary["device"] = {"requested": AUTO_DEVICE, "fitted_on": model.fit_device,
+                                     "scored_on": scored,
+                                     "mixed_devices": len({model.fit_device, *scored}) > 1}
+            complete.publish({"summary.json": self.json_bytes(summary)})
             return "complete"
         except IntegrityError:
             raise
@@ -649,7 +685,7 @@ class CDFExperiment:
             # Integrity checks above raise a separate type. Library incompatibility,
             # numerical failure and epoch ceilings are visible model-specific skips,
             # unless the document says a failure is retried: then no terminal state exists.
-            if self.config.get("raise_fit_errors"):
+            if self.config.get("raise_fit_errors") or self._is_mps_failure(error, regime):
                 raise
             skip.publish({"reason.json": self.json_bytes({"error": type(error).__name__,
                 "reason": str(error), "candidate": candidate["name"], "groups": groups})})
@@ -889,6 +925,28 @@ class CDFExperiment:
             store.publish({"forecasts.parquet": buffer.getvalue(), "receipt.json": self.json_bytes(receipt)})
             return receipt
 
+    def _is_mps_failure(self, error, regime):
+        """Say whether an error is the MPS device's own, so that it is raised and never published as a skip.
+
+        Only where this regime's device is, or on this machine resolves to, MPS; on cuda and cpu nothing
+        here applies. On MPS these are the device's: a ``NotImplementedError`` (an op it lacks), a
+        ``TypeError`` or ``RuntimeError`` naming MPS as a whole word, any case (``float64`` conversion,
+        out of memory; not ``timestamps``), and a ``RuntimeError`` saying ``Invalid buffer size`` (an
+        allocation it refuses). A terminal skip is permanent under a machine-independent identity, so
+        it must not record what another machine would not have hit.
+        """
+        if not resolve_device(self.config["capacity"][regime]["device"]).startswith("mps"):
+            return False
+        if isinstance(error, NotImplementedError):
+            return True
+        if isinstance(error, (TypeError, RuntimeError)) and re.search(r"\bmps\b", str(error), re.I):
+            return True
+        return isinstance(error, RuntimeError) and "Invalid buffer size" in str(error)
+
+    def _receipt(self, root):
+        """Return a completed auto cell's device receipt from its summary."""
+        return json.loads((root/"completed"/"summary.json").read_text())["device"]
+
     def run(self, regime, worker=0, workers=1, limit=None):
         """Execute one stable worker partition, verifying completed artifacts on retry."""
         import fcntl
@@ -910,6 +968,13 @@ class CDFExperiment:
         frame = self.load_panel()
         calendar = self.study.plan.calendar(frame)
         done = 0
+        auto = self.config["capacity"][regime]["device"] == AUTO_DEVICE
+        devices, mixed = set(), []      # what an "auto" run's cells used, for the status file
+
+        def devices_status():
+            # Added only for "auto": an explicit document's status keeps its bytes.
+            return ({"devices": sorted(devices), "mixed_devices": len(devices) > 1,
+                     "mixed_cells": mixed} if auto else {})
         for fold in self.study.plan.ids():
             for arm_name, arm in self.config["arms"].items():
                 bands, groups, admission = self._bands(frame, calendar, fold, arm)
@@ -930,16 +995,24 @@ class CDFExperiment:
                             "band_identities": [value_hash(b[keys].values.tolist()) for b in subset]}
                         status = self._cell(root, identity, subset, unit, admission, arm, candidate, regime)
                         done += 1
+                        if auto and status == "complete":
+                            receipt = self._receipt(root)
+                            devices.update([receipt["fitted_on"], *receipt["scored_on"]])
+                            if receipt["mixed_devices"]:
+                                mixed.append(str(root))
+                                print("WARNING: auto cell used more than one device: "+str(root),
+                                      file=sys.stderr, flush=True)
                         atomic_write(str(self.output/f"status-{regime}-{worker}.json"),
                             self.json_bytes({"status": "running", "processed_this_run": done,
-                            "last": str(root), "last_outcome": status, "updated": time.time()}))
+                            "last": str(root), "last_outcome": status, "updated": time.time(),
+                            **devices_status()}))
                         print(json.dumps({"cell": str(root), "status": status}), flush=True)
                         if limit is not None and done >= limit:
                             return
                 atomic_write(str(self.output/f"admission-{regime}-{arm_name}-{fold}-{worker}.json"),
                              self.json_bytes(admission))
         atomic_write(str(self.output/f"status-{regime}-{worker}.json"),
-                     self.json_bytes({"status": "queue_exhausted", "updated": time.time()}))
+                     self.json_bytes({"status": "queue_exhausted", "updated": time.time(), **devices_status()}))
 
 
 if __name__ == "__main__":

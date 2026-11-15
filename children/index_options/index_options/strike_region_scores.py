@@ -42,7 +42,11 @@ linear tail ``tail_width`` wide (the owner's ``OptionImpliedTransportCDF`` defau
 regions' market masses and every score reaching past the outermost quantile depend on that completion; no
 calibrated or transported market variant is built here. A nested decision-context column cannot sit on a
 CDFExperiment panel (its reader refuses nested schemas), so the ``panel_context`` listed-strike source reads a
-JSON-text column. Only the pooled regime is read. The checkpoint restores on the device it was saved with.
+JSON-text column. Only the pooled regime is read. The checkpoint restores on the device its settings name for
+an explicit-device document (``cpu``, ``cuda``, ``mps``), strictly: where torch cannot, it refuses. For a document whose
+capacity device is ``auto`` it is the machine scoring now that decides (CUDA, else MPS, else CPU), which can
+differ from the device the cell was fitted or its shards scored on; the stored-column check above then compares
+across devices, and a pass only means the two agree within ``MIXTURE_ATOL``, not that they ran the same arithmetic.
 """
 
 import json
