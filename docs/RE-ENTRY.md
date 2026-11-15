@@ -6,8 +6,8 @@ history questions, the memos and ADRs are reached from the lane note's links.
 
 | Lane | Note | State (one line, dated) |
 |---|---|---|
-| dskit core | "Core" below | 2026-10-29: machine hook names the host at session start; ADR-0284 two-host dispatch built, parked unmerged on `docs/adr-two-host-runner` (4 Majors, path mapping) |
-| index_options | children/index_options/docs/RE-ENTRY.md | 2026-11-13: ADR-0307 eight option baselines attested; ADR-0314 daily stock five completed, three cash-infeasible; Terra cleared run mechanics; owner comparison on D: is provisional pending shared hedge defect audit. |
+| dskit core | "Core" below | 2026-11-15: ADR-0296 device selection and ADR-0317 fault study reviewed and integrated; storage/worktree receipts retain unfinished work and frozen runtimes. |
+| index_options | children/index_options/docs/RE-ENTRY.md | 2026-11-15: stress replay and fitted-method refusal fix integrated; ADR-0314 comparison remains provisional pending shared hedge defect audit. |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-19: historical 600-entry audit complete; method24 two-cell Kalshi recommendation beat market scores in later W4/W5; retrospective; protected tests closed; two final reviews passed |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
 | statistical_arbitrage | `children/statistical_arbitrage/docs/RE-ENTRY.md` | 2026-10-21: prediction-only studies ADR-0272..0275: ATM-spread reversion; best now the pooled-scaled blend on the vol-scaled label (ATM 20d R²oos 0.25→0.27, the most robust pass); Theta Greeks/flow/market features add nothing; skew none; no edge claim |
@@ -19,31 +19,32 @@ history questions, the memos and ADRs are reached from the lane note's links.
 
 ## Core (dskit itself)
 
-**Now.** 2026-10-29: `tools/session/machine.sh` names the host at session start
-(Claude `SessionStart` hook on main, `c1dc38ee`; Codex reads it through a
-user-level `~/.codex/hooks.json`, once trusted in `/hooks`). ADR-0284, two-host
-fold dispatch over SSH with a path map below identity, was approved and built on
-branch `docs/adr-two-host-runner` (head `4e2a338e`, base `db39f872`, Mac clone
-only), then parked unmerged: review round 2 left 4 Majors, all path mapping. Only
-the ADR is on main. Compute stays on the PC, driven from the Mac by `ssh desktop`.
-Mac-only base reds, not regressions: 9 `test_folds.py` and 2 intraday cap tests
-(macOS refuses `RLIMIT_AS`), production 133 failed + 23 errors
-(`RuntimeFingerprint` libc), no `hypothesis`. `tools/sweep/sweep` crashes when
-its git grep times out.
+**Now.** 2026-11-15: reusable device selection (ADR-0296, candidate
+`94e785ac`) and saved-fit forecast faults (ADR-0317, `c38e2b28`)
+passed two fresh independent final lenses each, with zero Critical/Major.
+Explicit-device defaults and frozen studies are unchanged. The stress replay
+and fitted-method refusal fix are also integrated; PR #19 is merged.
 
-**Next.** PC/WSL clones: pull for the machine hook. Retained work from the
-2026-10-26 branch sweep still reconciles one candidate at a time.
+**Next.** Reconcile remaining reusable candidates individually from the
+review-eligibility manifests. Keep canonical data outside new worktrees and
+check the storage guard before bulk work. Maintenance receipts distinguish
+retired code copies from retained results, dirty work and runtime pins.
+The shared .venv retains an editable import path to the preserved
+`/home/russell/wt/claude-sonnet-5-5` checkout; verify import locations before
+using new main code and do not repoint an environment underneath running jobs.
 
-**Blocked / owner decisions.** ADR-0284: one redesigned round (inventory every
-recorded-path reader and writer first; drop it if review still finds a Major)
-or leave it parked.
+**Blocked / owner decisions.** Unreviewed experiments retain their gates.
+ADR-0284's last recorded Mac-only dispatch review has four path-mapping
+Majors; this maintenance did not clear it. Windows C: remains low even after
+WSL files were removed; compaction needs a planned interruption.
 
-**Read first.** ADR-0284's "Review checkpoint" in the decision log;
-[Branch sweep receipt](memos/2026-10-26-repository-branch-sweep.md).
+**Read first.** ADR-0296/0317 in `docs/architecture/decision-log.md`;
+`/home/russell/storage-investigation/2026-11-15/worktree-closeout/maintenance-summary.json`;
+`/home/russell/storage-investigation/storage-policy.json`.
 
-**Do not.** Merge the ADR-0284 branch without a fresh two-lens review at zero
-Critical/Major (rebase it first; main's ADR-0284 text wins). Delete unmerged or
-dirty work. Run capped folds on a macOS host. History:
+**Do not.** Rewrite frozen source pins to accept changed code, delete protected
+results or unique unfinished work, or treat development review as real-run or
+deployment approval. ADR-0284 still needs fresh clean reviews. Earlier notes:
 `docs/archive/re-entry/dskit-core.md`.
 
 ## Protocol

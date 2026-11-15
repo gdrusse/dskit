@@ -37384,9 +37384,12 @@ Actual reports and hash comparisons are retained in
 `device-auto-untracked-review-proof.json`).
 
 The current integration preserves the later feature-only checkpoint probe,
-forecast methods and `raise_fit_errors` behavior. Two fresh final lenses on
-the immutable integrated candidate are still required; historical clearance
-is not clearance for the merge. Existing explicit-device defaults, locked
+forecast methods and `raise_fit_errors` behavior. Two fresh independent final lenses closed the integration gate on
+immutable candidate `94e785ac17b4f3206f76131d204060102323f7fa` with zero
+Critical/Major findings (`device-final-correctness.json` and
+`device-final-integration.json` in the receipt directory above). The 677
+author-run focused checks and independent reviewer probes passed; historical
+clearance alone was not used as clearance for the merge. Existing explicit-device defaults, locked
 documents, source pins and running jobs stay unchanged. The earlier questions
 remain future choices where they propose behavior beyond items 1-7; this
 integration does not select those alternatives or authorize real studies.

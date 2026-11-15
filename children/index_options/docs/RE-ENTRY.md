@@ -1,9 +1,10 @@
 # RE-ENTRY - index_options
 
-Updated 2026-11-13 by GPT-6.1 Sol.
+Updated 2026-11-15 by GPT-6.
 
 ## Now
 
+- Reusable ADR-0317 stress replay and the fitted-method refusal fix landed in `c38e2b28` (PR #19). Two fresh final lenses found zero Critical/Major; focused checks passed. Device selection in `94e785ac` has its own two clean final lenses and saved-fit/source-pin checks. These development integrations change no frozen run document, Path row, or study approval.
 - ADR-0314 daily stock replay is frozen on main at `82bf83d2`; the operational v11 bundle and final queues were independently cleared by Luna and Terra. The stock sleeve uses saved option books and a daily next-open share hedge; it never re-solves options.
 - All eight ADR-0307 Kelly 050/075 option-only baselines were reattested across 2019Q4, 2020Q1, 2021Q1 and 2021Q2. All eight stock arms were attempted under unchanged v11 policy: five completed with 218 fills total; 2019Q4-075 and both 2020Q1 arms are funding-infeasible at the exact settled-cash guard. They are not Z/time-outs.
 - The owner comparison is [on D:](D:/dskit-stock-hedge-owner-20261113/owner-eight-comparison.html), SHA256 `a2d9162626e3eb651d9de0587d6d23430637f09b4cebd5726a8d0e19915e077f`. [Final verification](/home/russell/mnt/adr0313-research/daily-stock-4q/final-stock-eight-verification.json) SHA256 `5750b14fb6a7bf4497198fa134f096b568c893ca8b8dd25499cc81bbb0d61143` binds all eight receipts and 45 completed output files. The owner reported a separate Claude multistart2 hedge run was wrong; it shares the pinned hedge_overlay.py blob. The economic comparison is provisional until the cause and ADR-0307 impact are scoped.

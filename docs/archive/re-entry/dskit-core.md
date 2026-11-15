@@ -1,3 +1,35 @@
+## Archived 2026-11-15 before maintenance wrap
+
+## Core (dskit itself)
+
+**Now.** 2026-10-29: `tools/session/machine.sh` names the host at session start
+(Claude `SessionStart` hook on main, `c1dc38ee`; Codex reads it through a
+user-level `~/.codex/hooks.json`, once trusted in `/hooks`). ADR-0284, two-host
+fold dispatch over SSH with a path map below identity, was approved and built on
+branch `docs/adr-two-host-runner` (head `4e2a338e`, base `db39f872`, Mac clone
+only), then parked unmerged: review round 2 left 4 Majors, all path mapping. Only
+the ADR is on main. Compute stays on the PC, driven from the Mac by `ssh desktop`.
+Mac-only base reds, not regressions: 9 `test_folds.py` and 2 intraday cap tests
+(macOS refuses `RLIMIT_AS`), production 133 failed + 23 errors
+(`RuntimeFingerprint` libc), no `hypothesis`. `tools/sweep/sweep` crashes when
+its git grep times out.
+
+**Next.** PC/WSL clones: pull for the machine hook. Retained work from the
+2026-10-26 branch sweep still reconciles one candidate at a time.
+
+**Blocked / owner decisions.** ADR-0284: one redesigned round (inventory every
+recorded-path reader and writer first; drop it if review still finds a Major)
+or leave it parked.
+
+**Read first.** ADR-0284's "Review checkpoint" in the decision log;
+[Branch sweep receipt](memos/2026-10-26-repository-branch-sweep.md).
+
+**Do not.** Merge the ADR-0284 branch without a fresh two-lens review at zero
+Critical/Major (rebase it first; main's ADR-0284 text wins). Delete unmerged or
+dirty work. Run capped folds on a macOS host. History:
+`docs/archive/re-entry/dskit-core.md`.
+
+
 # RE-ENTRY archive — dskit-core
 
 Previous re-entry notes for this lane, newest first. `/wrap` moves the note it
