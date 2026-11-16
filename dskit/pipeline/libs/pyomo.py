@@ -4329,6 +4329,9 @@ class TransportPortfolioSolve(PyomoSolve):
 
     #: The keys of a ``utility`` block, every one explicit.
     UTILITY_KEYS = frozenset({"w0", "gamma", "n_tangents", "core", "wealth_lo", "aggregate", "joint"})
+    #: ADR-0318: the one optional key. ``charge_scale`` (finite, at least 1) multiplies every name's dispersion charge,
+    #: ``charge_scale x gamma x S_a^2 / (2 w0)``; absent is 1 and the block, its identity and every value are unchanged.
+    UTILITY_OPTIONAL_KEYS = frozenset({"charge_scale"})
     #: How far the scenario weights may miss one in total (float sums of configured weights).
     UTILITY_WEIGHT_TOLERANCE = 1e-9
 
@@ -4356,7 +4359,9 @@ class TransportPortfolioSolve(PyomoSolve):
         """
         if utility is None:
             return None
-        if (not isinstance(utility, dict) or set(utility) != cls.UTILITY_KEYS
+        if (not isinstance(utility, dict) or set(utility)-cls.UTILITY_OPTIONAL_KEYS != cls.UTILITY_KEYS
+                or ("charge_scale" in utility and (not number_ok(utility["charge_scale"])
+                                                   or utility["charge_scale"] < 1))
                 or not number_ok(utility["w0"]) or utility["w0"] <= 0
                 or not number_ok(utility["gamma"]) or utility["gamma"] < 1
                 or type(utility["n_tangents"]) is not int or utility["n_tangents"] < 2
@@ -4383,8 +4388,11 @@ class TransportPortfolioSolve(PyomoSolve):
             total += float(scenario["weight"])
         if abs(total-1.) > cls.UTILITY_WEIGHT_TOLERANCE:
             raise ValueError("utility scenario weights must sum to one")
-        return {**utility, "w0": float(utility["w0"]), "gamma": float(utility["gamma"]), "core": float(utility["core"]),
-                "wealth_lo": float(utility["wealth_lo"]), "aggregate": dict(utility["aggregate"])}
+        checked = {**utility, "w0": float(utility["w0"]), "gamma": float(utility["gamma"]), "core": float(utility["core"]),
+                   "wealth_lo": float(utility["wealth_lo"]), "aggregate": dict(utility["aggregate"])}
+        if "charge_scale" in utility:
+            checked["charge_scale"] = float(utility["charge_scale"])
+        return checked
 
     @staticmethod
     def _expected_profit(groups):
@@ -4465,6 +4473,9 @@ class TransportPortfolioSolve(PyomoSolve):
             members.setdefault(utility["aggregate"][g["id"]], []).append(i)
             ceiling[i] = cls.SD_PER_MAD*float(own @ np.asarray(g["capacity"], dtype=float))
         slope = utility["gamma"]/(2.*utility["w0"])
+        if "charge_scale" in utility:
+            # ADR-0318: the declared multiplier on every name's own charge (absent: the slope above, unchanged).
+            slope = utility["charge_scale"]*slope
         lines = {name: _ChargeLines(slope, sum(ceiling[i] for i in indices), utility["n_tangents"])
                  for name, indices in members.items()}
         return {"rows": rows, "charge": charge, "members": members, "lines": lines}
@@ -6218,8 +6229,11 @@ class TransportActionScore:
         sd = math.sqrt(sum(sum(exact_sd[i] for i in indices)**2 for indices in plan["members"].values()))
         dispersion = math.sqrt(sum(total**2 for total in totals.values()))
         ratio = sd/dispersion if dispersion > self.BOOK_NOISE*self.utility["w0"] else None
+        gamma = self.utility["gamma"]
+        if "charge_scale" in self.utility:
+            gamma = self.utility["charge_scale"]*gamma   # ADR-0318: the charge applies gamma times the multiplier
         return {"sd": float(sd), "dispersion": float(dispersion), "ratio": ratio,
-                "effective_fraction": None if ratio is None else ratio**2/self.utility["gamma"]}
+                "effective_fraction": None if ratio is None else ratio**2/gamma}
 
     def _utility_components(self, quantities):
         """Value the quantities under the tangent envelope and the charge lines (what the program maximizes), and exactly."""

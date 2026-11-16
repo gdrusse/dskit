@@ -66,6 +66,7 @@ import json
 import logging
 import math
 import os
+import statistics
 import sys
 from abc import ABC, abstractmethod
 from collections import Counter
@@ -2452,6 +2453,165 @@ class CalibratedEdge:
                 "counts_as_evidence": weeks.get("warm", 0) >= self.block["min_warm_weeks"]}
 
 
+class EdgeWeights:
+    """ADR-0318: three optional kelly keys that reweight a local-search week's objective; absent, nothing changes.
+
+    ``accuracy`` (``{"shrink_rows": k}``) weights each name's forecast edge by how well that name's forecasts did on
+    every forecast row of the study that SETTLED strictly before the decision day (quote day, expiry and settlement
+    all earlier; nothing at or after the day, nor at or after :data:`DEVELOPMENT_SEAL`, is read). The measure is the
+    linear-pool weight: of the mixture ``G + w (F - G)`` between the reference ``G`` (a standard normal in the
+    forecast's own ``z = ln(S_T / spot) / reference_scale``, the forecast with no view) and the forecast ``F``, the
+    ``w`` with the least summed Brier score at the grid's thresholds (the CRPS integrand at the grid points). Per
+    row ``a = F - G`` and ``b = H - G`` (``H`` the outcome's step); the least-squares weight is ``sum ab / sum aa``.
+    A name's own sums are shrunk toward the pool of every name by ``k`` pseudo-rows at the pool's per-row averages,
+    then bounded to ``[0, 1]`` and rounded to :attr:`DIGITS` places (one value on every host). A name with no
+    scored row takes the pooled value; a week with no scored row anywhere takes 1 (the forecast at face value).
+
+    ``dte_tilt`` (``lam`` in ``(0, 1)``) multiplies a candidate's edge by ``1 - lam (1 - min(dte, L) / L)``,
+    ``L`` = :attr:`DTE_LONG_END`: 1 at the long end, ``1 - lam (L - 1) / L`` at one day. Nothing is removed.
+
+    The two multiply into one edge multiplier ``m`` per candidate group, applied as the group's ``value_adjust``
+    ``(m - 1) x e`` with ``e`` its items' expected profit per contract under the forecast masses (``credit - masses .
+    losses``, exactly summed), so the scorer's expected profit of every item is ``m x e``: its sign never changes and
+    the losses, scenario terms, dispersion charge, reserves, caps, hedge and fills are untouched. Stage one (the
+    dollar start program) is built from the same groups, so it ranks on the same weighted edge.
+
+    ``name_spread`` (``c >= 1``) is not an edge weight: it is the one-stage program's ``utility.charge_scale``, the
+    multiplier on every name's own dispersion charge (see :meth:`WeeklyOptionPortfolioStudy._method`).
+    """
+
+    KEYS = ("accuracy", "dte_tilt", "name_spread")
+    #: The two keys that set a candidate's edge multiplier (``name_spread`` acts on the charge instead).
+    EDGE_KEYS = ("accuracy", "dte_tilt")
+    ACCURACY_KEYS = frozenset({"shrink_rows"})
+    #: The menu's longest days to expiry: the tilt is zero there and beyond.
+    DTE_LONG_END = 60
+    #: Weights and multipliers are rounded to this many decimals so a last-bit libm difference cannot move them.
+    DIGITS = 9
+
+    @classmethod
+    def declared(cls, kelly):
+        """Return whether a kelly block declares any of the three keys."""
+        return isinstance(kelly, dict) and any(key in kelly for key in cls.KEYS)
+
+    @classmethod
+    def valid(cls, kelly):
+        """Return whether the declared keys are well formed (absent keys are valid)."""
+        accuracy = kelly.get("accuracy")
+        return ((accuracy is None or (isinstance(accuracy, dict) and set(accuracy) == cls.ACCURACY_KEYS
+                                      and number_ok(accuracy["shrink_rows"]) and accuracy["shrink_rows"] > 0))
+                and ("dte_tilt" not in kelly or (number_ok(kelly["dte_tilt"]) and 0 < kelly["dte_tilt"] < 1))
+                and ("name_spread" not in kelly or (number_ok(kelly["name_spread"]) and kelly["name_spread"] >= 1)))
+
+    def __init__(self, study, kelly):
+        self.study, self.kelly = study, kelly
+        self._rows = None
+
+    @staticmethod
+    def _normal_cdf(z):
+        return .5*(1.+math.erf(z/math.sqrt(2.)))
+
+    def _scored_rows(self):
+        """Every tradable forecast row with its settlement and its two dot products ``(settle, symbol, ab, aa)``."""
+        if self._rows is not None:
+            return self._rows
+        study, rows = self.study, []
+        for symbol in study.params["symbols"]:
+            node, bars = study._nodes[symbol], study._bars[symbol]
+            z_grid, labels = node.params["z_grid"], node.params["grid_labels"]
+            reference = [self._normal_cdf(float(z)) for z in z_grid]
+            for (quote, expiry), context in sorted(study._contexts[symbol].items()):
+                forecast = study._forecasts[symbol].get((quote, expiry))
+                settle = context.get("settlement_date")
+                if (forecast is None or forecast.get("fitted") is False or settle != expiry
+                        or study._pair(symbol, quote, expiry) is None or settle >= DEVELOPMENT_SEAL
+                        or quote not in bars or settle not in bars):
+                    continue
+                scale = context.get("reference_scale")
+                if not number_ok(scale) or scale <= 0 or not bars[quote] > 0 or not bars[settle] > 0:
+                    continue
+                factors = study._factors[symbol]
+                if (quote in factors and settle in factors
+                        and not math.isclose(factors[quote], factors[settle], rel_tol=1e-9)):
+                    continue   # a basis change inside the window: the close ratio is not the forecast's outcome
+                cdf = [forecast.get(f"method_cdf_{label}") for label in labels]
+                if any(not number_ok(v) for v in cdf):
+                    continue
+                y = math.log(bars[settle]/bars[quote])/float(scale)
+                a = [min(1., max(0., float(f)))-g for f, g in zip(cdf, reference)]
+                b = [(1. if y <= float(z) else 0.)-g for z, g in zip(z_grid, reference)]
+                rows.append((settle, quote, symbol, math.fsum(x*v for x, v in zip(a, b)), math.fsum(x*x for x in a)))
+        self._rows = rows
+        return rows
+
+    def accuracy(self, day, symbols):
+        """Return ``({symbol: weight}, record)`` from the rows settled and quoted strictly before ``day``."""
+        k = float(self.kelly["accuracy"]["shrink_rows"])
+        own, pool = {}, ([], [])
+        for settle, quote, symbol, ab, aa in self._scored_rows():
+            if settle < day and quote < day:
+                sums = own.setdefault(symbol, ([], []))
+                sums[0].append(ab)
+                sums[1].append(aa)
+                pool[0].append(ab)
+                pool[1].append(aa)
+        n = len(pool[0])
+        names = sorted(set(symbols))
+        if not n:
+            weights = {s: 1. for s in names}
+            pooled = None
+        else:
+            mean_ab, mean_aa = math.fsum(pool[0])/n, math.fsum(pool[1])/n
+            pooled = self._bounded(mean_ab, mean_aa)
+            weights = {}
+            for s in names:
+                ab, aa = own.get(s, ([], []))
+                weights[s] = self._bounded(math.fsum(ab)+k*mean_ab, math.fsum(aa)+k*mean_aa)
+        values = sorted(weights.values())
+        record = {"shrink_rows": self.kelly["accuracy"]["shrink_rows"], "scored_rows": n, "pooled": pooled,
+                  "names": len(values), "min": values[0] if values else None,
+                  "median": statistics.median(values) if values else None, "max": values[-1] if values else None,
+                  "fallback_pooled": sum(1 for s in names if s not in own) if n else 0,
+                  "no_history": not n, "weights": dict(weights)}
+        return weights, record
+
+    @classmethod
+    def _bounded(cls, ab, aa):
+        """The least-squares pool weight ``ab / aa`` in ``[0, 1]``; 1 when the forecast never departs from ``G``."""
+        if not aa > 0:
+            return 1.
+        return round(min(1., max(0., ab/aa)), cls.DIGITS)
+
+    def tilt(self, dte):
+        """The days-to-expiry multiplier: ``1 - lam (1 - min(dte, L) / L)``, 1 when undeclared."""
+        if "dte_tilt" not in self.kelly:
+            return 1.
+        span = self.DTE_LONG_END
+        return 1.-float(self.kelly["dte_tilt"])*(1.-min(max(int(dte), 0), span)/span)
+
+    def apply(self, day, configured, metadata):
+        """Return ``(configured with value_adjust, the week record)``; the groups' other keys are unchanged."""
+        weights, record = None, {}
+        if "accuracy" in self.kelly:
+            weights, record["accuracy"] = self.accuracy(day, [m["symbol"] for m in metadata])
+        out, multipliers = [], {}
+        for group, meta in zip(configured, metadata, strict=True):
+            m = (1. if weights is None else weights[meta["symbol"]])*self.tilt(meta["dte"])
+            m = round(m, self.DIGITS)
+            multipliers[group["id"]] = m
+            losses, masses = group["losses"], group["masses"]
+            expected = [math.fsum([float(c), *(-float(p)*float(row[j]) for p, row in zip(masses, losses))])
+                        for j, c in enumerate(group["credit"])]
+            out.append({**group, "value_adjust": [(m-1.)*e for e in expected]})
+        values = sorted(multipliers.values())
+        record["multiplier"] = {"groups": len(values), "min": values[0] if values else None,
+                                "median": statistics.median(values) if values else None,
+                                "max": values[-1] if values else None}
+        if "dte_tilt" in self.kelly:
+            record["dte_tilt"] = {"lam": self.kelly["dte_tilt"], "long_end": self.DTE_LONG_END}
+        return out, record, multipliers
+
+
 #: A0010's ordered formulation ids and whole-spec digests (ADR-0297/0313).
 #: The queue example and each research template are pinned to this authority by tests.
 LOCKED_FORMULATION_HASHES = MappingProxyType({
@@ -2666,7 +2826,9 @@ class WeeklyOptionPortfolioStudy:
     #: An optional kelly key (ADR-0301): ``max_groups`` keeps, of the ``lp`` screen's survivors, only that many with
     #: the largest standalone relaxed value before the joint growth program is built (the solver's group_screen_keep).
     _KELLY_OPTIONAL_KEYS = {"max_groups", "accept_uncertified", "search", "warm_start", "local_search",
-                            "settleable_only"}
+                            "settleable_only", *EdgeWeights.KEYS}
+    #: ADR-0318: ``accuracy``, ``dte_tilt`` and ``name_spread`` (:class:`EdgeWeights`) are declared only on a stage-one
+    #: local-search method (ADR-0307, not the multi-start) without a calibration block; absent, nothing changes.
     #: ADR-0315 Amendment 2: ``settleable_only`` (only ``true``) drops, before anything else reads the week, every
     #: candidate whose book could not be carried to its expiry on the decision's basis (:meth:`_settleable`); each is
     #: refused ``unsettleable_expiry``. Absent means the candidate set is untouched, byte for byte.
@@ -3278,6 +3440,9 @@ class WeeklyOptionPortfolioStudy:
                 and ("max_groups" not in kelly or (type(kelly["max_groups"]) is int and kelly["max_groups"] >= 1))
                 and ("accept_uncertified" not in kelly or type(kelly["accept_uncertified"]) is bool)
                 and ("settleable_only" not in kelly or kelly["settleable_only"] is True)
+                and (not EdgeWeights.declared(kelly)
+                     or (EdgeWeights.valid(kelly) and isinstance(kelly.get("local_search"), dict)
+                         and "start" in kelly["local_search"] and "calibration" not in method))
                 and cls._kelly_strategy_valid(kelly)
                 and cls._local_search_valid(kelly)
                 and number_ok(kelly["fraction"]) and 0 < kelly["fraction"] <= 1
@@ -4939,6 +5104,9 @@ class WeeklyOptionPortfolioStudy:
         hedge = calibrated = limited = None
         warm_weeks = Counter()
         local = (self._kelly(method) or {}).get("local_search")
+        # ADR-0318: the optional edge weights (None, and nothing below reads them, when no key is declared).
+        edge_weights = (EdgeWeights(self, self._kelly(method))
+                        if any(key in (self._kelly(method) or {}) for key in EdgeWeights.EDGE_KEYS) else None)
         present = self._BLOCKS.present(method)
         if present:
             # A local-search method's hedge is derived: the search is rerun on this host over this host's own hedged
@@ -5193,6 +5361,12 @@ class WeeklyOptionPortfolioStudy:
                                        **({} if risk is None else {"risk_charge": dict(risk)}),
                                        **({} if adjusts is None else {"value_adjust": adjusts[g["id"]]})}
                                       for g, meta in zip(groups, metadata)]
+                        edge_multipliers = None
+                        if edge_weights is not None:
+                            # ADR-0318: the weighted edge enters the groups themselves, so the start program, the
+                            # search's scorer and every replay of this week read the same value_adjust.
+                            configured, record["kelly"]["edge_weights"], edge_multipliers = edge_weights.apply(
+                                day, configured, metadata)
                         solver_params = p["solver"]
                         if kelly is not None and any(key in kelly for key in ("max_groups", *self._KELLY_STRATEGY_KEYS)):
                             solver_params = self._kelly_solver_params(p["solver"], kelly)
@@ -5222,6 +5396,9 @@ class WeeklyOptionPortfolioStudy:
                                 "aggregate": {meta["id"]: meta["symbol"] for meta in metadata},
                                 "joint": self._centred_scenarios(terms, kelly["moves"], record["kelly"]["weights"],
                                                                  record["kelly"]["quiet"])}
+                            if "name_spread" in kelly:
+                                # ADR-0318: the declared multiplier on every name's own dispersion charge.
+                                program["utility"]["charge_scale"] = kelly["name_spread"]
                             if hedged_search and hedge.overlay.REBALANCES:
                                 # ADR-0316 Amendment 1: a daily re-struck hedge is scored on seeded PATHS per move, so
                                 # the re-hedge P&L and costs along each path are in the scenarios the objective sizes on.
@@ -5305,6 +5482,15 @@ class WeeklyOptionPortfolioStudy:
                         books = [] if timed_out else self._books(candidate, metadata, charge)
                         if calibrated is not None and books:
                             self._calibration_fields(books, program, candidate, metadata, adjusts)
+                        if edge_multipliers is not None and books:
+                            # ADR-0318: ``expected`` is the weighted value the search saw; ``expected_raw`` the forecast's.
+                            index = {m["id"]: i for i, m in enumerate(metadata)}
+                            for book in books:
+                                i = index[book["id"]]
+                                adjust = math.fsum(a*q for a, q in zip(configured[i]["value_adjust"],
+                                                                       candidate["quantities"][i], strict=True))
+                                book.update(edge_multiplier=edge_multipliers[book["id"]],
+                                            expected_raw=book["expected"]-adjust)
                         status = "timeout_skipped" if timed_out else "selected" if books else "cash"
                         certificates = [{k: v for k, v in c.items() if k != "binding"}
                                         for c in selection.get("certificates", [])]
