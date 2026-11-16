@@ -1298,6 +1298,34 @@ class _SQLiteQuoteView:
         except Exception as exc:
             raise QuoteIndexIntegrityError(str(exc)) from exc
 
+    def release_memory(self):
+        """Drop the connection's page cache (memory only: the index is immutable and read-only, so no row changes)."""
+        connection = getattr(self.index, "connection", None)
+        if connection is not None:
+            connection.execute("PRAGMA shrink_memory")
+
+
+def _return_freed_memory():
+    """Collect cyclic garbage and hand freed heap back to the OS (memory only: no value, order or seed is touched).
+
+    ``gc.collect`` frees cycles (a solved pyomo model and its solver interface) now rather than at the collector's next
+    full pass, which in a process holding the quarter's inputs is rare. ``malloc_trim(0)`` (glibc) and
+    ``malloc_zone_pressure_relief`` (macOS) return the freed pages; elsewhere, or on any failure, nothing happens.
+    """
+    import ctypes
+    import gc
+
+    gc.collect()
+    try:
+        if sys.platform.startswith("linux"):
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        elif sys.platform == "darwin":
+            relief = ctypes.CDLL("/usr/lib/libSystem.B.dylib").malloc_zone_pressure_relief
+            relief.argtypes, relief.restype = [ctypes.c_void_p, ctypes.c_size_t], ctypes.c_size_t
+            relief(None, 0)
+    except Exception:
+        pass
+
 
 #: ADR-0316 Amendment 2: the logger of the run-time hedge guard (a program week whose legs all lack an iv).
 _LOG = logging.getLogger(__name__)
@@ -1337,6 +1365,14 @@ class ParityForwards:
                                 "ask": r.get("ask"), "iv": r.get("iv"), "bid_size": r.get("bid_size"),
                                 "ask_size": r.get("ask_size"), "basis_factor": r.get("basis_factor")} for r in raw]
         return self._rows[key]
+
+    def release(self):
+        """Forget every cached chain (memory only: a later read rebuilds the same rows from the same quotes).
+
+        The cache is keyed by session and grows by every candidate expiry of every decision day; past sessions are
+        read again only by the end-of-run marks (:meth:`ReplayHedge.path`), which rebuild them.
+        """
+        self._rows = {}
 
     def spot(self, symbol, day, factor):
         """Return the underlying on ``day`` on the book's basis, or ``None``."""
@@ -4983,8 +5019,12 @@ class WeeklyOptionPortfolioStudy:
                 # ADR-0316 Amendment 3: the hedged search's books are marked as of one day (a carried option mark
                 # carries its forward); the replay-hedge ids keep the independent mark they were recorded under.
                 ledger_params["hedge"]["mark_carry"] = "with_legs"
-            ledger_inputs["hedge_forwards"] = [row for index, b in enumerate(trades)
-                                               for row in hedge.forward_rows(b, index)]
+            forwards = []
+            for index, b in enumerate(trades):
+                forwards.extend(hedge.forward_rows(b, index))
+                if isinstance(getattr(hedge, "forwards", None), ParityForwards):
+                    hedge.forwards.release()   # memory only: one book's daily chains at a time (rebuilt alike on a reread)
+            ledger_inputs["hedge_forwards"] = forwards
         ledger = OptionStructureLedger("ledger", ledger_params).run(None, ledger_inputs)
         if len(ledger["trades"]) != len(trades):
             raise ValueError("shared ledger refused an admitted book")
@@ -5081,6 +5121,22 @@ class WeeklyOptionPortfolioStudy:
         for quotes in self._quotes.values():
             if isinstance(quotes, _SQLiteQuoteView):
                 quotes.close(verify=verify)
+
+    def _release_week(self, hedge=None):
+        """Release what one recorded decision week built (memory only: no value, order, seed or option changes).
+
+        The latest prepared week (read again only for the same day), the hedge's cached chains (rebuilt alike from the
+        immutable quotes when a fill or the end-of-run marks read them), each quote index's page cache, and then
+        the freed heap (:func:`_return_freed_memory`). What later weeks read stays: the account and its open books,
+        the records, the inputs, the accuracy rows and the beta and component caches.
+        """
+        self._prepared_cache = {}
+        if hedge is not None and isinstance(getattr(hedge, "forwards", None), ParityForwards):
+            hedge.forwards.release()
+        for quotes in self._quotes.values():
+            if isinstance(quotes, _SQLiteQuoteView):
+                quotes.release_memory()
+        _return_freed_memory()
 
     def _method(self, method, progress, *, recorded=None, derived=None, events=None):
         self._verify_quote_indexes()
@@ -5265,6 +5321,9 @@ class WeeklyOptionPortfolioStudy:
                               "status": self._WEEK_NOT_SELECTED}
                 else:
                     groups, metadata, refusals = self._prepare(day)
+                    # Memory only: this day is prepared once here; the raw menu is freed as soon as the hedge and the
+                    # filters below have replaced it, instead of living through stage one and the climb.
+                    self._prepared_cache = {}
                     if (self._kelly(method) or {}).get("settleable_only"):
                         # ADR-0315 Amendment 2: per method and outside _prepare, so the shared prepared week is untouched.
                         groups, metadata, excluded = self._settleable_candidates(groups, metadata)
@@ -5625,6 +5684,11 @@ class WeeklyOptionPortfolioStudy:
                             "solver_certificates": [{k: cert.get(k)
                                 for k in ("objective", "bound", "gap", "seconds")} for cert in certs],
                             "provisional": True})
+                # Memory only (owner 2026-11-16): the week is recorded, so nothing that built it is read again; drop
+                # the menu, the scored program, its scenarios and the search's working state before the next week.
+                groups = metadata = configured = program = terms = rows = local_week = solver = None
+                selection = candidate = edge_multipliers = adjusts = exposure_rows = scorer = request = None
+                self._release_week(hedge)
                 if progress is not None:
                     progress(method["id"], len(decisions), len(self.weeks), record["status"])
             snapshot = {"date": day, "deposit": deposited, "contributions": account.contributions,

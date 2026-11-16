@@ -909,6 +909,30 @@ class MIOMethodWorker:
         line = f"{stamp()} week {done}/{total}\n"
         with open(self.spec["out"] + ".progress", "a", encoding="utf-8") as handle:
             handle.write(line)
+        # Memory after the week was recorded and released (stderr: the progress file keeps its exact format).
+        now, peak = self.memory_gib()
+        sys.stderr.write(f"{stamp()} week {done}/{total} rss_gib {'na' if now is None else f'{now:.2f}'} "
+                         f"peak_rss_gib {'na' if peak is None else f'{peak:.2f}'}\n")
+        sys.stderr.flush()
+
+    @staticmethod
+    def memory_gib():
+        """``(current RSS, peak RSS)`` of this process in GiB; current is None off Linux, either None if unreadable."""
+        now = peak = None
+        try:
+            with open("/proc/self/status", encoding="ascii") as handle:
+                for row in handle:
+                    if row.startswith("VmRSS:"):
+                        now = int(row.split()[1])/1048576.
+        except (OSError, ValueError):
+            pass
+        try:
+            import resource
+            raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss   # bytes on macOS, KiB on Linux
+            peak = raw/(1 << 30) if platform.system() == "Darwin" else raw/1048576.
+        except (ImportError, AttributeError, OSError):
+            pass
+        return now, peak
 
     def _heartbeat(self, what="index building"):
         """Append one progress line that says the index build (or the pricing) is still running."""
