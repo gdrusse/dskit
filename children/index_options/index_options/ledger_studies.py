@@ -2463,9 +2463,11 @@ class EdgeWeights:
     forecast's own ``z = ln(S_T / spot) / reference_scale``, the forecast with no view) and the forecast ``F``, the
     ``w`` with the least summed Brier score at the grid's thresholds (the CRPS integrand at the grid points). Per
     row ``a = F - G`` and ``b = H - G`` (``H`` the outcome's step); the least-squares weight is ``sum ab / sum aa``.
-    A name's own sums are shrunk toward the pool of every name by ``k`` pseudo-rows at the pool's per-row averages,
-    then bounded to ``[0, 1]`` and rounded to :attr:`DIGITS` places (one value on every host). A name with no
-    scored row takes the pooled value; a week with no scored row anywhere takes 1 (the forecast at face value).
+    The pooled (all-name) weight is shrunk toward 1 (face value) by ``k`` pseudo-rows and each name's own sums toward
+    the pooled weight by ``k`` pseudo-rows, both at the pool's per-row ``aa`` (:meth:`accuracy`), then bounded to
+    ``[0, 1]`` and rounded to :attr:`DIGITS` places (one value on every host). A name with no scored row takes the
+    pooled value; a week with no scored row anywhere takes 1 (the forecast at face value) and refuses once that
+    persists past :attr:`NO_HISTORY_GRACE_DAYS`.
 
     ``dte_tilt`` (``lam`` in ``(0, 1)``) multiplies a candidate's edge by ``1 - lam (1 - min(dte, L) / L)``,
     ``L`` = :attr:`DTE_LONG_END`: 1 at the long end, ``1 - lam (L - 1) / L`` at one day. Nothing is removed.
@@ -2488,6 +2490,10 @@ class EdgeWeights:
     DTE_LONG_END = 60
     #: Weights and multipliers are rounded to this many decimals so a last-bit libm difference cannot move them.
     DIGITS = 9
+    #: Days after the study's first forecast past which a week with no scored row refuses (``accuracy_no_history``):
+    #: by then every forecast of 21 days or less quoted on the first day has settled, so an empty history is a
+    #: defect, not a young quarter.
+    NO_HISTORY_GRACE_DAYS = 21
 
     @classmethod
     def declared(cls, kelly):
@@ -2505,47 +2511,76 @@ class EdgeWeights:
 
     def __init__(self, study, kelly):
         self.study, self.kelly = study, kelly
-        self._rows = None
+        self._rows = self._unscored = None
 
     @staticmethod
     def _normal_cdf(z):
         return .5*(1.+math.erf(z/math.sqrt(2.)))
 
     def _scored_rows(self):
-        """Every tradable forecast row with its settlement and its two dot products ``(settle, symbol, ab, aa)``."""
+        """Every tradable forecast row with its settlement and its two dot products ``(settle, quote, symbol, ab, aa)``.
+
+        A row the method could trade is one with a forecast, a selected pair and a settlement on its own expiry; an
+        unfitted forecast counts unless the bridge's ``require_fitted`` is set (the week trades it otherwise, as the
+        record's ``fallback`` count shows). Every other row's reason is kept in :attr:`_unscored` as
+        ``(quote, settle, reason)`` so a week's record can say how many rows it could have scored and did not.
+        """
         if self._rows is not None:
             return self._rows
-        study, rows = self.study, []
+        study, rows, unscored = self.study, [], []
         for symbol in study.params["symbols"]:
-            node, bars = study._nodes[symbol], study._bars[symbol]
+            node, bars, factors = study._nodes[symbol], study._bars[symbol], study._factors[symbol]
             z_grid, labels = node.params["z_grid"], node.params["grid_labels"]
+            require_fitted = node.params.get("require_fitted") is True
             reference = [self._normal_cdf(float(z)) for z in z_grid]
             for (quote, expiry), context in sorted(study._contexts[symbol].items()):
                 forecast = study._forecasts[symbol].get((quote, expiry))
                 settle = context.get("settlement_date")
-                if (forecast is None or forecast.get("fitted") is False or settle != expiry
-                        or study._pair(symbol, quote, expiry) is None or settle >= DEVELOPMENT_SEAL
-                        or quote not in bars or settle not in bars):
-                    continue
                 scale = context.get("reference_scale")
-                if not number_ok(scale) or scale <= 0 or not bars[quote] > 0 or not bars[settle] > 0:
-                    continue
-                factors = study._factors[symbol]
-                if (quote in factors and settle in factors
+                reason = None
+                if forecast is None:
+                    reason = "no_forecast"
+                elif not isinstance(settle, str) or settle != expiry:
+                    reason = "settlement_not_expiry"
+                elif settle >= DEVELOPMENT_SEAL:
+                    reason = "after_seal"
+                elif study._pair(symbol, quote, expiry) is None:
+                    reason = "no_pair"
+                elif require_fitted and forecast.get("fitted") is not True:
+                    reason = "not_fitted"
+                elif quote not in bars or settle not in bars or not bars[quote] > 0 or not bars[settle] > 0:
+                    reason = "missing_close"
+                elif not number_ok(scale) or scale <= 0:
+                    reason = "bad_scale"
+                elif (quote in factors and settle in factors
                         and not math.isclose(factors[quote], factors[settle], rel_tol=1e-9)):
-                    continue   # a basis change inside the window: the close ratio is not the forecast's outcome
-                cdf = [forecast.get(f"method_cdf_{label}") for label in labels]
-                if any(not number_ok(v) for v in cdf):
+                    reason = "basis_change"   # the close ratio is not the forecast's outcome
+                else:
+                    cdf = [forecast.get(f"method_cdf_{label}") for label in labels]
+                    if any(not number_ok(v) for v in cdf):
+                        reason = "bad_cdf"
+                if reason is not None:
+                    unscored.append((quote, settle if isinstance(settle, str) else None, reason))
                     continue
                 y = math.log(bars[settle]/bars[quote])/float(scale)
                 a = [min(1., max(0., float(f)))-g for f, g in zip(cdf, reference)]
                 b = [(1. if y <= float(z) else 0.)-g for z, g in zip(z_grid, reference)]
                 rows.append((settle, quote, symbol, math.fsum(x*v for x, v in zip(a, b)), math.fsum(x*x for x in a)))
-        self._rows = rows
+        self._rows, self._unscored = rows, unscored
         return rows
 
     def accuracy(self, day, symbols):
-        """Return ``({symbol: weight}, record)`` from the rows settled and quoted strictly before ``day``."""
+        """Return ``({symbol: weight}, record)`` from the rows settled and quoted strictly before ``day``.
+
+        With ``n`` scored rows, sums ``S_ab``, ``S_aa`` and ``abar = S_aa / n``, the pooled weight is shrunk toward
+        1 (the forecast at face value) by ``k`` pseudo-rows: ``(S_ab + k abar) / (S_aa + k abar)``; each name's own
+        sums are shrunk toward the pooled value ``P`` by ``k`` pseudo-rows: ``(s_ab + k P abar) / (s_aa + k abar)``.
+        Both are bounded to ``[0, 1]`` and rounded. A name with no scored row takes ``P``. With no scored row at all
+        the weight is 1 and the record says ``no_history``; past :attr:`NO_HISTORY_GRACE_DAYS` after the study's
+        first forecast that refuses instead, since every short-dated forecast quoted then has settled.
+        """
+        from datetime import date
+
         k = float(self.kelly["accuracy"]["shrink_rows"])
         own, pool = {}, ([], [])
         for settle, quote, symbol, ab, aa in self._scored_rows():
@@ -2557,22 +2592,31 @@ class EdgeWeights:
                 pool[1].append(aa)
         n = len(pool[0])
         names = sorted(set(symbols))
+        unscored = Counter(reason for quote, settle, reason in self._unscored
+                           if quote < day and (settle is None or settle < day))
         if not n:
+            first = min((q for s in self.study.params["symbols"] for q, _e in self.study._forecasts[s]), default=None)
+            if (first is not None and (date.fromisoformat(day)-date.fromisoformat(first)).days
+                    > self.NO_HISTORY_GRACE_DAYS):
+                raise ValueError(f"accuracy_no_history: no forecast row scored before {day}, "
+                                 f"{self.NO_HISTORY_GRACE_DAYS}+ days after the first forecast ({first}); "
+                                 f"unscored {dict(sorted(unscored.items()))}")
             weights = {s: 1. for s in names}
             pooled = None
         else:
-            mean_ab, mean_aa = math.fsum(pool[0])/n, math.fsum(pool[1])/n
-            pooled = self._bounded(mean_ab, mean_aa)
+            s_ab, s_aa = math.fsum(pool[0]), math.fsum(pool[1])
+            bar = s_aa/n
+            pooled = self._bounded(s_ab+k*bar, s_aa+k*bar)
             weights = {}
             for s in names:
                 ab, aa = own.get(s, ([], []))
-                weights[s] = self._bounded(math.fsum(ab)+k*mean_ab, math.fsum(aa)+k*mean_aa)
+                weights[s] = self._bounded(math.fsum(ab)+k*pooled*bar, math.fsum(aa)+k*bar)
         values = sorted(weights.values())
         record = {"shrink_rows": self.kelly["accuracy"]["shrink_rows"], "scored_rows": n, "pooled": pooled,
                   "names": len(values), "min": values[0] if values else None,
                   "median": statistics.median(values) if values else None, "max": values[-1] if values else None,
                   "fallback_pooled": sum(1 for s in names if s not in own) if n else 0,
-                  "no_history": not n, "weights": dict(weights)}
+                  "no_history": not n, "unscored": dict(sorted(unscored.items())), "weights": dict(weights)}
         return weights, record
 
     @classmethod

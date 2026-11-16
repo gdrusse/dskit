@@ -190,14 +190,33 @@ def _fake(rows, pairs=True):
 G = [.5*(1+math.erf(z/math.sqrt(2))) for z in Z]
 
 
-def _hand(rows):
+def _hand(rows, z_grid=Z):
+    g_ref = [.5*(1+math.erf(z/math.sqrt(2))) for z in z_grid]
     ab = aa = 0.
     for cdf, y in rows:
-        a = [f-g for f, g in zip(cdf, G)]
-        b = [(1. if y <= z else 0.)-g for z, g in zip(Z, G)]
+        a = [f-g for f, g in zip(cdf, g_ref)]
+        b = [(1. if y <= z else 0.)-g for z, g in zip(z_grid, g_ref)]
         ab += sum(x*v for x, v in zip(a, b))
         aa += sum(x*x for x in a)
     return ab, aa
+
+
+def _bound(ab, aa):
+    return 1. if not aa > 0 else round(min(1., max(0., ab/aa)), 9)
+
+
+def _shrunk(by_name, k, names):
+    """The ADR-0318 weights by hand: ``by_name`` maps a name to its ``(ab, aa, rows)``; returns (weights, pooled)."""
+    n = sum(r for _ab, _aa, r in by_name.values())
+    s_ab, s_aa = sum(ab for ab, _aa, _r in by_name.values()), sum(aa for _ab, aa, _r in by_name.values())
+    bar = s_aa/n
+    pooled = _bound(s_ab+k*bar, s_aa+k*bar)
+    own = {s: by_name.get(s, (0., 0., 0)) for s in names}
+    return {s: _bound(ab+k*pooled*bar, aa+k*bar) for s, (ab, aa, _r) in own.items()}, pooled
+
+
+#: Small enough that the pseudo-rows vanish at 9 places: the name's own least-squares weight.
+UNSHRUNK = {"accuracy": {"shrink_rows": 1e-12}}
 
 
 def test_a_sharp_right_forecast_weighs_one_a_wrong_one_zero_and_the_reference_itself_one():
@@ -205,7 +224,7 @@ def test_a_sharp_right_forecast_weighs_one_a_wrong_one_zero_and_the_reference_it
     wrong = [("A", "2019-01-02", "2019-01-04", [1., 1., 1.], .5)]    # all mass below an outcome above zero
     same = [("A", "2019-01-02", "2019-01-04", G, .5)]
     for rows, expected in ((right, 1.), (wrong, 0.), (same, 1.)):
-        w, record = EdgeWeights(_fake(rows), {"accuracy": {"shrink_rows": 1}}).accuracy("2019-01-07", ["A"])
+        w, record = EdgeWeights(_fake(rows), UNSHRUNK).accuracy("2019-01-07", ["A"])
         assert w == {"A": expected} and record["scored_rows"] == 1 and not record["no_history"]
 
 
@@ -216,36 +235,128 @@ def test_only_rows_settled_and_quoted_strictly_before_the_day_count():
     weights = EdgeWeights(_fake(rows), {"accuracy": {"shrink_rows": 5}})
     w, record = weights.accuracy("2019-01-07", ["A"])
     ab, aa = _hand([([.2, .7, .9], .3)])
-    assert record["scored_rows"] == 1 and w["A"] == round(min(1., max(0., (ab+5*ab)/(aa+5*aa))), 9)
+    assert record["scored_rows"] == 1 and w == _shrunk({"A": (ab, aa, 1)}, 5, ["A"])[0]
+    assert record["unscored"] == {}, "rows not yet settled are not counted as unscored"
     # a later day reads the second row too, and nothing on the first day moved when the future rows changed
     later, _ = weights.accuracy("2019-01-08", ["A"])
     ab2, aa2 = _hand([([.2, .7, .9], .3), ([.9, .95, 1.], .8)])
-    assert later["A"] == round(min(1., max(0., (ab2+5*ab2/2)/(aa2+5*aa2/2))), 9)
+    assert later == _shrunk({"A": (ab2, aa2, 2)}, 5, ["A"])[0]
     changed = [rows[0], ("A", "2019-01-03", "2019-01-07", [0., 0., 1.], -3.), rows[2]]
     assert EdgeWeights(_fake(changed), {"accuracy": {"shrink_rows": 5}}).accuracy("2019-01-07", ["A"])[0] == w
 
 
+def test_nothing_settling_on_or_after_the_development_seal_is_scored():
+    from index_options.ledger_studies import DEVELOPMENT_SEAL
+    assert DEVELOPMENT_SEAL == "2021-07-01"
+    rows = [("A", "2021-06-21", "2021-06-25", [.2, .7, .9], .3),
+            ("A", "2021-06-24", "2021-07-01", [1., 1., 1.], 2.),     # settles on the seal: never read
+            ("A", "2021-06-25", "2021-07-02", [0., 0., 0.], -2.)]    # settles after it: never read
+    weights = EdgeWeights(_fake(rows), UNSHRUNK)
+    for day, sealed in (("2021-07-02", 1), ("2021-07-09", 2)):
+        w, record = weights.accuracy(day, ["A"])
+        assert record["scored_rows"] == 1 and record["unscored"] == {"after_seal": sealed}
+        assert w == {"A": _bound(*_hand([([.2, .7, .9], .3)]))}
+    # the holdout rows' values cannot move the weight
+    other = [rows[0], ("A", "2021-06-24", "2021-07-01", [0., 0., 1.], -3.), ("A", "2021-06-25", "2021-07-02", G, 0.)]
+    assert EdgeWeights(_fake(other), UNSHRUNK).accuracy("2021-07-09", ["A"])[0] == w
+
+
 def test_a_name_is_shrunk_toward_the_pool_and_a_name_without_rows_takes_the_pooled_value():
-    rows = [("A", "2019-01-02", "2019-01-04", [.1, .6, .95], .2), ("A", "2019-01-03", "2019-01-04", [.3, .5, .8], .2),
-            ("B", "2019-01-02", "2019-01-04", [.6, .9, 1.], .4)]
+    rows = [("A", "2019-01-02", "2019-01-04", [0., .9, 1.], -.5), ("A", "2019-01-03", "2019-01-04", [.05, .6, .95], -.5),
+            ("B", "2019-01-02", "2019-01-04", [.2, .6, .9], .4)]
     w, record = EdgeWeights(_fake(rows), {"accuracy": {"shrink_rows": 2}}).accuracy("2019-01-07", ["A", "B", "C"])
-    a_ab, a_aa = _hand([([.1, .6, .95], .2), ([.3, .5, .8], .2)])
-    b_ab, b_aa = _hand([([.6, .9, 1.], .4)])
-    mean_ab, mean_aa = (a_ab+b_ab)/3, (a_aa+b_aa)/3
-    bound = lambda ab, aa: round(min(1., max(0., ab/aa)), 9)
-    assert w["A"] == pytest.approx(bound(a_ab+2*mean_ab, a_aa+2*mean_aa), abs=1e-9)
-    assert w["B"] == pytest.approx(bound(b_ab+2*mean_ab, b_aa+2*mean_aa), abs=1e-9)
-    assert w["C"] == record["pooled"] == pytest.approx(bound(mean_ab, mean_aa), abs=1e-9)
+    a_ab, a_aa = _hand([([0., .9, 1.], -.5), ([.05, .6, .95], -.5)])
+    b_ab, b_aa = _hand([([.2, .6, .9], .4)])
+    assert 0. < _shrunk({"A": (a_ab, a_aa, 2), "B": (b_ab, b_aa, 1)}, 2, ["B"])[0]["B"] < 1., "B is interior"
+    want, pooled = _shrunk({"A": (a_ab, a_aa, 2), "B": (b_ab, b_aa, 1)}, 2, ["A", "B", "C"])
+    assert w == pytest.approx(want, abs=1e-9) and record["pooled"] == pytest.approx(pooled, abs=1e-9)
+    assert w["C"] == record["pooled"] and w["A"] != w["B"]
     assert record["fallback_pooled"] == 1 and record["names"] == 3 and record["min"] <= record["median"] <= record["max"]
     assert all(0. <= v <= 1. for v in w.values())
+
+
+def test_the_pooled_weight_is_shrunk_toward_face_value_so_a_few_early_rows_cannot_zero_every_name():
+    wrong = [(s, "2019-01-02", "2019-01-04", [1., 1., 1.], .5) for s in ("A", "B", "C")]
+    w, record = EdgeWeights(_fake(wrong), {"accuracy": {"shrink_rows": 60}}).accuracy("2019-01-07", ["A", "B", "C", "D"])
+    assert _bound(*_hand([([1., 1., 1.], .5)]*3)) == 0., "unshrunk, three wrong rows would zero the pool"
+    assert record["pooled"] > .9 and min(w.values()) > .9 and w["D"] == record["pooled"]
+    # with a long record the data speak: 600 wrong rows bring the pool well under a half
+    many = [(f"N{i:03d}", "2019-01-02", "2019-01-04", [1., 1., 1.], .5) for i in range(600)]
+    _, record = EdgeWeights(_fake(many), {"accuracy": {"shrink_rows": 60}}).accuracy("2019-01-07", ["N000"])
+    assert record["pooled"] < .5
 
 
 def test_a_week_with_no_scored_row_takes_the_forecast_at_face_value_and_says_so():
     rows = [("A", "2019-01-02", "2019-01-04", [.1, .6, .95], .2)]
     w, record = EdgeWeights(_fake(rows), {"accuracy": {"shrink_rows": 2}}).accuracy("2019-01-04", ["A"])
     assert w == {"A": 1.} and record["no_history"] and record["scored_rows"] == 0 and record["pooled"] is None
-    w, _ = EdgeWeights(_fake(rows, pairs=False), {"accuracy": {"shrink_rows": 2}}).accuracy("2019-01-07", ["A"])
-    assert w == {"A": 1.}, "a row the method could not trade is not scored"
+    w, record = EdgeWeights(_fake(rows, pairs=False), {"accuracy": {"shrink_rows": 2}}).accuracy("2019-01-07", ["A"])
+    assert w == {"A": 1.} and record["unscored"] == {"no_pair": 1}, "a row the method could not trade is not scored"
+
+
+def test_an_empty_history_past_the_grace_days_refuses_loudly():
+    rows = [("A", "2019-01-02", "2019-01-04", [.1, .6, .95], .2)]
+    weights = EdgeWeights(_fake(rows, pairs=False), {"accuracy": {"shrink_rows": 2}})
+    assert EdgeWeights.NO_HISTORY_GRACE_DAYS == 21
+    assert weights.accuracy("2019-01-23", ["A"])[1]["no_history"]           # 21 days after the first forecast
+    with pytest.raises(ValueError, match="accuracy_no_history.*no_pair"):
+        weights.accuracy("2019-01-24", ["A"])
+
+
+# --- the accuracy weight on the REAL study class (its own forecasts, contexts, closes, factors, pairs, node grid) ---
+
+def _real_study(closes, fitted=(True, False), require_fitted=False):
+    """The hedged world's study with a sharp forecast (a normal shifted up by one z) on both of its rows.
+
+    Rows: quoted 2019-01-02 settling 2019-02-01 and quoted 2019-01-07 settling 2019-02-08 (pair X30, 28-32 days).
+    ``closes`` sets the close on those four days; ``fitted`` the two rows' flags.
+    """
+    params, inputs = _hedged_world()
+    params["bridge"]["require_fitted"] = require_fitted
+    z_grid = [float(z) for z in params["bridge"]["z_grid"]]
+    sharp = [.5*(1+math.erf((z-1.)/math.sqrt(2))) for z in z_grid]
+    for row, flag in zip(sorted(inputs["X"]["forecasts"], key=lambda r: r["quote_date"]), fitted, strict=True):
+        row.update({f"method_cdf_{label}": v for label, v in zip(params["bridge"]["grid_labels"], sharp)}, fitted=flag)
+    for bar in inputs["X"]["bars"]:
+        if bar["date"] in closes:
+            bar["close"] = closes[bar["date"]]
+    arm = _arm("kelly075_ls_fast_hedged_static_acc_lp")
+    params.update(methods=[arm], hedge_parity=dict(_PARITY), locked_method_ids=list(FORMULATIONS))
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    rows = sorted((r["quote_date"], r["settlement_date"], r["reference_scale"]) for r in inputs["X"]["contexts"])
+    return study, arm, z_grid, sharp, rows
+
+
+def test_the_real_study_scores_its_own_settled_rows_and_the_weight_follows_the_outcomes():
+    up = {"2019-01-02": 100., "2019-02-01": 102.5, "2019-01-07": 100., "2019-02-08": 102.}    # the sharp view was right
+    down = {"2019-01-02": 100., "2019-02-01": 97.5, "2019-01-07": 100., "2019-02-08": 98.}  # it was wrong
+    weights = {}
+    for label, closes in (("up", up), ("down", down)):
+        study, arm, z_grid, sharp, rows = _real_study(closes)
+        edge = EdgeWeights(study, arm["kelly"])
+        assert [s for s in study.params["symbols"]] == ["X"]
+        _w, first = edge.accuracy("2019-01-02", ["X"])
+        assert first["no_history"] and first["scored_rows"] == 0
+        w, mid = edge.accuracy("2019-02-04", ["X"])      # the first row has settled, the second has not
+        assert mid["scored_rows"] == 1 and mid["unscored"] == {} and not mid["no_history"]
+        w, late = edge.accuracy("2019-02-11", ["X"])     # both settled; the unfitted one counts (require_fitted off)
+        assert late["scored_rows"] == 2 and late["unscored"] == {} and late["fallback_pooled"] == 0
+        hand = [(sharp, math.log(closes[s]/closes[q])/scale) for q, s, scale in rows]
+        ab, aa = _hand(hand, z_grid)
+        assert w == _shrunk({"X": (ab, aa, 2)}, 60, ["X"])[0] and late["pooled"] == _shrunk({"X": (ab, aa, 2)}, 60, ["X"])[1]
+        weights[label] = w["X"]
+    assert weights["down"] < weights["up"] <= 1. and weights["down"] < 1.
+
+
+def test_the_real_study_follows_require_fitted_and_drops_a_basis_change():
+    closes = {"2019-01-02": 100., "2019-02-01": 102.5, "2019-01-07": 100., "2019-02-08": 102.}
+    study, arm, *_ = _real_study(closes, require_fitted=True)
+    _w, record = EdgeWeights(study, arm["kelly"]).accuracy("2019-02-11", ["X"])
+    assert record["scored_rows"] == 1 and record["unscored"] == {"not_fitted": 1}
+    study, arm, *_ = _real_study(closes)
+    study._factors["X"].update({"2019-01-02": 1., "2019-02-01": 2.})
+    _w, record = EdgeWeights(study, arm["kelly"]).accuracy("2019-02-11", ["X"])
+    assert record["scored_rows"] == 1 and record["unscored"] == {"basis_change": 1}
 
 
 def test_the_dte_tilt_is_one_at_the_long_end_and_falls_linearly_to_the_short_end():
