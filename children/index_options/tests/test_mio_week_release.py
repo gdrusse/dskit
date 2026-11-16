@@ -96,6 +96,20 @@ def test_shrink_memory_runs_on_a_real_read_only_connection():
     ledger_studies._return_freed_memory()
 
 
+def test_a_broken_stderr_never_ends_the_solve(tmp_path, monkeypatch):
+    class Broken:
+        def write(self, text):
+            raise OSError("broken pipe")
+
+        def flush(self):
+            raise ValueError("closed")
+    worker = object.__new__(MIOMethodWorker)
+    worker.spec = {"out": str(tmp_path / "unit.json")}
+    monkeypatch.setattr(ledger_studies.sys, "stderr", Broken())
+    worker._progress(1, 14, "selected")
+    assert (tmp_path / "unit.json.progress").read_text().endswith(" week 1/14\n")
+
+
 def test_the_worker_reads_its_memory():
     now, peak = MIOMethodWorker.memory_gib()
     assert peak is None or peak > 0

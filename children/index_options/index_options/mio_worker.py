@@ -910,10 +910,14 @@ class MIOMethodWorker:
         with open(self.spec["out"] + ".progress", "a", encoding="utf-8") as handle:
             handle.write(line)
         # Memory after the week was recorded and released (stderr: the progress file keeps its exact format).
+        # A closed or broken stderr must never end a solve: the line is a measurement, not an output.
         now, peak = self.memory_gib()
-        sys.stderr.write(f"{stamp()} week {done}/{total} rss_gib {'na' if now is None else f'{now:.2f}'} "
-                         f"peak_rss_gib {'na' if peak is None else f'{peak:.2f}'}\n")
-        sys.stderr.flush()
+        try:
+            sys.stderr.write(f"{stamp()} week {done}/{total} rss_gib {'na' if now is None else f'{now:.2f}'} "
+                             f"peak_rss_gib {'na' if peak is None else f'{peak:.2f}'}\n")
+            sys.stderr.flush()
+        except (OSError, ValueError, AttributeError):
+            pass
 
     @staticmethod
     def memory_gib():
