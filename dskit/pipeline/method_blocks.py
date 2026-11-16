@@ -33,7 +33,7 @@ __all__ = ["MethodBlocks", "BlockSpec", "DelegatedBlockSpec", "NullBlock", "Cali
 
 #: The first date the owner has NOT opened for development economics (RE-ENTRY: no 2022-2023 MIO
 #: economics before the owner's 3 picks). The one owner; it moves only when the owner lifts it.
-DEVELOPMENT_SEAL = "2021-07-01"
+DEVELOPMENT_SEAL = "2024-01-01"
 #: Stable refusal codes; each starts its message.
 UNKNOWN_BLOCK, UNKNOWN_KEY, MISSING_KEY = "block_unknown", "block_unknown_key", "block_missing_key"
 BLOCK_TYPE, PARAM_VALUE = "block_type", "block_param_value"

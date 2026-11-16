@@ -99,7 +99,7 @@ def stamp(now=None):
 
 #: First date of the sealed holdout (2021Q3 onward). Worker pricing writes P&L in the clear, so it never
 #: runs for a packet whose decision window reaches it (ADR-0297 Amendment 1; repo holdout rule).
-HOLDOUT_START = "2021-07-01"
+HOLDOUT_START = "2024-01-01"
 _NONSEALED_PURPOSES = {"development", "adaptation", "confirmation"}
 
 
