@@ -14,6 +14,7 @@ formulation is unchanged.
 |---|---|
 | LS | `children/index_options/index_options/ledger_studies.py` |
 | KL | `children/index_options/index_options/kelly_local.py` |
+| nodes.py | `children/index_options/index_options/nodes.py` |
 | PY | `dskit/pipeline/libs/pyomo.py` |
 | OL | `dskit/pipeline/libs/option_ledger.py` |
 | HO | `dskit/pipeline/hedge_overlay.py` |
@@ -39,7 +40,7 @@ Parameter values come from the bundle `2020q2-fsdte-t40/study.json`.
 
 | symbol | meaning | where it comes from |
 |---|---|---|
-| $F_g(z)$, $p_{gk}$, $s_{gk}$ | forecast CDF of $z=\ln(S_T/S_t)/\text{scale}$ at 13 points, projected onto the grid as masses $p_{gk}$ at prices $s_{gk}$ | `forecasts.parquet` (`method_cdf_*`) from source `quarterly-forecasts-b10d67deebb5`. The model is recipe `b10d67de` (`fixed_loc` net, 5 seeds, linear pool). Labels are cut at the quarter start, per `<Q>/receipt.json`. The projection is `MeanPreservingCDFGrid` (nodes.py:4786) |
+| $F_g(z)$, $p_{gk}$, $s_{gk}$ | forecast CDF of $z=\ln(S_T/S_t)/\text{scale}$ at 13 points, projected onto the grid as masses $p_{gk}$ at prices $s_{gk}$ | `forecasts.parquet` (`method_cdf_*`) from source `quarterly-forecasts-b10d67deebb5`. study.json pins the recipe sha `b10d67de...` and the receipt sha `32adb43a...`. The receipt itself is not in the bundle. It is `2020Q2/receipt.json` in the source snapshot (`/home/russell/data/index_options/full-span-rerun-20261105/quarterly/onboarding/raw/quarterly-forecasts-b10d67deebb5/20261106T013245Z-backfill-1cdd4756/payload/files/`); its sha matches the pin. It records recipe kind `fixed_loc`, seeds 11/29/47/53/71 averaged by `linear_pool`, and `label_cutoff` 2020-04-01 (the quarter start). The projection is `MeanPreservingCDFGrid` (nodes.py:4786) |
 | $S_g$, $\text{scale}_g$ | spot and reference scale | `contexts.parquet`, same source and receipt |
 | bid, ask, sizes, vendor IV | end-of-day option quotes on $t$; also on the fill day and for marks | source `theta-exact-expiry-archive`, `<sym>/options_<year>.parquet` |
 | $\pi_j$ | price per share at $t$: ask to buy, bid to sell | the quotes (LS:4173) |
@@ -89,7 +90,8 @@ $$
 \end{aligned}
 $$
 
-The utility is $u_\gamma(W)=\big((W/w_0)^{1-\gamma}-1\big)/(1-\gamma)$, which is 0 at $w_0$ (PY:174).
+The utility is $u_\gamma(W)=\big((W/w_0)^{1-\gamma}-1\big)/(1-\gamma)$ for $\gamma>1$, and $u_1(W)=\ln(W/w_0)$ for
+$\gamma=1$, which the $f=1.0$ cells use. Both are 0 at $w_0$ (PY:174).
 
 $M_g$ is the group's dispersion on the book's terminal payoffs $v_k=-\ell_{gk}^\top x_g$ over atoms with positive mass.
 With $t_k=\lvert v_k-\bar v\rvert$, it is the maximum of these (PY:3694, PY:4438):
@@ -138,7 +140,8 @@ for each session t in the calendar:                                         # LS
         build menu G_t, m_g, omega, tau, w0 from the inputs above            # LS:5323-5504
         # stage one: (D) with HiGHS (appsi, threads 1, mip_rel_gap 0.1, mip_abs_gap 1, no seed set)
         A <- LP screen (one LP per group)                                   # PY:4597
-        x1 <- HiGHS(D) under time_limit 300 s                               # LS:4715
+        x1 <- HiGHS(D) under stage1_time_limit 300 s                        # LS:4715
+              (the 2400 s time_limit in study.json is validated only, never binding)
         if finished: start <- x1 (cash if its value <= 0)
         elif stopped with an incumbent (gap > 10%, or audit miss): start <- incumbent
         else: start <- cash                                                 # LS:4744
@@ -161,7 +164,9 @@ for each session t in the calendar:                                         # LS
 
 The result is **not a global optimum** of (P).
 
-- Stage one stops at a 10% (or $1) gap, or at 300 s. Then it only supplies a start.
+- Stage one stops at a gap of max($1, 10%·|value|) or at 300 s, and then it only supplies a start. The `time_limit`
+  2400 in study.json is only validated (LS:3601). It never binds: stage one runs under 300 s and the climb reads no
+  clock. In the batch measured in `PROFILE.md`, 72 of 365 unit-weeks hit the 300 s cap.
 - The climb stops at a local optimum of the *evaluated* neighbourhood, or after 200 moves.
 - `end_value` is only a lower bound on the optimum of (P) (decision log, ADR-0307 limits). No bound or gap is computed.
 - Solving (P) directly as one MIP did not finish: 300,000 to 430,000 rows, and 12 of 13 weeks skipped on 2021Q1
