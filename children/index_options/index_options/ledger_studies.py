@@ -4870,7 +4870,13 @@ class WeeklyOptionPortfolioStudy:
                                                                  "time_limit": search["stage1_time_limit"]}}
         solver = self._solver(solver_params)
         record_selection = search.get("record_stage1_selection", False)
-        program_sha256 = self._stage1_program_sha256(dollar, solver_params) if record_selection else None
+        program_sha256 = None
+        if record_selection:
+            try:
+                program_sha256 = self._stage1_program_sha256(dollar, solver_params)
+            except Exception as exc:  # a non-finite program value: name the week
+                raise RecordedCheckRefusal("stage-one program cannot be digested: "+str(exc),
+                                           "stage1_program_digest", "other", week=day)
         if derived is not None:
             claim = derived["stage1"]
             base = {"actions", "certificates"}
@@ -4883,6 +4889,9 @@ class WeeklyOptionPortfolioStudy:
                     # The recorded selection stands in for the re-solve AND the integer re-derivation: it is checked
                     # against this program's digest and its own, then audited by ``_recorded`` exactly as a record is.
                     self._check_stage1_selection(claim, program_sha256, day)
+                    if TransportPortfolioSolve.actions(claim["selection"]) != claim["actions"]:
+                        raise RecordedCheckRefusal("recorded stage-one actions differ from the recorded selection",
+                                                   "stage1_selection_actions", "file", week=day)
                     first = solver._recorded(dollar, claim["selection"], claim["certificates"])
                 else:
                     first = solver.derived(dollar, claim["actions"], claim["certificates"])["selection"]
@@ -4899,7 +4908,7 @@ class WeeklyOptionPortfolioStudy:
             claim = recorded.get("stage1")
             if not isinstance(claim, dict) or "selection" not in claim or "certificates" not in claim:
                 raise ValueError("eligible decision lacks recorded solve evidence")
-            if "program_sha256" in claim:
+            if record_selection or any(k in claim for k in self._STAGE1_SELECTION_KEYS[1:]):
                 self._check_stage1_selection(claim, program_sha256, day)
             first = solver._recorded(dollar, claim["selection"], claim["certificates"])
         screen = dict(solver.last_screen)
@@ -4968,10 +4977,12 @@ class WeeklyOptionPortfolioStudy:
         from dskit.pipeline.base import value_hash
 
         def plain(value):
+            if isinstance(value, float):
+                return float(f"{value:.12g}")   # 12 significant digits: a last-bit BLAS difference is not a program
             if isinstance(value, np.ndarray):
                 return plain(value.tolist())
             if isinstance(value, np.generic):
-                return value.item()
+                return plain(value.item())
             if isinstance(value, dict):
                 return {str(k): plain(v) for k, v in value.items()}
             if isinstance(value, (list, tuple)):

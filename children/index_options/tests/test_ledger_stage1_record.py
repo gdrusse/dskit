@@ -158,6 +158,45 @@ def test_a_selection_that_differs_from_its_own_digest_or_is_undeclared_refuses()
         STUDY(plain_params, plain_data)._method(plain, None, derived=body)
 
 
+def test_actions_that_differ_from_the_recorded_selection_refuse():
+    params, data, method, study, live = _run()
+    body = _entries(live, method, study)
+    forged = copy.deepcopy(body)
+    day = next(iter(forged["decisions"]))
+    forged["decisions"][day]["stage1"]["actions"]["pairs"] = [{"group": "x", "pair": [0, 1], "matched_quantity": 1}]
+    assert _refusal(params, data, method, forged).check == "stage1_selection_actions"
+
+
+def test_the_recorded_route_refuses_stripped_partial_and_undeclared_digests():
+    params, data, method, _study, live = _run()
+    day_index = next(i for i, w in enumerate(live["decisions"]) if "stage1" in w)
+    for drop in (("program_sha256", "selection_sha256"), ("program_sha256",), ("selection_sha256",)):
+        forged = copy.deepcopy(live)
+        for key in drop:
+            del forged["decisions"][day_index]["stage1"][key]
+        with pytest.raises(RecordedCheckRefusal, match="not declared"):
+            STUDY(params, data)._method(method, None, recorded=forged)
+    forged = copy.deepcopy(live)
+    forged["decisions"][day_index]["stage1"]["selection"]["value"] += 1.
+    with pytest.raises(RecordedCheckRefusal, match="differs from its digest"):
+        STUDY(params, data)._method(method, None, recorded=forged)
+    plain_params, plain_data, plain, _s, off = _run(record=False)
+    week = next(w for w in off["decisions"] if "stage1" in w)
+    week["stage1"].update(program_sha256="0"*64, selection_sha256="0"*64)
+    with pytest.raises(RecordedCheckRefusal, match="not declared"):
+        STUDY(plain_params, plain_data)._method(plain, None, recorded=off)
+
+
+def test_the_program_digest_ignores_last_bit_float_noise_and_numpy_types():
+    import numpy as np
+
+    digest = STUDY._stage1_program_sha256
+    a = {"groups": [{"capacity": np.array([1, 2]), "w": np.float64(0.1+0.2)}], "caps": []}
+    b = {"groups": [{"capacity": [1, 2], "w": 0.3}], "caps": []}
+    assert digest(a, {"x": 1}) == digest(b, {"x": 1})
+    assert digest(a, {"x": 1}) != digest({**b, "caps": [1]}, {"x": 1})
+
+
 def test_the_record_size_per_week_is_reported_for_the_synthetic_world():
     _p, _d, method, study, live = _run()
     body = _entries(live, method, study)
