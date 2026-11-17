@@ -87,6 +87,7 @@ from dskit.pipeline.records import number_ok
 from dskit.pipeline.runs import NODES_DIR, RESULT_FILE, WALKFORWARD_FILE, walk_fold_dirs
 from dskit.pipeline.stats import lower_tail_mean, max_drawdown
 
+from .close_candidates import CloseCandidates
 from .contracts import CONDOR_LEGS, STRUCTURES, structure_max_loss, usable_parity_rows
 from .joint_scenarios import defects as joint_scenario_defects
 from .joint_scenarios import generator as joint_scenario_generator
@@ -3084,7 +3085,7 @@ class WeeklyOptionPortfolioStudy:
     #: An optional kelly key (ADR-0301): ``max_groups`` keeps, of the ``lp`` screen's survivors, only that many with
     #: the largest standalone relaxed value before the joint growth program is built (the solver's group_screen_keep).
     _KELLY_OPTIONAL_KEYS = {"max_groups", "accept_uncertified", "search", "warm_start", "local_search",
-                            "settleable_only", "risk", *EdgeWeights.KEYS, "calibration"}
+                            "settleable_only", "risk", CloseCandidates.KEY, *EdgeWeights.KEYS, "calibration"}
     #: ADR-0319: ``risk`` ({cvar: {alpha, weight}, concentration: {by, weight, power}, replace_name_charge}) prices the
     #: tail loss and the reserve concentration inside the local search's objective
     #: (:meth:`~index_options.kelly_local.KellyLocalSearch.validate_risk`). It needs a ``local_search`` (the climb is
@@ -3398,6 +3399,9 @@ class WeeklyOptionPortfolioStudy:
         if not isinstance(p["methods"], list) or not p["methods"]:
             raise ValueError("methods must be a nonempty declared list")
         for method in p["methods"]:
+            if isinstance(method, dict) and CloseCandidates.problems(method):
+                # P2: the feature's own named refusals (hedge, calibration, limits, sizer, edge weights, multistart).
+                raise ValueError("; ".join(CloseCandidates.problems(method)))
             if (not isinstance(method, dict)
                     or set(method)-cls._OPTIONAL_METHOD_KEYS != cls._METHOD_KEYS
                     or any(not number_ok(v) or v < 0 for v in cls._charge(method).values())
@@ -3782,6 +3786,7 @@ class WeeklyOptionPortfolioStudy:
                 and ("max_groups" not in kelly or (type(kelly["max_groups"]) is int and kelly["max_groups"] >= 1))
                 and ("accept_uncertified" not in kelly or type(kelly["accept_uncertified"]) is bool)
                 and ("settleable_only" not in kelly or kelly["settleable_only"] is True)
+                and CloseCandidates.well_formed(kelly)
                 and (not EdgeWeights.declared(kelly)
                      or (EdgeWeights.valid(kelly) and isinstance(kelly.get("local_search"), dict)
                          and "start" in kelly["local_search"] and "calibration" not in method))
@@ -5104,7 +5109,7 @@ class WeeklyOptionPortfolioStudy:
         return out if any(any(row) for row in out) else None
 
     def _local_search_week(self, day, method, kelly, program, configured, metadata, account, components, mult,
-                           derived, recorded):
+                           derived, recorded, close=None):
         """Return one local-search week (ADR-0307): the stage-one start, the climb, and the evidence for a replay.
 
         Stage one is the dollar program of the method's ``local_search.start`` (its radius and shock gate, the dollar
@@ -5197,12 +5202,31 @@ class WeeklyOptionPortfolioStudy:
         # ADR-0307 Amendment 1: a stage one stopped at its limit WITH an incumbent (the "return" policy's timeout
         # envelope, candidate actions present) starts the climb from that incumbent when the block says so.
         incumbent = timed_out and search.get("incumbent_start", False) and first.get("candidate") is not None
-        scorer = TransportActionScore(program, {"parity_tolerance": p["solver"]["parity_tolerance"]})
+        score_params = {"parity_tolerance": p["solver"]["parity_tolerance"]}
+        holds, hold_start, closing = None, True, None
+        if close is None:
+            scorer = TransportActionScore(program, score_params)
+        else:
+            # P2 (close_candidates): the program carries one hold/close group per closable open book after the
+            # candidates. The reference selection keeps every hold (or closes every hold when keeping breaches the
+            # wealth floor); a week where neither reference is feasible falls back to the plain program.
+            scorer = TransportActionScore(close["program"], score_params)
+            holds = list(range(len(program["groups"]), len(close["program"]["groups"])))
+            nothing = [[0]*len(g["capacity"]) for g in program["groups"]]
+            if scorer.check_feasible([*nothing, *([1] for _ in holds)])["feasible"]:
+                closing = "hold_start"
+            elif scorer.check_feasible([*nothing, *([0] for _ in holds)])["feasible"]:
+                closing, hold_start = "close_start", False
+            else:
+                closing, holds = "dropped_infeasible_baseline", None
+                scorer = TransportActionScore(program, score_params)
+        start = first["candidate"]["quantities"] if incumbent else None if timed_out else first["quantities"]
+        if holds and start is not None:
+            start = [*start, *([1 if hold_start else 0] for _ in holds)]
         out = KellyLocalSearch(scorer, {k: v for k, v in search.items()
                                         if k not in ("start", *self._LOCAL_STAGE1_KEYS,
-                                                     *self._LOCAL_RECORD_KEYS)}).run(
-            first["candidate"]["quantities"] if incumbent else None if timed_out else first["quantities"],
-            "stage1_incumbent" if incumbent else "stage1")
+                                                     *self._LOCAL_RECORD_KEYS)}, holds, hold_start).run(
+            start, "stage1_incumbent" if incumbent else "stage1")
         local = out["record"]
         if timed_out and not incumbent:
             local["start_kind"] = "stage1_timeout_cash"
@@ -5264,8 +5288,29 @@ class WeeklyOptionPortfolioStudy:
             from dskit.pipeline.base import value_hash
 
             stage1.update(program_sha256=program_sha256, selection_sha256=value_hash(stage1["selection"]))
-        return {"selection": out["selection"], "local": local, "screen": screen, "stage1": stage1,
+        week = {"selection": out["selection"], "local": local, "screen": screen, "stage1": stage1,
                 "certificates": [*stage1_certificates, certificate]}
+        if close is not None:
+            ids = close["week"]["books"] if holds else []
+            week["close"] = {"state": closing, "books": ids,
+                             "closing": [key for key, g in zip(ids, holds or ()) if out["quantities"][g][0] == 0]}
+        return week
+
+    def _close_program(self, program, week, metadata, terms, kelly, kelly_record, account, method, components):
+        """The week's one-stage program with the closable books' hold groups added (P2).
+
+        The groups follow the candidates; their scenario terms join the candidates' before the centring, the name
+        aggregate covers them, the shared reserve caps list them (their reserve row is zero) and the utility's ``w0``
+        carries the scenario-free close proceeds the hold items are measured against.
+        """
+        joint_terms = {move: {**terms[move], **week["terms"][move]} for move in terms}
+        utility = {**program["utility"], "w0": program["utility"]["w0"]+week["shift"],
+                   "aggregate": {**program["utility"]["aggregate"], **{m["id"]: m["symbol"] for m in week["meta"]}},
+                   "joint": self._centred_scenarios(joint_terms, kelly["moves"], kelly_record["weights"],
+                                                    kelly_record["quiet"])}
+        limits = self._limits(account, method, components, solve=True)
+        return {**program, "groups": [*program["groups"], *week["groups"]],
+                "caps": self._caps(limits, [*metadata, *week["meta"]]), "utility": utility}
 
     #: The keys a recorded stage-one selection adds to a week's (or an action entry's) ``stage1`` evidence.
     _STAGE1_SELECTION_KEYS = ("selection", "program_sha256", "selection_sha256")
@@ -5435,6 +5480,30 @@ class WeeklyOptionPortfolioStudy:
                       fees=fees, stress_extra=stress, status="filled")
         return filled, None
 
+    def _close_fills(self, closer, account, pending, day):
+        """Execute the closes decided last session at today's quotes (P2); a close that cannot fill leaves its book held.
+
+        Closes run after today's settlements and before today's entry fills. Each is priced by
+        :meth:`CloseCandidates.fill` from today's quotes only (the decision saw date-D quotes, the fill never moves
+        them), then taken by :meth:`FundedOptionAccount.close_early`. The outcome joins the decision's own record.
+        """
+        done, refused = [], []
+        for key in pending["ids"]:
+            book = account.open.get(key)
+            if book is None:
+                refused.append({"id": key, "reason": "not_open"})
+                continue
+            fields, reason = closer.fill(book, day)
+            if fields is None:
+                refused.append({"id": key, "reason": reason})
+                continue
+            pnl = fields.pop("pnl")
+            account.close_early(day, key, pnl, close_decision_date=pending["date"], **fields)
+            done.append({"id": key, "fill_date": day, "pnl": pnl, "close_proceeds": fields["close_proceeds"],
+                         "close_fees": fields["close_fees"]})
+        record = pending["record"]["kelly"]["close_candidates"]
+        record["filled"], record["unfilled"] = done, refused
+
     def _settlements(self, account, day):
         """Use only today's observed underlying for today's maturing books."""
         from dskit.pipeline.option_structures import structure_payoff
@@ -5464,6 +5533,26 @@ class WeeklyOptionPortfolioStudy:
         ledger's ``fixed`` forward hedge and the ``hedge`` object's forwards; the passes are merged back into the
         account's order. With no hedged book this is the single pass it always was.
         """
+        early = [b for b in trades if b.get("closed_early")]
+        if early:
+            # P2: books closed before expiry replay in their own pass under the ledger's exit rule (the same quotes
+            # the account closed at); the rest run as ever. Hedged books are refused beside close_candidates.
+            kept = [b for b in trades if not b.get("closed_early")]
+            position = {id(b): i for i, b in enumerate(trades)}
+            passes = [(kept, self._ledger_pass(kept, charge)), (early, self._ledger_pass(early, charge, exits=True))]
+            merged = {"trades": [], "marks": []}
+            for books, done in passes:
+                for row in done["trades"]:
+                    row["order_index"] = position[id(books[row["order_index"]])]
+                    merged["trades"].append(row)
+                for row in done["marks"]:
+                    row["order_index"] = position[id(books[row["order_index"]])]
+                    merged["marks"].append(row)
+            merged["trades"].sort(key=lambda r: r["order_index"])
+            merged["marks"].sort(key=lambda r: r["order_index"])
+            merged["summary"] = {**passes[0][1]["summary"], "early_closed": passes[1][1]["summary"]} if kept \
+                else passes[1][1]["summary"]
+            return merged
         held = [b for b in trades if b.get("hedge", {}).get("units")]
         if not held:
             return self._ledger_pass(trades, charge)
@@ -5487,7 +5576,7 @@ class WeeklyOptionPortfolioStudy:
             else passes[1][1]["summary"]
         return merged
 
-    def _ledger_pass(self, trades, charge=None, hedge=None):
+    def _ledger_pass(self, trades, charge=None, hedge=None, exits=False):
         """One shared-ledger pass over ``trades`` (all unhedged, or all hedged with ``hedge`` supplying the forwards)."""
         from dskit.pipeline.libs.option_ledger import OptionStructureLedger
 
@@ -5499,7 +5588,8 @@ class WeeklyOptionPortfolioStudy:
             structures[b["id"]] = [[leg["right"], leg["sign"]*leg["quantity"]] for leg in b["legs"]]
             orders.append({"date": b["fill_date"], "symbol": symbol, "expiration": expiry,
                            "strikes": [leg["strike"] for leg in b["legs"]], "structure": b["id"],
-                           **({"hedge_units": b["hedge"]["units"]} if hedge else {})})
+                           **({"hedge_units": b["hedge"]["units"]} if hedge else {}),
+                           **({"exit": b["close_date"]} if exits else {})})
             for day in self.calendar:
                 if not b["fill_date"] <= day <= expiry:
                     continue
@@ -5526,7 +5616,7 @@ class WeeklyOptionPortfolioStudy:
                                  "ask": raw["ask"]/factor if number_ok(raw["ask"]) else raw["ask"],
                                  "underlying": underlying}
         fields = ("symbol", "date", "expiration", "strike", "right", "bid", "ask", "underlying")
-        order_fields = ("date", "symbol", "expiration", "strikes", "structure")
+        order_fields = ("date", "symbol", "expiration", "strikes", "structure") + (("exit",) if exits else ())
         ledger_inputs = {"chain": list(rows.values()), "orders": orders}
         if self.adjustments:
             ledger_inputs["adjustments"] = [event.record() for event in self.adjustments.values()]
@@ -5534,7 +5624,7 @@ class WeeklyOptionPortfolioStudy:
             "chain_fields": {k: k for k in fields}, "order_fields": {k: k for k in order_fields},
             "structures": structures, "multiplier": self.params["bridge"]["solver"]["multiplier"],
             "fee_per_contract": self.params["bridge"]["solver"]["fee_per_contract_usd"],
-            "fill": "nbbo", "close_rule": "expiry"}
+            "fill": "nbbo", "close_rule": "exit" if exits else "expiry"}
         if hedge:
             # The units are already truncated (once, by the overlay): the ledger must not round them again.
             first = trades[0]["hedge"]["rates"]
@@ -5632,7 +5722,7 @@ class WeeklyOptionPortfolioStudy:
                 "losses": sum(t["pnl"] < 0 for t in trades),
                 "unfilled": len(rejected), "contracts": sum(t["contracts"] for t in trades),
                 "unbounded_books": sum(not math.isfinite(t["max_loss"]) for t in trades),
-                "fees": sum(t["fees"] for t in trades), "ledger_summary": ledger["summary"]}
+                "fees": sum(t["fees"]+t.get("close_fees", 0.) for t in trades), "ledger_summary": ledger["summary"]}
         if "decision_weeks" in self.params:
             # A check week is timing only: the key makes every read of the result refuse it as evidence.
             result["decision_weeks"] = list(self.params["decision_weeks"])
@@ -5803,11 +5893,17 @@ class WeeklyOptionPortfolioStudy:
         charge = self._charge(method)
         hedged_search = hedge is not None and self._hedged_search(method)
         decisions, rejected, snapshots, pending = [], [], [], None
+        close_spec = CloseCandidates.spec(self._kelly(method))
+        closer = None if close_spec is None else CloseCandidates(self, close_spec)
+        pending_closes = raw_menu = close_week = close_program = None
         for day in self.calendar:
             self._apply_adjustments(account, day, charge)
             if hedge is not None:
                 hedge.rehedge(account.open.values(), day, charge)   # ADR-0316: a no-op unless the hedge rebalances
             deposited = account.advance(day, self._settlements(account, day))
+            if pending_closes is not None:
+                self._close_fills(closer, account, pending_closes, day)
+                pending_closes = None
             if pending is not None:
                 survivors, refusals = [], []
                 for book in pending["books"]:
@@ -5855,6 +5951,7 @@ class WeeklyOptionPortfolioStudy:
                               "status": self._WEEK_NOT_SELECTED}
                 else:
                     groups, metadata, refusals = self._prepare(day)
+                    raw_menu = None if closer is None else (groups, metadata)   # P2: the held books' forecasts live here
                     # Memory only: this day is prepared once here; the raw menu is freed as soon as the hedge and the
                     # filters below have replaced it, instead of living through stage one and the climb.
                     self._prepared_cache = {}
@@ -6063,6 +6160,15 @@ class WeeklyOptionPortfolioStudy:
                                     raise ValueError("joint_scenarios cannot score a daily re-struck hedge's paths")
                                 self._joint_utility(day, kelly[self._JOINT_SCENARIOS], program, configured, metadata,
                                                     joint_history, record)
+                        close_week = close_program = None
+                        if closer is not None:
+                            close_week = closer.week(day, account, raw_menu, mult, estimate["betas"],
+                                                     [*kelly["moves"], 0.], record["kelly"]["w0"],
+                                                     record["kelly"]["wealth_lo"])
+                            record["kelly"][CloseCandidates.KEY] = close_week["record"]
+                            if close_week["groups"]:
+                                close_program = self._close_program(program, close_week, metadata, terms, kelly,
+                                                                    record["kelly"], account, method, components)
                         local_week = None
                         if local is not None:
                             # ADR-0307: the one-stage program above is only SCORED (never built as a model): the week
@@ -6074,7 +6180,8 @@ class WeeklyOptionPortfolioStudy:
                             local_week = self._local_search_week(
                                 day, method, kelly, program, configured, metadata, account, components, mult,
                                 None if derived_decisions is None else derived_decisions[day],
-                                None if recorded_decisions is None else recorded_decisions[day])
+                                None if recorded_decisions is None else recorded_decisions[day],
+                                None if close_program is None else {"week": close_week, "program": close_program})
                             selection = local_week["selection"]
                         elif policy:
                             from dskit.pipeline.libs.pyomo import TransportActionScore
@@ -6210,6 +6317,11 @@ class WeeklyOptionPortfolioStudy:
                                 solve_certificate = (selection.get("certificates") or [{}])[0]
                             record["kelly"]["solve"] = {k: solve_certificate.get(k)
                                                         for k in ("strategy_outcome", "bound_source")}
+                        if local_week is not None and local_week.get("close") is not None:
+                            outcome = local_week["close"]
+                            record["kelly"][CloseCandidates.KEY].update(state=outcome["state"], closing=list(outcome["closing"]))
+                            if outcome["closing"]:
+                                pending_closes = {"ids": list(outcome["closing"]), "record": record, "date": day}
                         if books:
                             pending = {"books": books, "components": components, "record": record}
                 decisions.append(record)
@@ -6240,6 +6352,7 @@ class WeeklyOptionPortfolioStudy:
                 # Memory only (owner 2026-11-16): the week is recorded, so nothing that built it is read again; drop
                 # the menu, the scored program, its scenarios and the search's working state before the next week.
                 groups = metadata = configured = program = terms = rows = local_week = solver = None
+                raw_menu = close_week = close_program = None
                 selection = candidate = edge_multipliers = adjusts = exposure_rows = scorer = request = None
                 self._release_week(hedge)
                 if progress is not None:
@@ -6260,6 +6373,12 @@ class WeeklyOptionPortfolioStudy:
         if derived_decisions is not None and set(derived_decisions) != consumed:
             raise ValueError("derived actions for an ineligible week")
         result = self._finish(method, account, decisions, rejected, snapshots, hedge)
+        if closer is not None:
+            early = [t for t in account.closed if t.get("closed_early")]
+            result[CloseCandidates.KEY] = {"spec": dict(close_spec), "closed": len(early),
+                                           "pnl": sum(t["pnl"] for t in early),
+                                           "close_fees": sum(t["close_fees"] for t in early),
+                                           "ids": [t["id"] for t in early]}
         if calibrated is not None:
             result["calibration"] = calibrated.record(warm_weeks)
         if limited is not None:

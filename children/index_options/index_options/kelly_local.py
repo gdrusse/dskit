@@ -150,7 +150,7 @@ class KellyLocalSearch:
             defects.append("risk replace_name_charge needs a concentration cost to replace it")
         return defects
 
-    def __init__(self, scorer, params):
+    def __init__(self, scorer, params, holds=None, hold_start=True):
         defects = self.validate_params(params)
         if defects:
             raise ValueError("; ".join(defects))
@@ -159,6 +159,7 @@ class KellyLocalSearch:
         self.scorer, self.params = scorer, dict(params)
         self.tol = float(scorer.params.get("parity_tolerance", 0.))
         self.evaluations = 0
+        self.holds, self.hold_start = sorted(set(holds or ())), bool(hold_start)
         self._build()
 
     # --- the program, once ---------------------------------------------------------------------------------
@@ -241,6 +242,16 @@ class KellyLocalSearch:
             self.item_key[self.off[g]:self.off[g+1]] = k
         self._build_risk()
         self.slopes_ext = np.append(self.slopes, 0.)
+        # Held-book groups (opt-in, ``close_candidates``): one item of capacity 1 each, ``1`` meaning HOLD and ``0``
+        # CLOSE. Their items are pinned out of the repair and the restarts' drops; the reference selection ("cash")
+        # is every hold kept (or, when the week says so, every hold closed). With no holds all of this is inert.
+        self.pin = np.zeros(self.N, dtype=bool)
+        self.base = np.zeros(self.N, dtype=np.int64)
+        for g in self.holds:
+            if not 0 <= g < self.G or self.sizes[g] != 1 or self.cap[self.off[g]] != 1:
+                raise ValueError("a held-book group has one item of capacity one")
+            self.pin[self.off[g]] = True
+            self.base[self.off[g]] = 1 if self.hold_start else 0
 
     def _build_risk(self):
         """Read the opt-in ``risk`` declaration (ADR-0319): the CVaR price, the concentration keys, the charge switch."""
@@ -642,7 +653,7 @@ class KellyLocalSearch:
         began = time.perf_counter()
         self.evaluations = 0
         kind = "cash" if start is None else start_kind
-        first = np.zeros(self.N, dtype=np.int64) if start is None else self._flat(start)
+        first = self.base.copy() if start is None else self._flat(start)
         if len(first) != self.N:
             raise ValueError("the start differs from the program's layout")
         repaired = 0
@@ -651,9 +662,9 @@ class KellyLocalSearch:
                 first, repaired = self._repaired(first)
                 kind = "repaired_"+start_kind if first.any() else "infeasible_start_cash"
             else:
-                kind, first = "infeasible_start_cash", np.zeros(self.N, dtype=np.int64)
+                kind, first = "infeasible_start_cash", self.base.copy()
         self._load(first)
-        start_value, start_contracts = self.value(), int(self.q.sum())
+        start_value, start_contracts = self.value(), int(self.q[~self.pin].sum())
         start_penalty = self._penalty(self.W, self.rtot if self.conc_weight else None) if self.risk_on else None
         best_q, best_values, best_kinds, best_done = None, None, None, None
         total_moves, exhausted, ran, skipped = 0, False, 0, 0
@@ -677,11 +688,11 @@ class KellyLocalSearch:
         floored = False
         if self.params.get("cash_floor"):
             # ADR-0307 Amendment 1: a climb that ends below cash trades cash (cash is always feasible).
-            self._load(np.zeros(self.N, dtype=np.int64))
+            self._load(self.base.copy())
             cash_value = self.value()
             self._load(best_q)
             if self.value() < cash_value:
-                floored, best_q, best_values = True, np.zeros(self.N, dtype=np.int64), [cash_value]
+                floored, best_q, best_values = True, self.base.copy(), [cash_value]
         self._load(best_q)
         end_value = self.value()
         nested = self._nested(best_q)
@@ -690,7 +701,7 @@ class KellyLocalSearch:
         if abs(self._explains(exact)-end_value) > self.PARITY*max(1., abs(exact), self.w0):
             raise ValueError("the local search's score differs from the exact recompute of its selection")
         record = {"start_kind": kind, "start_value": start_value, "end_value": end_value,
-                  "start_contracts": start_contracts, "end_contracts": int(best_q.sum()),
+                  "start_contracts": start_contracts, "end_contracts": int(best_q[~self.pin].sum()),
                   "moves": total_moves, "evaluations": self.evaluations, "local_optimum": bool(best_done),
                   "budget_exhausted": exhausted, "restarts": ran, "restarts_skipped": skipped,
                   "move_counts": counts}
@@ -700,6 +711,8 @@ class KellyLocalSearch:
             record["repaired_contracts"] = repaired
         if self.risk_on:
             record["risk"] = {**self.risk_terms(), "start_penalty": start_penalty}
+        if self.holds:
+            record["holds_closed"] = int((best_q[self.pin] == 0).sum())
         return {"quantities": nested, "selection": selection, "record": record, "values": best_values,
                 "seconds": time.perf_counter()-began}
 
@@ -765,11 +778,11 @@ class KellyLocalSearch:
         """
         self._load(q)
         removed = 0
-        while self.q.any():
+        while self.q[~self.pin].any():
             if self._excess() <= 0. and self.scorer.check_feasible(self._nested(self.q))["feasible"]:
                 break
             best = None
-            for flat in np.flatnonzero(self.q > 0):
+            for flat in np.flatnonzero((self.q > 0) & ~self.pin):
                 change, value = self._removal(int(flat))
                 key = (change, -value, int(self.rank[flat]))
                 if best is None or key < best[0]:
@@ -781,7 +794,7 @@ class KellyLocalSearch:
     def _perturbed(self, q, rng):
         """Return ``q`` with each held contract dropped with probability :attr:`PERTURBATION`, None when that changes
         nothing or the result is infeasible (a removal can breach a floor that a hedge held up)."""
-        held = np.flatnonzero(q > 0)
+        held = np.flatnonzero((q > 0) & ~self.pin)
         ordered = held[np.argsort(self.rank[held], kind="stable")]
         units = np.repeat(ordered, q[ordered])
         dropped = units[rng.random(len(units)) < self.PERTURBATION]
