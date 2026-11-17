@@ -5479,8 +5479,6 @@ class WeeklyOptionPortfolioStudy:
         raise RuntimeError("MIO lifecycle unexpectedly requested policy input")
 
     def _method_steps(self, method, progress, *, recorded=None, derived=None, events=None, policy=False):
-        if hasattr(self, "_warm_books"):
-            self._warm_books.pop(method["id"], None)   # a run starts cold whatever ran before on this study
         """Advance one account, suspending only for an external policy decision.
 
         ``recorded`` replays a complete result of this host exactly;
@@ -5489,6 +5487,8 @@ class WeeklyOptionPortfolioStudy:
         through ``TransportPortfolioSolve.derived`` so every valuation is this
         host's own. The two are exclusive.
         """
+        if hasattr(self, "_warm_books"):
+            self._warm_books.pop(method["id"], None)   # a run starts cold whatever ran before on this study
         import copy
         from dskit.pipeline.libs.option_ledger import FundedOptionAccount
         from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
