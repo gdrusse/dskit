@@ -165,14 +165,14 @@ class EmpiricalCopula(JointScenarioGenerator):
 
     @classmethod
     def own_defects(cls, spec):
-        """``window`` an int >= 2, ``block`` an int >= 1 and no longer than the window."""
+        """``window`` an int >= 2, ``block`` an int >= 1 with two blocks within the window (else no week could draw)."""
         problems = []
         if type(spec["window"]) is not int or spec["window"] < 2:
             problems.append("joint_scenarios window must be an int >= 2")
         if type(spec["block"]) is not int or spec["block"] < 1:
             problems.append("joint_scenarios block must be an int >= 1")
-        elif type(spec["window"]) is int and spec["block"] > spec["window"]:
-            problems.append("joint_scenarios block must not exceed the window")
+        elif type(spec["window"]) is int and 2*spec["block"] > spec["window"]:
+            problems.append("joint_scenarios window must hold at least two blocks")
         return problems
 
     def minimum(self, min_returns):

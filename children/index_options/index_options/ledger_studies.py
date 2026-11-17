@@ -79,6 +79,7 @@ from dskit.pipeline.driver import resolve_json_artifact
 from dskit.pipeline.hedge_overlay import (BOOKS_PREFIX, MARK_CARRIED, HedgeOverlay, forward_leg_net_settle,
                                           forward_leg_one_way_cost, forward_leg_rehedged_value,
                                           forward_leg_rule)
+from dskit.pipeline.hedge_overlay import KINDS as HEDGE_KINDS
 from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL, MethodBlocks
 from dskit.pipeline.option_exposure import (BookGreeks, ExposureLimits, ExposureSnapshot, HardToBorrowProxy, LegGreeks,
                                             ParityForward)
@@ -3553,8 +3554,7 @@ class WeeklyOptionPortfolioStudy:
                 and (not EdgeWeights.declared(kelly)
                      or (EdgeWeights.valid(kelly) and isinstance(kelly.get("local_search"), dict)
                          and "start" in kelly["local_search"] and "calibration" not in method))
-                and (cls._JOINT_SCENARIOS not in kelly or (not joint_scenario_defects(kelly[cls._JOINT_SCENARIOS])
-                                                          and isinstance(kelly.get("local_search"), dict)))
+                and (cls._JOINT_SCENARIOS not in kelly or cls._joint_scenarios_valid(method))
                 and cls._kelly_strategy_valid(kelly)
                 and cls._local_search_valid(kelly)
                 and number_ok(kelly["fraction"]) and 0 < kelly["fraction"] <= 1
@@ -3756,6 +3756,20 @@ class WeeklyOptionPortfolioStudy:
                     "terms": {key: (row-centre[key]).tolist() for key, row in deviations[move].items()}}
                    for move in modelled])
 
+    @classmethod
+    def _joint_scenarios_valid(cls, method):
+        """Return whether a kelly method's ``joint_scenarios`` may be declared.
+
+        It needs a well-formed spec, the local search beside it (the sampled program is scored, never built), and no
+        daily re-struck hedge (whose scenarios are seeded re-hedge paths per basket move, ADR-0316 A1, which the
+        sampled set does not carry).
+        """
+        hedge = method.get("hedge")
+        overlay = HEDGE_KINDS.get(hedge.get("kind")) if isinstance(hedge, dict) else None
+        return (not joint_scenario_defects(method["kelly"][cls._JOINT_SCENARIOS])
+                and isinstance(method["kelly"].get("local_search"), dict)
+                and not (overlay is not None and overlay.REBALANCES))
+
     @staticmethod
     def _copula_rows(symbol, rows, end_before):
         """Return one symbol's ``copula_bars`` as ``{date: close}`` (a nonfinite or nonpositive close kept as NaN).
@@ -3844,11 +3858,11 @@ class WeeklyOptionPortfolioStudy:
         (:meth:`_horizon_sessions`: no future session is read). The toolkit derives each scenario's profit from the
         group's own loss rows, centred on the sampled mean, so every item's expectation stays its forecast's.
         """
+        horizons = {dte: self._horizon_sessions(day, dte) for dte in sorted({int(meta["dte"]) for meta in metadata})}
         draw = joint_scenario_generator(spec).draw({
             "day": day, "names": history["names"], "returns": history["matrix"],
             "min_returns": self.params["correlation_min_pairs"],
-            "groups": [{"id": g["id"], "name": meta["symbol"],
-                        "horizon": self._horizon_sessions(day, int(meta["dte"])),
+            "groups": [{"id": g["id"], "name": meta["symbol"], "horizon": horizons[int(meta["dte"])],
                         "masses": g["masses"]} for g, meta in zip(configured, metadata, strict=True)]})
         program["utility"]["joint"] = []
         program["utility"]["atom_scenarios"] = {"weights": draw["weights"], "atoms": draw["atoms"]}

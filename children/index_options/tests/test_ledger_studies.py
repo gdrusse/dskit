@@ -7023,8 +7023,53 @@ def test_a_name_the_copula_window_cannot_cover_is_dropped_with_its_candidates():
 
 
 def test_a_copula_history_shorter_than_the_spec_needs_does_not_trade():
-    params, data, method = _joint_world({**JOINT_SCENARIOS, "window": 240, "block": 200})
+    def recent(name, one):
+        rows = [{"symbol": name, "date": r["date"], "close": r["close"]} for r in one["bars"] if r["date"] < "2019-01-09"]
+        return rows[-60:]
+    params, data, method = _joint_world({**JOINT_SCENARIOS, "window": 240, "block": 100}, copula_bars=recent)
     week = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)["decisions"][0]
     assert week["status"] == "kelly_risk_input"
     assert week["kelly"]["status"] == "joint_insufficient_history"
-    assert week["kelly"]["joint_scenarios"]["history_minimum"] == 400 and "selection" not in week
+    assert week["kelly"]["joint_scenarios"]["history_minimum"] == 200 and "selection" not in week
+    assert week["kelly"]["joint_scenarios"]["history_returns"] < 200
+
+
+def test_bars_on_or_after_a_decision_cannot_move_its_draw():
+    """The copula source poisoned from the first decision on: the first week's draw and selection are unchanged."""
+    def clean(name, one):
+        return [{"symbol": name, "date": r["date"], "close": r["close"]} for r in one["bars"] if r["date"] < "2019-01-09"]
+    params, data, method = _joint_world(copula_bars=clean)
+    first = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)["decisions"][0]
+    day = first["date"]
+
+    def poisoned(name, one):
+        return [dict(r, close=r["close"]*(50. if r["date"] >= day else 1.)) for r in clean(name, one)]
+    params, data, method = _joint_world(copula_bars=poisoned)
+    again = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)["decisions"][0]
+    assert again["date"] == day and again["selection"] == first["selection"]
+    assert again["kelly"]["joint_scenarios"] == first["kelly"]["joint_scenarios"]
+
+
+@pytest.mark.parametrize("bad_date", ["2017-1-03", "20170103", "2017-02-30"])
+def test_a_noncanonical_or_duplicate_copula_date_is_refused(bad_date):
+    def rows(name, one):
+        return [{"symbol": name, "date": r["date"], "close": r["close"]} for r in one["bars"] if r["date"] < "2019-01-09"]
+    params, data, _method = _joint_world(copula_bars=rows)
+    name = params["symbols"][0]
+    data[name]["copula_bars"].append({"symbol": name, "date": bad_date, "close": 1.})
+    with pytest.raises(ValueError, match="noncanonical, duplicate"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    params, data, _method = _joint_world(copula_bars=rows)
+    data[name]["copula_bars"].append(dict(data[name]["copula_bars"][3]))
+    with pytest.raises(ValueError, match="noncanonical, duplicate"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+
+
+def test_the_joint_arm_refuses_a_daily_re_struck_hedge_by_its_kind():
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    _params, _data, method = _joint_world()
+    assert study._joint_scenarios_valid(method)
+    assert study._joint_scenarios_valid({**method, "hedge": {"kind": "fixed_delta_forward"}})
+    assert not study._joint_scenarios_valid({**method, "hedge": {"kind": "daily_delta_forward"}})
+    assert not study._joint_scenarios_valid({**method, "kelly": {k: v for k, v in method["kelly"].items()
+                                                                  if k != "local_search"}})

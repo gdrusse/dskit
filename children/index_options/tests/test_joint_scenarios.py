@@ -9,6 +9,7 @@ from dskit.pipeline.libs.pyomo import TransportActionScore, TransportPortfolioSo
 from index_options.joint_scenarios import (EmpiricalCopula, InsufficientHistory, JointScenarioGenerator, defects,
                                            generator)
 from index_options.kelly_local import KellyLocalSearch
+from index_options.kelly_multistart import KellyMultiStart
 from index_options.kelly_sizer import joint_atoms, step_atoms
 
 SPEC = {"method": "empirical_copula", "scenarios": 400, "window": 250, "block": 5, "seed": 20261117}
@@ -36,6 +37,7 @@ def test_the_spec_is_validated_by_name():
     assert defects(SPEC) == []
     for bad in ({**SPEC, "scenarios": 1}, {**SPEC, "scenarios": 300.}, {**SPEC, "seed": -1}, {**SPEC, "seed": True},
                 {**SPEC, "window": 1}, {**SPEC, "block": 0}, {**SPEC, "block": 251}, {**SPEC, "extra": 1},
+                {**SPEC, "window": 10, "block": 6},
                 {k: v for k, v in SPEC.items() if k != "block"}, {**SPEC, "method": "gaussian"}, None, []):
         assert defects(bad), bad
         with pytest.raises(ValueError):
@@ -106,6 +108,22 @@ def test_a_names_expiries_are_nested_windows_of_one_path():
     assert draw["record"]["horizon_max"] == 30 and draw["record"]["pairs"] == 2
 
 
+def test_a_names_horizons_read_one_path_exactly():
+    """One spike day: a scenario whose short horizon saw it has a long horizon that saw it too (nested windows)."""
+    m = 120
+    spiked = np.zeros(m)
+    spiked[70] = .5
+    req = _request({"A": spiked}, [])
+    returns = np.asarray(req["returns"])
+    for block in (10, 40):   # stitched blocks and one block per path
+        gen = generator({**SPEC, "window": 120, "block": block})
+        u, _record = gen.uniforms(req, returns, {"A": 0}, [("A", 3), ("A", 25)])
+        short, long = u["A", 3] > u["A", 3].min(), u["A", 25] > u["A", 25].min()
+        assert short.any() and short.sum() < long.sum() < 400
+        assert np.all(long[short]), "every path that holds the spike within 3 sessions holds it within 25"
+        assert np.all((u["A", 3] > 0) & (u["A", 3] < 1))
+
+
 def test_the_window_bounds_what_is_read_and_short_history_refuses():
     groups = [{"id": "g", "name": "A", "horizon": 5, "masses": _masses()}]
     returns = _returns(m=300)
@@ -118,7 +136,7 @@ def test_the_window_bounds_what_is_read_and_short_history_refuses():
     with pytest.raises(InsufficientHistory):
         generator(spec).draw(_request({n: r[:15] for n, r in returns.items()}, groups))
     with pytest.raises(InsufficientHistory):
-        generator({**spec, "block": 40}).draw(_request(returns, groups))   # 2 x block = 80 > 60 returns
+        generator(spec).draw(_request(returns, groups, min_returns=61))   # the study's floor above the window
 
 
 def test_a_malformed_request_is_refused():
@@ -200,3 +218,20 @@ def test_the_blocked_floor_check_is_the_one_shot_check():
     search.FLOOR_CHUNK_ELEMENTS = 7*search.S+1
     assert np.array_equal(search._floor_ok(ids), whole)
     assert search._floor_ok(ids[:0]).shape == (0,)
+
+
+def test_the_multistart_singles_on_the_compact_form_equal_those_on_its_list_form():
+    from test_kelly_multistart import MULTI2
+
+    program = _program(seed=2)
+    compact = KellyMultiStart(TransportActionScore(program, {"parity_tolerance": 1e-3}), PARAMS, MULTI2)
+    listed = KellyMultiStart(TransportActionScore(_listed(program), {"parity_tolerance": 1e-3}), PARAMS, MULTI2)
+    for search in (compact, listed):
+        search._load(np.zeros(search.N, dtype=np.int64))
+    singles = compact._singles()
+    assert singles and [s for s in singles] == [s for s in listed._singles()]
+    compact.FLOOR_CHUNK_ELEMENTS = compact.S   # one row per block: the same starts
+    compact._load(np.zeros(compact.N, dtype=np.int64))
+    assert compact._singles() == singles
+    a, b = compact.run_multistart(), listed.run_multistart()
+    assert a["quantities"] == b["quantities"]

@@ -322,12 +322,22 @@ class KellyMultiStart(KellyLocalSearch):
         if self.K:
             fits &= ((self.jtot[None, :]+self.J) <= self.j_up+self.tol).all(axis=1)
         ids = np.flatnonzero(fits)
-        wealth = self.W[None, :]+self.D[ids]
-        ids, wealth = ids[(wealth >= self.lo-self.tol).all(axis=1)], wealth[(wealth >= self.lo-self.tol).all(axis=1)]
-        if not len(ids):
-            return []
-        values = (self.w0*(tangent_utility(wealth, self.w0, self.gamma)[0] @ self.weights)
-                  - self.slopes_ext[self.item_key[ids]]*self.own[ids]**2)
+        if getattr(self.scorer, "atom_tables", None) is None:
+            wealth = self.W[None, :]+self.D[ids]
+            ids, wealth = ids[(wealth >= self.lo-self.tol).all(axis=1)], wealth[(wealth >= self.lo-self.tol).all(axis=1)]
+            if not len(ids):
+                return []
+            utility = tangent_utility(wealth, self.w0, self.gamma)[0] @ self.weights
+        else:
+            # Sampled joint scenarios (hundreds): the floor check and the utilities in row blocks, so no
+            # items x scenarios temporary is built (the plain path above stays exactly as it was).
+            ids = ids[self._floor_ok(ids)]
+            if not len(ids):
+                return []
+            rows = max(1, self.FLOOR_CHUNK_ELEMENTS//max(1, self.S))
+            utility = np.concatenate([tangent_utility(self.W[None, :]+self.D[ids[a:a+rows]], self.w0, self.gamma)[0]
+                                      @ self.weights for a in range(0, len(ids), rows)])
+        values = self.w0*utility-self.slopes_ext[self.item_key[ids]]*self.own[ids]**2
         keep = values > self.value()+self.IMPROVEMENT*self.w0
         ids, values = ids[keep], values[keep]
         out, groups = [], set()

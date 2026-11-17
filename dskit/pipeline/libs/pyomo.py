@@ -4471,8 +4471,7 @@ class TransportPortfolioSolve(PyomoSolve):
 
         if cls.UTILITY_ATOM_KEY in utility:
             weights, tables = atom_tables if atom_tables is not None else cls._atom_tables(groups, utility)
-            return [(f"sample:{s}", float(weight), {i: table[atoms[s]] for i, (table, atoms) in tables.items()})
-                    for s, weight in enumerate(weights)]
+            return [(f"sample:{s}", float(weight), _AtomTerms(tables, s)) for s, weight in enumerate(weights)]
         lookup = {g["id"]: i for i, g in enumerate(groups)}
         return [(scenario["id"], float(scenario["weight"]),
                  {lookup[key]: np.asarray(row, dtype=float) for key, row in scenario["terms"].items()})
@@ -4490,13 +4489,13 @@ class TransportPortfolioSolve(PyomoSolve):
         return lo, hi
 
     @classmethod
-    def _utility_envelope(cls, groups, utility, expected, scenarios):
+    def _utility_envelope(cls, groups, utility, expected, scenarios, atom_tables=None):
         """Return the one tangent envelope of a program: knots from ``wealth_lo`` to the highest reachable wealth."""
         import numpy as np
 
         if cls.UTILITY_ATOM_KEY in utility:
             # Sampled scenarios: each group's highest reachable gain per atom, gathered per scenario (vectorized).
-            weights, tables = cls._atom_tables(groups, utility)
+            weights, tables = atom_tables if atom_tables is not None else cls._atom_tables(groups, utility)
             totals = np.zeros(len(weights))
             for i, (table, atoms) in tables.items():
                 capacity = np.asarray(groups[i]["capacity"], dtype=float)
@@ -6113,6 +6112,30 @@ class _TransportActionInfeasible(ValueError):
     """A quantity vector fails a declared transport constraint."""
 
 
+class _AtomTerms(Mapping):
+    """One sampled scenario's terms, ``{group index: profit coefficients beyond the expectation}``, read on access.
+
+    Each value is a view of the group's atom-table row the scenario lands on
+    (:meth:`TransportPortfolioSolve._atom_tables`), so ``S`` scenarios over ``G`` groups hold ``S`` small objects
+    instead of ``S x G`` arrays; anything that reads a scenario's terms as a mapping reads the same numbers.
+    """
+
+    __slots__ = ("_tables", "_s")
+
+    def __init__(self, tables, s):
+        self._tables, self._s = tables, s
+
+    def __getitem__(self, i):
+        table, atoms = self._tables[i]
+        return table[atoms[self._s]]
+
+    def __iter__(self):
+        return iter(self._tables)
+
+    def __len__(self):
+        return len(self._tables)
+
+
 class TransportActionScore:
     """Value and check finite integer actions against a shared transport program.
 
@@ -6193,7 +6216,8 @@ class TransportActionScore:
             if solve.UTILITY_ATOM_KEY in self.utility:
                 self.atom_tables = solve._atom_tables(self.groups, self.utility)
             self.scenarios = solve._utility_scenarios(self.groups, self.utility, self.atom_tables)
-            self.envelope = solve._utility_envelope(self.groups, self.utility, self.expected, self.scenarios)
+            self.envelope = solve._utility_envelope(self.groups, self.utility, self.expected, self.scenarios,
+                                                    self.atom_tables)
             self.charge_plan = solve._charge_plan(self.groups, self.utility)
         self.program_identity = hashlib.sha256(json.dumps(
             identity, sort_keys=True, separators=(",", ":"), allow_nan=False
