@@ -4738,6 +4738,12 @@ class WeeklyOptionPortfolioStudy:
                 raise ValueError("eligible decision lacks recorded solve evidence")
             first = solver._recorded(dollar, claim["selection"], claim["certificates"])
         screen = dict(solver.last_screen)
+        # Memory only (owner 2026-11-16): stage one is done; its solver (with its checked copy of the dollar program),
+        # its pyomo model, the HiGHS instance and the group-screen LPs are never read again. The model and solver are
+        # cyclic garbage the collector would free only at a rare full pass, and glibc keeps HiGHS's freed heap, so
+        # without this they stay resident under the climb's scorer. No value, order, seed or option changes.
+        solver = dollar = dollar_groups = None
+        self._release_stage_one()
         timed_out = "timeout" in first
         # ADR-0307 Amendment 1: a stage one stopped at its limit WITH an incumbent (the "return" policy's timeout
         # envelope, candidate actions present) starts the climb from that incumbent when the block says so.
@@ -5121,6 +5127,15 @@ class WeeklyOptionPortfolioStudy:
         for quotes in self._quotes.values():
             if isinstance(quotes, _SQLiteQuoteView):
                 quotes.close(verify=verify)
+
+    @staticmethod
+    def _release_stage_one():
+        """Free what a finished stage one left behind before the climb builds its scorer (memory only).
+
+        :meth:`_local_search_week` drops its last references to the stage-one solver and model first; collecting and
+        trimming here returns them, and HiGHS's freed heap, to the OS (:func:`_return_freed_memory`).
+        """
+        _return_freed_memory()
 
     def _release_week(self, hedge=None):
         """Release what one recorded decision week built (memory only: no value, order, seed or option changes).

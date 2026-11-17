@@ -938,6 +938,20 @@ class MIOMethodWorker:
             pass
         return now, peak
 
+    @staticmethod
+    def use_system_arrow_pool():
+        """Put arrow's buffers on the system allocator unless ``ARROW_DEFAULT_MEMORY_POOL`` names one (memory only).
+
+        pyarrow's bundled mimalloc kept the intake's freed read buffers resident (measured 2026-11-16 on a 40-name
+        slice of 2019Q4: 0.30 against 0.22 GiB after intake, 0.41 against 0.31 GiB between weeks). The pool only
+        decides which allocator holds a buffer; no read value changes. Returns the pool's backend name.
+        """
+        import pyarrow as pa
+
+        if "ARROW_DEFAULT_MEMORY_POOL" not in os.environ:
+            pa.set_memory_pool(pa.system_memory_pool())
+        return pa.default_memory_pool().backend_name
+
     def _heartbeat(self, what="index building"):
         """Append one progress line that says the index build (or the pricing) is still running."""
         with open(self.spec["out"] + ".progress", "a", encoding="utf-8") as handle:
@@ -971,6 +985,7 @@ class MIOMethodWorker:
         work.mkdir(parents=True, exist_ok=True)
         Path(self.spec["out"]).parent.mkdir(parents=True, exist_ok=True)
         reuse = self.spec.get("reuse_root")
+        self.use_system_arrow_pool()
         with Heartbeat(self._heartbeat, self.HEARTBEAT_SECONDS, self.HEARTBEAT_MAX_SECONDS):
             bounded = MIOPacketInputs.read_bounded(  # a cold quote-index build is minutes of silence
                 study, plan["read_bounds"], MIOStudyContract.packet(study),
