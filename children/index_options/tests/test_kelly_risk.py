@@ -102,10 +102,12 @@ def test_the_risk_declaration_is_validated():
 
 
 def _original_module():
-    """The kelly_local.py of the base commit, loaded under another name, as the byte-for-byte reference."""
+    """The kelly_local.py of the integrated base (eb31b27a: b40a3785 plus joint, C5, C1-C3 and calibration, no risk
+    pieces), loaded under another name, as the byte-for-byte reference. b40a3785 itself no longer matches once joint
+    scenarios change the wealth rounding."""
     here = Path(__file__).resolve().parents[1]
     try:
-        text = subprocess.run(["git", "show", "b40a3785:children/index_options/index_options/kelly_local.py"],
+        text = subprocess.run(["git", "show", "eb31b27a:children/index_options/index_options/kelly_local.py"],
                               cwd=here, capture_output=True, text=True, check=True).stdout
     except (OSError, subprocess.CalledProcessError):
         pytest.skip("the base commit is not reachable")
