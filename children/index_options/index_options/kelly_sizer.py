@@ -43,8 +43,8 @@ from dskit.pipeline.libs.pyomo import DEFAULT_SOLVER, PyomoSolve, TangentEnvelop
 from dskit.pipeline.records import number_ok
 
 __all__ = ["BookKellySizer", "MAX_COMPONENT_CORRELATION", "MAX_CORRELATION", "TAIL_DF", "component_loadings",
-           "factor_correlations", "joint_atoms", "scenario_seed", "shrink_targets", "stressed", "student_t4_cdf",
-           "tilt_weights"]
+           "factor_correlations", "joint_atoms", "scenario_seed", "shrink_targets", "step_atoms", "stressed",
+           "student_t4_cdf", "tilt_weights"]
 
 #: Degrees of freedom of the copula's Student t: the Kelly family's one constant (ADR-0299, the lowest with a
 #: finite variance). :func:`student_t4_cdf` is this law's closed form, so the two are one decision.
@@ -362,13 +362,35 @@ def joint_atoms(masses, symbol_of, correlations, n, seed, components=None):
         index, s = components.get(name, (None, 0.))
         shared = r*factor+(s*component_factors[index] if index is not None else 0.)
         uniforms[name] = student_t4_cdf(root*(shared+math.sqrt(max(0., 1.-r*r-s*s))*noise[i]))
-    atoms = {}
-    for key, p in masses.items():
-        cumulative = np.cumsum(np.asarray(p, dtype=float))
-        cumulative[-1] = 1.   # float noise must not leave a draw past the last atom
-        atoms[key] = np.minimum(np.searchsorted(cumulative, uniforms[symbol_of[key]], side="right"), len(p)-1)
+    atoms = {key: step_atoms(p, uniforms[symbol_of[key]]) for key, p in masses.items()}
     return {"atoms": atoms, "uniforms": uniforms, "factor": factor, "mixing": mixing,
             "component_factors": component_factors}
+
+
+def step_atoms(masses, uniforms):
+    """Return the atom of a forecast grid each uniform selects: the step inverse ``F^{-1}(u)`` of the grid's masses.
+
+    The one owner of the step inverse (:func:`joint_atoms` and :mod:`index_options.joint_scenarios` both read it):
+    atom ``k`` is the first whose cumulative mass exceeds ``u``, so a uniform sample lands on each atom with its mass.
+
+    Parameters
+    ----------
+    masses : array_like
+        The grid's masses, summing to one (the last cumulative value is set to exactly one, so float noise cannot
+        leave a draw past the last atom).
+    uniforms : array_like
+        Values in ``[0, 1]``.
+
+    Returns
+    -------
+    numpy.ndarray
+        One int atom index per uniform, in ``[0, len(masses) - 1]``.
+    """
+    import numpy as np
+
+    cumulative = np.cumsum(np.asarray(masses, dtype=float))
+    cumulative[-1] = 1.
+    return np.minimum(np.searchsorted(cumulative, uniforms, side="right"), len(cumulative)-1)
 
 
 class BookKellySizer(PyomoSolve):

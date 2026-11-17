@@ -87,6 +87,8 @@ from dskit.pipeline.runs import NODES_DIR, RESULT_FILE, WALKFORWARD_FILE, walk_f
 from dskit.pipeline.stats import lower_tail_mean, max_drawdown
 
 from .contracts import CONDOR_LEGS, STRUCTURES, structure_max_loss, usable_parity_rows
+from .joint_scenarios import defects as joint_scenario_defects
+from .joint_scenarios import generator as joint_scenario_generator
 from .nodes import CDFQuoteOptionSelect as _CDFQuoteOptionSelect
 from .nodes import (
     _iso_day,
@@ -2855,6 +2857,17 @@ class WeeklyOptionPortfolioStudy:
         HiGHS time limit in place of the document's), incumbent_start (bool:
         a stage one stopped at its limit WITH an incumbent starts the climb
         from that incumbent), cash_floor and repair (bools, see kelly_local).
+        The joint-scenario arm (owner-approved P2 item C1): a local-search
+        kelly block may add joint_scenarios {method "empirical_copula",
+        scenarios, window, block, seed} (index_options.joint_scenarios):
+        the scored program's 17 basket-move scenarios are replaced by
+        that many sampled joint settlements, each group on an atom of its
+        own forecast grid, the names tied by block-bootstrapped historical
+        days strictly before the decision (read from the optional
+        per-symbol input copula_bars when given, else from bars). A name
+        the window cannot cover is dropped with its candidates; a history
+        too short for the spec is kelly_risk_input
+        (joint_insufficient_history). Absent, nothing changes.
         Optional method key sizer (ADR-0300, exclusive with kelly) keeps the
         method's dollar program as stage 1, unchanged (its books and leg
         ratios, under every cap it declares), and sizes the selected books
@@ -2909,6 +2922,17 @@ class WeeklyOptionPortfolioStudy:
                             "settleable_only", *EdgeWeights.KEYS}
     #: ADR-0318: ``accuracy``, ``dte_tilt`` and ``name_spread`` (:class:`EdgeWeights`) are declared only on a stage-one
     #: local-search method (ADR-0307, not the multi-start) without a calibration block; absent, nothing changes.
+    #: The joint-scenario arm (owner-approved P2 item C1, ``index_options.joint_scenarios``): ``joint_scenarios``
+    #: replaces the 17 basket-move scenarios of the scored one-stage program by ``scenarios`` sampled joint
+    #: settlements (an empirical copula over the forecast marginals); only beside ``local_search`` (the program is
+    #: scored, never built), never with a daily re-struck hedge. Absent, every week is unchanged byte for byte.
+    _JOINT_SCENARIOS = "joint_scenarios"
+    _KELLY_OPTIONAL_KEYS = _KELLY_OPTIONAL_KEYS | {_JOINT_SCENARIOS}
+    #: The optional per-symbol input the copula may read its history from (rows ``{symbol, date, close}``, every date
+    #: before the last entry): a longer point-in-time daily-bars source than the study's own ``bars`` slice. Absent,
+    #: the copula reads the study's ``bars`` over its history calendar.
+    COPULA_BARS = "copula_bars"
+    _JOINT_SHORT = "joint_insufficient_history"
     #: ADR-0315 Amendment 2: ``settleable_only`` (only ``true``) drops, before anything else reads the week, every
     #: candidate whose book could not be carried to its expiry on the decision's basis (:meth:`_settleable`); each is
     #: refused ``unsettleable_expiry``. Absent means the candidate set is untouched, byte for byte.
@@ -3038,6 +3062,7 @@ class WeeklyOptionPortfolioStudy:
                 raise ValueError("insufficient strictly prior session history")
         self._nodes, self._forecasts, self._contexts = {}, {}, {}
         self._quotes, self._factors, self._bars, self._by_day = {}, {}, {}, {}
+        self._copula_bars = {}
         for symbol in symbols:
             local = {**p["bridge"], "symbol": symbol}
             if self.clocks is not None:
@@ -3056,6 +3081,9 @@ class WeeklyOptionPortfolioStudy:
                 quote_view.symbol = symbol
             for name, rows in data.items():
                 if name == "chain_index":
+                    continue
+                if name == self.COPULA_BARS:
+                    self._copula_bars[symbol] = self._copula_rows(symbol, rows, local["end_before"])
                     continue
                 field = "date" if name in ("chain", "bars") else "quote_date"
                 lower = self.clocks["history_start"] if self.clocks and name == "bars" else local["start"]
@@ -3082,6 +3110,8 @@ class WeeklyOptionPortfolioStudy:
             self._nodes[symbol], self._forecasts[symbol], self._contexts[symbol] = node, forecasts, contexts
             self._quotes[symbol], self._factors[symbol], self._bars[symbol] = quotes, factors, bars
             self._by_day[symbol] = by_day
+        if self._copula_bars and set(self._copula_bars) != set(symbols):
+            raise ValueError("copula_bars must be given for every symbol or for none")
         if self.clocks:
             self.history_calendar = list(self.clocks["sessions"])
             for symbol, bars in self._bars.items():
@@ -3523,6 +3553,8 @@ class WeeklyOptionPortfolioStudy:
                 and (not EdgeWeights.declared(kelly)
                      or (EdgeWeights.valid(kelly) and isinstance(kelly.get("local_search"), dict)
                          and "start" in kelly["local_search"] and "calibration" not in method))
+                and (cls._JOINT_SCENARIOS not in kelly or (not joint_scenario_defects(kelly[cls._JOINT_SCENARIOS])
+                                                          and isinstance(kelly.get("local_search"), dict)))
                 and cls._kelly_strategy_valid(kelly)
                 and cls._local_search_valid(kelly)
                 and number_ok(kelly["fraction"]) and 0 < kelly["fraction"] <= 1
@@ -3723,6 +3755,104 @@ class WeeklyOptionPortfolioStudy:
                 + [{"id": f"market:{move}", "weight": weights[str(move)],
                     "terms": {key: (row-centre[key]).tolist() for key, row in deviations[move].items()}}
                    for move in modelled])
+
+    @staticmethod
+    def _copula_rows(symbol, rows, end_before):
+        """Return one symbol's ``copula_bars`` as ``{date: close}`` (a nonfinite or nonpositive close kept as NaN).
+
+        Refused: a row of another symbol, a noncanonical or duplicate date, or a date at or after ``end_before`` (the
+        last entry bound): the copula reads only dates strictly before each decision, and none after the entries.
+        """
+        out = {}
+        for row in rows:
+            day = row.get("date") if isinstance(row, dict) else None
+            if (row.get("symbol") != symbol if isinstance(row, dict) else True) or not isinstance(day, str):
+                raise ValueError("copula_bars contains another symbol or an undated row")
+            try:
+                canonical = date.fromisoformat(day).isoformat() == day
+            except ValueError:
+                canonical = False
+            if not canonical or day in out or not day < end_before:
+                raise ValueError("copula_bars holds a noncanonical, duplicate or post-entry date: "+symbol)
+            close = row.get("close")
+            out[day] = float(close) if number_ok(close) and close > 0 else math.nan
+        return out
+
+    def _joint_history(self, day, spec, names):
+        """Return the copula's daily log returns strictly before ``day`` for ``names``, and the names it drops.
+
+        Source: ``copula_bars`` when the study received them (the longer point-in-time history), else the study's
+        ``bars`` over its history calendar. The reference dates are the source's dates before ``day`` that at least
+        half of ``names`` carry (the history calendar for ``bars``); the last ``window + 1`` of them give the returns.
+        A name missing any of those dates, or with a nonfinite return there, is dropped (and so are its candidates).
+        Returns ``{"source", "names", "dropped", "matrix" ((M, names) array), "returns" (M), "first", "last"}``.
+        """
+        import numpy as np
+
+        if self._copula_bars:
+            source, closes = self.COPULA_BARS, {s: self._copula_bars[s] for s in names}
+            counts = Counter(d for s in names for d in closes[s] if d < day)
+            dates = sorted(d for d, k in counts.items() if 2*k >= len(names))
+        else:
+            source, closes = "bars", {s: self._bars[s] for s in names}
+            dates = [d for d in self.history_calendar if d < day]
+        dates = dates[-(spec["window"]+1):]
+        kept, columns = [], []
+        with np.errstate(divide="ignore", invalid="ignore"):
+            for s in names:
+                series = np.array([closes[s].get(d, math.nan) for d in dates], dtype=float)
+                returns = np.diff(np.log(series))
+                if len(dates) >= 2 and np.all(np.isfinite(returns)):
+                    kept.append(s)
+                    columns.append(returns)
+        rows = max(0, len(dates)-1)
+        return {"source": source, "names": kept, "dropped": [s for s in names if s not in kept],
+                "matrix": np.column_stack(columns) if columns else np.zeros((rows, 0)), "returns": rows,
+                "first": dates[0] if dates else None, "last": dates[-1] if dates else None}
+
+    def _joint_week_history(self, day, spec, groups, metadata, record):
+        """Read the joint-scenario history for the week's candidate names; drop the names it cannot cover.
+
+        Returns ``(groups, metadata, history)`` without the dropped names' candidates. The counts in ``record`` are
+        rewritten for the candidates the week can trade, ``record["kelly"]["joint_scenarios"]`` records the history,
+        and a history too short for the spec makes the week a ``kelly_risk_input`` (status ``joint_insufficient_history``).
+        """
+        history = self._joint_history(day, spec, sorted({m["symbol"] for m in metadata}))
+        if history["dropped"]:
+            kept = [i for i, m in enumerate(metadata) if m["symbol"] not in history["dropped"]]
+            groups, metadata = [groups[i] for i in kept], [metadata[i] for i in kept]
+            record.update(candidate_books=len(groups), candidate_contracts=self._candidate_contracts(groups, metadata),
+                          eligible_by_symbol=dict(Counter(m["symbol"] for m in metadata)))
+            if self.pairs is not None:
+                record["eligible_by_pair"] = dict(Counter(m["pair_id"] for m in metadata))
+                record["fitted"] = sum(bool(m["method_fitted"]) for m in metadata)
+                record["fallback"] = len(metadata)-record["fitted"]
+            record["kelly"]["candidates"] = len(metadata)
+        minimum = joint_scenario_generator(spec).minimum(self.params["correlation_min_pairs"])
+        record["kelly"][self._JOINT_SCENARIOS] = {
+            "history_source": history["source"], "history_returns": history["returns"],
+            "history_first": history["first"], "history_last": history["last"], "history_minimum": minimum,
+            "dropped": list(history["dropped"])}
+        if record["kelly"]["status"] == "estimated" and history["returns"] < minimum:
+            record["kelly"]["status"] = self._JOINT_SHORT
+        return groups, metadata, history
+
+    def _joint_utility(self, day, spec, program, configured, metadata, history, record):
+        """Replace the scored program's basket-move scenarios by the spec's sampled joint scenarios (atom form).
+
+        Each group's horizon is the sessions its DTE spans, counted back from ``day`` on the history calendar
+        (:meth:`_horizon_sessions`: no future session is read). The toolkit derives each scenario's profit from the
+        group's own loss rows, centred on the sampled mean, so every item's expectation stays its forecast's.
+        """
+        draw = joint_scenario_generator(spec).draw({
+            "day": day, "names": history["names"], "returns": history["matrix"],
+            "min_returns": self.params["correlation_min_pairs"],
+            "groups": [{"id": g["id"], "name": meta["symbol"],
+                        "horizon": self._horizon_sessions(day, int(meta["dte"])),
+                        "masses": g["masses"]} for g, meta in zip(configured, metadata, strict=True)]})
+        program["utility"]["joint"] = []
+        program["utility"]["atom_scenarios"] = {"weights": draw["weights"], "atoms": draw["atoms"]}
+        record["kelly"][self._JOINT_SCENARIOS].update(draw["record"])
 
     def _horizon_sessions(self, day, days):
         """Return how many sessions the calendar holds in the ``days`` calendar days ending at ``day``, at least 1."""
@@ -5427,6 +5557,11 @@ class WeeklyOptionPortfolioStudy:
                             "candidates": len(metadata), **weights,
                             "status": (weights["status"] if w0 > 0 else "nonpositive_capital")
                             if metadata or not estimate["dropped"] else "no_candidate_with_history"}
+                    joint_history = None
+                    if kelly is not None and self._JOINT_SCENARIOS in kelly:
+                        # The joint-scenario arm reads its copula history now, so a week without it solves nothing.
+                        groups, metadata, joint_history = self._joint_week_history(
+                            day, kelly[self._JOINT_SCENARIOS], groups, metadata, record)
                     sizer = self._sizer(method)
                     if sizer is not None:
                         # ADR-0300: the sizer's risk inputs are read before stage 1, as the kelly estimate is, so a week
@@ -5512,6 +5647,11 @@ class WeeklyOptionPortfolioStudy:
                                     "paths": hedge.overlay.params["rehedge_paths"],
                                     "seed": hedge.overlay.params["rehedge_seed"],
                                     "scenarios": len(program["utility"]["joint"])}
+                            if joint_history is not None:
+                                if hedged_search and hedge.overlay.REBALANCES:
+                                    raise ValueError("joint_scenarios cannot score a daily re-struck hedge's paths")
+                                self._joint_utility(day, kelly[self._JOINT_SCENARIOS], program, configured, metadata,
+                                                    joint_history, record)
                         local_week = None
                         if local is not None:
                             # ADR-0307: the one-stage program above is only SCORED (never built as a model): the week

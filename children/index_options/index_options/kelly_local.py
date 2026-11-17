@@ -22,7 +22,10 @@ What it owns, and what it reads from the toolkit:
   profit plus its scenario term) is built once. Its size is contracts times scenarios, a few megabytes at a
   production week (about 154,000 items by 17 scenarios), because the one-stage program's scenarios are the shock
   moves and not a large sample: the dispersion that a sampled program would carry in thousands of scenarios is
-  the program's per-name charge here.
+  the program's per-name charge here. A program with sampled joint scenarios (the scorer's ``atom_tables``,
+  ``index_options.joint_scenarios``) has hundreds: ``D`` is then filled group by group from the atom tables, and the
+  shortlist's floor check runs in row blocks (:meth:`KellyLocalSearch._floor_ok`) so no second matrix of that size
+  is ever built.
 * The moves: add one contract of an item, remove one contract, swap one contract of item ``a`` for one of item
   ``b`` (the same group or another). Each round a first-order estimate ranks every addable item from the current
   wealth vector (one matrix-vector product), the top ``adds_evaluated`` feasible adds, every removal of a held
@@ -131,9 +134,15 @@ class KellyLocalSearch:
         self.D = np.empty((self.N, self.S))
         for g in range(self.G):
             self.D[self.off[g]:self.off[g+1], :] = np.asarray(scorer.expected[g], dtype=float)[:, None]
-        for s, (_name, _weight, terms) in enumerate(scorer.scenarios):
-            for g, row in terms.items():
-                self.D[self.off[g]:self.off[g+1], s] += row
+        atom_tables = getattr(scorer, "atom_tables", None)
+        if atom_tables is not None:
+            # Sampled atom scenarios: a group's column block is its atom table gathered onto the scenarios.
+            for g, (table, atoms) in atom_tables[1].items():
+                self.D[self.off[g]:self.off[g+1], :] += table[atoms].T
+        else:
+            for s, (_name, _weight, terms) in enumerate(scorer.scenarios):
+                for g, row in terms.items():
+                    self.D[self.off[g]:self.off[g+1], s] += row
         self.dmin = self.D.min(axis=1) if self.S else np.zeros(self.N)
         self.R = [np.asarray(g["reserve_rows"], dtype=float).reshape(-1, n) for g, n in zip(groups, self.sizes)]
         self.lin_coef = [np.asarray([row["coefficients"] for row in g["linear_rows"]], dtype=float).reshape(-1, n)
@@ -327,20 +336,35 @@ class KellyLocalSearch:
         held = np.flatnonzero(self.q > 0)
         return adds, pool, held, add_gain, remove_gain
 
+    #: Elements per block of :meth:`_floor_ok` (about 32 MB of float64): bounds the check's temporaries when a program
+    #: carries hundreds of sampled scenarios, where one ``items x scenarios`` temporary would be gigabytes.
+    FLOOR_CHUNK_ELEMENTS = 1 << 22
+
+    def _floor_rows(self, ids):
+        """Return, per item in ``ids``, whether one more contract keeps every scenario's wealth on the floor.
+
+        Elementwise the same comparison as one ``(W + D[ids] >= lo - tol).all(axis=1)``, taken in row blocks.
+        """
+        rows = max(1, self.FLOOR_CHUNK_ELEMENTS//max(1, self.S))
+        out = np.empty(len(ids), dtype=bool)
+        for a in range(0, len(ids), rows):
+            out[a:a+rows] = (self.W[None, :]+self.D[ids[a:a+rows]] >= self.lo-self.tol).all(axis=1)
+        return out
+
     def _floor_ok(self, ids):
         """Return which of ``ids`` keep the wealth floor in every scenario after one more contract.
 
         Exact: ``W_s + D_is >= min W + min_s D_is`` in floating point too (rounding is monotone), so an item whose
-        worst-scenario sum clears the floor passes without its row being read; only the rest get the full check."""
-        floor = self.lo-self.tol
+        worst-scenario sum clears the floor passes without its row being read; only the rest get the full check
+        (taken in row blocks, see :meth:`_floor_rows`)."""
         if not self.INCREMENTAL:
-            return (self.W[None, :]+self.D[ids] >= floor).all(axis=1)
+            return self._floor_rows(ids)
         if not self.S:
             return np.ones(len(ids), dtype=bool)
-        ok = self.W.min()+self.dmin[ids] >= floor
+        ok = self.W.min()+self.dmin[ids] >= self.lo-self.tol
         rest = np.flatnonzero(~ok)
         if len(rest):
-            ok[rest] = (self.W[None, :]+self.D[ids[rest]] >= floor).all(axis=1)
+            ok[rest] = self._floor_rows(ids[rest])
         return ok
 
     def _best_move(self):

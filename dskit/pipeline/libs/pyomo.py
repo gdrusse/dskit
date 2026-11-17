@@ -4332,6 +4332,13 @@ class TransportPortfolioSolve(PyomoSolve):
     #: ADR-0318: the one optional key. ``charge_scale`` (finite, at least 1) multiplies every name's dispersion charge,
     #: ``charge_scale x gamma x S_a^2 / (2 w0)``; absent is 1 and the block, its identity and every value are unchanged.
     UTILITY_OPTIONAL_KEYS = frozenset({"charge_scale"})
+    #: The optional compact form of SAMPLED joint scenarios (the index_options joint-scenario arm):
+    #: ``{"weights": [S floats], "atoms": {group id: [S ints]}}`` with ``joint`` the empty list. Scenario ``s`` puts
+    #: every group on atom ``atoms[id][s]`` of its own grid; the group's term is its PROFIT there beyond the
+    #: weighted sampled mean, derived from the group's own ``losses`` (``-(losses[k] - sum_s w_s losses[k_s])``), so a
+    #: sampled scenario cannot drift from the losses the expectation is priced on and every item's weighted
+    #: deviation is zero. Absent, every path below is unchanged. Scored only: :meth:`build_model` refuses it.
+    UTILITY_ATOM_KEY = "atom_scenarios"
     #: How far the scenario weights may miss one in total (float sums of configured weights).
     UTILITY_WEIGHT_TOLERANCE = 1e-9
 
@@ -4359,7 +4366,9 @@ class TransportPortfolioSolve(PyomoSolve):
         """
         if utility is None:
             return None
-        if (not isinstance(utility, dict) or set(utility)-cls.UTILITY_OPTIONAL_KEYS != cls.UTILITY_KEYS
+        atom = isinstance(utility, dict) and cls.UTILITY_ATOM_KEY in utility
+        if (not isinstance(utility, dict)
+                or set(utility)-cls.UTILITY_OPTIONAL_KEYS-{cls.UTILITY_ATOM_KEY} != cls.UTILITY_KEYS
                 or ("charge_scale" in utility and (not number_ok(utility["charge_scale"])
                                                    or utility["charge_scale"] < 1))
                 or not number_ok(utility["w0"]) or utility["w0"] <= 0
@@ -4370,10 +4379,18 @@ class TransportPortfolioSolve(PyomoSolve):
                 or not isinstance(utility["aggregate"], dict)
                 or set(utility["aggregate"]) != {g["id"] for g in groups}
                 or any(not isinstance(v, str) or not v for v in utility["aggregate"].values())
-                or not isinstance(utility["joint"], list) or not utility["joint"]):
+                or not isinstance(utility["joint"], list) or bool(utility["joint"]) == atom):
             raise ValueError("invalid utility block")
         if any(g["radius"] != 0 for g in groups) or any(charge is not None for charge in charges):
             raise ValueError("a utility objective needs radius 0 and no priced risk charge")
+        if atom:
+            checked = {**utility, "w0": float(utility["w0"]), "gamma": float(utility["gamma"]),
+                       "core": float(utility["core"]), "wealth_lo": float(utility["wealth_lo"]),
+                       "aggregate": dict(utility["aggregate"]), "joint": [],
+                       cls.UTILITY_ATOM_KEY: cls._checked_atom_scenarios(utility[cls.UTILITY_ATOM_KEY], groups)}
+            if "charge_scale" in utility:
+                checked["charge_scale"] = float(utility["charge_scale"])
+            return checked
         sizes = {g["id"]: len(g["capacity"]) for g in groups}
         seen, total = set(), 0.
         for scenario in utility["joint"]:
@@ -4402,11 +4419,60 @@ class TransportPortfolioSolve(PyomoSolve):
         return [np.asarray(TransportPortfolioSolve._effective_credit(g), dtype=float)
                 - np.asarray(g["masses"], dtype=float) @ np.asarray(g["losses"], dtype=float) for g in groups]
 
-    @staticmethod
-    def _utility_scenarios(groups, utility):
-        """Return every utility scenario as ``(id, weight, {group index: profit coefficients beyond the expectation})``."""
+    @classmethod
+    def _checked_atom_scenarios(cls, spec, groups):
+        """Validate the compact sampled scenarios (:attr:`UTILITY_ATOM_KEY`) and return a normalized copy.
+
+        ``weights`` is a list of at least two finite nonnegative numbers summing to one; ``atoms`` maps EVERY group id
+        to one int per scenario, each an index into that group's grid (``0 <= k < len(masses)``).
+        """
+        if (not isinstance(spec, dict) or set(spec) != {"weights", "atoms"}
+                or not isinstance(spec["weights"], list) or len(spec["weights"]) < 2
+                or any(not number_ok(w) or w < 0 for w in spec["weights"])
+                or not isinstance(spec["atoms"], dict) or set(spec["atoms"]) != {g["id"] for g in groups}):
+            raise ValueError("invalid atom scenarios")
+        if abs(math.fsum(float(w) for w in spec["weights"])-1.) > cls.UTILITY_WEIGHT_TOLERANCE:
+            raise ValueError("utility scenario weights must sum to one")
+        n = len(spec["weights"])
+        for g in groups:
+            row, k = spec["atoms"][g["id"]], len(g["masses"])
+            if not isinstance(row, list) or len(row) != n or any(type(a) is not int or not 0 <= a < k for a in row):
+                raise ValueError("invalid atom scenarios")
+        return {"weights": [float(w) for w in spec["weights"]],
+                "atoms": {key: list(row) for key, row in spec["atoms"].items()}}
+
+    @classmethod
+    def _atom_tables(cls, groups, utility):
+        """Return the sampled scenarios' weights and, per group index, ``(table, atoms)``.
+
+        ``table[k]`` is the group's profit per contract at atom ``k`` beyond the weighted sampled mean loss,
+        ``centre - losses[k]`` with ``centre = sum_s w_s losses[atoms[s]]``; ``atoms`` the group's atom per scenario.
+        """
         import numpy as np
 
+        spec = utility[cls.UTILITY_ATOM_KEY]
+        weights = np.asarray(spec["weights"], dtype=float)
+        tables = {}
+        for i, g in enumerate(groups):
+            losses = np.asarray(g["losses"], dtype=float)
+            atoms = np.asarray(spec["atoms"][g["id"]], dtype=np.intp)
+            frequency = np.bincount(atoms, weights=weights, minlength=losses.shape[0])
+            tables[i] = (frequency @ losses)[None, :]-losses, atoms
+        return weights, tables
+
+    @classmethod
+    def _utility_scenarios(cls, groups, utility, atom_tables=None):
+        """Return every utility scenario as ``(id, weight, {group index: profit coefficients beyond the expectation})``.
+
+        With :attr:`UTILITY_ATOM_KEY` the rows are views into each group's atom table (``sample:<s>`` ids);
+        ``atom_tables`` (:meth:`_atom_tables` of the same program) is reused when given instead of rebuilt.
+        """
+        import numpy as np
+
+        if cls.UTILITY_ATOM_KEY in utility:
+            weights, tables = atom_tables if atom_tables is not None else cls._atom_tables(groups, utility)
+            return [(f"sample:{s}", float(weight), {i: table[atoms[s]] for i, (table, atoms) in tables.items()})
+                    for s, weight in enumerate(weights)]
         lookup = {g["id"]: i for i, g in enumerate(groups)}
         return [(scenario["id"], float(scenario["weight"]),
                  {lookup[key]: np.asarray(row, dtype=float) for key, row in scenario["terms"].items()})
@@ -4426,6 +4492,17 @@ class TransportPortfolioSolve(PyomoSolve):
     @classmethod
     def _utility_envelope(cls, groups, utility, expected, scenarios):
         """Return the one tangent envelope of a program: knots from ``wealth_lo`` to the highest reachable wealth."""
+        import numpy as np
+
+        if cls.UTILITY_ATOM_KEY in utility:
+            # Sampled scenarios: each group's highest reachable gain per atom, gathered per scenario (vectorized).
+            weights, tables = cls._atom_tables(groups, utility)
+            totals = np.zeros(len(weights))
+            for i, (table, atoms) in tables.items():
+                capacity = np.asarray(groups[i]["capacity"], dtype=float)
+                totals += (np.maximum(0., np.asarray(expected[i], dtype=float)[None, :]+table) @ capacity)[atoms]
+            return _TangentEnvelope(utility["w0"], utility["gamma"], utility["wealth_lo"],
+                                    utility["w0"]+float(totals.max()), utility["n_tangents"], utility["core"])
         every = range(len(groups))
         highest = max((cls._scenario_range(expected, terms, groups, every)[1] for _id, _w, terms in scenarios),
                       default=0.)
@@ -4783,6 +4860,8 @@ class TransportPortfolioSolve(PyomoSolve):
         )
 
         groups, caps, duals, joint, charges, utility = self._checked(inputs)
+        if utility is not None and self.UTILITY_ATOM_KEY in utility:
+            raise ValueError("sampled atom scenarios are scored (TransportActionScore), never built as a model")
         self._groups, self._caps, self._duals, self._joint = groups, caps, duals, joint
         self._charges, self._utility = charges, utility
         self._charged = any(charge is not None for charge in charges)
@@ -6106,12 +6185,14 @@ class TransportActionScore:
         (self.groups, self.caps, self.duals, self.joint,
          self.charges, self.utility) = TransportPortfolioSolve._checked_program(self.program)
         identity = {"groups": self.groups, "caps": self.caps, "joint_rows": self.joint}
-        self.scenarios = self.envelope = self.expected = self.charge_plan = None
+        self.scenarios = self.envelope = self.expected = self.charge_plan = self.atom_tables = None
         if self.utility is not None:
             identity["utility"] = self.utility
             solve = TransportPortfolioSolve
             self.expected = solve._expected_profit(self.groups)
-            self.scenarios = solve._utility_scenarios(self.groups, self.utility)
+            if solve.UTILITY_ATOM_KEY in self.utility:
+                self.atom_tables = solve._atom_tables(self.groups, self.utility)
+            self.scenarios = solve._utility_scenarios(self.groups, self.utility, self.atom_tables)
             self.envelope = solve._utility_envelope(self.groups, self.utility, self.expected, self.scenarios)
             self.charge_plan = solve._charge_plan(self.groups, self.utility)
         self.program_identity = hashlib.sha256(json.dumps(
@@ -6206,6 +6287,15 @@ class TransportActionScore:
         import numpy as np
 
         mean = sum(float(np.dot(row, q)) for row, q in zip(self.expected, quantities))
+        if self.atom_tables is not None:
+            # Sampled scenarios: each held group's per-atom profit, gathered onto the scenarios (vectorized).
+            _weights, tables = self.atom_tables
+            total = np.full(len(self.scenarios), self.utility["w0"]+mean)
+            for i, (table, atoms) in tables.items():
+                q = np.asarray(quantities[i], dtype=float)
+                if q.any():
+                    total += (table @ q)[atoms]
+            return [name for name, _weight, _terms in self.scenarios], [float(w) for w in total]
         names, wealth = [], []
         for name, _weight, terms in self.scenarios:
             names.append(name)
