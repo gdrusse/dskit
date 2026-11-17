@@ -2763,7 +2763,7 @@ class RegimeEdgeShrink:
                 or not isinstance(regimes["edges"], list)):
             return False
         edges = regimes["edges"]
-        return (type(block["window_weeks"]) is int and block["window_weeks"] >= 1
+        return (type(block["window_weeks"]) is int and 1 <= block["window_weeks"] <= 520
                 and type(block["min_obs"]) is int and block["min_obs"] >= 2
                 and all(number_ok(e) and e > 0 for e in edges)
                 and all(a < b for a, b in zip(edges, edges[1:])))

@@ -44,7 +44,7 @@ def test_a_well_formed_block_validates_and_composes_with_the_other_knobs():
 
 
 @pytest.mark.parametrize("block", [
-    {**CAL, "method": "other"}, {**CAL, "window_weeks": 0}, {**CAL, "window_weeks": 1.5}, {**CAL, "min_obs": 1},
+    {**CAL, "method": "other"}, {**CAL, "window_weeks": 0}, {**CAL, "window_weeks": 10**9}, {**CAL, "window_weeks": 1.5}, {**CAL, "min_obs": 1},
     {**CAL, "min_obs": True}, {**CAL, "extra": 1}, {k: v for k, v in CAL.items() if k != "min_obs"},
     {**CAL, "regimes": {"variable": "vix", "edges": []}}, {**CAL, "regimes": {"variable": "basket_vol"}},
     {**CAL, "regimes": {"variable": "basket_vol", "edges": [.02, .01]}},
