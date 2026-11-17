@@ -112,3 +112,19 @@ def test_the_applied_wealth_is_the_full_recompute_to_rounding():
             break
         search._apply(found[1])
         assert search.W == pytest.approx(W0+search.q.astype(float) @ search.D, rel=1e-12, abs=1e-8)
+
+
+@pytest.mark.parametrize("scenarios", [17, 300])
+def test_multistart_matches_the_full_refresh_including_repaired_starts(scenarios):
+    from index_options.kelly_multistart import KellyMultiStart
+    from test_kelly_multistart import MULTI2
+
+    class Full(KellyMultiStart):
+        INCREMENTAL = False
+
+    spec = program(scenarios, seed=5, floor=3000.)
+    params = PARAMS
+    new = KellyMultiStart(_scorer(spec), params, MULTI2).run_multistart()
+    old = Full(_scorer(spec), params, MULTI2).run_multistart()
+    assert new["quantities"] == old["quantities"]
+    assert new["record"] == old["record"]    # includes every start's value and every climb's end value

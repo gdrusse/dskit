@@ -335,6 +335,8 @@ class KellyLocalSearch:
         floor = self.lo-self.tol
         if not self.INCREMENTAL:
             return (self.W[None, :]+self.D[ids] >= floor).all(axis=1)
+        if not self.S:
+            return np.ones(len(ids), dtype=bool)
         ok = self.W.min()+self.dmin[ids] >= floor
         rest = np.flatnonzero(~ok)
         if len(rest):
@@ -369,10 +371,10 @@ class KellyLocalSearch:
             return None
         return best[1], best[2]
 
-    def _apply(self, changes):
+    def _apply(self, changes, full=False):
         """Take a move: change ``q``, refresh the groups it touches and the sums."""
         wealth = None
-        if self.INCREMENTAL:
+        if self.INCREMENTAL and not full:
             wealth = self.W.copy()      # the same additions, in the same order, as ``_trial`` scored
             for flat, dq in changes.items():
                 wealth += dq*self.D[flat]
@@ -554,7 +556,7 @@ class KellyLocalSearch:
                 key = (change, -value, int(self.rank[flat]))
                 if best is None or key < best[0]:
                     best = (key, int(flat))
-            self._apply({best[1]: -1})
+            self._apply({best[1]: -1}, full=True)    # repair decisions read W: keep it the full refresh
             removed += 1
         return self.q.copy(), removed
 
