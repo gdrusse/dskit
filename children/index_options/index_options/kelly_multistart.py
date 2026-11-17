@@ -231,17 +231,17 @@ class KellyMultiStart(KellyLocalSearch):
         values, kinds = [self.value()], {"add": 0, "remove": 0, "swap": 0, "pair": 0}
         for _ in range(self.params["moves"]):
             if stop is not None and self.evaluations >= stop:
-                return values, kinds, False
+                return self._settled(values), kinds, False
             found = self._best_move()
             if found is None:
-                return values, kinds, True
+                return self._settled(values), kinds, True
             _gain, changes = found
             steps = list(changes.values())
             kinds["pair" if steps == [1, 1] else "swap" if len(steps) == 2
                   else "add" if steps[0] > 0 else "remove"] += 1
             self._apply(changes)
             values.append(self.value())
-        return values, kinds, False
+        return self._settled(values), kinds, False
 
     # --- the starts ------------------------------------------------------------------------------------------
 

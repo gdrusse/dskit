@@ -79,6 +79,10 @@ class KellyLocalSearch:
     PERTURBATION = .25
     #: The relative miss between the search's score and the scorer's exact recompute above which the search refuses.
     PARITY = 1e-9
+    #: Refresh the wealth vector by the moved contracts' rows (O(S) per changed item, the arithmetic ``_trial`` already
+    #: did) and prefilter the add floor check by each item's worst scenario. ``False`` restores the full ``q @ D``
+    #: refresh and the full floor check; it exists as the reference the parity test compares against.
+    INCREMENTAL = True
 
     @classmethod
     def validate_params(cls, params):
@@ -130,6 +134,7 @@ class KellyLocalSearch:
         for s, (_name, _weight, terms) in enumerate(scorer.scenarios):
             for g, row in terms.items():
                 self.D[self.off[g]:self.off[g+1], s] += row
+        self.dmin = self.D.min(axis=1) if self.S else np.zeros(self.N)
         self.R = [np.asarray(g["reserve_rows"], dtype=float).reshape(-1, n) for g, n in zip(groups, self.sizes)]
         self.lin_coef = [np.asarray([row["coefficients"] for row in g["linear_rows"]], dtype=float).reshape(-1, n)
                          for g, n in zip(groups, self.sizes)]
@@ -198,13 +203,15 @@ class KellyLocalSearch:
             self.pay[g] = self.pay_rows[g] @ qg
             self.spread[g] = measure.price*float(measure.columns(self.pay[g][:, None])[0])
 
-    def _refresh_totals(self):
-        """Recompute the cross-group sums: the caps' reserves, the joint rows, the names' spreads and the wealth."""
+    def _refresh_totals(self, wealth=None):
+        """Recompute the cross-group sums: the caps' reserves, the joint rows, the names' spreads and the wealth.
+
+        ``wealth`` is the already-updated wealth vector of an applied move; None recomputes it in full from ``q``."""
         self.capsum = np.array([self.res[m].sum() for m in self.cap_members], dtype=float)
         self.jtot = self.q @ self.J if self.K else np.zeros(0)
         self.keytot = np.bincount(self.charged_key, weights=self.spread[self.charged],
                                   minlength=len(self.slopes)).astype(float)
-        self.W = self.w0+self.q.astype(float) @ self.D
+        self.W = self.w0+self.q.astype(float) @ self.D if wealth is None else wealth
 
     def _load(self, q):
         """Make ``q`` (a flat int array) the current selection and rebuild every cached quantity."""
@@ -315,10 +322,24 @@ class KellyLocalSearch:
         if self.K:
             fits &= ((self.jtot[None, :]+self.J) <= self.j_up+self.tol).all(axis=1)
         ids = np.flatnonzero(fits)
-        ids = ids[(self.W[None, :]+self.D[ids] >= self.lo-self.tol).all(axis=1)]
+        ids = ids[self._floor_ok(ids)]
         adds = ids[np.lexsort((self.rank[ids], -add_gain[ids]))[:self.params["adds_evaluated"]]]
         held = np.flatnonzero(self.q > 0)
         return adds, pool, held, add_gain, remove_gain
+
+    def _floor_ok(self, ids):
+        """Return which of ``ids`` keep the wealth floor in every scenario after one more contract.
+
+        Exact: ``W_s + D_is >= min W + min_s D_is`` in floating point too (rounding is monotone), so an item whose
+        worst-scenario sum clears the floor passes without its row being read; only the rest get the full check."""
+        floor = self.lo-self.tol
+        if not self.INCREMENTAL:
+            return (self.W[None, :]+self.D[ids] >= floor).all(axis=1)
+        ok = self.W.min()+self.dmin[ids] >= floor
+        rest = np.flatnonzero(~ok)
+        if len(rest):
+            ok[rest] = (self.W[None, :]+self.D[ids[rest]] >= floor).all(axis=1)
+        return ok
 
     def _best_move(self):
         """Return ``(gain, changes)`` of the best strictly improving move among those evaluated, or None."""
@@ -350,11 +371,16 @@ class KellyLocalSearch:
 
     def _apply(self, changes):
         """Take a move: change ``q``, refresh the groups it touches and the sums."""
+        wealth = None
+        if self.INCREMENTAL:
+            wealth = self.W.copy()      # the same additions, in the same order, as ``_trial`` scored
+            for flat, dq in changes.items():
+                wealth += dq*self.D[flat]
         for flat, dq in changes.items():
             self.q[flat] += dq
         for g in sorted({int(self.gid[flat]) for flat in changes}):
             self._refresh_group(g)
-        self._refresh_totals()
+        self._refresh_totals(wealth)
 
     def _climb(self):
         """Move until no evaluated move improves or the move budget is spent; return the accepted values and how it ended."""
@@ -362,12 +388,20 @@ class KellyLocalSearch:
         for _ in range(self.params["moves"]):
             found = self._best_move()
             if found is None:
-                return values, kinds, True
+                return self._settled(values), kinds, True
             _gain, changes = found
             kinds["swap" if len(changes) == 2 else "add" if next(iter(changes.values())) > 0 else "remove"] += 1
             self._apply(changes)
             values.append(self.value())
-        return values, kinds, False
+        return self._settled(values), kinds, False
+
+    def _settled(self, values):
+        """End a climb on the full ``q @ D`` wealth, so the final value is the full-refresh one to the last bit (the
+        incremental wealth differs from it by rounding only)."""
+        if self.INCREMENTAL and len(values) > 1:
+            self.W = self.w0+self.q.astype(float) @ self.D
+            values[-1] = self.value()
+        return values
 
     # --- the search ----------------------------------------------------------------------------------------
 
