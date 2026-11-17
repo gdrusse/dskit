@@ -2869,6 +2869,9 @@ class WeeklyOptionPortfolioStudy:
         the window cannot cover is dropped with its candidates; a history
         too short for the spec is kelly_risk_input
         (joint_insufficient_history). Absent, nothing changes.
+        Opt-in record_stage1_selection (bool): the week's stage-one evidence also carries the full stage-one
+        selection with the digests of the stage-one program (program_sha256) and of the selection itself, so a later
+        run reuses stage one with no re-solve and no integer re-derivation; a program that differs refuses.
         Optional method key sizer (ADR-0300, exclusive with kelly) keeps the
         method's dollar program as stage 1, unchanged (its books and leg
         ratios, under every cap it declares), and sizes the selected books
@@ -2953,6 +2956,9 @@ class WeeklyOptionPortfolioStudy:
     #: ADR-0307 Amendment 1 (the FAST variant): opt-in keys of the block that steer stage one, read here and never
     #: handed to the search (``cash_floor`` and ``repair`` are the search's own, ``KellyLocalSearch.OPTION_KEYS``).
     _LOCAL_STAGE1_KEYS = ("stage1_time_limit", "incumbent_start")
+    #: Opt-in record key of the block (bool): it changes what a week's evidence CARRIES, never a decision, so it is
+    #: read here and never handed to the search or to a stage-one key.
+    _LOCAL_RECORD_KEYS = ("record_stage1_selection",)
     #: ``accept_uncertified`` (ADR-0301 amendment): a week whose certification the relax_fix strategy DECLINED (a support
     #: incumbent exists, too many actions stayed free to certify within the limit) trades that incumbent instead of
     #: skipping; the gap to the relaxation's bound is recorded (``kelly.uncertified``). A failed relaxation still skips.
@@ -3535,7 +3541,9 @@ class WeeklyOptionPortfolioStudy:
             return False
         start = search["start"]
         return (not KellyLocalSearch.validate_params({k: v for k, v in search.items()
-                                                      if k not in ("start", *cls._LOCAL_STAGE1_KEYS)})
+                                                      if k not in ("start", *cls._LOCAL_STAGE1_KEYS,
+                                                                   *cls._LOCAL_RECORD_KEYS)})
+                and all(type(search[k]) is bool for k in cls._LOCAL_RECORD_KEYS if k in search)
                 and ("stage1_time_limit" not in search or (number_ok(search["stage1_time_limit"])
                                                            and search["stage1_time_limit"] > 0))
                 and ("incumbent_start" not in search or type(search["incumbent_start"]) is bool)
@@ -4861,12 +4869,23 @@ class WeeklyOptionPortfolioStudy:
             solver_params = {**solver_params, "solver_options": {**solver_params.get("solver_options", {}),
                                                                  "time_limit": search["stage1_time_limit"]}}
         solver = self._solver(solver_params)
+        record_selection = search.get("record_stage1_selection", False)
+        program_sha256 = self._stage1_program_sha256(dollar, solver_params) if record_selection else None
         if derived is not None:
             claim = derived["stage1"]
-            if not isinstance(claim, dict) or set(claim) != {"actions", "certificates"}:
+            base = {"actions", "certificates"}
+            if (not isinstance(claim, dict)
+                    or set(claim) not in (base, base | set(self._STAGE1_SELECTION_KEYS)) or (
+                        len(claim) > len(base) and not record_selection)):
                 raise ValueError("derived local-search week lacks its stage-one evidence")
             try:
-                first = solver.derived(dollar, claim["actions"], claim["certificates"])["selection"]
+                if "selection" in claim:
+                    # The recorded selection stands in for the re-solve AND the integer re-derivation: it is checked
+                    # against this program's digest and its own, then audited by ``_recorded`` exactly as a record is.
+                    self._check_stage1_selection(claim, program_sha256, day)
+                    first = solver._recorded(dollar, claim["selection"], claim["certificates"])
+                else:
+                    first = solver.derived(dollar, claim["actions"], claim["certificates"])["selection"]
             except QuoteIndexIntegrityError:
                 raise
             except Exception as exc:  # name the week of any refusal, typed or not
@@ -4880,6 +4899,8 @@ class WeeklyOptionPortfolioStudy:
             claim = recorded.get("stage1")
             if not isinstance(claim, dict) or "selection" not in claim or "certificates" not in claim:
                 raise ValueError("eligible decision lacks recorded solve evidence")
+            if "program_sha256" in claim:
+                self._check_stage1_selection(claim, program_sha256, day)
             first = solver._recorded(dollar, claim["selection"], claim["certificates"])
         screen = dict(solver.last_screen)
         timed_out = "timeout" in first
@@ -4888,7 +4909,8 @@ class WeeklyOptionPortfolioStudy:
         incumbent = timed_out and search.get("incumbent_start", False) and first.get("candidate") is not None
         scorer = TransportActionScore(program, {"parity_tolerance": p["solver"]["parity_tolerance"]})
         out = KellyLocalSearch(scorer, {k: v for k, v in search.items()
-                                        if k not in ("start", *self._LOCAL_STAGE1_KEYS)}).run(
+                                        if k not in ("start", *self._LOCAL_STAGE1_KEYS,
+                                                     *self._LOCAL_RECORD_KEYS)}).run(
             first["candidate"]["quantities"] if incumbent else None if timed_out else first["quantities"],
             "stage1_incumbent" if incumbent else "stage1")
         local = out["record"]
@@ -4922,10 +4944,57 @@ class WeeklyOptionPortfolioStudy:
                 raise refusal
         if recorded is not None and (recorded.get("selection", {}).get("quantities") != out["quantities"]):
             raise ValueError("recorded local-search selection differs from this host's replay")
-        return {"selection": out["selection"], "local": local, "screen": screen,
-                "stage1": {"selection": {k: v for k, v in first.items() if k != "certificates"},
-                           "certificates": stage1_certificates},
+        stage1 = {"selection": {k: v for k, v in first.items() if k != "certificates"},
+                  "certificates": stage1_certificates}
+        if record_selection:
+            from dskit.pipeline.base import value_hash
+
+            stage1.update(program_sha256=program_sha256, selection_sha256=value_hash(stage1["selection"]))
+        return {"selection": out["selection"], "local": local, "screen": screen, "stage1": stage1,
                 "certificates": [*stage1_certificates, certificate]}
+
+    #: The keys a recorded stage-one selection adds to a week's (or an action entry's) ``stage1`` evidence.
+    _STAGE1_SELECTION_KEYS = ("selection", "program_sha256", "selection_sha256")
+
+    @staticmethod
+    def _stage1_program_sha256(dollar, solver_params):
+        """Return the digest of the stage-one program a recorded selection is valid for.
+
+        The dollar program (groups, caps, joint rows) and the solver parameters the selection was solved under, each
+        number by its exact value (numpy arrays and scalars by their Python values), so two hosts that build the same
+        program agree and any changed group, cap, shock row or solver parameter does not.
+        """
+        import numpy as np
+        from dskit.pipeline.base import value_hash
+
+        def plain(value):
+            if isinstance(value, np.ndarray):
+                return plain(value.tolist())
+            if isinstance(value, np.generic):
+                return value.item()
+            if isinstance(value, dict):
+                return {str(k): plain(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [plain(v) for v in value]
+            return value
+
+        return value_hash({"program": plain(dollar), "solver": plain(solver_params)})
+
+    @classmethod
+    def _check_stage1_selection(cls, claim, program_sha256, day):
+        """Refuse a recorded stage-one selection whose program or own digest is not this week's, never reuse it."""
+        from dskit.pipeline.base import value_hash
+        from dskit.pipeline.libs.pyomo import RecordedCheckRefusal
+
+        if program_sha256 is None or any(key not in claim for key in cls._STAGE1_SELECTION_KEYS):
+            raise RecordedCheckRefusal("recorded stage-one selection is not declared by this method",
+                                       "stage1_selection_shape", "file", week=day)
+        if claim["program_sha256"] != program_sha256:
+            raise RecordedCheckRefusal("recorded stage-one selection belongs to a different stage-one program",
+                                       "stage1_program_digest", "replay", week=day)
+        if claim["selection_sha256"] != value_hash(claim["selection"]):
+            raise RecordedCheckRefusal("recorded stage-one selection differs from its digest",
+                                       "stage1_selection_digest", "file", week=day)
 
     def _multistart_week(self, day, search, program, derived, recorded):
         """Return one multi-start local-search week (ADR-0315): no stage one, the LP-rounded starts and the climbs.

@@ -732,6 +732,11 @@ class MIOMethodWorker:
                     decisions[decision["date"]]["stage1"] = {
                         "actions": TransportPortfolioSolve.actions(stage1["selection"]),
                         "certificates": copy.deepcopy(stage1["certificates"])}
+                    if kelly["local_search"].get("record_stage1_selection") is True:
+                        # Opt-in: the full stage-one selection and the digests that bind it to its program, so a later
+                        # run reuses stage one with no re-solve (``WeeklyOptionPortfolioStudy._local_search_week``).
+                        decisions[decision["date"]]["stage1"].update(
+                            {k: copy.deepcopy(stage1[k]) for k in ("selection", "program_sha256", "selection_sha256")})
                 if declared:
                     decisions[decision["date"]]["kelly_strategy"] = {
                         k: copy.deepcopy(decision["kelly"][k]) for k in declared}
