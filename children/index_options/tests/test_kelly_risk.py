@@ -92,7 +92,7 @@ def test_the_risk_declaration_is_validated():
                 {"concentration": {"by": "sector", "weight": 1., "power": 2}},
                 {"concentration": {"by": "name", "weight": -1., "power": 2}},
                 {"concentration": {"by": "name", "weight": 1., "power": .5}},
-                {"concentration": {"by": "name", "weight": 1.}}, {"replace_name_charge": 1},
+                {"concentration": {"by": "name", "weight": 1.}}, {"replace_name_charge": 1}, {"replace_name_charge": True}, {"cvar": {"alpha": .1, "weight": 1.}, "replace_name_charge": True},
                 {"cvar": {"alpha": float("nan"), "weight": 1.}}):
         assert KellyLocalSearch.validate_risk(bad), bad
         assert KellyLocalSearch.validate_params({**PARAMS, "risk": bad}), bad
@@ -218,7 +218,7 @@ def test_a_trial_equals_a_full_rescoring_and_the_scorers_exact_value_less_the_pe
 def test_the_replaced_name_charge_drops_out_and_the_exact_recompute_still_reconciles():
     program = _program(n_groups=6, n_pairs=3, seed=3, capacity=5)
     kept = _search(program, {"cvar": CVAR}).run(None)
-    dropped = _search(program, {"cvar": CVAR, "replace_name_charge": True}).run(None)
+    dropped = _search(program, {"cvar": CVAR, "concentration": CONC, "replace_name_charge": True}).run(None)
     risk = dropped["record"]["risk"]
     assert risk["name_charge_applied"] == 0. and risk["name_charge_exact"] > 0.
     assert kept["record"]["risk"]["name_charge_applied"] == kept["record"]["risk"]["name_charge_exact"] > 0.

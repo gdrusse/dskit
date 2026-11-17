@@ -146,6 +146,8 @@ class KellyLocalSearch:
                     defects.append("risk concentration power must be a number >= 1")
         if "replace_name_charge" in risk and type(risk["replace_name_charge"]) is not bool:
             defects.append("risk replace_name_charge must be a bool")
+        elif risk.get("replace_name_charge") and "concentration" not in risk:
+            defects.append("risk replace_name_charge needs a concentration cost to replace it")
         return defects
 
     def __init__(self, scorer, params):
