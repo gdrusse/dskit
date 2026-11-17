@@ -51,6 +51,15 @@ def test_an_absent_key_and_an_explicit_milp_are_the_same_week_and_write_no_field
         assert "stage1_solve" not in new.get("kelly", {}).get("local", {})
 
 
+def test_a_start_without_search_inherits_no_search_from_the_document_block():
+    params, _data, _method = _local_world(RELAX)
+    params["solver"] = {**params["solver"], "utility_search": SEARCH, "utility_warm_start": {"node_limit": 5}}
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    block = study._relax_fix_params(params["solver"], RELAX["start"])
+    assert "utility_search" not in block and "utility_warm_start" not in block and block["dollar_solve"] == "relax_fix"
+    assert study._relax_fix_params(params["solver"], RELAX_SEARCHED["start"])["utility_search"] == SEARCH
+
+
 @pytest.mark.parametrize("search", [RELAX, RELAX_SEARCHED])
 def test_relax_fix_stage_one_is_feasible_recorded_and_replays(search):
     params, data, method, study, result = _local_result(search=search)

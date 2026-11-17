@@ -117,9 +117,9 @@ def test_the_search_never_lowers_the_incumbent():
 def test_an_unproved_start_is_the_gap_envelope_and_a_loose_gap_certifies():
     inputs = _program(seed=2)
     node, tight = _solve(inputs, dollar_solve="relax_fix")
-    if node.last_dollar_solve["outcome"] == "incumbent":
-        assert tight["timeout"] == "gap" and tight["candidate"]["gap"] > 0
-        assert tight["certificates"][0]["termination"] == "maxTimeLimit"
+    assert node.last_dollar_solve["outcome"] == "incumbent"   # seed 2: the relaxation is not integral
+    assert tight["timeout"] == "gap" and tight["candidate"]["gap"] > 0
+    assert tight["certificates"][0]["termination"] == "maxTimeLimit"
     loose = _params(dollar_solve="relax_fix", absolute_gap=1e9)
     node = TransportPortfolioSolve("l", loose)
     selection = node.run(None, copy.deepcopy(inputs))["selection"]
@@ -176,11 +176,64 @@ def test_a_relaxation_that_does_not_solve_falls_back_to_the_integer_program(monk
     assert _feasible(inputs, selection) == pytest.approx(full["value"], abs=1e-6)
 
 
-def test_bounds_and_domains_are_restored_after_the_solve():
-    inputs = _program(groups=3)
-    node = TransportPortfolioSolve("w", _params(dollar_solve="relax_fix"))
-    node.run(None, copy.deepcopy(inputs))
-    model = node.build_model(copy.deepcopy(inputs), node.params)
-    again = TransportPortfolioSolve("v", _params(dollar_solve="relax_fix"))
-    again.run(None, copy.deepcopy(inputs))
-    assert all(v.is_integer() for v in model.x.values())
+def _spy_model(monkeypatch):
+    """Capture the solved model, and its capacities as built."""
+    seen = {}
+    solve = TransportPortfolioSolve._solve_dollar_relax_fix
+
+    def spy(self, solver, model):
+        seen["model"] = model
+        seen["capacity"] = {key: v.ub for key, v in model.x.items()}
+        seen["solver"] = solver
+        return solve(self, solver, model)
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_dollar_relax_fix", spy)
+    return seen
+
+
+def _restored(seen):
+    model = seen["model"]
+    assert {key: v.ub for key, v in model.x.items()} == seen["capacity"]
+    assert all(v.is_integer() for v in model.x.values()) and all(v.lb == 0 for v in model.x.values())
+    assert all(v.is_integer() for v in model.side.values())
+
+
+def test_bounds_and_domains_are_restored_after_the_solve(monkeypatch):
+    seen = _spy_model(monkeypatch)
+    node, _ = _solve(_program(groups=3), dollar_solve="relax_fix", utility_search=SEARCH)
+    assert node.last_dollar_solve["support_actions"] < node.last_dollar_solve["actions"]   # something was fixed
+    _restored(seen)
+
+
+def test_bounds_and_domains_are_restored_when_the_restricted_solve_raises(monkeypatch):
+    seen = _spy_model(monkeypatch)
+
+    def boom(self, solver, model, time_limit=None):
+        raise RuntimeError("solver died")
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", boom)
+    with pytest.raises(RuntimeError, match="solver died"):
+        _solve(_program(groups=3), dollar_solve="relax_fix")
+    _restored(seen)
+
+
+def test_the_document_time_limit_is_back_on_the_solver_afterwards(monkeypatch):
+    seen = _spy_model(monkeypatch)
+    _solve(_program(groups=3), dollar_solve="relax_fix", utility_search=SEARCH)
+    assert seen["solver"].options["time_limit"] == 60.
+
+
+def test_a_restricted_solve_without_an_incumbent_keeps_the_solvers_own_record(monkeypatch):
+    seen = _spy_model(monkeypatch)
+    once = TransportPortfolioSolve._solve_once
+
+    def empty(self, solver, model, time_limit=None):
+        result = once(self, solver, model, time_limit)
+        model._transport_no_incumbent = True
+        return result
+    monkeypatch.setattr(TransportPortfolioSolve, "_solve_once", empty)
+    monkeypatch.setattr(TransportPortfolioSolve, "extract", lambda self, model, results: {"selection": None})
+    node, _ = _solve(_program(groups=3), dollar_solve="relax_fix", utility_search=SEARCH)
+    record = node.last_dollar_solve
+    assert record["outcome"] == "no_incumbent" and record["search"] is None and record["final_objective"] is None
+    assert record["restricted_objective"] is None and record["lp_bound"] is not None
+    assert getattr(seen["model"], "_transport_bound") is None and not seen["model"]._transport_declined
+    _restored(seen)

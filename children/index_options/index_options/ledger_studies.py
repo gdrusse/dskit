@@ -3283,9 +3283,7 @@ class WeeklyOptionPortfolioStudy:
             start = local_block.get("start") if isinstance(local_block, dict) else None
             if isinstance(start, dict) and start.get("strategy") == "relax_fix":
                 # The relax_fix stage one returns an uncertified incumbent: the solver block it extends must accept it.
-                defects = TransportPortfolioSolve.validate_params({
-                    **p["solver"], "dollar_solve": "relax_fix",
-                    **({"utility_search": dict(start["search"])} if "search" in start else {})})
+                defects = TransportPortfolioSolve.validate_params(cls._relax_fix_params(p["solver"], start))
                 if defects:
                     raise ValueError("; ".join(defects))
             if "kelly" in method and not cls._gap_within(p["solver"], method["kelly"]):
@@ -3535,6 +3533,21 @@ class WeeklyOptionPortfolioStudy:
             params["utility_search"] = dict(kelly["search"])
         if "warm_start" in kelly:
             params["utility_warm_start"] = dict(kelly["warm_start"])
+        return params
+
+    @staticmethod
+    def _relax_fix_params(solver, start):
+        """The stage-one solver block of a relax_fix start: the document's, with the start's own search or none.
+
+        An inherited ``utility_search`` or ``utility_warm_start`` (the document's block may carry them for a utility
+        arm) is dropped: absent ``start.search`` means no neighbourhood search. The dollar program ignores
+        ``utility_solve``, but ``validate_params`` still ties a declared search to ``utility_solve`` relax_fix, so a
+        document that sets ``utility_solve`` "direct" cannot declare ``start.search`` (refused at validation).
+        """
+        params = {k: v for k, v in solver.items() if k not in ("utility_search", "utility_warm_start")}
+        params["dollar_solve"] = "relax_fix"
+        if "search" in start:
+            params["utility_search"] = dict(start["search"])
         return params
 
     @classmethod
@@ -4946,8 +4959,7 @@ class WeeklyOptionPortfolioStudy:
             solver_params = {**solver_params, "incumbent_audit": "uncertified"}
         relax_fix = start.get("strategy") == "relax_fix"
         if relax_fix:
-            solver_params = {**solver_params, "dollar_solve": "relax_fix",
-                             **({"utility_search": dict(start["search"])} if "search" in start else {})}
+            solver_params = self._relax_fix_params(solver_params, start)
         if "stage1_time_limit" in search:
             # ADR-0307 Amendment 1: stage one's own time limit (the integer program is never built here).
             solver_params = {**solver_params, "solver_options": {**solver_params.get("solver_options", {}),

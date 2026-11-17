@@ -5404,6 +5404,15 @@ class TransportPortfolioSolve(PyomoSolve):
         falls back to the plain integer program on the remaining time. A restricted solve with no incumbent leaves the
         solver's own record (the no-incumbent envelope). What happened is left in ``last_dollar_solve``.
         """
+        saved = solver.options.get("time_limit")
+        try:
+            return self._dollar_relax_fix(solver, model)
+        finally:
+            if saved is not None:   # the stages' shrinking limits are not the document's: the pricing solve sees its own
+                solver.options["time_limit"] = saved
+
+    def _dollar_relax_fix(self, solver, model):
+        """The body of :meth:`_solve_dollar_relax_fix`."""
         from pyomo.environ import Var
 
         self.last_dollar_solve = None
