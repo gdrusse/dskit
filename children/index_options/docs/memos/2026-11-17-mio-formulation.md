@@ -12,10 +12,16 @@ This memo is a description of code. It reports no new result. Every claim about 
   run: lift the development seal to the owner cap 2024-01-01"). The unseen-quarter bundle
   `2020q2-fsdte-t40` was built from this commit. Its `study.json` code digests match this commit's `ledger_studies.py`,
   `kelly_local.py`, `kelly_sizer.py`, `mio_worker.py` and `pyomo.py` byte for byte (checked 2026-11-17, SHA-256).
-- **The development-quarter runs.** These used `b6e083d0`. The diff `b6e083d0..b40a3785` touches only memory release
-  (`_release_week`, `_return_freed_memory`, `ParityForwards.release`), worker logging and the seal date
-  (`dskit/pipeline/method_blocks.py:36`, now `2024-01-01`). The formulation is the same at both, but the line numbers
-  differ.
+- **The development-quarter runs.** These used `b6e083d0`. `git diff --stat b6e083d0 b40a3785`, run in
+  `/home/russell/dskit` where both commits resolve, lists exactly four files:
+  - `ledger_studies.py`: memory release only (`_SQLiteQuoteView.release_memory`, `_return_freed_memory`,
+    `ParityForwards.release`, `_release_week` and its call after each week);
+  - `mio_worker.py`: `HOLDOUT_START` moves from `2021-07-01` to `2024-01-01`, plus a per-week RSS line on stderr;
+  - `children/index_options/tests/test_mio_week_release.py`: a new test file;
+  - `dskit/pipeline/method_blocks.py:36`: `DEVELOPMENT_SEAL` moves from `2021-07-01` to `2024-01-01`.
+
+  No objective, constraint, menu or solver line changes, so the formulation is the same at both commits; only the line
+  numbers differ.
 - **Availability.** Neither `b40a3785` nor `b6e083d0` is an ancestor of `origin/main` (`78c18df9`) on 2026-11-17. At
   that date `b40a3785` was only on the local branch `claude/mio-future-seal-20261116`. A reader on GitHub can follow
   these citations only once that commit is pushed. On `origin/main` the same functions exist at other lines, or not at
@@ -367,7 +373,10 @@ Constraints (PY:6176-6202; KL:234-284 checks the same rules incrementally). Ever
 - exclusive pairs: no two both positive;
 - group linear (slope) rows $\le 0$;
 - **one cash cap** over all groups (LS:4222-4227, `cash_buffer` 0.05):
-  $$\sum_g R_g(x_g)\ \le\ \max\big(0,\ 0.95\max(0,\Phi)-\Omega\big);$$
+  $$\sum_g R_g(x_g)\ \le\ \max\big(0,\ 0.95\max(0,\Phi)-\Omega\big).$$
+  This is `account.remaining(symbols, 0.95)` $= 0.95\max(0,\Phi)-\Omega$ (OL:1462), floored at 0 by `_caps`
+  (LS:4250). Note that the 5% buffer is taken on funding, not on $w_0$: the cap sits $0.05\max(0,\Phi)$ below
+  $w_0=\max(0,\Phi)-\Omega$;
 - **wealth floor** in every scenario: $W_s(x)\ge 0.01\,w_0$ (`wealth_floor` 0.01, LS:5425, PY:6198-6201);
 - no joint rows: the kelly program has none; the shock rows are recorded but not imposed (LS:5493, LS:5637-5638).
 
@@ -478,7 +487,8 @@ KL:73-75).
    $W = w_0 + xD$, along with the reserve rows, linear rows, exclusive partners, cap membership, and each item's own
    per-contract dispersion (an upper bound on how far one contract can move its group's $M$).
 2. **Start feasibility** (KL:400-411). The start is checked against the *kelly* program. It can fail because:
-   - the cash cap is 0.95 of funding, where stage one allowed the full funding;
+   - the kelly cash cap is $\max(0,\ 0.95\max(0,\Phi)-\Omega)$, while stage one's total cap is
+     $\max(0,\ \max(0,\Phi)-\Omega)$ (OL:1462, LS:4250);
    - stage one has no wealth floor;
    - rounding.
 
@@ -493,7 +503,10 @@ KL:73-75).
      - the 64 best feasible adds, pre-filtered on capacity, exclusivity, linear rows, reserve-cap slack, joint rows and
        the wealth floor;
      - every removal of a held item;
-     - the 64 best swaps (remove one held $a$, add one $b$ from the top-64 add pool, any group).
+     - the 64 best swaps (remove one held $a$, add one $b$, any group). The add side $b$ comes from a separate
+       pool: the 64 best items by add gain among those that are only capacity- and exclusivity-eligible
+       ($x_b<\bar q_b$ and no held partner, KL:307-309). This pool is NOT feasibility-filtered like the add
+       shortlist, so a swap that breaks a cap, linear row or wealth floor is ranked and then rejected by `_trial`.
    - *Exact evaluation*: each candidate is scored by `_trial`, which recomputes $W$, the touched groups' reserves and
      spreads and the name totals, and returns None if any rule fails (KL:234-284).
    - *Choice*: the best strictly improving move is taken if it gains more than $10^{-9}w_0$. Ties go to the larger
@@ -532,8 +545,9 @@ The traded book is a **local optimum of the exact objective $F$**, with respect 
 - the top 64 adds, all removals and the top 64 swaps;
 - or simply the point reached after 200 moves.
 
-It is **not** a global optimum, and no bound or gap is computed. It depends on the stage-one start, which is itself a
-time-capped dollar MILP of a different objective.
+It is **not** a global optimum, and no bound or gap is computed. Its `end_value` is only a lower bound on the program's
+optimum (DL:36085). It depends on the stage-one start, which is itself a time-capped dollar MILP of a different
+objective.
 
 This is by design. The one-stage MIP that would maximize the same objective directly (ADR-0299) did not finish on real
 weeks. It had 300,000 to 430,000 rows, and 12 of 13 weeks of 2021Q1 were skipped. The top-100 restriction (ADR-0301)
@@ -627,7 +641,8 @@ traded book only through the start it gives the climb.
 
    Both were opened before the crash and paid in it; through the crash weeks the method opened almost nothing
    (`D:\mio-analysis-20261115\GRID-MORNING-20261117.md` lines 56-65). Removing the best single book takes sdte's
-   four-quarter total from about +84,114 to +63,505 (`D:\mio-analysis-20261115\stress\out\sdte.md` lines 45-48). The
+   four-quarter total from +84,114 (`D:\mio-analysis-20261115\stress\out\sdte.md` lines 9 and 79) to +63,505 (same
+   file, lines 45-48). The
    lockstep screen found the same pattern. In 2020Q1, the no-accuracy cells' lead over the centre came almost entirely
    from weeks 5-6 (27 Jan and 3 Feb), and it was negative once the best two weeks were removed (`LOCKSTEP.md`
    section 2, V3).
