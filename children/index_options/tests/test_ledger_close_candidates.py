@@ -220,3 +220,15 @@ def test_a_close_that_cannot_fill_leaves_the_book_held():
 def test_the_recorded_route_replays_a_closing_run_exactly():
     params, data, method, result = _run(shift=2.5, crash=True)
     assert STUDY(params, data)._method(method, None, recorded=result) == result
+
+
+def test_a_close_that_would_breach_the_books_reserve_is_refused_not_fatal():
+    params, data, method = _world(shift=2.5, crash=True)
+    study = STUDY(params, data)
+    closer = CloseCandidates(study, SPEC)
+    result = study._method(method, None)
+    book = {**_book(result), "reserve": 0.}
+    fields, reason = closer.fill(book, "2019-01-08")
+    assert fields is None and reason == "close_exceeds_reserve"
+    book["reserve"] = 1e6
+    assert closer.fill(book, "2019-01-08")[0]["pnl"] == pytest.approx(_book(result)["pnl"])

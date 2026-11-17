@@ -29,7 +29,10 @@ Refused beside it (named codes, :meth:`CloseCandidates.problems`): a hedge block
 forward leg: the static hedge settles WITH its book, and a mid-life unwind of the forward is not modelled), a
 calibration block, exposure limits, a sizer, the ADR-0318 edge weights (the held book's edge would be unweighted
 while a candidate's is weighted), the multi-start search (its LP-rounded starts know no held book) and any split
-adjustment of the study. The stage-one shock gate and the filled-account shock gate read the books as held (a close
+adjustment of the study. Coverage: only a week that reaches the solve considers closes (a week that is cash for a
+status such as ``no_eligible_candidates``, ``no_entry_fill_session`` or a shock/kelly risk status holds every book),
+and a hold group is valued without a robustness radius (a kelly method carries rho 0, so candidates have none
+either). The stage-one shock gate and the filled-account shock gate read the books as held (a close
 never relaxes them within its week: conservative).
 """
 
@@ -233,6 +236,8 @@ class CloseCandidates:
         markets = [market for _row, market in quoted]
         proceeds = self._proceeds(book, markets, mult, fee)
         fees = fee*sum(leg["quantity"] for leg in book["legs"])
+        if book["credit"]+proceeds < -book["reserve"]-fees-1e-5:
+            return None, "close_exceeds_reserve"   # the account would refuse it: the book stays held
         return {"pnl": book["credit"]+proceeds, "close_proceeds": proceeds, "close_fees": fees,
                 "close_fill_prices": [bid if leg["sign"] > 0 else ask
                                       for leg, (bid, ask) in zip(book["legs"], markets, strict=True)],
