@@ -2957,6 +2957,13 @@ class WeeklyOptionPortfolioStudy:
     #: "previous_climb") offers stage one's MIP the previous decision week's stage-one selection (or its climb's
     #: picks) mapped by contract as a feasible start. Absent, stage one starts from cash exactly as before.
     _LOCAL_START_WARM = ("none", "previous_week", "previous_climb")
+    #: Opt-in keys of the start block (ADR-0302 relax-and-fix for stage one): ``strategy`` ("milp", the default and what
+    #: an absent key means, or "relax_fix": the dollar program's LP relaxation, then the integer program on its
+    #: support, :meth:`TransportPortfolioSolve._solve_dollar_relax_fix`) and ``search`` (relax_fix only: the seeded
+    #: neighbourhood search's {iterations, neighbourhood, node_limit, seed}). Absent, the week is solved and recorded
+    #: exactly as before.
+    _LOCAL_START_OPTIONAL = {"strategy", "search"}
+    _LOCAL_START_STRATEGIES = ("milp", "relax_fix")
     #: ADR-0307 Amendment 1 (the FAST variant): opt-in keys of the block that steer stage one, read here and never
     #: handed to the search (``cash_floor`` and ``repair`` are the search's own, ``KellyLocalSearch.OPTION_KEYS``).
     _LOCAL_STAGE1_KEYS = ("stage1_time_limit", "incumbent_start")
@@ -3272,6 +3279,15 @@ class WeeklyOptionPortfolioStudy:
                 defects = TransportPortfolioSolve.validate_params(cls._kelly_solver_params(p["solver"], method["kelly"]))
                 if defects:
                     raise ValueError("; ".join(defects))
+            local_block = method["kelly"].get("local_search") if isinstance(method.get("kelly"), dict) else None
+            start = local_block.get("start") if isinstance(local_block, dict) else None
+            if isinstance(start, dict) and start.get("strategy") == "relax_fix":
+                # The relax_fix stage one returns an uncertified incumbent: the solver block it extends must accept it.
+                defects = TransportPortfolioSolve.validate_params({
+                    **p["solver"], "dollar_solve": "relax_fix",
+                    **({"utility_search": dict(start["search"])} if "search" in start else {})})
+                if defects:
+                    raise ValueError("; ".join(defects))
             if "kelly" in method and not cls._gap_within(p["solver"], method["kelly"]):
                 # The objective is dollars of growth: a 50-dollar gap certifies a weak week as cash and cannot tell
                 # a quarter Kelly from a half. The method states the gap it needs; a looser document refuses.
@@ -3522,6 +3538,19 @@ class WeeklyOptionPortfolioStudy:
         return params
 
     @classmethod
+    def _start_strategy_valid(cls, start):
+        """Whether a start block's optional ``strategy`` and ``search`` are well formed (``search`` needs relax_fix)."""
+        from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+        strategy = start.get("strategy", cls._LOCAL_START_STRATEGIES[0])
+        if type(strategy) is not str or strategy not in cls._LOCAL_START_STRATEGIES:
+            return False
+        if "search" not in start:
+            return True
+        return (strategy == "relax_fix" and start["search"] is not None
+                and not TransportPortfolioSolve.strategy_problems(start["search"], None))
+
+    @classmethod
     def _local_search_valid(cls, kelly):
         """Return whether a kelly block's optional ``local_search`` is well formed and combines with nothing it cannot.
 
@@ -3551,8 +3580,12 @@ class WeeklyOptionPortfolioStudy:
                 and ("stage1_time_limit" not in search or (number_ok(search["stage1_time_limit"])
                                                            and search["stage1_time_limit"] > 0))
                 and ("incumbent_start" not in search or type(search["incumbent_start"]) is bool)
-                and isinstance(start, dict) and set(start)-{"warm"} == cls._LOCAL_START_KEYS
+                and isinstance(start, dict)
+                and set(start)-cls._LOCAL_START_OPTIONAL-{"warm"} == cls._LOCAL_START_KEYS
                 and ("warm" not in start or start["warm"] in cls._LOCAL_START_WARM)
+                and cls._start_strategy_valid(start)
+                # The MIP warm start seeds the plain MILP; relax_fix solves other programs, so the pair is refused.
+                and not (start.get("strategy") == "relax_fix" and start.get("warm", "none") != "none")
                 and number_ok(start["rho"]) and start["rho"] >= 0
                 and cls._shock_valid(start["shock"]) and "scope" not in start["shock"])
 
@@ -4911,6 +4944,10 @@ class WeeklyOptionPortfolioStudy:
             # integers before it is recorded (the value every route recomputes), and a solver bound below that value
             # (2020Q1 week 2020-02-18: 46.7 under it, the loaded duals 138.0 under it) is the start's named audit.
             solver_params = {**solver_params, "incumbent_audit": "uncertified"}
+        relax_fix = start.get("strategy") == "relax_fix"
+        if relax_fix:
+            solver_params = {**solver_params, "dollar_solve": "relax_fix",
+                             **({"utility_search": dict(start["search"])} if "search" in start else {})}
         if "stage1_time_limit" in search:
             # ADR-0307 Amendment 1: stage one's own time limit (the integer program is never built here).
             solver_params = {**solver_params, "solver_options": {**solver_params.get("solver_options", {}),
@@ -4999,6 +5036,13 @@ class WeeklyOptionPortfolioStudy:
                                 metadata,
                                 out["quantities"] if warm == "previous_climb"
                                 else carried["quantities"] if carried is not None else None)
+        if relax_fix:
+            # The strategy, its LP bound, the restricted program's objective, its seconds and its support size. A live
+            # solve reads them off the solver; a recorded replay carries the recorded ones (a measurement, never
+            # re-derived: its selection is what the replay checks); a foreign worker's derived week has none.
+            local["stage1_solve"] = (dict(solver.last_dollar_solve) if solver.last_dollar_solve is not None
+                                     else None if recorded is None
+                                     else (recorded.get("kelly", {}).get("local", {}) or {}).get("stage1_solve"))
         stage1_certificates = [{k: v for k, v in c.items() if k != "binding"} for c in first.get("certificates", [])]
         certificate = {"strategy_outcome": self._LOCAL_OUTCOME, "certified": False, "objective": local["end_value"],
                        "bound": None, "gap": None, "seconds": None, "bound_source": None}

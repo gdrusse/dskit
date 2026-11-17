@@ -4044,7 +4044,7 @@ class TransportPortfolioSolve(PyomoSolve):
     _PARAMS = PyomoSolve._PARAMS + (
         "absolute_gap", "relative_gap", "parity_tolerance", "timeout_policy",
         "group_screen", "group_screen_keep", "utility_solve", "utility_search", "utility_warm_start",
-        "incumbent_audit")
+        "incumbent_audit", "dollar_solve")
     #: ADR-0316 Amendment 3: what a primary incumbent whose VALUE checks miss becomes. ``raise`` (the default, every
     #: program before the amendment) refuses it; ``uncertified`` (timeout_policy ``return`` only) returns it as the
     #: non-executable ``incumbent_audit`` timeout envelope, its audited book the ``candidate`` and the first miss
@@ -4095,6 +4095,18 @@ class TransportPortfolioSolve(PyomoSolve):
     #: fixed at zero (exact, so the final bound holds for the whole program); ``direct`` hands HiGHS the whole
     #: integer program, whose root probing on a hundred thousand interior integer variables never ends.
     UTILITY_SOLVES = ("relax_fix", "direct")
+    #: How a DOLLAR program is solved (a utility program ignores it): ``milp`` (the default, every program before this
+    #: key) hands HiGHS the whole integer program; ``relax_fix`` (opt-in, needs timeout_policy ``return``) solves the LP
+    #: relaxation, solves the integer program restricted to the relaxation's support, optionally improves that
+    #: incumbent by the ADR-0302 neighbourhood search (``utility_search``), and returns it bounded by the relaxation:
+    #: certified when the relaxation's bound is within the document's gap of it, otherwise an uncertified ``gap``
+    #: timeout envelope (:meth:`_solve_dollar_relax_fix`). A start for a caller that improves it, never a certified optimum.
+    DOLLAR_SOLVES = ("milp", "relax_fix")
+    #: What the last ``relax_fix`` dollar solve did (None: not declared or not reached); see :meth:`_solve_dollar_relax_fix`.
+    last_dollar_solve = None
+    DOLLAR_SOLVE_RECORD_KEYS = ("strategy", "outcome", "actions", "support_actions", "lp_bound", "restricted_objective",
+                                "restricted_termination", "final_objective", "lp_seconds", "restricted_seconds",
+                                "search_seconds", "seconds", "search")
     #: Share of the time limit the incumbent search (the support-reduced program) may take before certification.
     UTILITY_INCUMBENT_SHARE = .4
     #: A relaxed action below this many contracts is outside the incumbent search's support.
@@ -4153,6 +4165,11 @@ class TransportPortfolioSolve(PyomoSolve):
         strategy = params.get("utility_solve", cls.UTILITY_SOLVES[0])
         if not isinstance(strategy, str) or strategy not in cls.UTILITY_SOLVES:
             problems.append("utility_solve must be one of "+", ".join(cls.UTILITY_SOLVES))
+        dollar = params.get("dollar_solve", cls.DOLLAR_SOLVES[0])
+        if not isinstance(dollar, str) or dollar not in cls.DOLLAR_SOLVES:
+            problems.append("dollar_solve must be one of "+", ".join(cls.DOLLAR_SOLVES))
+        elif dollar == "relax_fix" and policy != "return":
+            problems.append("dollar_solve relax_fix returns an uncertified incumbent and requires timeout_policy return")
         problems.extend(cls.strategy_problems(params.get("utility_search"), params.get("utility_warm_start")))
         if ((params.get("utility_search") is not None or params.get("utility_warm_start") is not None)
                 and strategy != "relax_fix"):
@@ -4933,9 +4950,14 @@ class TransportPortfolioSolve(PyomoSolve):
             return self._solve_relax_fix(solver, model)
         if getattr(self, "_utility", None) is not None:
             model._transport_outcome, model._transport_bound_source = "direct", "solver"
-        if self.warm_quantities is not None:
-            self._seed_start(model, self.warm_quantities, solver)
-        result = self._solve_once(solver, model)
+        if (getattr(self, "_utility", None) is None
+                and self.params.get("dollar_solve", self.DOLLAR_SOLVES[0]) == "relax_fix"):
+            # The warm start (stage1 start.warm) is refused alongside relax_fix at validation: nothing seeds here.
+            result = self._solve_dollar_relax_fix(solver, model)
+        else:
+            if self.warm_quantities is not None:
+                self._seed_start(model, self.warm_quantities, solver)
+            result = self._solve_once(solver, model)
         if (getattr(self, "_utility", None) is None and self.params.get("incumbent_audit", "raise") == "uncertified"
                 and not getattr(model, "_transport_no_incumbent", False)):
             self._priced_incumbent(model)
@@ -5363,6 +5385,89 @@ class TransportPortfolioSolve(PyomoSolve):
         model._transport_outcome, model._transport_bound_source = "relaxation_failed", "none"
         return SimpleNamespace(solver=SimpleNamespace(status="aborted", termination_condition="maxTimeLimit"),
                                problem=None, solution=())
+
+    def _solve_dollar_relax_fix(self, solver, model):
+        """Relax-and-fix for a dollar program (opt-in ``dollar_solve`` ``relax_fix``): a start, bounded by its relaxation.
+
+        The same pieces as the utility strategy (:meth:`_solve_relax_fix`), without its certification round: solve the
+        LP relaxation (:meth:`_relaxation`); solve the integer program with every action the relaxation holds below
+        :attr:`UTILITY_SUPPORT_EPS` fixed at zero, from the cash start, under the document's own HiGHS gaps; when
+        ``utility_search`` is declared, improve that incumbent by the seeded neighbourhood search
+        (:meth:`_search_incumbent`, exact dollar audit). Every action's bound is restored afterwards. The relaxation
+        bounds the WHOLE program, so it is the record's bound (``_transport_outside`` equal to it makes
+        :meth:`_build_solve_record` take it): an incumbent within the document's gap of it is certified, any other is
+        labelled ``maxTimeLimit`` so :meth:`extract` returns it as the uncertified ``gap`` envelope (``timeout_policy``
+        ``return``; :meth:`validate_params`), the shape a start already arrives in. The week's wall clock is the
+        document's ``time_limit``: the restricted solve takes :attr:`UTILITY_INCUMBENT_SHARE` of it when a search is
+        declared (the whole remainder otherwise), the search at most :attr:`UTILITY_SEARCH_SHARE` of it inside what
+        is left, so the total stays within the limit (HiGHS's own overshoot aside). A relaxation that does not solve
+        falls back to the plain integer program on the remaining time. A restricted solve with no incumbent leaves the
+        solver's own record (the no-incumbent envelope). What happened is left in ``last_dollar_solve``.
+        """
+        from pyomo.environ import Var
+
+        self.last_dollar_solve = None
+        model._transport_bound = model._transport_outside = None
+        model._transport_declined = False
+        budget = float(self.params.get("solver_options", {}).get("time_limit", 0) or 0)
+        clock = time.perf_counter()
+        remaining = lambda: None if not budget else max(1., budget-(time.perf_counter()-clock))
+        search = self.params.get("utility_search")
+        record = dict.fromkeys(self.DOLLAR_SOLVE_RECORD_KEYS)
+        record.update(strategy="relax_fix", actions=len(model.x))
+        relaxed = self._relaxation(solver, model, remaining())
+        record["lp_seconds"] = round(time.perf_counter()-clock, 3)
+        for variable in model.component_data_objects(Var, active=True):
+            if not variable.fixed:   # the cash start of build_model: the relaxed point is no integer start
+                variable.set_value(0)
+        if relaxed is None:
+            self.log.info("dollar relax_fix: the relaxation did not solve; the plain integer program on the rest")
+            result = self._solve_once(solver, model, remaining())
+            record.update(outcome="relaxation_failed", seconds=round(time.perf_counter()-clock, 3))
+            self.last_dollar_solve = record
+            return result
+        bound, stakes, _costs = relaxed
+        capacity = {key: model.x[key].ub for key in model.x}
+        outside = [key for key, stake in stakes.items() if stake < self.UTILITY_SUPPORT_EPS]
+        record.update(lp_bound=bound, support_actions=len(stakes)-len(outside))
+        began = time.perf_counter()
+        for key in outside:
+            model.x[key].setub(0)
+        try:
+            share = None if not budget else max(1., (self.UTILITY_INCUMBENT_SHARE if search is not None else 1.)
+                                                 * (remaining() if search is None else budget))
+            result = self._solve_once(solver, model, None if share is None else min(share, remaining()))
+        finally:
+            for key in outside:
+                model.x[key].setub(capacity[key])
+        record["restricted_seconds"] = round(time.perf_counter()-began, 3)
+        record["restricted_termination"] = self._termination(result)
+        incumbent = None if getattr(model, "_transport_no_incumbent", False) else self._objective_value(model)
+        record["restricted_objective"] = incumbent
+        if incumbent is not None and search is not None:
+            allowance = None if not budget else min(self.UTILITY_SEARCH_SHARE*budget,
+                                                    budget-(time.perf_counter()-clock))
+            began = time.perf_counter()
+            if allowance is None or allowance >= 1.:
+                record["search"] = self._search_incumbent(solver, model, bound, stakes, allowance)
+                incumbent = self._objective_value(model)
+            record["search_seconds"] = round(time.perf_counter()-began, 3)
+        if incumbent is None:
+            record.update(outcome="no_incumbent", seconds=round(time.perf_counter()-clock, 3))
+        else:
+            allowance = max(self.params["absolute_gap"], self.params["relative_gap"]*abs(incumbent))
+            certified = bound-incumbent <= allowance
+            # The relaxation covers every solution, the restricted ones and the rest: it is the bound, whole.
+            model._transport_bound = model._transport_outside = bound
+            model._transport_declined = not certified
+            record.update(outcome="relaxation_certified" if certified else "incumbent", final_objective=incumbent,
+                          seconds=round(time.perf_counter()-clock, 3))
+        self.log.info("dollar relax_fix: relaxation %.1fs, support %d of %d actions, restricted solve %.1fs (%s), "
+                      "search %.1fs, %s", record["lp_seconds"], record["support_actions"], record["actions"],
+                      record["restricted_seconds"], record["restricted_termination"], record["search_seconds"] or 0.,
+                      record["outcome"])
+        self.last_dollar_solve = record
+        return result
 
     def _solve_relax_fix(self, solver, model):
         """The utility strategy: relax, search the support for an incumbent, certify on the reduced-cost-fixed program.
