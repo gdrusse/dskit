@@ -4934,7 +4934,7 @@ class TransportPortfolioSolve(PyomoSolve):
         if getattr(self, "_utility", None) is not None:
             model._transport_outcome, model._transport_bound_source = "direct", "solver"
         if self.warm_quantities is not None:
-            self._seed_start(model, self.warm_quantities)
+            self._seed_start(model, self.warm_quantities, solver)
         result = self._solve_once(solver, model)
         if (getattr(self, "_utility", None) is None and self.params.get("incumbent_audit", "raise") == "uncertified"
                 and not getattr(model, "_transport_no_incumbent", False)):
@@ -4950,7 +4950,10 @@ class TransportPortfolioSolve(PyomoSolve):
     #: before the cash fallback.
     START_SCALES = (1., .5, .25, .125)
 
-    def _seed_start(self, model, quantities):
+    #: Seconds the LP completion of one start attempt may take (it is a fully fixed LP, normally well under a second).
+    START_LP_SECONDS = 60.
+
+    def _seed_start(self, model, quantities, solver=None):
         """Load a feasible, completed incumbent for a dollar program's MIP start, or leave the cash start.
 
         ``quantities`` are clipped to capacity, exclusive pairs netted to their larger side, and the result checked by
@@ -5001,6 +5004,11 @@ class TransportPortfolioSolve(PyomoSolve):
             except ValueError:
                 continue
             if self._complete_start(model, trial):
+                capable = getattr(solver, "warm_start_capable", None)
+                if not (callable(capable) and capable()):
+                    for variable in model.component_data_objects(Var):
+                        variable.set_value(0, skip_validation=True)
+                    return finish("solver_not_warm_start_capable")
                 record.update(used=True, objective=float(value(model.profit)), scored=float(scored["value"]),
                               scale=scale)
                 return finish()
@@ -5018,7 +5026,10 @@ class TransportPortfolioSolve(PyomoSolve):
             model.side[i, k].fix(1 if quantities[i][a] else 0)
         try:
             try:
-                results = self._resolve_solver().solve(model)
+                lp = self._resolve_solver()
+                lp.options["time_limit"] = min(float(lp.options.get("time_limit") or self.START_LP_SECONDS),
+                                               self.START_LP_SECONDS)
+                results = lp.solve(model)
             except RuntimeError:   # appsi raises when the fixed point has no solution to load
                 return False
             return str(getattr(results.solver, "termination_condition", "")) == "optimal"

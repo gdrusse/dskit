@@ -77,9 +77,10 @@ def test_a_warm_week_offers_the_previous_book_by_contract_and_records_it(monkeyp
     weeks = [w for w in warm["decisions"] if "kelly" in w and "local" in w["kelly"]]
     records = [w["kelly"]["local"]["stage1_warm"] for w in weeks]
     assert records and all(r["mode"] == mode for r in records)
-    assert records[0] == {"mode": mode, "used": False, "reason": "no_previous_book"}
+    assert records[0] == {"mode": mode, "used": False, "reason": "no_previous_book", "objective": None,
+                          "scored": None, "scale": None}
     for record in records:
-        assert set(record) <= {"mode", "used", "reason", "objective", "scored", "scale", "seconds"}
+        assert set(record) == {"mode", "used", "reason", "objective", "scored", "scale"}
         if record["used"]:
             assert record["objective"] is not None and record["scale"] in (1., .5, .25, .125)
     assert len(offered) == len(weeks)
@@ -98,7 +99,7 @@ def test_a_carried_book_reaches_stage_one_as_a_start_and_the_trade_is_the_climbs
     params, data, method, warm = _result(mode)
     second = warm["decisions"][1]["kelly"]["local"]["stage1_warm"]
     assert second["mode"] == mode and second["reason"] != "no_previous_book"
-    assert "used" in second and second["seconds"] >= 0
+    assert "used" in second and "seconds" not in second
     if second["used"]:
         assert second["objective"] == pytest.approx(second["scored"], abs=1e-3) and second["scale"] in (1., .5, .25, .125)
     else:
@@ -121,7 +122,8 @@ def test_the_contract_book_maps_by_contract_and_a_vanished_contract_gets_zero():
                          {"right": "call", "strike": 110., "sign": -1}]}]
     groups_a = [{"id": "d1:S:e1", "capacity": [5, 5, 5]}]
     book = ledger_studies.WeeklyOptionPortfolioStudy._contract_book(groups_a, meta_a, [[2, 0, 3]])
-    assert book == {("S", "e1", "put", 100., 1): 2, ("S", "e1", "call", 110., -1): 3}
+    assert book == {("S", "e1", "put", 100., 1, False): 2,
+                    ("S", "e1", "call", 110., -1, False): 3}
     study = object.__new__(ledger_studies.WeeklyOptionPortfolioStudy)
     study._warm_books = {"m": book}
     # next week: same expiry with the legs reordered and one gone, plus a new expiry
@@ -132,5 +134,24 @@ def test_the_contract_book_maps_by_contract_and_a_vanished_contract_gets_zero():
     groups_b = [{"id": "d2:S:e1", "capacity": [5, 5]}, {"id": "d2:S:e2", "capacity": [5]}]
     assert study._warm_start_quantities("m", groups_b, meta_b) == [[3, 2], [0]]
     assert study._warm_start_quantities("other", groups_b, meta_b) is None
-    study._warm_books = {"m": {("S", "gone", "put", 1., 1): 4}}
+    study._warm_books = {"m": {("S", "gone", "put", 1., 1, False): 4}}
     assert study._warm_start_quantities("m", groups_b, meta_b) is None     # nothing carries over: no start offered
+
+
+def test_a_hedged_twin_is_a_different_contract_from_its_plain_leg():
+    key = ledger_studies.WeeklyOptionPortfolioStudy._contract_key
+    meta = {"symbol": "S", "expiry": "e"}
+    plain = {"right": "put", "strike": 100., "sign": 1}
+    assert key(meta, plain) != key(meta, {**plain, "hedged": True})
+    assert key(meta, plain) == key(meta, {**plain, "hedged": False})
+
+
+def test_a_second_run_on_one_study_starts_cold(monkeypatch):
+    _same_leg_every_week(monkeypatch)
+    params, data, method = _local_world(search={"start": {**LOOSE, "warm": "previous_week"}})
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    first = study._method(method, None)
+    second = study._method(method, None)
+    assert first["decisions"][0]["kelly"]["local"]["stage1_warm"]["reason"] == "no_previous_book"
+    assert second["decisions"][0]["kelly"]["local"]["stage1_warm"]["reason"] == "no_previous_book"
+    assert [w.get("kelly", {}).get("local", {}).get("stage1_warm") for w in first["decisions"]] ==         [w.get("kelly", {}).get("local", {}).get("stage1_warm") for w in second["decisions"]]

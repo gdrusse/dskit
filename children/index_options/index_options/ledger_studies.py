@@ -4841,7 +4841,8 @@ class WeeklyOptionPortfolioStudy:
     @staticmethod
     def _contract_key(meta, item):
         """The identity of one leg across weeks: underlying, expiry, right, strike and side (the group id carries the day)."""
-        return (meta["symbol"], meta["expiry"], item["right"], item["strike"], item["sign"])
+        return (meta["symbol"], meta["expiry"], item["right"], item["strike"], item["sign"],
+                bool(item.get("hedged")))
 
     @staticmethod
     def _contract_book(groups, metadata, quantities):
@@ -4989,8 +4990,10 @@ class WeeklyOptionPortfolioStudy:
                 if echoed is not None:
                     local["stage1_warm"] = dict(echoed)
             elif derived is None:
-                local["stage1_warm"] = {"mode": warm, **(solver.last_start if solver.last_start is not None else
-                                                         {"used": False, "reason": "no_previous_book"})}
+                started = solver.last_start or {"used": False, "reason": "no_previous_book", "objective": None,
+                                                "scored": None, "scale": None}
+                # No wall-clock in the record: the replay compares kelly.local whole.
+                local["stage1_warm"] = {"mode": warm, **{k: v for k, v in started.items() if k != "seconds"}}
             carried = first["candidate"] if timed_out else first
             self._warm_remember(method["id"], warm, program["groups"] if warm == "previous_climb" else dollar_groups,
                                 metadata,
@@ -5476,6 +5479,8 @@ class WeeklyOptionPortfolioStudy:
         raise RuntimeError("MIO lifecycle unexpectedly requested policy input")
 
     def _method_steps(self, method, progress, *, recorded=None, derived=None, events=None, policy=False):
+        if hasattr(self, "_warm_books"):
+            self._warm_books.pop(method["id"], None)   # a run starts cold whatever ran before on this study
         """Advance one account, suspending only for an external policy decision.
 
         ``recorded`` replays a complete result of this host exactly;

@@ -87,3 +87,38 @@ def test_a_start_that_is_too_large_even_scaled_down_falls_back():
     selection = node.run(None, _program())["selection"]
     assert node.last_start["used"] is False and node.last_start["reason"] == "infeasible"
     assert selection["quantities"] == _run()[1]["quantities"]
+
+
+def test_a_completion_the_solver_refuses_restores_every_variable_to_cash_and_leaves_none_fixed(monkeypatch):
+    from pyomo.environ import Var
+
+    seen = []
+    build = TransportPortfolioSolve.build_model
+    monkeypatch.setattr(TransportPortfolioSolve, "build_model",
+                        lambda self, inputs, params: seen.append(build(self, inputs, params)) or seen[-1])
+
+    def refuse(self):
+        class Boom:
+            options = {}
+            def solve(self, model):
+                raise RuntimeError("infeasible")
+        return Boom()
+    resolve = TransportPortfolioSolve._resolve_solver
+    calls = {"n": 0}
+
+    def once_refusing(self):
+        calls["n"] += 1
+        return refuse(self) if calls["n"] == 2 else resolve(self)   # call 1 is run's own solver
+    monkeypatch.setattr(TransportPortfolioSolve, "_resolve_solver", once_refusing)
+    node = TransportPortfolioSolve("w", PARAMS)
+    node.warm_quantities = [[1, 0]]
+    node.START_SCALES = (1.,)
+    node.run(None, _program())
+    assert node.last_start["used"] is False and node.last_start["reason"] == "completion_infeasible"
+    model = seen[0]
+    assert not any(v.fixed for v in model.component_data_objects(Var))
+
+
+def test_the_start_works_under_the_return_timeout_policy_and_the_uncertified_audit():
+    node, selection = _run([[1, 0]], timeout_policy="return", incumbent_audit="uncertified")
+    assert node.last_start["used"] is True and selection["quantities"] == _run()[1]["quantities"]
