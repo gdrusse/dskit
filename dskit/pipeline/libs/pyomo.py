@@ -4933,11 +4933,100 @@ class TransportPortfolioSolve(PyomoSolve):
             return self._solve_relax_fix(solver, model)
         if getattr(self, "_utility", None) is not None:
             model._transport_outcome, model._transport_bound_source = "direct", "solver"
+        if self.warm_quantities is not None:
+            self._seed_start(model, self.warm_quantities)
         result = self._solve_once(solver, model)
         if (getattr(self, "_utility", None) is None and self.params.get("incumbent_audit", "raise") == "uncertified"
                 and not getattr(model, "_transport_no_incumbent", False)):
             self._priced_incumbent(model)
         return result
+
+    #: Opt-in MIP start of a dollar program (stage one of the weekly Kelly local search): per-group integer
+    #: quantities aligned with the program's groups, set by the caller before :meth:`run`. None (the default) leaves
+    #: the cash start, byte for byte. :attr:`last_start` records what became of it (None when none was offered).
+    warm_quantities = None
+    last_start = None
+    #: Capacity-fraction ladder of the start's repair: a start the program's rows refuse is scaled down (floor)
+    #: before the cash fallback.
+    START_SCALES = (1., .5, .25, .125)
+
+    def _seed_start(self, model, quantities):
+        """Load a feasible, completed incumbent for a dollar program's MIP start, or leave the cash start.
+
+        ``quantities`` are clipped to capacity, exclusive pairs netted to their larger side, and the result checked by
+        the scorer's own rows (:class:`TransportActionScore`); an infeasible start is scaled down along
+        :attr:`START_SCALES`. The accepted actions (and the exclusive sides they imply) are fixed and the remaining
+        continuous variables (reserves, transport duals, risk-charge variables) solved as a linear program, so the
+        solver is offered a COMPLETE point; everything is then released. Any refusal, an infeasible completion
+        included, restores the cash start. :attr:`last_start` records ``used``, ``reason`` (why not), the start's
+        ``objective`` (the completed model's profit), ``scored`` (the scorer's value), the ``scale`` that was feasible
+        and the seconds spent here.
+        """
+        from pyomo.environ import Var, value
+
+        began = time.perf_counter()
+        record = {"used": False, "reason": None, "objective": None, "scored": None, "scale": None, "seconds": 0.}
+        self.last_start = record
+
+        def finish(reason=None):
+            record["reason"] = reason
+            record["seconds"] = time.perf_counter()-began
+        if self._utility is not None:
+            return finish("utility_program")
+        groups = self._groups
+        if (not isinstance(quantities, (list, tuple)) or len(quantities) != len(groups)
+                or any(not isinstance(row, (list, tuple)) or len(row) != len(g["capacity"])
+                       for g, row in zip(groups, quantities))):
+            return finish("shape")
+        base = []
+        for i, (g, row) in enumerate(zip(groups, quantities)):
+            if i not in self._active:
+                base.append([0]*len(g["capacity"]))
+                continue
+            row = [min(max(int(q), 0), cap) for q, cap in zip(row, g["capacity"])]
+            for a, b in g["exclusive"]:
+                if row[a] and row[b]:
+                    row[a if row[a] < row[b] else b] = 0   # keep the larger side (ties keep a)
+            base.append(row)
+        if not any(any(row) for row in base):
+            return finish("all_zero")
+        score = TransportActionScore(self._program(), {"parity_tolerance": self.params["parity_tolerance"]})
+        reason = "infeasible"
+        for scale in self.START_SCALES:
+            trial = [[int(math.floor(q*scale)) for q in row] for row in base]
+            if not any(any(row) for row in trial):
+                break
+            try:
+                scored = score.evaluate(trial)
+            except ValueError:
+                continue
+            if self._complete_start(model, trial):
+                record.update(used=True, objective=float(value(model.profit)), scored=float(scored["value"]),
+                              scale=scale)
+                return finish()
+            reason = "completion_infeasible"
+        for variable in model.component_data_objects(Var):
+            variable.set_value(0, skip_validation=True)    # the cash start again
+        return finish(reason)
+
+    def _complete_start(self, model, quantities):
+        """Fix ``quantities`` (and their exclusive sides), solve the rest as an LP, release; True on an optimum."""
+        for (i, j) in model.x:
+            model.x[i, j].fix(quantities[i][j])
+        for (i, k) in model.side:
+            a, _b = self._groups[i]["exclusive"][k]
+            model.side[i, k].fix(1 if quantities[i][a] else 0)
+        try:
+            try:
+                results = self._resolve_solver().solve(model)
+            except RuntimeError:   # appsi raises when the fixed point has no solution to load
+                return False
+            return str(getattr(results.solver, "termination_condition", "")) == "optimal"
+        finally:
+            for (i, j) in model.x:
+                model.x[i, j].unfix()
+            for key in model.side:
+                model.side[key].unfix()
 
     def _priced_incumbent(self, model):
         """Price a loaded dollar incumbent's continuous part at its integers (ADR-0316 Amendment 4).

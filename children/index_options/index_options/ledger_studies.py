@@ -2953,6 +2953,10 @@ class WeeklyOptionPortfolioStudy:
     #: The dollar program the local search starts from: the sized arms' stage 1, declared inside the block because the
     #: kelly method itself carries rho 0 and no shock (the utility program refuses a radius).
     _LOCAL_START_KEYS = {"rho", "shock"}
+    #: The start block's one optional key: ``warm`` ("none", the default and the same as absent, or "previous_week" /
+    #: "previous_climb") offers stage one's MIP the previous decision week's stage-one selection (or its climb's
+    #: picks) mapped by contract as a feasible start. Absent, stage one starts from cash exactly as before.
+    _LOCAL_START_WARM = ("none", "previous_week", "previous_climb")
     #: ADR-0307 Amendment 1 (the FAST variant): opt-in keys of the block that steer stage one, read here and never
     #: handed to the search (``cash_floor`` and ``repair`` are the search's own, ``KellyLocalSearch.OPTION_KEYS``).
     _LOCAL_STAGE1_KEYS = ("stage1_time_limit", "incumbent_start")
@@ -3547,7 +3551,8 @@ class WeeklyOptionPortfolioStudy:
                 and ("stage1_time_limit" not in search or (number_ok(search["stage1_time_limit"])
                                                            and search["stage1_time_limit"] > 0))
                 and ("incumbent_start" not in search or type(search["incumbent_start"]) is bool)
-                and isinstance(start, dict) and set(start) == cls._LOCAL_START_KEYS
+                and isinstance(start, dict) and set(start)-{"warm"} == cls._LOCAL_START_KEYS
+                and ("warm" not in start or start["warm"] in cls._LOCAL_START_WARM)
                 and number_ok(start["rho"]) and start["rho"] >= 0
                 and cls._shock_valid(start["shock"]) and "scope" not in start["shock"])
 
@@ -4833,6 +4838,47 @@ class WeeklyOptionPortfolioStudy:
     #: The local-search certificate's fixed fields: it bounds nothing, so it is never read as a certified solve.
     _LOCAL_OUTCOME = "local_search"
 
+    @staticmethod
+    def _contract_key(meta, item):
+        """The identity of one leg across weeks: underlying, expiry, right, strike and side (the group id carries the day)."""
+        return (meta["symbol"], meta["expiry"], item["right"], item["strike"], item["sign"])
+
+    @staticmethod
+    def _contract_book(groups, metadata, quantities):
+        """``{(symbol, expiry, right, strike, sign): quantity}`` of the positive quantities (by contract, not by index)."""
+        meta = {m["id"]: m for m in metadata}
+        book = {}
+        for group, row in zip(groups, quantities):
+            m = meta.get(group["id"])
+            if m is None or len(row) != len(m["items"]):
+                continue
+            for item, quantity in zip(m["items"], row):
+                if quantity:
+                    key = WeeklyOptionPortfolioStudy._contract_key(m, item)
+                    book[key] = book.get(key, 0)+int(quantity)
+        return book
+
+    def _warm_remember(self, method_id, mode, groups, metadata, quantities):
+        """Keep, per method, the contract book of the week's stage-one selection or climb picks (None when none)."""
+        if not hasattr(self, "_warm_books"):
+            self._warm_books = {}
+        self._warm_books[method_id] = (None if quantities is None
+                                       else self._contract_book(groups, metadata, quantities))
+
+    def _warm_start_quantities(self, method_id, groups, metadata):
+        """The previous book mapped onto this week's groups by contract (a contract gone gets 0), or None."""
+        book = getattr(self, "_warm_books", {}).get(method_id)
+        if not book:
+            return None
+        meta = {m["id"]: m for m in metadata}
+        out = []
+        for group in groups:
+            m = meta.get(group["id"])
+            if m is None or len(m["items"]) != len(group["capacity"]):
+                return None
+            out.append([book.get(self._contract_key(m, i), 0) for i in m["items"]])
+        return out if any(any(row) for row in out) else None
+
     def _local_search_week(self, day, method, kelly, program, configured, metadata, account, components, mult,
                            derived, recorded):
         """Return one local-search week (ADR-0307): the stage-one start, the climb, and the evidence for a replay.
@@ -4903,6 +4949,11 @@ class WeeklyOptionPortfolioStudy:
                 exc.week = day
                 raise exc
         elif recorded is None:
+            warm = start.get("warm", "none")
+            offered = None
+            if warm != "none":
+                offered = self._warm_start_quantities(method["id"], dollar_groups, metadata)
+                solver.warm_quantities = offered
             first = solver.run(None, dollar)["selection"]
         else:
             claim = recorded.get("stage1")
@@ -4913,6 +4964,7 @@ class WeeklyOptionPortfolioStudy:
             first = solver._recorded(dollar, claim["selection"], claim["certificates"])
         screen = dict(solver.last_screen)
         timed_out = "timeout" in first
+        warm = start.get("warm", "none")
         # ADR-0307 Amendment 1: a stage one stopped at its limit WITH an incumbent (the "return" policy's timeout
         # envelope, candidate actions present) starts the climb from that incumbent when the block says so.
         incumbent = timed_out and search.get("incumbent_start", False) and first.get("candidate") is not None
@@ -4929,6 +4981,21 @@ class WeeklyOptionPortfolioStudy:
             local["stage1_timeout"] = first["timeout"] if timed_out else None
         if "audit" in first:
             local["stage1_audit"] = dict(first["audit"])
+        if warm != "none":
+            # Opt-in record of a live solve; a recorded replay echoes the recorded one (it never solves stage one,
+            # and the replay compares the whole record); a derived week has none.
+            if recorded is not None:
+                echoed = recorded.get("kelly", {}).get("local", {}).get("stage1_warm")
+                if echoed is not None:
+                    local["stage1_warm"] = dict(echoed)
+            elif derived is None:
+                local["stage1_warm"] = {"mode": warm, **(solver.last_start if solver.last_start is not None else
+                                                         {"used": False, "reason": "no_previous_book"})}
+            carried = first["candidate"] if timed_out else first
+            self._warm_remember(method["id"], warm, program["groups"] if warm == "previous_climb" else dollar_groups,
+                                metadata,
+                                out["quantities"] if warm == "previous_climb"
+                                else carried["quantities"] if carried is not None else None)
         stage1_certificates = [{k: v for k, v in c.items() if k != "binding"} for c in first.get("certificates", [])]
         certificate = {"strategy_outcome": self._LOCAL_OUTCOME, "certified": False, "objective": local["end_value"],
                        "bound": None, "gap": None, "seconds": None, "bound_source": None}
