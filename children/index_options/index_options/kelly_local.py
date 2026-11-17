@@ -75,7 +75,15 @@ class KellyLocalSearch:
 
     PARAM_KEYS = ("moves", "adds_evaluated", "swaps_evaluated", "restarts", "seed")
     #: Opt-in booleans of the FAST variant (ADR-0307 Amendment 1). Each writes its record field only when declared.
-    OPTION_KEYS = ("cash_floor", "repair")
+    OPTION_KEYS = ("cash_floor", "repair", "risk")
+    #: The booleans among :attr:`OPTION_KEYS` (``risk`` is a dict: :meth:`validate_risk`).
+    BOOL_KEYS = ("cash_floor", "repair")
+    #: Opt-in priced risk terms (ADR-0319): ``cvar`` {alpha, weight}, ``concentration`` {by, weight, power} and
+    #: ``replace_name_charge`` (bool). Absent, nothing changes, byte for byte. See :meth:`validate_risk`.
+    RISK_KEYS = ("cvar", "concentration", "replace_name_charge")
+    CVAR_KEYS = ("alpha", "weight")
+    CONCENTRATION_KEYS = ("by", "weight", "power")
+    CONCENTRATION_BY = ("name", "event")
     #: A move must raise the objective by more than this fraction of ``w0`` (float noise otherwise cycles).
     IMPROVEMENT = 1e-9
     #: The chance a restart drops each held contract.
@@ -95,8 +103,50 @@ class KellyLocalSearch:
         floors = {"moves": 1, "adds_evaluated": 1, "swaps_evaluated": 0, "restarts": 0, "seed": 0}
         return ([f"local_search {key} must be an int >= {floor}" for key, floor in floors.items()
                  if type(params[key]) is not int or params[key] < floor]
-                + [f"local_search {key} must be a bool" for key in cls.OPTION_KEYS
-                   if key in params and type(params[key]) is not bool])
+                + [f"local_search {key} must be a bool" for key in cls.BOOL_KEYS
+                   if key in params and type(params[key]) is not bool]
+                + (cls.validate_risk(params["risk"]) if "risk" in params else []))
+
+    @classmethod
+    def validate_risk(cls, risk):
+        """Return the defects of a ``risk`` declaration (empty when well formed).
+
+        ``cvar``: ``alpha`` in (0, 1] is the TAIL probability (0.05 prices the mean loss over the worst 5% of the
+        scenario weight) and ``weight`` >= 0 the price in objective dollars per dollar of tail loss.
+        ``concentration``: ``by`` is ``name`` (the program's aggregate key, the symbol) or ``event`` (one program
+        group: a name and an expiry), ``weight`` >= 0 and ``power`` >= 1 (convexity).
+        ``replace_name_charge``: true drops the name-spread charge from the objective (the concentration cost on
+        reserves replaces it).
+        """
+        def num(value):
+            return type(value) in (int, float) and np.isfinite(value)
+
+        if not isinstance(risk, dict) or not risk or set(risk)-set(cls.RISK_KEYS):
+            return [f"risk needs a nonempty dict with keys from {list(cls.RISK_KEYS)}"]
+        defects = []
+        if "cvar" in risk:
+            cvar = risk["cvar"]
+            if not isinstance(cvar, dict) or set(cvar) != set(cls.CVAR_KEYS):
+                defects.append(f"risk cvar needs exactly the keys {list(cls.CVAR_KEYS)}")
+            else:
+                if not (num(cvar["alpha"]) and 0 < cvar["alpha"] <= 1):
+                    defects.append("risk cvar alpha must be a number in (0, 1]")
+                if not (num(cvar["weight"]) and cvar["weight"] >= 0):
+                    defects.append("risk cvar weight must be a number >= 0")
+        if "concentration" in risk:
+            conc = risk["concentration"]
+            if not isinstance(conc, dict) or set(conc) != set(cls.CONCENTRATION_KEYS):
+                defects.append(f"risk concentration needs exactly the keys {list(cls.CONCENTRATION_KEYS)}")
+            else:
+                if conc["by"] not in cls.CONCENTRATION_BY:
+                    defects.append(f"risk concentration by must be one of {list(cls.CONCENTRATION_BY)}")
+                if not (num(conc["weight"]) and conc["weight"] >= 0):
+                    defects.append("risk concentration weight must be a number >= 0")
+                if not (num(conc["power"]) and conc["power"] >= 1):
+                    defects.append("risk concentration power must be a number >= 1")
+        if "replace_name_charge" in risk and type(risk["replace_name_charge"]) is not bool:
+            defects.append("risk replace_name_charge must be a bool")
+        return defects
 
     def __init__(self, scorer, params):
         defects = self.validate_params(params)
@@ -187,7 +237,34 @@ class KellyLocalSearch:
         self.item_key = np.full(self.N, len(names), dtype=int)   # the sentinel key carries no charge
         for g, k in self.key_of.items():
             self.item_key[self.off[g]:self.off[g+1]] = k
+        self._build_risk()
         self.slopes_ext = np.append(self.slopes, 0.)
+
+    def _build_risk(self):
+        """Read the opt-in ``risk`` declaration (ADR-0319): the CVaR price, the concentration keys, the charge switch."""
+        risk = self.params.get("risk")
+        self.risk_on = risk is not None
+        self.cvar_alpha = self.cvar_weight = self.conc_weight = 0.
+        self.conc_power, self.conc_by, self.conc_labels = 2., None, []
+        self.slopes_true = self.slopes      # the scorer's own name charge, kept to reconcile the exact recompute
+        if not self.risk_on:
+            return
+        if "cvar" in risk:
+            self.cvar_alpha, self.cvar_weight = float(risk["cvar"]["alpha"]), float(risk["cvar"]["weight"])
+        if "concentration" in risk:
+            conc = risk["concentration"]
+            self.conc_by, self.conc_weight, self.conc_power = conc["by"], float(conc["weight"]), float(conc["power"])
+            groups = self.scorer.groups
+            if self.conc_by == "event":
+                labels = [g["id"] for g in groups]
+            else:
+                aggregate = self.scorer.utility.get("aggregate", {})
+                labels = [aggregate.get(g["id"], g["id"]) for g in groups]
+            self.conc_labels = sorted(set(labels))
+            index = {label: i for i, label in enumerate(self.conc_labels)}
+            self.conc_key = np.array([index[label] for label in labels], dtype=int)
+        if risk.get("replace_name_charge"):
+            self.slopes = np.zeros_like(self.slopes)
 
     # --- state of one selection ----------------------------------------------------------------------------
 
@@ -221,6 +298,8 @@ class KellyLocalSearch:
         self.keytot = np.bincount(self.charged_key, weights=self.spread[self.charged],
                                   minlength=len(self.slopes)).astype(float)
         self.W = self.w0+self.q.astype(float) @ self.D if wealth is None else wealth
+        if self.conc_weight:
+            self.rtot = np.bincount(self.conc_key, weights=self.res, minlength=len(self.conc_labels)).astype(float)
 
     def _load(self, q):
         """Make ``q`` (a flat int array) the current selection and rebuild every cached quantity."""
@@ -243,7 +322,97 @@ class KellyLocalSearch:
     def value(self):
         """Return the exact objective of the current selection: ``w0 E[u(W)]`` less the names' exact charges."""
         u = tangent_utility(self.W, self.w0, self.gamma)[0]
-        return float(self.w0*(self.weights @ u)-(self.slopes @ self.keytot**2))
+        value = float(self.w0*(self.weights @ u)-(self.slopes @ self.keytot**2))
+        if self.risk_on:
+            value -= self._penalty(self.W, self.rtot if self.conc_weight else None)
+        return value
+
+    # --- the priced risk terms (ADR-0319) ------------------------------------------------------------------
+
+    def _cvar_tail(self, wealth):
+        """Return ``(tail loss, tail weights)`` of a wealth vector: the Rockafellar-Uryasev ``CVaR_alpha`` of the loss
+        ``w0 - W`` over the scenario weights, and the weight vector (summing to 1) that averages it.
+
+        ``CVaR_alpha(L) = min_theta theta + E[(L - theta)+]/alpha`` equals the mean of ``L`` over the worst ``alpha``
+        of the weight (the boundary scenario counted in part): sort the losses downward, take weight until ``alpha``
+        is used. O(S log S); ties are interchangeable, so the value does not depend on the sort's tie order.
+        """
+        loss = self.w0-wealth
+        order = np.argsort(-loss, kind="stable")
+        w = self.weights[order]
+        take = np.clip(self.cvar_alpha-(np.cumsum(w)-w), 0., w)
+        tail = take/self.cvar_alpha
+        weights = np.zeros(len(loss))
+        weights[order] = tail
+        return float(tail @ loss[order]), weights
+
+    def _cvar_rows(self, wealth):
+        """Return the tail loss of every row of a ``(rows, S)`` wealth matrix (the vectorized :meth:`_cvar_tail`)."""
+        loss = self.w0-wealth
+        order = np.argsort(-loss, axis=1, kind="stable")
+        w = self.weights[order]
+        take = np.clip(self.cvar_alpha-(np.cumsum(w, axis=1)-w), 0., w)
+        return (take*np.take_along_axis(loss, order, axis=1)).sum(axis=1)/self.cvar_alpha
+
+    def _concentration(self, rtot):
+        """Return the concentration cost of per-key reserves ``rtot``: ``weight w0 sum_k (r_k / w0)^power``."""
+        return self.conc_weight*self.w0*float(((rtot/self.w0)**self.conc_power).sum())
+
+    def _penalty(self, wealth, rtot):
+        """Return the priced risk terms at a wealth vector and per-key reserves: ``kappa max(0, CVaR)`` plus the
+        concentration cost (each zero when not declared)."""
+        out = 0.
+        if self.cvar_weight:
+            out += self.cvar_weight*max(0., self._cvar_tail(wealth)[0])
+        if self.conc_weight:
+            out += self._concentration(rtot)
+        return out
+
+    def _risk_shift(self):
+        """Return the first-order penalty change of adding one contract of every item (rank-only; the exact trial decides).
+
+        CVaR's subgradient is ``-D_i . t`` for the tail weights ``t`` (zero when the tail loss is not positive); the
+        concentration part is the exact change of the item's key at the item's cached one-contract reserve change.
+        """
+        out = np.zeros(self.N)
+        if self.cvar_weight:
+            tail, weights = self._cvar_tail(self.W)
+            if tail > 0.:
+                out -= self.cvar_weight*(self.D @ weights)
+        if self.conc_weight:
+            r = self.rtot[self.conc_key[self.gid]]
+            out += self.conc_weight*self.w0*(((r+self.dres)/self.w0)**self.conc_power-(r/self.w0)**self.conc_power)
+        return out
+
+    def risk_terms(self):
+        """Return the current selection's risk terms as plain numbers (the week record's ``risk`` block)."""
+        tail = max(0., self._cvar_tail(self.W)[0]) if self.cvar_weight else None
+        out = {"declared": self.params["risk"],
+               "name_charge_exact": float(self.slopes_true @ self.keytot**2),
+               "name_charge_applied": float(self.slopes @ self.keytot**2)}
+        if self.cvar_weight:
+            out.update(cvar_alpha=self.cvar_alpha, cvar_tail_loss=tail, cvar_penalty=self.cvar_weight*tail)
+        if self.conc_weight:
+            share = self.rtot/self.w0
+            top = int(np.argmax(share)) if len(share) else None
+            out.update(concentration_by=self.conc_by, concentration_power=self.conc_power,
+                       concentration_sum=float((share**self.conc_power).sum()),
+                       concentration_penalty=self._concentration(self.rtot),
+                       reserve_share_max=float(share.max()) if len(share) else 0.,
+                       reserve_share_max_key=None if top is None else self.conc_labels[top],
+                       reserve_share_by_key={self.conc_labels[k]: float(share[k]) for k in np.flatnonzero(share)})
+        out["penalty"] = self._penalty(self.W, self.rtot if self.conc_weight else None)
+        out["objective"] = self.value()
+        out["objective_unpenalized"] = out["objective"]+out["penalty"]
+        return out
+
+    def _explains(self, exact):
+        """Return the objective the search's score must equal for the scorer's ``exact``: its dispersion charge less
+        the risk penalties, plus the name charge a ``replace_name_charge`` declaration dropped."""
+        if not self.risk_on:
+            return exact
+        return (exact+float(self.slopes_true @ self.keytot**2)-float(self.slopes @ self.keytot**2)
+                - self._penalty(self.W, self.rtot if self.conc_weight else None))
 
     # --- scoring a move ------------------------------------------------------------------------------------
 
@@ -274,7 +443,7 @@ class KellyLocalSearch:
         touched = {}
         for flat, dq in changes.items():
             touched.setdefault(int(self.gid[flat]), []).append((int(self.loc[flat]), dq))
-        cap_change, key_change = {}, {}
+        cap_change, key_change, conc_change = {}, {}, {}
         for g, items in touched.items():
             columns = [c for c, _dq in items]
             step = np.array([dq for _c, dq in items], dtype=float)
@@ -285,6 +454,8 @@ class KellyLocalSearch:
             reserve = max(0., float((self.Rq[g]+rows[:, columns] @ step).max())) if rows.shape[0] else 0.
             for c in self.caps_of[g]:
                 cap_change[c] = cap_change.get(c, 0.)+reserve-self.res[g]
+            if self.conc_weight:
+                conc_change[self.conc_key[g]] = conc_change.get(self.conc_key[g], 0.)+reserve-self.res[g]
             if g in self.key_of:
                 measure = self.measure[g]
                 pay = self.pay[g]+self.pay_rows[g][:, columns] @ step
@@ -297,7 +468,15 @@ class KellyLocalSearch:
         for k, change in key_change.items():
             keytot[k] += change
         u = tangent_utility(wealth, self.w0, self.gamma)[0]
-        return float(self.w0*(self.weights @ u)-(self.slopes @ keytot**2))
+        value = float(self.w0*(self.weights @ u)-(self.slopes @ keytot**2))
+        if self.risk_on:
+            rtot = None
+            if self.conc_weight:
+                rtot = self.rtot.copy()
+                for k, change in conc_change.items():
+                    rtot[k] += change
+            value -= self._penalty(wealth, rtot)
+        return value
 
     def _blocked(self):
         """Return the items whose exclusive partner is held."""
@@ -315,6 +494,9 @@ class KellyLocalSearch:
         marginal = self.D @ (self.w0*self.weights*tangent_utility(self.W, self.w0, self.gamma)[1])
         total = np.append(self.keytot, 0.)[self.item_key]
         charge = 2.*self.slopes_ext[self.item_key]*total*self.own
+        if self.risk_on:
+            shift = self._risk_shift()
+            return marginal-charge-shift, charge-marginal+shift
         return marginal-charge, charge-marginal
 
     def _shortlists(self):
@@ -470,6 +652,7 @@ class KellyLocalSearch:
                 kind, first = "infeasible_start_cash", np.zeros(self.N, dtype=np.int64)
         self._load(first)
         start_value, start_contracts = self.value(), int(self.q.sum())
+        start_penalty = self._penalty(self.W, self.rtot if self.conc_weight else None) if self.risk_on else None
         best_q, best_values, best_kinds, best_done = None, None, None, None
         total_moves, exhausted, ran, skipped = 0, False, 0, 0
         counts = {"add": 0, "remove": 0, "swap": 0}
@@ -502,7 +685,7 @@ class KellyLocalSearch:
         nested = self._nested(best_q)
         selection = self.scorer.evaluate(nested)
         exact = selection["utility"]["exact"]
-        if abs(exact-end_value) > self.PARITY*max(1., abs(exact), self.w0):
+        if abs(self._explains(exact)-end_value) > self.PARITY*max(1., abs(exact), self.w0):
             raise ValueError("the local search's score differs from the exact recompute of its selection")
         record = {"start_kind": kind, "start_value": start_value, "end_value": end_value,
                   "start_contracts": start_contracts, "end_contracts": int(best_q.sum()),
@@ -513,6 +696,8 @@ class KellyLocalSearch:
             record["cash_floor"] = floored
         if "repair" in self.params:
             record["repaired_contracts"] = repaired
+        if self.risk_on:
+            record["risk"] = {**self.risk_terms(), "start_penalty": start_penalty}
         return {"quantities": nested, "selection": selection, "record": record, "values": best_values,
                 "seconds": time.perf_counter()-began}
 
@@ -561,7 +746,14 @@ class KellyLocalSearch:
             pay = self.pay[g]-self.pay_rows[g][:, c]
             keytot[self.key_of[g]] += measure.price*float(measure.columns(pay[:, None])[0])-self.spread[g]
         u = tangent_utility(wealth, self.w0, self.gamma)[0]
-        return change, float(self.w0*(self.weights @ u)-(self.slopes @ keytot**2))
+        value = float(self.w0*(self.weights @ u)-(self.slopes @ keytot**2))
+        if self.risk_on:
+            rtot = None
+            if self.conc_weight:
+                rtot = self.rtot.copy()
+                rtot[self.conc_key[g]] += reserve-self.res[g]
+            value -= self._penalty(wealth, rtot)
+        return change, value
 
     def _repaired(self, q):
         """Return ``(q repaired, contracts removed)``: drop one contract at a time until the scorer accepts the book.

@@ -3084,7 +3084,11 @@ class WeeklyOptionPortfolioStudy:
     #: An optional kelly key (ADR-0301): ``max_groups`` keeps, of the ``lp`` screen's survivors, only that many with
     #: the largest standalone relaxed value before the joint growth program is built (the solver's group_screen_keep).
     _KELLY_OPTIONAL_KEYS = {"max_groups", "accept_uncertified", "search", "warm_start", "local_search",
-                            "settleable_only", *EdgeWeights.KEYS, "calibration"}
+                            "settleable_only", "risk", *EdgeWeights.KEYS, "calibration"}
+    #: ADR-0319: ``risk`` ({cvar: {alpha, weight}, concentration: {by, weight, power}, replace_name_charge}) prices the
+    #: tail loss and the reserve concentration inside the local search's objective
+    #: (:meth:`~index_options.kelly_local.KellyLocalSearch.validate_risk`). It needs a ``local_search`` (the climb is
+    #: what scores it) and is handed to the search as its ``risk`` option; absent, nothing changes, byte for byte.
     #: ADR-0318: ``accuracy``, ``dte_tilt`` and ``name_spread`` (:class:`EdgeWeights`) are declared only on a stage-one
     #: local-search method (ADR-0307, not the multi-start) without a calibration block; absent, nothing changes.
     #: The joint-scenario arm (owner-approved P2 item C1, ``index_options.joint_scenarios``): ``joint_scenarios``
@@ -3764,6 +3768,13 @@ class WeeklyOptionPortfolioStudy:
                 and cls._shock_valid(start["shock"]) and "scope" not in start["shock"])
 
     @classmethod
+    def _risk_valid(cls, kelly):
+        """Return whether a kelly block's ``risk`` declaration is well formed and rides on a ``local_search``."""
+        from .kelly_local import KellyLocalSearch
+
+        return isinstance(kelly.get("local_search"), dict) and not KellyLocalSearch.validate_risk(kelly["risk"])
+
+    @classmethod
     def _kelly_valid(cls, method):
         """Return whether a method's kelly block is well formed and the method declares no sizing cap beside it."""
         kelly = method["kelly"]
@@ -3779,6 +3790,7 @@ class WeeklyOptionPortfolioStudy:
                      or (RegimeEdgeShrink.valid(kelly) and isinstance(kelly.get("local_search"), dict)
                          and "start" in kelly["local_search"] and "calibration" not in method
                          and "accuracy" not in kelly))
+                and ("risk" not in kelly or cls._risk_valid(kelly))
                 and cls._kelly_strategy_valid(kelly)
                 and cls._local_search_valid(kelly)
                 and number_ok(kelly["fraction"]) and 0 < kelly["fraction"] <= 1
@@ -5107,6 +5119,8 @@ class WeeklyOptionPortfolioStudy:
         from .kelly_local import KellyLocalSearch
 
         p, search = self.params, kelly["local_search"]
+        if "risk" in kelly:
+            search = {**search, "risk": kelly["risk"]}      # ADR-0319: the priced risk terms ride on the search
         if "multistart" in search:
             return self._multistart_week(day, search, program, derived, recorded)
         start = search["start"]

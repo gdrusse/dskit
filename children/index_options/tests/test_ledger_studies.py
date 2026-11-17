@@ -6617,6 +6617,53 @@ def test_a_local_search_week_trades_the_search_and_records_its_evidence():
     assert sum(b["contracts"] for b in week["books"]) == local["end_contracts"]
 
 
+#: ADR-0319: the priced risk terms of the local search (kelly.risk), light enough that this fixture still trades.
+RISK = {"cvar": {"alpha": .2, "weight": .05}, "concentration": {"by": "name", "weight": .3, "power": 2},
+        "replace_name_charge": True}
+
+
+def _risk_world(risk=RISK, search=None):
+    params, data, method = _local_world(search)
+    method["kelly"] = {**method["kelly"], "risk": risk}
+    return params, data, method
+
+
+@pytest.mark.parametrize("bad", [
+    {}, {"cvar": {"alpha": 0., "weight": 1.}}, {"cvar": {"alpha": .1}}, {"concentration": {"by": "sector", "weight": 1.,
+                                                                                         "power": 2}},
+    {"replace_name_charge": "yes"}, {"extra": 1}])
+def test_a_malformed_risk_declaration_is_refused(bad):
+    params, _data, _method = _risk_world(bad)
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_a_risk_declaration_needs_the_local_search_and_a_declared_one_validates():
+    params, _data, _method = _risk_world()
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    params, _data, method = _overlapping_kelly_world()
+    method["kelly"]["risk"] = RISK
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_a_risk_week_records_its_term_values_and_replays_exactly():
+    params, data, method = _risk_world()
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    result = study._method(method, None)
+    week = result["decisions"][0]
+    local = week["kelly"]["local"]
+    risk = local["risk"]
+    assert risk["declared"] == RISK and risk["objective"] == pytest.approx(local["end_value"])
+    assert risk["penalty"] == pytest.approx(risk["cvar_penalty"]+risk["concentration_penalty"])
+    assert risk["name_charge_applied"] == 0.
+    assert week["selection"]["utility"]["exact"] == pytest.approx(
+        local["end_value"]+risk["penalty"]-risk["name_charge_exact"], rel=1e-9, abs=1e-9)
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, recorded=result) == result
+    plain = _local_result()[4]["decisions"][0]["kelly"]["local"]
+    assert "risk" not in plain
+
+
 def test_the_local_search_builds_no_integer_program_and_starts_from_the_dollar_selection(monkeypatch):
     """The solver is handed the stage-one DOLLAR program (radius, shock rows, dollar caps) and never a utility program."""
     seen = _spy_utility_programs(monkeypatch)
