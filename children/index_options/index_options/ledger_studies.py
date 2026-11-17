@@ -2695,6 +2695,167 @@ class EdgeWeights:
         return out, record, multipliers
 
 
+class RegimeEdgeShrink:
+    """Shrink each candidate's forecast expected profit ``e_j`` by volatility regime, from this account's settled books.
+
+    Opt-in: ``kelly.calibration = {"method": "shrink_by_regime", "window_weeks": W, "min_obs": N, "regimes":
+    {"variable": "basket_vol", "edges": [..]}}``. Absent, no code here runs and every program, record and result is
+    byte for byte what it was.
+
+    **History available inside a run.** Only this method's own account: :attr:`FundedOptionAccount.closed`, the books it
+    traded, filled and settled in this walk. Each book is stamped at its decision with ``calibration`` =
+    ``{"expected", "regime", "week"}``: ``expected`` is the FORECAST expected profit ``sum_j e_j q_j`` of the quantities
+    chosen (``e_j = credit_j - masses . losses_j``, before any edge weight or shrink), scaled by the filled fraction when
+    a fill is partial; ``regime`` the volatility regime of its decision week. A book counts for a decision on ``day``
+    when it settled strictly before ``day`` (``close_date < day``: the same strict cut as :class:`EdgeWeights`) and no
+    more than ``window_weeks`` weeks before it. Nothing else is read: no forecast row, no book still open, no order that
+    did not fill, no other method's account, no outcome of ``day`` or later. (The accuracy weight reads every
+    forecast row of the study; this reads only what this method traded.)
+
+    **The shrink.** Per regime ``r`` with ``n_r`` counted books, ``y_b`` the book's realised profit (``closed["pnl"]``,
+    credit and fees and hedge included) and ``e_b`` its stamped expected profit, the shrink factor is the least-squares
+    scale of realised on expected through the origin, bounded to ``[0, 1]`` and rounded to :attr:`DIGITS` places::
+
+        lambda_r = clip(sum y_b e_b / sum e_b^2, 0, 1)      when n_r >= min_obs and sum e_b^2 > 0, else 1 (cold).
+
+    Cold is face value, not "trade nothing": inside one run a method that traded nothing would never settle a book and
+    could never leave the cold state. For the same reason a regime whose window empties (every book older than
+    ``window_weeks``) is cold again, so a method shrunk to 0 re-opens at face value once its evidence ages out, and
+    learns again. The residual spread ``nu_r`` (sd of ``y_b - lambda_r e_b`` over mean ``|e_b|``) is recorded, not used.
+
+    **Where it enters.** The week's ``e_j`` only: the group's ``value_adjust`` gains ``(lambda - 1) x (e_j + adjust_j)``
+    so the scorer's expected profit of every item is ``lambda x`` the (already weighted) forecast's. Its sign never
+    changes; the losses, scenario terms, dispersion charge, reserves, caps, hedge and fills are untouched; stage one
+    reads the same groups. A cold week (``lambda == 1``) adds nothing: its programs equal the uncalibrated method's.
+
+    **Forecast error does NOT widen the scenario dispersion here (decision).** The 17 centred scenarios carry one basket
+    factor and no name-level noise; the only name-level dispersion in the utility is the quadratic charge on payoff
+    deviation, which has no slot for an error on the MEAN. Widening it would change the solver shared by every method,
+    and an error independent of the basket factor needs the sampled-scenario set (critique item 1), not a patch to the
+    17. The shrunk mean already scales the sizing; ``nu`` is recorded so that item can use it.
+
+    ``regimes.variable`` is ``basket_vol``: the week's trailing daily basket volatility (``kelly.sigma_daily``, strictly
+    before the decision day); ``edges`` ascending daily-vol cut points, regime ``bisect_right(edges, sigma)``; ``[]`` is
+    one pooled regime.
+    """
+
+    KEY = "calibration"
+    METHOD = "shrink_by_regime"
+    KEYS = frozenset({"method", "window_weeks", "regimes", "min_obs"})
+    REGIME_KEYS = frozenset({"variable", "edges"})
+    DIGITS = 9
+
+    @classmethod
+    def declared(cls, kelly):
+        """Return whether a kelly block declares the key."""
+        return isinstance(kelly, dict) and cls.KEY in kelly
+
+    @classmethod
+    def valid(cls, kelly):
+        """Return whether the declared block is well formed (an absent key is valid)."""
+        if cls.KEY not in kelly:
+            return True
+        block = kelly[cls.KEY]
+        if not isinstance(block, dict) or set(block) != cls.KEYS or block["method"] != cls.METHOD:
+            return False
+        regimes = block["regimes"]
+        if (not isinstance(regimes, dict) or set(regimes) != cls.REGIME_KEYS or regimes["variable"] != "basket_vol"
+                or not isinstance(regimes["edges"], list)):
+            return False
+        edges = regimes["edges"]
+        return (type(block["window_weeks"]) is int and block["window_weeks"] >= 1
+                and type(block["min_obs"]) is int and block["min_obs"] >= 2
+                and all(number_ok(e) and e > 0 for e in edges)
+                and all(a < b for a, b in zip(edges, edges[1:])))
+
+    def __init__(self, kelly):
+        self.block = kelly[self.KEY]
+        self.edges = [float(e) for e in self.block["regimes"]["edges"]]
+
+    def regime(self, sigma_daily):
+        """Return the regime index of a week's trailing daily basket volatility."""
+        import bisect
+
+        return bisect.bisect_right(self.edges, float(sigma_daily))
+
+    @staticmethod
+    def _filled_fraction(book):
+        """The fraction of the selected quantities that filled (1 unless the fill was resized)."""
+        for leg in book.get("legs", []):
+            if leg.get("selected_quantity"):
+                return leg["quantity"]/leg["selected_quantity"]
+        return 1.
+
+    def history(self, day, closed):
+        """Return ``{regime: [(expected, realised)]}`` of the books settled in ``[day - window, day)``."""
+        from datetime import date, timedelta
+
+        start = (date.fromisoformat(day)-timedelta(weeks=self.block["window_weeks"])).isoformat()
+        rows = {}
+        for book in closed:
+            stamp = book.get("calibration")
+            if stamp is None or not start <= book["close_date"] < day:
+                continue
+            rows.setdefault(stamp["regime"], []).append((stamp["expected"]*self._filled_fraction(book), book["pnl"]))
+        return rows
+
+    def factors(self, day, closed):
+        """Return ``{regime: {"n", "slope", "lambda", "nu", "cold"}}`` for every regime with a counted book."""
+        out = {}
+        for regime, rows in sorted(self.history(day, closed).items()):
+            see = math.fsum(e*e for e, _y in rows)
+            n = len(rows)
+            slope = math.fsum(e*y for e, y in rows)/see if see > 0 else None
+            cold = n < self.block["min_obs"] or slope is None
+            lam = 1. if cold else round(min(1., max(0., slope)), self.DIGITS)
+            mean_abs = math.fsum(abs(e) for e, _y in rows)/n
+            nu = (math.sqrt(math.fsum((y-lam*e)**2 for e, y in rows)/n)/mean_abs) if mean_abs > 0 else None
+            out[regime] = {"n": n, "slope": slope, "lambda": lam, "nu": nu, "cold": cold}
+        return out
+
+    @staticmethod
+    def _expected(group):
+        """The group's forecast expected profit per contract, exactly summed (as :meth:`EdgeWeights.apply`)."""
+        losses, masses = group["losses"], group["masses"]
+        return [math.fsum([float(c), *(-float(p)*float(row[j]) for p, row in zip(masses, losses))])
+                for j, c in enumerate(group["credit"])]
+
+    def apply(self, day, configured, metadata, closed, sigma_daily, multipliers=None):
+        """Return ``(configured with the shrink, the week record, per-group multipliers or None)``.
+
+        ``multipliers`` are the edge weights' (None when there are none); the returned map is ``m x lambda`` and is
+        None when neither moves a value, so the caller's book fields are exactly as before.
+        """
+        regime = self.regime(sigma_daily)
+        factors = self.factors(day, closed)
+        current = factors.get(regime)
+        lam = 1. if current is None else current["lambda"]
+        record = {"method": self.METHOD, "window_weeks": self.block["window_weeks"], "min_obs": self.block["min_obs"],
+                  "edges": list(self.edges), "sigma_daily": sigma_daily, "regime": regime, "lambda": lam,
+                  "cold": True if current is None else current["cold"],
+                  "factors": {str(r): dict(f) for r, f in factors.items()},
+                  "books": sum(f["n"] for f in factors.values())}
+        if lam == 1.:
+            return configured, record, multipliers
+        out = []
+        for group in configured:
+            adjust = group.get("value_adjust")
+            expected = self._expected(group)
+            adjust = [0.]*len(expected) if adjust is None else list(adjust)
+            out.append({**group, "value_adjust": [a+(lam-1.)*(e+a) for e, a in zip(expected, adjust)]})
+        merged = {meta["id"]: round((1. if multipliers is None else multipliers[meta["id"]])*lam, self.DIGITS)
+                  for meta in metadata}
+        return out, record, merged
+
+    def stamp(self, books, configured, metadata, quantities, regime, day):
+        """Stamp each selected book with the forecast expected profit and the regime the later weeks will read."""
+        index = {m["id"]: i for i, m in enumerate(metadata)}
+        for book in books:
+            i = index[book["id"]]
+            expected = math.fsum(e*q for e, q in zip(self._expected(configured[i]), quantities[i], strict=True))
+            book["calibration"] = {"expected": expected, "regime": regime, "week": day}
+
+
 #: A0010's ordered formulation ids and whole-spec digests (ADR-0297/0313).
 #: The queue example and each research template are pinned to this authority by tests.
 LOCKED_FORMULATION_HASHES = MappingProxyType({
@@ -2923,7 +3084,7 @@ class WeeklyOptionPortfolioStudy:
     #: An optional kelly key (ADR-0301): ``max_groups`` keeps, of the ``lp`` screen's survivors, only that many with
     #: the largest standalone relaxed value before the joint growth program is built (the solver's group_screen_keep).
     _KELLY_OPTIONAL_KEYS = {"max_groups", "accept_uncertified", "search", "warm_start", "local_search",
-                            "settleable_only", *EdgeWeights.KEYS}
+                            "settleable_only", *EdgeWeights.KEYS, "calibration"}
     #: ADR-0318: ``accuracy``, ``dte_tilt`` and ``name_spread`` (:class:`EdgeWeights`) are declared only on a stage-one
     #: local-search method (ADR-0307, not the multi-start) without a calibration block; absent, nothing changes.
     #: The joint-scenario arm (owner-approved P2 item C1, ``index_options.joint_scenarios``): ``joint_scenarios``
@@ -3614,6 +3775,10 @@ class WeeklyOptionPortfolioStudy:
                      or (EdgeWeights.valid(kelly) and isinstance(kelly.get("local_search"), dict)
                          and "start" in kelly["local_search"] and "calibration" not in method))
                 and (cls._JOINT_SCENARIOS not in kelly or cls._joint_scenarios_valid(method))
+                and (not RegimeEdgeShrink.declared(kelly)
+                     or (RegimeEdgeShrink.valid(kelly) and isinstance(kelly.get("local_search"), dict)
+                         and "start" in kelly["local_search"] and "calibration" not in method
+                         and "accuracy" not in kelly))
                 and cls._kelly_strategy_valid(kelly)
                 and cls._local_search_valid(kelly)
                 and number_ok(kelly["fraction"]) and 0 < kelly["fraction"] <= 1
@@ -5559,6 +5724,9 @@ class WeeklyOptionPortfolioStudy:
         # ADR-0318: the optional edge weights (None, and nothing below reads them, when no key is declared).
         edge_weights = (EdgeWeights(self, self._kelly(method))
                         if any(key in (self._kelly(method) or {}) for key in EdgeWeights.EDGE_KEYS) else None)
+        # The optional regime shrink of the forecast edge (None, and nothing below reads it, when undeclared).
+        edge_shrink = (RegimeEdgeShrink(self._kelly(method))
+                        if RegimeEdgeShrink.declared(self._kelly(method)) else None)
         present = self._BLOCKS.present(method)
         if present:
             # A local-search method's hedge is derived: the search is rerun on this host over this host's own hedged
@@ -5827,6 +5995,13 @@ class WeeklyOptionPortfolioStudy:
                             # search's scorer and every replay of this week read the same value_adjust.
                             configured, record["kelly"]["edge_weights"], edge_multipliers = edge_weights.apply(
                                 day, configured, metadata)
+                        cal_regime = None
+                        if edge_shrink is not None:
+                            # The regime shrink of the edge, from the books this account settled before ``day``.
+                            cal_regime = edge_shrink.regime(record["kelly"]["sigma_daily"])
+                            configured, record["kelly"]["calibration"], edge_multipliers = edge_shrink.apply(
+                                day, configured, metadata, account.closed, record["kelly"]["sigma_daily"],
+                                edge_multipliers)
                         solver_params = p["solver"]
                         if kelly is not None and any(key in kelly for key in ("max_groups", *self._KELLY_STRATEGY_KEYS)):
                             solver_params = self._kelly_solver_params(p["solver"], kelly)
@@ -5956,6 +6131,8 @@ class WeeklyOptionPortfolioStudy:
                                                                        candidate["quantities"][i], strict=True))
                                 book.update(edge_multiplier=edge_multipliers[book["id"]],
                                             expected_raw=book["expected"]-adjust)
+                        if edge_shrink is not None and books:
+                            edge_shrink.stamp(books, configured, metadata, candidate["quantities"], cal_regime, day)
                         status = "timeout_skipped" if timed_out else "selected" if books else "cash"
                         certificates = [{k: v for k, v in c.items() if k != "binding"}
                                         for c in selection.get("certificates", [])]
