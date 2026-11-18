@@ -6013,8 +6013,8 @@ class TransportPortfolioSolve(PyomoSolve):
         self.log.warning("fixed actions infeasible to the pricing LP at its own tolerance: priced apart from their "
                          "action rows, which the scorer judges (incumbent_audit %s; HiGHS model status %s)",
                          self.ACTION_ROWS_CHECK, status)
-        model.rows.deactivate()
         solver = self._resolve_solver()
+        model.rows.deactivate()
         try:
             results = solver.solve(model)
         except RuntimeError:
@@ -6043,19 +6043,23 @@ class TransportPortfolioSolve(PyomoSolve):
         off (2021Q1 ``..._dte_risk_s_lp`` week 8, ``..._dte25_s_lp`` week 5, 2020Q1 ``ls075hs5``). Here the
         exclusive sides are fixed as the actions imply (:meth:`_complete_start`) and every fixed integer variable is
         typed continuous for this solve only: the feasible set is the same point, and HiGHS solves an LP at its LP
-        tolerance. Rows on first: an optimum there is the incumbent's ordinary price (no audit of its own). Rows off
+        tolerance (so an action row over its bound by less than HiGHS's LP feasibility tolerance, about 1e-7, prices
+        rows on without the ``action_rows`` audit the integer-typed route would have recorded; the scorer still judges
+        every row at ``parity_tolerance``). Rows on first: an optimum there is the incumbent's ordinary price (no audit
+        of its own). Rows off
         next (``apart`` None only): the :attr:`ACTION_ROWS_CHECK` envelope, as :meth:`_price_apart`. Domains, sides
         and rows are restored whatever happens. ``apart`` (a rows-off price no action row explains) is returned
         marked apart when the rows-on LP raises too, so :meth:`extract` refuses it by name exactly as before.
         """
         from pyomo.environ import Reals, Var, value
 
-        for (i, k) in model.side:
-            a, _b = self._groups[i]["exclusive"][k]
-            model.side[i, k].fix(1 if value(model.x[i, a]) else 0)
-        relaxed = [(v, v.domain) for v in model.component_data_objects(Var) if v.fixed and not v.is_continuous()]
-        statuses = list(statuses)
+        statuses, relaxed = list(statuses), []
         try:
+            for (i, k) in model.side:
+                a, _b = self._groups[i]["exclusive"][k]
+                model.side[i, k].fix(1 if value(model.x[i, a]) else 0)
+            relaxed = [(v, v.domain) for v in model.component_data_objects(Var)
+                       if v.fixed and not v.is_continuous()]
             if any(not v.is_continuous() for v in model.component_data_objects(Var) if not v.fixed):
                 statuses.append(("linear", "unfixed integer variable"))
             else:

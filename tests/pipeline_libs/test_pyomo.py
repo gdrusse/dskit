@@ -7177,26 +7177,126 @@ def test_every_pricing_form_raising_refuses_by_name_with_highs_statuses(monkeypa
     status of each of the four attempts (appsi's own words name none), and the model is restored."""
     from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
 
-    params, program = _over_cap_program()
-    _on_the_cap(monkeypatch)
+    params, program = _exclusive_program()
     _pricing_infeasible(monkeypatch, apart_too=True)
+    real_linear, models = TransportPortfolioSolve._price_linear, []
+
+    def linear(self, model, *args, **kwargs):
+        models.append(model)
+        return real_linear(self, model, *args, **kwargs)
+
+    monkeypatch.setattr(TransportPortfolioSolve, "_price_linear", linear)
     with pytest.raises(RecordedCheckRefusal, match="infeasible apart from their rows") as caught:
         TransportPortfolioSolve("live", params).run(None, program)
     assert caught.value.check == "dual_pricing"
     message = str(caught.value)
     assert all(f"{attempt} " in message for attempt in ("rows", "apart", "linear", "linear_apart"))
+    assert len(models) == 1 and len(models[0].side) == 1
+    _assert_restored(models[0])          # the actions unfixed by _priced_incumbent, everything else by the routes
+
+
+def _priced_model(groups=1):
+    """A built uncertified dollar model (``groups`` copies of ``_exclusive_program``'s group, each with a side) with
+    its actions fixed at a feasible book, as :meth:`_price_duals` leaves them before a fallback."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params, program = _exclusive_program()
+    group = program["groups"][0]
+    program = {**program, "groups": [{**group, "id": f"g{n}"} for n in range(groups)],
+               "caps": [{"groups": [f"g{n}" for n in range(groups)], "upper": 10000.*groups}]}
+    node = TransportPortfolioSolve("n", params)
+    model = node.build_model(program, params)
+    for (i, j) in model.x:
+        model.x[i, j].fix(1 if j == 0 else 0)
+    return node, model
+
+
+def _assert_released(model):
+    """The fallbacks' own mutations undone (the actions stay fixed: :meth:`_priced_incumbent` releases those)."""
+    from pyomo.environ import Binary, NonNegativeIntegers
+
+    assert all(v.domain is NonNegativeIntegers and v.fixed for v in model.x.values())
+    assert all(v.domain is Binary and not v.fixed for v in model.side.values())
+    assert model.rows.active
+
+
+def test_price_apart_restores_the_rows_when_the_solver_cannot_be_resolved(monkeypatch):
+    """Review defect: the rows must not stay deactivated when resolving the solver raises (it now precedes the
+    deactivation)."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    node, model = _priced_model()
+
+    def resolve(self):
+        raise ValueError("solver 'appsi_highs' is registered but not available")
+
+    monkeypatch.setattr(TransportPortfolioSolve, "_resolve_solver", resolve)
+    with pytest.raises(ValueError, match="not available"):
+        node._price_apart(model, None)
+    _assert_released(model)
+
+
+@pytest.mark.parametrize("where", ["side_fixing", "domains", "resolve", "solve", "apart_resolve"])
+def test_price_linear_restores_the_model_whatever_raises_midway(monkeypatch, where):
+    """Review defect: a non-solver exception anywhere in :meth:`_price_linear` (while fixing the sides, retyping the
+    domains, resolving the solver or solving, rows on or off) leaves no side fixed, no domain retyped, no row
+    deactivated."""
+    from pyomo.environ import Reals
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    node, model = _priced_model(groups=2)
+    real = TransportPortfolioSolve._resolve_solver
+    calls = {"n": 0}
+    if where == "side_fixing":
+        # the first side is fixed, the second side's pair lookup raises
+        node._groups = [node._groups[0], {**node._groups[1], "exclusive": []}]
+    elif where == "domains":
+        # the second variable typed continuous raises
+        domain = type(model.x[0, 0]).domain
+
+        def setter(self, value):
+            if value is Reals:
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    raise KeyError("domain")
+            domain.fset(self, value)
+
+        monkeypatch.setattr(type(model.x[0, 0]), "domain", property(domain.fget, setter))
+    else:
+        def resolve(self):
+            calls["n"] += 1
+            if where == "resolve" or (where == "apart_resolve" and not model.rows.active):
+                raise ValueError("resolve")
+            solver = real(self)
+            inner = solver.solve
+
+            def solve(m, *args, **kwargs):
+                if where == "solve":
+                    raise KeyError("solve")
+                if where == "apart_resolve" and m.rows.active:
+                    raise RuntimeError(_APPSI_NO_SOLUTION)           # rows-on LP infeasible: go to rows off
+                return inner(m, *args, **kwargs)
+
+            solver.solve = solve
+            return solver
+
+        monkeypatch.setattr(TransportPortfolioSolve, "_resolve_solver", resolve)
+    with pytest.raises((KeyError, ValueError, IndexError)):
+        node._price_linear(model, None, [])
+    _assert_released(model)
 
 
 def test_a_pricing_that_succeeds_never_reaches_the_fallbacks(monkeypatch):
     """Guard: a week whose integer-typed pricing solves (every completed week) prices exactly as before, one solve,
-    neither Amendment 5's nor Amendment 6's route, so its record is byte-identical."""
+    neither Amendment 5's nor Amendment 6's route, so its record is byte-identical. Behavioural, so it passes on
+    e2c1cc7b too (``_price_linear`` is patched only where it exists)."""
     from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
 
     def never(self, *args, **kwargs):
         raise AssertionError("fallback reached on a week that prices")
 
     monkeypatch.setattr(TransportPortfolioSolve, "_price_apart", never)
-    monkeypatch.setattr(TransportPortfolioSolve, "_price_linear", never)
+    monkeypatch.setattr(TransportPortfolioSolve, "_price_linear", never, raising=False)
     real = TransportPortfolioSolve._resolve_solver
     forms = []
 
