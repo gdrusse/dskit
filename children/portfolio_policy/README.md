@@ -4,7 +4,7 @@ Research child for **hold-vs-exit decisions on a long-term Schwab
 portfolio**: for each position, is the expected after-tax, after-cost value
 of holding passively at least the value of cashing out into an active
 strategy? The first real Schwab advisory run completed on 2026-10-30 using
-`weekly.sh --no-strategy`; implementation, review evidence and remaining
+`bash weekly.sh 2026-10-30 --no-strategy`; implementation, review evidence and remaining
 connector limitations are summarized in [the lane note](docs/RE-ENTRY.md).
 The configured rates and market assumptions still require owner choices.
 Nothing in this child places an order. The sections after

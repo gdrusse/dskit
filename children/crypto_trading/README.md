@@ -73,8 +73,8 @@ Known issues and what is not modelled: the runbook's last section.
 
 ## Feature selection (family and scale ablation)
 
-The original owner-approved 2026-10-09 ablation design is described here;
-its templates still require the configured zoo/grid bindings below. Per model class (sequence: PatchTST and its kin; tabular: the
+The owner-approved 2026-10-09 ablation design uses the shipped panel templates
+and workflow bindings described below. Per model class (sequence: PatchTST and its kin; tabular: the
 3-component mixture MLP) the predictor is run once per arm of `features-arms.json` (`all`, ten `minus_<family>`,
 six `minus_scale_<n>`) on W1 only (2023-06-20 up to but excluding 2026-05-01): expanding walk-forward folds, a
 1-day embargo, the same folds, rows and seeds in every arm, scored by weighted CRPS (CRPS plus tail CRPS). An
@@ -87,14 +87,17 @@ A scale arm drops every column of that many minutes: the `scales` columns and th
 | Config (`configs/`) | Job |
 |---|---|
 | `features-arms.json` | the arm vocabulary: kept families (`arms`) and kept scales (`scale_arms`) |
-| `select-template-{sequence,tabular}.json` | one W1 walk-forward template per class; `${arm.*}` fills the feature node's `families`, `scales`, `ewma_half_lives`, `range_windows`, `taker_windows` and `taker_check_windows`; the model, folds, seeds, loss and grid are the same in every arm |
-| `workflow-select-{sequence,tabular}.json` | manifest: one lane per arm (17), `workflow-batch`, resumable; identical but for the template and `work_dir` |
+| `select-template-{sequence,tabular}.json` | one W1 walk-forward template per class using `PanelTrain` and `PanelScore`; `${arm.context}` selects columns from the shared panel, with model, folds, seed, loss and scoring grid fixed across that class's arms |
+| `workflow-select-{sequence,tabular}.json` | resumable `workflow-batch` manifests with 17 arm lanes; populated fold/training/grid/panel settings plus the class-specific zoo settings are bound into each template |
 | `select-features.json` | pipeline document: reads both classes' per-arm summaries, writes `selected-features-{sequence,tabular}.json` and `feature-selection-disagreements.json` under its run's `artifacts/select/` (never committed) |
 
-Not built here (the zoo build supplies them): the W1 bars reader, the raw-channel window builder, the fit and the
-common-grid weighted-CRPS score nodes, and the W1 fold table and seeds. They are unfilled `args.zoo` / `args.grid`
-markers, so `python -m dskit.pipeline workflow configs/workflow-select-sequence.json --plan` lists them and a real run
-is refused until they exist. The fitted single-feature selector (plan step 2) is also not here. The optional check arm
+The workflows already bind `args.zoo`, `args.grid`, folds, training and panel
+settings. They read the onboarded minute panel through `PanelTrain`/`PanelScore`;
+the sequence template also declares its raw-channel window and encoder.
+`python -m dskit.pipeline workflow configs/workflow-select-sequence.json --plan`
+inspects the workflow without fitting. Execution still requires its pinned data,
+environment and study authorization. These manifests implement grouped ablation,
+not fitted single-feature selection. The optional check arm
 `selected` (the kept groups, run on the same folds) is read when present; one worse than `all` by more than `z` SE
 sends the class back to `all`, flagged.
 
