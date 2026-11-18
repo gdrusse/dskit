@@ -6,7 +6,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 
 | Lane | Note | State (one line, dated) |
 |---|---|---|
-| dskit core | "Core" below | 2026-11-15: reviewed integrations on main; C: compaction recovered 113.2 GiB; storage monitoring installed; automatic reclaim and legacy migration remain paused. |
+| dskit core | "Core" below | 2026-11-17: current documentation reconciled with code; storage maintenance and legacy migration remain paused. |
 | index_options | children/index_options/docs/RE-ENTRY.md | 2026-11-15: stress replay and fitted-method refusal fix integrated; ADR-0314 comparison remains provisional pending shared hedge defect audit. |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-19: historical 600-entry audit complete; method24 two-cell Kalshi recommendation beat market scores in later W4/W5; retrospective; protected tests closed; two final reviews passed |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
@@ -19,7 +19,10 @@ history questions, the memos and ADRs are reached from the lane note's links.
 
 ## Core (dskit itself)
 
-**Now.** 2026-11-15: ADR-0296 device selection (`94e785ac`) and
+**Now.** 2026-11-17: documentation audit corrected current guides against
+shipped code (candidate `62c2c67e`); see
+`docs/memos/2026-11-17-documentation-code-audit.md` for checks and scope.
+ADR-0296 device selection (`94e785ac`) and
 ADR-0317 saved-fit forecast faults (`c38e2b28`) remain reviewed and integrated,
 with two clean final lenses each. PR #19 is merged; explicit-device defaults
 and frozen study identities remain unchanged. Host maintenance recovered

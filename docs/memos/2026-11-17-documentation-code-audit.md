@@ -1,5 +1,10 @@
 # Documentation audit against code — 2026-11-17
 
+## TL;DR
+
+Corrected stale guidance and invalid command examples against the shipped code.
+Focused checks and both independent reviews passed; historical results were not rerun.
+
 Owner requested a repository-wide Markdown cleanup while MIO work continued.
 Base: `78c18df950444d6563d1700405ad38a2dcf1ead7`; isolated branch
 `codex/docs-code-audit-20261117`. Existing Claude branches and jobs were not edited.
@@ -27,8 +32,10 @@ This is not a revalidation of historical experiment results or external websites
 Run the focused documentation and journal store/CLI checks:
 `PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider tests/docs tests/journal/test_store.py tests/journal/test_main.py -q`.
 The checkpoint run passed 13 tests; no full suite, model run or network pull.
-All 250 concrete CLI examples parsed without dispatching verbs; 30 shorthand
-forms were classified as metasyntax. No broken local path link or commented-out
+250 command examples passed argument parsing after placeholder normalization,
+without dispatching verbs. The initial scan skipped 30 additional command forms;
+the integration reviewer checked all 30 (16 verb groups, seven optional-argument
+synopses, five commands with semicolons in comments, and two shell pipelines). No broken local path link or commented-out
 shell continuation remains in current/plan docs. All 20 CSV ledgers match the
 base. Instruction-pair parity and `git diff --check` also passed.
 
@@ -38,3 +45,14 @@ not used to read results. No policy, study window, owner Path row or runtime
 algorithm changed; `dskit/journal/render.py` changes only generated prose.
 Final candidate, review outputs and mechanical scan details are retained in
 the clone's `.git/docs-code-audit-20261117/` audit record.
+
+## Review and handoff
+
+Correctness and integration reviewers independently passed candidate `62c2c67e`
+with zero Critical/Major/Minor issues. Three earlier accuracy findings were fixed
+in that candidate; the remaining coverage-wording Nit is corrected above.
+The final wrap changes only evidence and lane handoff prose; reviewed
+runtime/configuration/ledger blobs remain identical. The initial duplicate-name
+sweep timed out at its eight-second limit; a 30-second rerun completed with no
+duplicate audit found. Final evidence snapshots and integration receipts are in
+`.git/docs-code-audit-20261117/`, including both reviewer transcript references.
