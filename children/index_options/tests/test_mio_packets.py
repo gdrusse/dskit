@@ -3092,3 +3092,116 @@ def test_research_tail_cap_excludes_exact_seal_and_later_expiries(study, tmp_pat
     assert out["audit"]["tail_capped_at"] == cap
     assert all(row["status"] == "completed" and row["replay_parity"]
                and not row["result"]["trades"] for row in out["results"])
+
+
+def _copula_packet(study, tmp_path, rows=None):
+    """Bind an independent synthetic history without changing ordinary bars."""
+    from datetime import date, timedelta
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from test_mio_worker import _priced_method
+
+    _priced_method(study, "kelly050_ls_lp")
+    study["domain"]["params"]["methods"] = copy.deepcopy(study["domain"]["params"]["methods"])
+    study["domain"]["params"]["methods"][0]["kelly"]["joint_scenarios"] = {
+        "method": "empirical_copula", "scenarios": 30, "window": 60, "block": 5, "seed": 20261117}
+    if rows is None:
+        first = date(2018, 1, 1)
+        rows = [{"symbol": "X", "date": (first+timedelta(days=i)).isoformat(),
+                 "close": 100.+(i % 17)*.1} for i in range(372)]
+    archive = tmp_path/"copula-origin"
+    archive.mkdir()
+    pq.write_table(pa.Table.from_pylist(rows), archive/"copula.parquet")
+    root = OnboardingRoot.create(str(tmp_path/"copula-ob"))
+    registry = root.registry()
+    vid = registry.register("source_config", {
+        "name": "copula", "catalog_source": "synthetic", "connector": "localblobs",
+        "config": {"path": str(archive), "as_of": "2026-01-01T00:00:00+00:00"}}, origin="test")
+    registry.transition(vid, "active", origin="test")
+    run_acquisition(root, registry, "copula", "files", "backfill")
+    acquired = payload_files(root, "copula", "files")
+    study["domain"]["sources"]["copula_bars"] = {
+        "pin": {"root": root.root, "source": "copula", "stream": "files",
+                "snapshot": acquired["snapshot"], "manifest_sha256": acquired["manifest_sha256"],
+                "files": acquired["sha256"]},
+        "files": {"X": "copula.parquet"}, "start": "2018-01-01"}
+    return study
+
+
+def test_copula_packet_preserves_control_clocks_and_ordinary_inputs(study, tmp_path):
+    from index_options.mio_contract import MIOStudyContract
+
+    original = copy.deepcopy(study)
+    baseline = MIOPacketInputs.read_bounded(original, MIOStudyContract().resolve(original)["read_bounds"],
+                                            MIOStudyContract.packet(original), tmp_path/"ordinary", None)
+    _copula_packet(study, tmp_path)
+    bounds = MIOStudyContract().resolve(study)["read_bounds"]
+    assert {k: v for k, v in bounds.items() if k != "copula_bars"} == MIOStudyContract().resolve(original)["read_bounds"]
+    assert bounds["copula_bars"] == {"start": "2018-01-01", "end_before": "2019-01-08"}
+    actual = MIOPacketInputs.read_bounded(study, bounds, MIOStudyContract.packet(study), tmp_path/"joint", None)
+    history = actual["inputs"]["X"].pop("copula_bars")
+    assert history and min(r["date"] for r in history) < original["domain"]["history_start"]
+    assert all("2018-01-01" <= r["date"] < "2019-01-08" for r in history)
+    assert MIOPacketInputs.portable_inputs_sha256(actual) == MIOPacketInputs.portable_inputs_sha256(baseline)
+
+
+@pytest.mark.parametrize("case,match", [
+    ("absent", "copula_bars_unbound"), ("unused", "copula_bars_unused"),
+    ("start_missing", "invalid source binding"), ("start_late", "copula.*start"),
+    ("start_noncanonical", "copula.*start"), ("wrong_symbols", "source file universe")])
+def test_copula_packet_binding_fails_closed(study, tmp_path, case, match):
+    from index_options.mio_contract import MIOStudyContract
+
+    _copula_packet(study, tmp_path)
+    source = study["domain"]["sources"]["copula_bars"]
+    if case == "absent":
+        del study["domain"]["sources"]["copula_bars"]
+    elif case == "unused":
+        del study["domain"]["params"]["methods"][0]["kelly"]["joint_scenarios"]
+    elif case == "start_missing":
+        del source["start"]
+    elif case == "start_late":
+        source["start"] = "2019-01-02"
+    elif case == "start_noncanonical":
+        source["start"] = "20180101"
+    else:
+        source["files"] = {"Y": "copula.parquet"}
+    with pytest.raises(ValueError, match=match):
+        MIOStudyContract().resolve(study)
+
+
+def test_copula_packet_null_source_is_a_missing_gate(study, tmp_path):
+    from index_options.mio_contract import MIOStudyContract
+
+    _copula_packet(study, tmp_path)
+    study["domain"]["sources"]["copula_bars"] = None
+    assert MIOStudyContract().resolve(study)["missing"] == ["copula_bars"]
+
+
+def test_copula_packet_start_and_rows_are_portable_identity(study, tmp_path):
+    from index_options.mio_contract import MIOStudyContract
+
+    _copula_packet(study, tmp_path)
+    digest = MIOPacketInputs.portable_study_sha256(study)
+    moved = copy.deepcopy(study)
+    moved["domain"]["sources"]["copula_bars"]["pin"]["root"] = "/different-host"
+    assert MIOPacketInputs.portable_study_sha256(moved) == digest
+    moved["domain"]["sources"]["copula_bars"]["start"] = "2018-01-02"
+    assert MIOPacketInputs.portable_study_sha256(moved) != digest
+    bounded = MIOPacketInputs.read_bounded(study, MIOStudyContract().resolve(study)["read_bounds"],
+                                          MIOStudyContract.packet(study), tmp_path/"quotes", None)
+    digest = MIOPacketInputs.portable_inputs_sha256(bounded)
+    bounded["inputs"]["X"]["copula_bars"][0]["close"] += 1
+    assert MIOPacketInputs.portable_inputs_sha256(bounded) != digest
+
+
+def test_copula_packet_discards_out_of_window_rows_before_materialization(study, tmp_path):
+    from index_options.mio_contract import MIOStudyContract
+
+    rows = [{"symbol": "X", "date": d, "close": c} for d, c in
+            [("2017-12-31", 999), ("2018-01-01", 100), ("2019-01-07", 101),
+             ("2019-01-08", 999), ("2026-01-01", 999)]]
+    _copula_packet(study, tmp_path, rows)
+    bounded = MIOPacketInputs.read_bounded(study, MIOStudyContract().resolve(study)["read_bounds"],
+                                          MIOStudyContract.packet(study), tmp_path/"quotes", None)
+    assert bounded["inputs"]["X"]["copula_bars"] == rows[1:3]

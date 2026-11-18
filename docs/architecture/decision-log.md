@@ -37422,3 +37422,14 @@ the original experiment identity and provenance before reading its saved fit.
 **Unchanged.** With no key, programs, results and method documents are byte for byte origin/main's (pinned digests on four existing ids, clock-read `seconds` aside, and an unchanged multi-start result). No new solver, dependency, block, dispatcher or queue change; the bundle needs nothing new (the weight is computed from the forecasts, contexts and bars it already carries); ADR-0316 Amendment 5's parked replay defect is untouched. Registration: `attempts.jsonl` registers ADR-0313 integration arms only (no `ls` method has a row), so none is written.
 
 **Evidence status.** Any result on 2019Q4, 2020Q1, 2021Q1, 2021Q2 is in-sample: those quarters supplied the findings behind knobs 2 and 3, and the base method was chosen on them.
+
+
+### ADR-0318 development amendment — pinned joint-history packet input (2026-11-17)
+
+**Authority and scope.** The owner's combined-method testing and overnight-work instructions authorize this isolated development integration. Astra cleared Phase 0 after separating the history clock and deriving one immutable source from both approved parents. This is not production-merge approval or permission to alter Path A0008–A0010, forecast scores, existing jobs or sealed windows.
+
+**Decision.** Full packets declaring `kelly.joint_scenarios` bind `sources.copula_bars`: `pin`, exact-symbol `files`, and canonical ISO `start` strictly before the packet. Null means missing; an absent binding refuses. An unused binding refuses. Its read window ends before the packet end; each decision still uses only strictly earlier closes through the existing joint-history owner. All ordinary inputs, source bounds and clocks remain unchanged. Portable study identity preserves the role-local start; bounded-input identity covers its rows. Export uses the existing pinned-source and bounded-Parquet owners.
+
+**Real-source contract.** The J300L development arm requires one already-bounded onboarded derivative, with both approved parent manifest identities, the frozen 166-symbol-to-source mapping, extraction bounds and output hashes. No raw future rows may materialize. Exported pins must equal original pins apart from roots; a transformed export is ineligible for the fast pricer. Genuine short history retains the existing cash result.
+
+**Exit.** Focused tests cover missing/unused/malformed bindings, exact control-input parity, date bounds, portable identity, actual exported-worker and recorded-pricer agreement, and strictly prior decision use. Two independent final reviews bind an immutable candidate before real dispatch. The existing in-memory joint-history interface and other method behavior remain unchanged.

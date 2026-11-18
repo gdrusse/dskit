@@ -1382,9 +1382,9 @@ class MIOStudyContract(StudyContract):
         else:
             raise ValueError("unknown admission mode")
         expected = {"forecasts", "contexts", "chain", "bars", "sessions"}
-        optional = {"corporate_actions", "edge_maps"}
+        optional = {"corporate_actions", "edge_maps", "copula_bars"}
         if not expected <= set(d["sources"]) <= expected | optional:
-            raise ValueError("five market source roles and optional corporate actions required")
+            raise ValueError("five market source roles and supported optional sources required")
         # ADR-0313 A9: the walk's maps are bound exactly when a method declares a calibration block.
         declared = any("calibration" in m for m in methods)
         if declared and "edge_maps" not in d["sources"]:
@@ -1393,14 +1393,28 @@ class MIOStudyContract(StudyContract):
         if "edge_maps" in d["sources"] and not declared:
             raise ValueError("edge_maps_unused: the study binds an edge_maps source but no method declares a "
                              "calibration block")
+        joint = any("joint_scenarios" in m.get("kelly", {}) for m in methods)
+        if joint and "copula_bars" not in d["sources"]:
+            raise ValueError("copula_bars_unbound: a joint method requires pinned copula history")
+        if "copula_bars" in d["sources"] and not joint:
+            raise ValueError("copula_bars_unused: no method declares joint scenarios")
         missing, pins = [], {}
         for role, binding in d["sources"].items():
             if binding is None:
                 missing.append(role)
                 continue
-            if set(binding) != {"pin", "files"}:
+            fields = {"pin", "files", "start"} if role == "copula_bars" else {"pin", "files"}
+            if set(binding) != fields:
                 raise ValueError("invalid source binding")
-            keys = (set(p["symbols"]) if role in {"chain", "bars"} else
+            if role == "copula_bars":
+                start = binding["start"]
+                try:
+                    canonical = date.fromisoformat(start).isoformat()
+                except (TypeError, ValueError):
+                    canonical = None
+                if canonical != start or start is None or start >= packet["start"]:
+                    raise ValueError("copula history start must be canonical and strictly prior")
+            keys = (set(p["symbols"]) if role in {"chain", "bars", "copula_bars"} else
                     {"shared", "memo"} if role == "corporate_actions" else
                     {"shared", "summary"} if role == "edge_maps" else {"shared"})
             if set(binding["files"]) != keys:
@@ -1422,6 +1436,9 @@ class MIOStudyContract(StudyContract):
         if "edge_maps" in d["sources"]:
             # ADR-0313 A9: a map is read by the decision session it belongs to, so the bound is the entry window.
             bounds["edge_maps"] = {"start": packet["start"], "end_before": packet["end_before"]}
+        if d["sources"].get("copula_bars") is not None:
+            bounds["copula_bars"] = {"start": d["sources"]["copula_bars"]["start"],
+                                     "end_before": packet["end_before"]}
         return {"missing": missing, "read_bounds": bounds,
                 "cohort": [m["id"] for m in methods], "source_pins": pins}
 

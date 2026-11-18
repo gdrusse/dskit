@@ -826,7 +826,7 @@ class MIOPacketInputs(StudyNode):
         sources = {}
         for role, binding in study["domain"]["sources"].items():
             pin = binding["pin"]
-            sources[role] = {"files": binding["files"],
+            sources[role] = {**binding,
                              "pin": {k: v for k, v in pin.items() if k != "root"}}
         domain = {**study["domain"], "sources": sources}
         return value_hash({"contract": study["contract"], "packets": study["packets"],
@@ -1000,6 +1000,10 @@ class MIOPacketInputs(StudyNode):
                                 "forecast_expiries": expiries, "selected_rows": quote_index["rows"],
                                 "basis_factors": basis_factors},
                             "bars": bars}
+            if "copula_bars" in d["sources"]:
+                data[symbol]["copula_bars"] = read(
+                    "copula_bars", symbol, ["symbol", "date", "close"],
+                    {"date": bounds["copula_bars"]}, ds.field("symbol") == symbol)
             if log is not None:
                 log.info("MIO quote intake complete for %s: %d indexed rows", symbol, quote_index["rows"])
         # Detect drift during the bounded scan as well as before it.

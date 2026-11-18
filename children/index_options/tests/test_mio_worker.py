@@ -1524,3 +1524,56 @@ def test_a_pricing_refusal_through_run_keeps_the_solve_and_the_pricing_beats_pro
     assert "pricing" in Path(str(again) + ".progress").read_text()
     assert json.loads(priced.read_text())["format"] and Path(str(again) + ".done").exists()
     assert not Path(str(priced) + ".refused").exists()
+
+
+@pytest.mark.parametrize("study", ["hedged_program"], indirect=True)
+def test_copula_packet_full_worker_and_official_recorded_pricer_agree(study, tmp_path, monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+    from test_mio_packets import _copula_packet
+
+    _copula_packet(study, tmp_path)
+    method = study["domain"]["params"]["methods"][0]["id"]
+    bundle = tmp_path/"bundle"
+    MIOMethodBundle(study, bundle).build()
+    exported = json.loads((bundle/MIOMethodBundle.STUDY_FILE).read_text())
+    binding = exported["domain"]["sources"]["copula_bars"]
+    assert binding["start"] == study["domain"]["sources"]["copula_bars"]["start"]
+    assert {k: v for k, v in binding["pin"].items() if k != "root"} == {
+        k: v for k, v in study["domain"]["sources"]["copula_bars"]["pin"].items() if k != "root"}
+    priced_path = tmp_path/"priced.json"
+    proc = _worker(tmp_path, bundle, method, priced_out=priced_path)
+    assert proc.returncode == 0, proc.stderr
+    priced = json.loads(priced_path.read_text())
+    assert priced["economics"]["contracts"] > 0
+    monkeypatch.setattr(TransportPortfolioSolve, "run", lambda *a, **k: pytest.fail("no official re-solve"))
+    _, plan, request = _init(study)
+    doc = _close_document(tmp_path, "copula-recorded", study, plan, request, recorded=tmp_path/"recorded")
+    ran = run_document(doc, asof="2019-02-09", journal=False)
+    assert ran.state == "ran", ran
+    receipt = _receipt(ran, doc)
+    assert receipt["complete"] and receipt["results"][0]["replay_parity"]
+    result = receipt["results"][0]["result"]
+    comparison = MIOMethodWorker.compare_priced(priced, result, receipt["audit"]["recorded_from"][method])
+    assert comparison["result_identical"] and comparison["economics_identical"]
+    selected = [w for w in result["decisions"] if w["status"] == "selected"]
+    assert selected
+    for week in selected:
+        history = week["kelly"]["joint_scenarios"]
+        assert history["history_source"] == "copula_bars"
+        assert history["history_last"] < week["date"]
+        assert history["history_returns"] == 60
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal
+    from index_options.mio_contract import MIOStudyContract
+
+    bounded = MIOPacketInputs.read_bounded(
+        study, plan["read_bounds"], MIOStudyContract.packet(study), tmp_path/"identity-quotes", None)
+    method_spec = study["domain"]["params"]["methods"][0]
+    changed = copy.deepcopy(study)
+    changed["domain"]["sources"]["copula_bars"]["start"] = "2018-01-02"
+    reader = MIOPacketStudy("changed_start", {"study": changed, "recorded": str(tmp_path/"recorded")})
+    with pytest.raises(RecordedCheckRefusal, match="study identity"):
+        reader._recorded_actions(method_spec, plan, bounded)
+    reader = MIOPacketStudy("changed_rows", {"study": study, "recorded": str(tmp_path/"recorded")})
+    bounded["inputs"]["X"]["copula_bars"][0]["close"] += 1
+    with pytest.raises(RecordedCheckRefusal, match="bounded inputs"):
+        reader._recorded_actions(method_spec, plan, bounded)
