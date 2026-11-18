@@ -6500,9 +6500,14 @@ class TransportActionScore:
         if defects:
             raise ValueError("; ".join(defects))
         self.params = copy.deepcopy(params)
-        self.program = copy.deepcopy(program)
+        # Memory only (owner 2026-11-16): the private copy IS the checked one. ``_checked_program`` deep-copies the
+        # groups, caps and joint rows itself; the utility block, whose scenario terms ``_checked_utility`` normalizes
+        # in place, is copied here. A second whole-program copy kept beside them was never read: same values, same
+        # identity, and the caller's program is still never mutated.
+        if isinstance(program, dict) and "utility" in program:
+            program = {**program, "utility": copy.deepcopy(program["utility"])}
         (self.groups, self.caps, self.duals, self.joint,
-         self.charges, self.utility) = TransportPortfolioSolve._checked_program(self.program)
+         self.charges, self.utility) = TransportPortfolioSolve._checked_program(program)
         identity = {"groups": self.groups, "caps": self.caps, "joint_rows": self.joint}
         self.scenarios = self.envelope = self.expected = self.charge_plan = self.atom_tables = None
         if self.utility is not None:
