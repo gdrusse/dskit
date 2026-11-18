@@ -5120,6 +5120,8 @@ class WeeklyOptionPortfolioStudy:
         scored, never built). Nothing the decision depends on reads the clock, so BOTH routes run the search again and
         refuse a selection that differs from the recorded or claimed one.
         """
+        import copy
+
         from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportActionScore, TransportPortfolioSolve
         from .kelly_local import KellyLocalSearch
 
@@ -5197,8 +5199,17 @@ class WeeklyOptionPortfolioStudy:
                 self._check_stage1_selection(claim, program_sha256, day)
             first = solver._recorded(dollar, claim["selection"], claim["certificates"])
         screen = dict(solver.last_screen)
-        timed_out = "timeout" in first
         warm = start.get("warm", "none")
+        started = None
+        if warm != "none" and recorded is None and derived is None:
+            started = copy.deepcopy(solver.last_start) or {
+                "used": False, "reason": "no_previous_book", "objective": None, "scored": None, "scale": None}
+        dollar_solve = copy.deepcopy(solver.last_dollar_solve) if relax_fix else None
+        # Retain the small procedure records, not the completed solver and its private program, during the climb.
+        # The warm contract map below uses configured: dollar_groups differs only in the unused radius field.
+        solver = dollar = dollar_groups = None
+        _return_freed_memory()
+        timed_out = "timeout" in first
         # ADR-0307 Amendment 1: a stage one stopped at its limit WITH an incumbent (the "return" policy's timeout
         # envelope, candidate actions present) starts the climb from that incumbent when the block says so.
         incumbent = timed_out and search.get("incumbent_start", False) and first.get("candidate") is not None
@@ -5242,12 +5253,10 @@ class WeeklyOptionPortfolioStudy:
                 if echoed is not None:
                     local["stage1_warm"] = dict(echoed)
             elif derived is None:
-                started = solver.last_start or {"used": False, "reason": "no_previous_book", "objective": None,
-                                                "scored": None, "scale": None}
                 # No wall-clock in the record: the replay compares kelly.local whole.
                 local["stage1_warm"] = {"mode": warm, **{k: v for k, v in started.items() if k != "seconds"}}
             carried = first["candidate"] if timed_out else first
-            self._warm_remember(method["id"], warm, program["groups"] if warm == "previous_climb" else dollar_groups,
+            self._warm_remember(method["id"], warm, program["groups"] if warm == "previous_climb" else configured,
                                 metadata,
                                 out["quantities"] if warm == "previous_climb"
                                 else carried["quantities"] if carried is not None else None)
@@ -5255,7 +5264,7 @@ class WeeklyOptionPortfolioStudy:
             # The strategy, its LP bound, the restricted program's objective, its seconds and its support size. A live
             # solve reads them off the solver; a recorded replay carries the recorded ones (a measurement, never
             # re-derived: its selection is what the replay checks); a foreign worker's derived week has none.
-            local["stage1_solve"] = (dict(solver.last_dollar_solve) if solver.last_dollar_solve is not None
+            local["stage1_solve"] = (dict(dollar_solve) if dollar_solve is not None
                                      else None if recorded is None
                                      else (recorded.get("kelly", {}).get("local", {}) or {}).get("stage1_solve"))
         stage1_certificates = [{k: v for k, v in c.items() if k != "binding"} for c in first.get("certificates", [])]

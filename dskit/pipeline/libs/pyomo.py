@@ -6418,9 +6418,11 @@ class TransportActionScore:
         if defects:
             raise ValueError("; ".join(defects))
         self.params = copy.deepcopy(params)
-        self.program = copy.deepcopy(program)
+        # _checked_program already copies groups, caps and joint rows. Copy only the utility block it normalizes.
+        if isinstance(program, dict) and "utility" in program:
+            program = {**program, "utility": copy.deepcopy(program["utility"])}
         (self.groups, self.caps, self.duals, self.joint,
-         self.charges, self.utility) = TransportPortfolioSolve._checked_program(self.program)
+         self.charges, self.utility) = TransportPortfolioSolve._checked_program(program)
         identity = {"groups": self.groups, "caps": self.caps, "joint_rows": self.joint}
         self.scenarios = self.envelope = self.expected = self.charge_plan = self.atom_tables = None
         if self.utility is not None:

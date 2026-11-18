@@ -116,3 +116,59 @@ def test_the_worker_reads_its_memory():
     assert now is None or now > 0
     if ledger_studies.sys.platform.startswith("linux"):
         assert now is not None and peak is not None and now <= peak + 1e-3
+
+
+@pytest.mark.parametrize("mode", ["plain", "previous_week", "previous_climb", "relax_fix", "recorded_selection"])
+def test_finished_stage_one_is_released_before_the_climb(mode, monkeypatch):
+    """Keep only result evidence, not the completed solver, alive while the climb runs."""
+    import weakref
+
+    from index_options.kelly_local import KellyLocalSearch
+    from test_ledger_studies import _local_world
+    from test_ledger_warm_start import LOOSE
+
+    search = {"start": dict(LOOSE)}
+    if mode in ("previous_week", "previous_climb"):
+        search["start"]["warm"] = mode
+    elif mode == "relax_fix":
+        search["start"]["strategy"] = mode
+    elif mode == "recorded_selection":
+        search["record_stage1_selection"] = True
+    params, data, method = _local_world(search=search)
+    study = WeeklyOptionPortfolioStudy(params, data)
+    make_solver = WeeklyOptionPortfolioStudy._solver
+    refs, observed = [], []
+
+    def watched_solver(study, params):
+        solver = make_solver(study, params)
+        refs.append(weakref.ref(solver))
+        return solver
+
+    run = KellyLocalSearch.run
+
+    def checked_run(self, *args, **kwargs):
+        assert refs and refs[-1]() is None, "finished stage-one solver retained during climb"
+        observed.append(True)
+        return run(self, *args, **kwargs)
+
+    monkeypatch.setattr(WeeklyOptionPortfolioStudy, "_solver", watched_solver)
+    monkeypatch.setattr(KellyLocalSearch, "run", checked_run)
+    result = study._method(method, None)
+    assert observed
+    # Recorded replay must retain warm/relax telemetry and every selection/certificate exactly.
+    again = WeeklyOptionPortfolioStudy(params, data)._method(method, None, recorded=result)
+    assert again == result
+
+
+def test_worker_allocator_preserves_an_explicit_configuration(monkeypatch):
+    import pyarrow as pa
+
+    previous = pa.default_memory_pool()
+    try:
+        monkeypatch.delenv("ARROW_DEFAULT_MEMORY_POOL", raising=False)
+        assert MIOMethodWorker.use_system_arrow_pool() == "system"
+        pa.set_memory_pool(previous)
+        monkeypatch.setenv("ARROW_DEFAULT_MEMORY_POOL", previous.backend_name)
+        assert MIOMethodWorker.use_system_arrow_pool() == previous.backend_name
+    finally:
+        pa.set_memory_pool(previous)

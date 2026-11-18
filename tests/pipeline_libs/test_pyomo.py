@@ -7065,3 +7065,30 @@ def test_without_uncertified_a_dollar_pricing_infeasibility_still_raises(monkeyp
     actions = TransportPortfolioSolve.actions(json.loads(json.dumps(selection)))
     with pytest.raises(RuntimeError, match="no solution can be loaded"):
         TransportPortfolioSolve("raise", {**params, "incumbent_audit": "raise"}).derived(program, actions, certs)
+
+
+def test_the_scorer_keeps_only_its_checked_copy_and_never_mutates_the_program():
+    """Owner 2026-11-16 (memory only): the scorer no longer keeps a second whole-program copy beside the checked one.
+
+    Its values, feasibility and identity equal a scorer given a private deep copy; the caller's program, whose utility
+    terms carry ints that the check normalizes to floats in its own copy, is left exactly as it was (types included).
+    """
+    import copy
+
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+
+    groups = [_bet_group("a"), _bet_group("b", p=.8, credit=90., loss=450., capacity=50)]
+    joint = [{"id": "market:0", "weight": .5, "terms": {"a": [3], "b": [-2]}},
+             {"id": "market:1", "weight": .5, "terms": {"a": [-3], "b": [2]}}]
+    program = _kelly_program(groups, fraction=.5, joint=joint)
+    before = copy.deepcopy(program)
+    scorer = TransportActionScore(program, {"parity_tolerance": 1e-8})
+    oracle = TransportActionScore(copy.deepcopy(program), {"parity_tolerance": 1e-8})
+    assert not hasattr(scorer, "program")
+    assert program == before and repr(program) == repr(before), "the caller's program is untouched, types included"
+    assert scorer.utility["joint"] is not program["utility"]["joint"]
+    assert all(type(v) is float for s in scorer.utility["joint"] for row in s["terms"].values() for v in row)
+    assert scorer.program_identity == oracle.program_identity
+    for q in ([[0], [0]], [[7], [3]], [[20], [0]], [[0], [20]]):
+        assert repr(scorer.evaluate(q)) == repr(oracle.evaluate(q))
+    assert scorer.check_feasible([[400], [50]]) == oracle.check_feasible([[400], [50]])
