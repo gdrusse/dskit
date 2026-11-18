@@ -7053,6 +7053,216 @@ def test_a_pricing_infeasibility_apart_from_the_rows_refuses_by_name(monkeypatch
     assert caught.value.check == "dual_pricing"
 
 
+# -- ADR-0316 Amendment 6: the integer-typed pricing raises on rounding alone; the actions are priced as an LP --------
+
+#: The hedged stage one's solver options on the real runs (study.json ``solver.solver_options`` plus
+#: ``stage1_time_limit``): ``mip_feasibility_tolerance`` 1e-9 is the absolute check HiGHS's MIP solver misses.
+_STAGE1_OPTIONS = {"mip_abs_gap": 1, "mip_feasibility_tolerance": 1e-09, "mip_rel_gap": 0.1, "threads": 1,
+                   "time_limit": 300.}
+
+
+def _integer_form_raises(monkeypatch, rows_only=False):
+    """Make every pricing solve whose fixed actions are still INTEGER-typed raise appsi's no-solution words (what
+    HiGHS's 'Solve error' becomes), rows on and off (``rows_only``: rows on only); a linear-form solve runs for real.
+    Returns the list of ``(form, rows active)`` of every solve, the stage one's included, and the last model seen."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    real = TransportPortfolioSolve._resolve_solver
+    seen = {"calls": [], "model": None}
+
+    def resolve(self):
+        solver = real(self)
+        inner = solver.solve
+
+        def solve(model, *args, **kwargs):
+            fixed = [v for v in model.x.values() if v.fixed]
+            form = "stage1" if not fixed else "integer" if not fixed[0].is_continuous() else "linear"
+            seen["calls"].append((form, model.rows.active))
+            seen["model"] = model
+            if form == "integer" and (model.rows.active or not rows_only):
+                raise RuntimeError(_APPSI_NO_SOLUTION)
+            return inner(model, *args, **kwargs)
+
+        solver.solve = solve
+        return solver
+
+    monkeypatch.setattr(TransportPortfolioSolve, "_resolve_solver", resolve)
+    return seen
+
+
+def _assert_restored(model):
+    """The linear pricing leaves the model as it found it: integer domains back, sides free, rows active."""
+    from pyomo.environ import Binary, NonNegativeIntegers
+
+    assert all(v.domain is NonNegativeIntegers and not v.fixed for v in model.x.values())
+    assert all(v.domain is Binary and not v.fixed for v in model.side.values())
+    assert model.rows.active
+
+
+def _exclusive_program(upper=10000.):
+    """``_over_cap_program``'s group with a second, exclusive action (so the model has a side binary)."""
+    params, program = _over_cap_program(upper=upper)
+    group = {**program["groups"][0], "credit": [200., -50.], "losses": [[1000., -900.], [0., 10.], [-1000., 950.]],
+             "capacity": [2, 2], "exclusive": [[0, 1]], "reserve_rows": [[800., 700.]]}
+    return params, {**program, "groups": [group]}
+
+
+def test_an_integer_pricing_raise_inside_the_rows_is_priced_as_an_lp_on_every_route(monkeypatch, caplog):
+    """The 2021Q1 week-8 shape: the stage one's rounded actions are inside every row, yet the pricing solve raises with
+    the rows on AND off (HiGHS's MIP solver, 'Solve error'). On e2c1cc7b this refused "infeasible apart from their
+    rows"; now the linear form prices them, the week is the ordinary priced incumbent (no action_rows audit), and the
+    recorded replay and the derived route reproduce it."""
+    import logging
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params, program = _exclusive_program()
+    clean = TransportPortfolioSolve("clean", params).run(None, program)["selection"]
+    assert "timeout" not in clean and clean["value"] > 0
+    seen = _integer_form_raises(monkeypatch)
+    node = TransportPortfolioSolve("live", params)
+    with caplog.at_level(logging.WARNING):
+        selection = node.run(None, program)["selection"]
+    assert seen["calls"] == [("stage1", True), ("integer", True), ("integer", False), ("linear", True)]
+    assert "priced as a linear program (rows on)" in caplog.text
+    _assert_restored(seen["model"])
+    assert "timeout" not in selection and "audit" not in selection
+    certificates = [{k: v for k, v in c.items() if k != "binding"} for c in selection.pop("certificates")]
+    clean_certificates = clean.pop("certificates")
+    assert selection["quantities"] == clean["quantities"] and selection["value"] == clean["value"]
+    assert selection["model_value"] == pytest.approx(clean["model_value"], abs=1e-9)
+    assert certificates[0]["objective"] == pytest.approx(clean_certificates[0]["objective"], abs=1e-9)
+    saved, certs = json.loads(json.dumps([selection, certificates]))
+    assert node._recorded(program, saved, certs) == {**saved, "certificates": certs}
+    derived = TransportPortfolioSolve("derived", params).derived(
+        program, TransportPortfolioSolve.actions(saved), certs)["selection"]
+    assert {k: v for k, v in derived.items() if k != "certificates"} == saved
+
+
+def test_an_integer_pricing_raise_over_a_cap_is_priced_apart_as_an_lp(monkeypatch):
+    """Over a cap by a tolerance-sized amount AND the integer-typed pricing raising off the rows too: the linear form
+    with the rows on is infeasible (HiGHS's LP tolerance), with them off it prices, and the week is Amendment 5's
+    action_rows envelope, the same as when only the rows-on solve raised."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params, program = _over_cap_program()
+    _on_the_cap(monkeypatch)
+    reference = TransportPortfolioSolve("reference", params).run(None, program)["selection"]
+    seen = _integer_form_raises(monkeypatch)
+    selection = TransportPortfolioSolve("live", params).run(None, program)["selection"]
+    assert seen["calls"][1:] == [("integer", True), ("integer", False), ("linear", True), ("linear", False)]
+    assert selection["timeout"] == "incumbent_audit" and selection["audit"] == {"check": "action_rows", "ratio": .2}
+    assert selection["candidate"]["quantities"] == reference["candidate"]["quantities"] == [[2]]
+    assert selection["candidate"]["value"] == reference["candidate"]["value"]
+    assert selection["candidate"]["model_value"] == pytest.approx(reference["candidate"]["model_value"], abs=1e-9)
+
+
+def test_a_rows_off_price_no_row_explains_is_repriced_as_an_lp(monkeypatch):
+    """The integer-typed pricing raises with the rows on only and prices with them off, but no action row is over its
+    bound (so the rows did not explain the raise): on e2c1cc7b extract refused "infeasible within their rows"; now
+    the linear form prices the actions with their rows and the week is the ordinary priced incumbent."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    params, program = _exclusive_program()
+    clean = TransportPortfolioSolve("clean", params).run(None, program)["selection"]
+    seen = _integer_form_raises(monkeypatch, rows_only=True)
+    selection = TransportPortfolioSolve("live", params).run(None, program)["selection"]
+    assert seen["calls"][1:] == [("integer", True), ("integer", False), ("linear", True)]
+    assert "timeout" not in selection and selection["quantities"] == clean["quantities"]
+    assert selection["value"] == clean["value"]
+    _assert_restored(seen["model"])
+
+
+def test_every_pricing_form_raising_refuses_by_name_with_highs_statuses(monkeypatch):
+    """The double failure persists in the linear form too: refused ``dual_pricing`` as before, now naming HiGHS's model
+    status of each of the four attempts (appsi's own words name none), and the model is restored."""
+    from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
+
+    params, program = _over_cap_program()
+    _on_the_cap(monkeypatch)
+    _pricing_infeasible(monkeypatch, apart_too=True)
+    with pytest.raises(RecordedCheckRefusal, match="infeasible apart from their rows") as caught:
+        TransportPortfolioSolve("live", params).run(None, program)
+    assert caught.value.check == "dual_pricing"
+    message = str(caught.value)
+    assert all(f"{attempt} " in message for attempt in ("rows", "apart", "linear", "linear_apart"))
+
+
+def test_a_pricing_that_succeeds_never_reaches_the_fallbacks(monkeypatch):
+    """Guard: a week whose integer-typed pricing solves (every completed week) prices exactly as before, one solve,
+    neither Amendment 5's nor Amendment 6's route, so its record is byte-identical."""
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    def never(self, *args, **kwargs):
+        raise AssertionError("fallback reached on a week that prices")
+
+    monkeypatch.setattr(TransportPortfolioSolve, "_price_apart", never)
+    monkeypatch.setattr(TransportPortfolioSolve, "_price_linear", never)
+    real = TransportPortfolioSolve._resolve_solver
+    forms = []
+
+    def resolve(self):
+        solver = real(self)
+        inner = solver.solve
+
+        def solve(model, *args, **kwargs):
+            fixed = [v for v in model.x.values() if v.fixed]
+            forms.append(("stage1" if not fixed else "integer" if not fixed[0].is_continuous() else "linear",
+                          model.rows.active))
+            return inner(model, *args, **kwargs)
+
+        solver.solve = solve
+        return solver
+
+    monkeypatch.setattr(TransportPortfolioSolve, "_resolve_solver", resolve)
+    for params, program in (_exclusive_program(), _loose_program()):
+        params = {**params, "incumbent_audit": "uncertified"}
+        forms.clear()
+        out = TransportPortfolioSolve("n", params).run(None, program)["selection"]
+        assert "timeout" not in out and out["value"] > 0
+        assert forms == [("stage1", True), ("integer", True)], "one pricing solve, the integer-typed one, rows on"
+
+
+def _large_book_program(scale=1e4, groups=40):
+    """A dollar program whose fixed losses fold to row constants of about 2e7 (``scale`` x 2,000 a group): HiGHS 1.15's
+    MIP solver ends the integer-typed pricing "Solve error" at the stage one's mip_feasibility_tolerance 1e-9 (its
+    final check misses by 1.9e-9, one rounding at that magnitude), rows on and off. The real-solver reproduction of the
+    2021Q1 week-8 double raise (probe: scale 1e3 prices, 1e4 to 1e9 raise; the linear form prices at every scale)."""
+    params = {"absolute_gap": 1., "relative_gap": .1, "parity_tolerance": .001, "timeout_policy": "return",
+              "incumbent_audit": "uncertified", "solver_options": dict(_STAGE1_OPTIONS)}
+    program = {"groups": [{"id": f"g{g}", "grid": [90., 100., 110.], "masses": [.25, .5, .25], "radius": .1,
+                           "scale": 100., "credit": [200.*scale*(1+.01*g), -150.*scale],
+                           "losses": [[1000.*scale*(1+.003*g), -900.*scale], [0., 10.*scale],
+                                      [-1000.*scale, 950.*scale*(1+.002*g)]],
+                           "capacity": [7, 7], "exclusive": [[0, 1]], "reserve_rows": [[800.*scale, 700.*scale]],
+                           "linear_rows": []} for g in range(groups)],
+               "caps": [{"groups": [f"g{g}" for g in range(groups)], "upper": 1e15}]}
+    return params, program
+
+
+def test_real_highs_solve_error_on_a_large_book_is_priced_as_an_lp(caplog):
+    """No mock: real appsi_highs with the stage one's options. The rounded actions are inside every row; the
+    integer-typed pricing raises rows on and off ('Solve error', named in the log), which on e2c1cc7b refused
+    "infeasible apart from their rows". Now the linear form prices them at the scorer's own value."""
+    import logging
+    from pyomo.environ import value
+    from dskit.pipeline.libs.pyomo import TransportActionScore, TransportPortfolioSolve
+
+    params, program = _large_book_program()
+    node = TransportPortfolioSolve("live", params)
+    model = node.build_model(program, params)
+    quantities = [[2, 0] for _ in program["groups"]]
+    for (i, j) in model.x:
+        model.x[i, j].set_value(quantities[i][j] + (1e-6 if j == 0 else 0.))    # an incumbent within 1e-5
+    with caplog.at_level(logging.WARNING):
+        node._priced_incumbent(model)
+    assert "rows Solve error" in caplog.text and "apart Solve error" in caplog.text, caplog.text
+    assert "priced as a linear program (rows on)" in caplog.text
+    assert not getattr(model, "_transport_priced_apart", False)
+    _assert_restored(model)
+    scored = TransportActionScore(program, {"parity_tolerance": .001}).evaluate(quantities)
+    assert value(model.profit) == pytest.approx(scored["value"], abs=params["parity_tolerance"])
+
+
 def test_without_uncertified_a_dollar_pricing_infeasibility_still_raises(monkeypatch):
     """Every other dollar program keeps appsi's raise on actions its pricing LP finds infeasible (the derived route)."""
     from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
