@@ -6617,6 +6617,53 @@ def test_a_local_search_week_trades_the_search_and_records_its_evidence():
     assert sum(b["contracts"] for b in week["books"]) == local["end_contracts"]
 
 
+#: ADR-0319: the priced risk terms of the local search (kelly.risk), light enough that this fixture still trades.
+RISK = {"cvar": {"alpha": .2, "weight": .05}, "concentration": {"by": "name", "weight": .3, "power": 2},
+        "replace_name_charge": True}
+
+
+def _risk_world(risk=RISK, search=None):
+    params, data, method = _local_world(search)
+    method["kelly"] = {**method["kelly"], "risk": risk}
+    return params, data, method
+
+
+@pytest.mark.parametrize("bad", [
+    {}, {"cvar": {"alpha": 0., "weight": 1.}}, {"cvar": {"alpha": .1}}, {"concentration": {"by": "sector", "weight": 1.,
+                                                                                         "power": 2}},
+    {"replace_name_charge": "yes"}, {"extra": 1}])
+def test_a_malformed_risk_declaration_is_refused(bad):
+    params, _data, _method = _risk_world(bad)
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_a_risk_declaration_needs_the_local_search_and_a_declared_one_validates():
+    params, _data, _method = _risk_world()
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    params, _data, method = _overlapping_kelly_world()
+    method["kelly"]["risk"] = RISK
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_a_risk_week_records_its_term_values_and_replays_exactly():
+    params, data, method = _risk_world()
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    result = study._method(method, None)
+    week = result["decisions"][0]
+    local = week["kelly"]["local"]
+    risk = local["risk"]
+    assert risk["declared"] == RISK and risk["objective"] == pytest.approx(local["end_value"])
+    assert risk["penalty"] == pytest.approx(risk["cvar_penalty"]+risk["concentration_penalty"])
+    assert risk["name_charge_applied"] == 0.
+    assert week["selection"]["utility"]["exact"] == pytest.approx(
+        local["end_value"]+risk["penalty"]-risk["name_charge_exact"], rel=1e-9, abs=1e-9)
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, recorded=result) == result
+    plain = _local_result()[4]["decisions"][0]["kelly"]["local"]
+    assert "risk" not in plain
+
+
 def test_the_local_search_builds_no_integer_program_and_starts_from_the_dollar_selection(monkeypatch):
     """The solver is handed the stage-one DOLLAR program (radius, shock rows, dollar caps) and never a utility program."""
     seen = _spy_utility_programs(monkeypatch)
@@ -6895,3 +6942,181 @@ def test_an_infeasible_stage_one_book_is_repaired_and_replays(monkeypatch):
     _p, _d, _m, _s, old = _local_result(search=_NOMINAL_START)
     assert old["decisions"][0]["kelly"]["local"]["start_kind"] == "infeasible_start_cash"
     assert "repaired_contracts" not in old["decisions"][0]["kelly"]["local"]
+
+
+# --- the joint-scenario arm (owner-approved P2 item C1): sampled joint settlements over the forecast marginals --------
+
+JOINT_SCENARIOS = {"method": "empirical_copula", "scenarios": 300, "window": 240, "block": 5, "seed": 20261117}
+
+
+def _spy_scored_programs(monkeypatch):
+    """Record every utility program the local search scores (``TransportActionScore``), whole."""
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+
+    seen, init = [], TransportActionScore.__init__
+
+    def spy(self, program, params):
+        if "utility" in program:
+            seen.append(copy.deepcopy(program))
+        return init(self, program, params)
+    monkeypatch.setattr(TransportActionScore, "__init__", spy)
+    return seen
+
+
+def _joint_world(spec=JOINT_SCENARIOS, copula_bars=None):
+    import copy
+
+    params, data, method = _local_world()
+    method["kelly"]["joint_scenarios"] = copy.deepcopy(spec)
+    if copula_bars is not None:
+        for name in params["symbols"]:
+            data[name]["copula_bars"] = copula_bars(name, data[name])
+    return params, data, method
+
+
+def test_the_joint_scenarios_key_validates_only_beside_the_local_search():
+    params, _data, _method = _joint_world()
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    for bad in ({**JOINT_SCENARIOS, "scenarios": 1}, {**JOINT_SCENARIOS, "method": "x"}, {**JOINT_SCENARIOS, "block": 0},
+                {k: v for k, v in JOINT_SCENARIOS.items() if k != "window"}, None):
+        params, _data, _method = _joint_world(bad)
+        with pytest.raises(ValueError, match="invalid fixed method"):
+            ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    params, _data, method = _overlapping_kelly_world()
+    method["kelly"]["joint_scenarios"] = dict(JOINT_SCENARIOS)
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_a_joint_scenarios_week_scores_the_sampled_scenarios_and_records_their_history(monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+    seen = _spy_scored_programs(monkeypatch)
+    params, data, method = _joint_world()
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)
+    week = result["decisions"][0]
+    assert week["status"] == "selected"
+    program = seen[0]
+    utility = program["utility"]
+    assert utility["joint"] == [] and set(utility[TransportPortfolioSolve.UTILITY_ATOM_KEY]) == {"weights", "atoms"}
+    atoms = utility[TransportPortfolioSolve.UTILITY_ATOM_KEY]["atoms"]
+    assert set(atoms) == {g["id"] for g in program["groups"]} and all(len(row) == 300 for row in atoms.values())
+    record = week["kelly"]["joint_scenarios"]
+    assert record["method"] == "empirical_copula" and record["scenarios"] == 300 and record["seed"] == 20261117
+    assert record["history_source"] == "bars" and record["history_last"] < week["date"], "strictly before the decision"
+    assert record["history_returns"] == record["returns"] == 240 and record["dropped"] == []
+    assert len(week["selection"]["utility"]["wealth"]) == 300
+    # the recorded route replays the sampled week exactly
+    assert ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None, recorded=result) == result
+
+
+def test_without_the_key_the_scored_program_and_records_carry_no_trace_of_it(monkeypatch):
+    seen = _spy_scored_programs(monkeypatch)
+    _params, _data, _method, _study, result = _local_result()
+    assert seen and all("atom_scenarios" not in p["utility"] and p["utility"]["joint"] for p in seen)
+    assert all("joint_scenarios" not in w.get("kelly", {}) for w in result["decisions"])
+
+
+def test_the_copula_reads_nothing_on_or_after_the_decision(monkeypatch):
+    """Every history the copula reads for a week ends strictly before that week's decision."""
+    params, data, method = _joint_world()
+    clean = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)
+    days = [w["date"] for w in clean["decisions"] if "joint_scenarios" in w.get("kelly", {})]
+    assert days
+    seen = []
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    history = study._joint_history
+
+    def spy(day, spec, names):
+        out = history(day, spec, names)
+        seen.append((day, out["last"]))
+        return out
+    monkeypatch.setattr(study, "_joint_history", spy)
+    study._method(method, None)
+    assert seen and all(last < day for day, last in seen)
+
+
+def test_the_copula_may_read_a_longer_point_in_time_source():
+    def longer(name, one):
+        rows = [{"symbol": name, "date": r["date"], "close": r["close"]} for r in one["bars"] if r["date"] < "2019-01-09"]
+        return rows
+    params, data, method = _joint_world(copula_bars=longer)
+    week = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)["decisions"][0]
+    assert week["kelly"]["joint_scenarios"]["history_source"] == "copula_bars"
+    assert week["kelly"]["joint_scenarios"]["history_last"] < week["date"]
+    # a post-entry row, another symbol's row, or copula bars for only some names are refused at intake
+    for mutate, message in (
+            (lambda d, n: d[n]["copula_bars"].append({"symbol": n, "date": "2019-01-09", "close": 1.}), "post-entry"),
+            (lambda d, n: d[n]["copula_bars"].append({"symbol": "Z", "date": "2017-01-03", "close": 1.}),
+             "another symbol"),
+            (lambda d, n: d[n].pop("copula_bars"), "every symbol or for none")):
+        params, data, method = _joint_world(copula_bars=longer)
+        mutate(data, params["symbols"][0])
+        with pytest.raises(ValueError, match=message):
+            ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+
+
+def test_a_name_the_copula_window_cannot_cover_is_dropped_with_its_candidates():
+    def gappy(name, one):
+        rows = [{"symbol": name, "date": r["date"], "close": r["close"]} for r in one["bars"] if r["date"] < "2019-01-09"]
+        return [r for r in rows if not (name == "C0N0" and r["date"] == rows[-30]["date"])]
+    params, data, method = _joint_world(copula_bars=gappy)
+    week = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)["decisions"][0]
+    dropped = week["kelly"]["joint_scenarios"]["dropped"]
+    assert dropped == ["C0N0"]
+    assert not set(week["eligible_by_symbol"]) & set(dropped)
+    assert week["kelly"]["candidates"] == week["candidate_books"]
+
+
+def test_a_copula_history_shorter_than_the_spec_needs_does_not_trade():
+    def recent(name, one):
+        rows = [{"symbol": name, "date": r["date"], "close": r["close"]} for r in one["bars"] if r["date"] < "2019-01-09"]
+        return rows[-60:]
+    params, data, method = _joint_world({**JOINT_SCENARIOS, "window": 240, "block": 100}, copula_bars=recent)
+    week = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)["decisions"][0]
+    assert week["status"] == "kelly_risk_input"
+    assert week["kelly"]["status"] == "joint_insufficient_history"
+    assert week["kelly"]["joint_scenarios"]["history_minimum"] == 200 and "selection" not in week
+    assert week["kelly"]["joint_scenarios"]["history_returns"] < 200
+
+
+def test_bars_on_or_after_a_decision_cannot_move_its_draw():
+    """The copula source poisoned from the first decision on: the first week's draw and selection are unchanged."""
+    def clean(name, one):
+        return [{"symbol": name, "date": r["date"], "close": r["close"]} for r in one["bars"] if r["date"] < "2019-01-09"]
+    params, data, method = _joint_world(copula_bars=clean)
+    first = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)["decisions"][0]
+    day = first["date"]
+
+    def poisoned(name, one):
+        return [dict(r, close=r["close"]*(50. if r["date"] >= day else 1.)) for r in clean(name, one)]
+    params, data, method = _joint_world(copula_bars=poisoned)
+    again = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)["decisions"][0]
+    assert again["date"] == day and again["selection"] == first["selection"]
+    assert again["kelly"]["joint_scenarios"] == first["kelly"]["joint_scenarios"]
+
+
+@pytest.mark.parametrize("bad_date", ["2017-1-03", "20170103", "2017-02-30"])
+def test_a_noncanonical_or_duplicate_copula_date_is_refused(bad_date):
+    def rows(name, one):
+        return [{"symbol": name, "date": r["date"], "close": r["close"]} for r in one["bars"] if r["date"] < "2019-01-09"]
+    params, data, _method = _joint_world(copula_bars=rows)
+    name = params["symbols"][0]
+    data[name]["copula_bars"].append({"symbol": name, "date": bad_date, "close": 1.})
+    with pytest.raises(ValueError, match="noncanonical, duplicate"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    params, data, _method = _joint_world(copula_bars=rows)
+    data[name]["copula_bars"].append(dict(data[name]["copula_bars"][3]))
+    with pytest.raises(ValueError, match="noncanonical, duplicate"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+
+
+def test_the_joint_arm_refuses_a_daily_re_struck_hedge_by_its_kind():
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    _params, _data, method = _joint_world()
+    assert study._joint_scenarios_valid(method)
+    assert study._joint_scenarios_valid({**method, "hedge": {"kind": "fixed_delta_forward"}})
+    assert not study._joint_scenarios_valid({**method, "hedge": {"kind": "daily_delta_forward"}})
+    assert not study._joint_scenarios_valid({**method, "kelly": {k: v for k, v in method["kelly"].items()
+                                                                  if k != "local_search"}})

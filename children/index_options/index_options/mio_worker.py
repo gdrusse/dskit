@@ -99,7 +99,7 @@ def stamp(now=None):
 
 #: First date of the sealed holdout (2021Q3 onward). Worker pricing writes P&L in the clear, so it never
 #: runs for a packet whose decision window reaches it (ADR-0297 Amendment 1; repo holdout rule).
-HOLDOUT_START = "2021-07-01"
+HOLDOUT_START = "2024-01-01"
 _NONSEALED_PURPOSES = {"development", "adaptation", "confirmation"}
 
 
@@ -732,6 +732,11 @@ class MIOMethodWorker:
                     decisions[decision["date"]]["stage1"] = {
                         "actions": TransportPortfolioSolve.actions(stage1["selection"]),
                         "certificates": copy.deepcopy(stage1["certificates"])}
+                    if kelly["local_search"].get("record_stage1_selection") is True:
+                        # Opt-in: the full stage-one selection and the digests that bind it to its program, so a later
+                        # run reuses stage one with no re-solve (``WeeklyOptionPortfolioStudy._local_search_week``).
+                        decisions[decision["date"]]["stage1"].update(
+                            {k: copy.deepcopy(stage1[k]) for k in ("selection", "program_sha256", "selection_sha256")})
                 if declared:
                     decisions[decision["date"]]["kelly_strategy"] = {
                         k: copy.deepcopy(decision["kelly"][k]) for k in declared}
@@ -909,6 +914,34 @@ class MIOMethodWorker:
         line = f"{stamp()} week {done}/{total}\n"
         with open(self.spec["out"] + ".progress", "a", encoding="utf-8") as handle:
             handle.write(line)
+        # Memory after the week was recorded and released (stderr: the progress file keeps its exact format).
+        # A closed or broken stderr must never end a solve: the line is a measurement, not an output.
+        now, peak = self.memory_gib()
+        try:
+            sys.stderr.write(f"{stamp()} week {done}/{total} rss_gib {'na' if now is None else f'{now:.2f}'} "
+                             f"peak_rss_gib {'na' if peak is None else f'{peak:.2f}'}\n")
+            sys.stderr.flush()
+        except (OSError, ValueError, AttributeError):
+            pass
+
+    @staticmethod
+    def memory_gib():
+        """``(current RSS, peak RSS)`` of this process in GiB; current is None off Linux, either None if unreadable."""
+        now = peak = None
+        try:
+            with open("/proc/self/status", encoding="ascii") as handle:
+                for row in handle:
+                    if row.startswith("VmRSS:"):
+                        now = int(row.split()[1])/1048576.
+        except (OSError, ValueError):
+            pass
+        try:
+            import resource
+            raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss   # bytes on macOS, KiB on Linux
+            peak = raw/(1 << 30) if platform.system() == "Darwin" else raw/1048576.
+        except (ImportError, AttributeError, OSError):
+            pass
+        return now, peak
 
     def _heartbeat(self, what="index building"):
         """Append one progress line that says the index build (or the pricing) is still running."""

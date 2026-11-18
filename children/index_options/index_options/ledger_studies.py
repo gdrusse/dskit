@@ -66,6 +66,7 @@ import json
 import logging
 import math
 import os
+import statistics
 import sys
 from abc import ABC, abstractmethod
 from collections import Counter
@@ -78,6 +79,7 @@ from dskit.pipeline.driver import resolve_json_artifact
 from dskit.pipeline.hedge_overlay import (BOOKS_PREFIX, MARK_CARRIED, HedgeOverlay, forward_leg_net_settle,
                                           forward_leg_one_way_cost, forward_leg_rehedged_value,
                                           forward_leg_rule)
+from dskit.pipeline.hedge_overlay import KINDS as HEDGE_KINDS
 from dskit.pipeline.method_blocks import DEVELOPMENT_SEAL, MethodBlocks
 from dskit.pipeline.option_exposure import (BookGreeks, ExposureLimits, ExposureSnapshot, HardToBorrowProxy, LegGreeks,
                                             ParityForward)
@@ -85,7 +87,10 @@ from dskit.pipeline.records import number_ok
 from dskit.pipeline.runs import NODES_DIR, RESULT_FILE, WALKFORWARD_FILE, walk_fold_dirs
 from dskit.pipeline.stats import lower_tail_mean, max_drawdown
 
+from .close_candidates import CloseCandidates
 from .contracts import CONDOR_LEGS, STRUCTURES, structure_max_loss, usable_parity_rows
+from .joint_scenarios import defects as joint_scenario_defects
+from .joint_scenarios import generator as joint_scenario_generator
 from .nodes import CDFQuoteOptionSelect as _CDFQuoteOptionSelect
 from .nodes import (
     _iso_day,
@@ -1297,6 +1302,34 @@ class _SQLiteQuoteView:
         except Exception as exc:
             raise QuoteIndexIntegrityError(str(exc)) from exc
 
+    def release_memory(self):
+        """Drop the connection's page cache (memory only: the index is immutable and read-only, so no row changes)."""
+        connection = getattr(self.index, "connection", None)
+        if connection is not None:
+            connection.execute("PRAGMA shrink_memory")
+
+
+def _return_freed_memory():
+    """Collect cyclic garbage and hand freed heap back to the OS (memory only: no value, order or seed is touched).
+
+    ``gc.collect`` frees cycles (a solved pyomo model and its solver interface) now rather than at the collector's next
+    full pass, which in a process holding the quarter's inputs is rare. ``malloc_trim(0)`` (glibc) and
+    ``malloc_zone_pressure_relief`` (macOS) return the freed pages; elsewhere, or on any failure, nothing happens.
+    """
+    import ctypes
+    import gc
+
+    gc.collect()
+    try:
+        if sys.platform.startswith("linux"):
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        elif sys.platform == "darwin":
+            relief = ctypes.CDLL("/usr/lib/libSystem.B.dylib").malloc_zone_pressure_relief
+            relief.argtypes, relief.restype = [ctypes.c_void_p, ctypes.c_size_t], ctypes.c_size_t
+            relief(None, 0)
+    except Exception:
+        pass
+
 
 #: ADR-0316 Amendment 2: the logger of the run-time hedge guard (a program week whose legs all lack an iv).
 _LOG = logging.getLogger(__name__)
@@ -1336,6 +1369,14 @@ class ParityForwards:
                                 "ask": r.get("ask"), "iv": r.get("iv"), "bid_size": r.get("bid_size"),
                                 "ask_size": r.get("ask_size"), "basis_factor": r.get("basis_factor")} for r in raw]
         return self._rows[key]
+
+    def release(self):
+        """Forget every cached chain (memory only: a later read rebuilds the same rows from the same quotes).
+
+        The cache is keyed by session and grows by every candidate expiry of every decision day; past sessions are
+        read again only by the end-of-run marks (:meth:`ReplayHedge.path`), which rebuild them.
+        """
+        self._rows = {}
 
     def spot(self, symbol, day, factor):
         """Return the underlying on ``day`` on the book's basis, or ``None``."""
@@ -2452,6 +2493,370 @@ class CalibratedEdge:
                 "counts_as_evidence": weeks.get("warm", 0) >= self.block["min_warm_weeks"]}
 
 
+class EdgeWeights:
+    """ADR-0318: three optional kelly keys that reweight a local-search week's objective; absent, nothing changes.
+
+    ``accuracy`` (``{"shrink_rows": k}``) weights each name's forecast edge by how well that name's forecasts did on
+    every forecast row of the study that SETTLED strictly before the decision day (quote day, expiry and settlement
+    all earlier; nothing at or after the day, nor at or after :data:`DEVELOPMENT_SEAL`, is read). The measure is the
+    linear-pool weight: of the mixture ``G + w (F - G)`` between the reference ``G`` (a standard normal in the
+    forecast's own ``z = ln(S_T / spot) / reference_scale``, the forecast with no view) and the forecast ``F``, the
+    ``w`` with the least summed Brier score at the grid's thresholds (the CRPS integrand at the grid points). Per
+    row ``a = F - G`` and ``b = H - G`` (``H`` the outcome's step); the least-squares weight is ``sum ab / sum aa``.
+    The pooled (all-name) weight is shrunk toward 1 (face value) by ``k`` pseudo-rows and each name's own sums toward
+    the pooled weight by ``k`` pseudo-rows, both at the pool's per-row ``aa`` (:meth:`accuracy`), then bounded to
+    ``[0, 1]`` and rounded to :attr:`DIGITS` places (one value on every host). A name with no scored row takes the
+    pooled value; a week with no scored row anywhere takes 1 (the forecast at face value) and refuses once that
+    persists past :attr:`NO_HISTORY_GRACE_DAYS`.
+
+    ``dte_tilt`` (``lam`` in ``(0, 1)``) multiplies a candidate's edge by ``1 - lam (1 - min(dte, L) / L)``,
+    ``L`` = :attr:`DTE_LONG_END`: 1 at the long end, ``1 - lam (L - 1) / L`` at one day. Nothing is removed.
+
+    The two multiply into one edge multiplier ``m`` per candidate group, applied as the group's ``value_adjust``
+    ``(m - 1) x e`` with ``e`` its items' expected profit per contract under the forecast masses (``credit - masses .
+    losses``, exactly summed), so the scorer's expected profit of every item is ``m x e``: its sign never changes and
+    the losses, scenario terms, dispersion charge, reserves, caps, hedge and fills are untouched. Stage one (the
+    dollar start program) is built from the same groups, so it ranks on the same weighted edge.
+
+    ``name_spread`` (``c >= 1``) is not an edge weight: it is the one-stage program's ``utility.charge_scale``, the
+    multiplier on every name's own dispersion charge (see :meth:`WeeklyOptionPortfolioStudy._method`).
+    """
+
+    KEYS = ("accuracy", "dte_tilt", "name_spread")
+    #: The two keys that set a candidate's edge multiplier (``name_spread`` acts on the charge instead).
+    EDGE_KEYS = ("accuracy", "dte_tilt")
+    ACCURACY_KEYS = frozenset({"shrink_rows"})
+    #: The menu's longest days to expiry: the tilt is zero there and beyond.
+    DTE_LONG_END = 60
+    #: Weights and multipliers are rounded to this many decimals so a last-bit libm difference cannot move them.
+    DIGITS = 9
+    #: Days after the study's first forecast past which a week with no scored row refuses (``accuracy_no_history``):
+    #: by then every forecast of 21 days or less quoted on the first day has settled, so an empty history is a
+    #: defect, not a young quarter.
+    NO_HISTORY_GRACE_DAYS = 21
+
+    @classmethod
+    def declared(cls, kelly):
+        """Return whether a kelly block declares any of the three keys."""
+        return isinstance(kelly, dict) and any(key in kelly for key in cls.KEYS)
+
+    @classmethod
+    def valid(cls, kelly):
+        """Return whether the declared keys are well formed (absent keys are valid)."""
+        accuracy = kelly.get("accuracy")
+        return ((accuracy is None or (isinstance(accuracy, dict) and set(accuracy) == cls.ACCURACY_KEYS
+                                      and number_ok(accuracy["shrink_rows"]) and accuracy["shrink_rows"] > 0))
+                and ("dte_tilt" not in kelly or (number_ok(kelly["dte_tilt"]) and 0 < kelly["dte_tilt"] < 1))
+                and ("name_spread" not in kelly or (number_ok(kelly["name_spread"]) and kelly["name_spread"] >= 1)))
+
+    def __init__(self, study, kelly):
+        self.study, self.kelly = study, kelly
+        self._rows = self._unscored = None
+
+    @staticmethod
+    def _normal_cdf(z):
+        return .5*(1.+math.erf(z/math.sqrt(2.)))
+
+    def _scored_rows(self):
+        """Every tradable forecast row with its settlement and its two dot products ``(settle, quote, symbol, ab, aa)``.
+
+        A row the method could trade is one with a forecast, a selected pair and a settlement on its own expiry; an
+        unfitted forecast counts unless the bridge's ``require_fitted`` is set (the week trades it otherwise, as the
+        record's ``fallback`` count shows). Every other row's reason is kept in :attr:`_unscored` as
+        ``(quote, settle, reason)`` so a week's record can say how many rows it could have scored and did not.
+        """
+        if self._rows is not None:
+            return self._rows
+        study, rows, unscored = self.study, [], []
+        for symbol in study.params["symbols"]:
+            node, bars, factors = study._nodes[symbol], study._bars[symbol], study._factors[symbol]
+            z_grid, labels = node.params["z_grid"], node.params["grid_labels"]
+            require_fitted = node.params.get("require_fitted") is True
+            reference = [self._normal_cdf(float(z)) for z in z_grid]
+            for (quote, expiry), context in sorted(study._contexts[symbol].items()):
+                forecast = study._forecasts[symbol].get((quote, expiry))
+                settle = context.get("settlement_date")
+                scale = context.get("reference_scale")
+                reason = None
+                if forecast is None:
+                    reason = "no_forecast"
+                elif not isinstance(settle, str) or settle != expiry:
+                    reason = "settlement_not_expiry"
+                elif settle >= DEVELOPMENT_SEAL:
+                    reason = "after_seal"
+                elif study._pair(symbol, quote, expiry) is None:
+                    reason = "no_pair"
+                elif require_fitted and forecast.get("fitted") is not True:
+                    reason = "not_fitted"
+                elif quote not in bars or settle not in bars or not bars[quote] > 0 or not bars[settle] > 0:
+                    reason = "missing_close"
+                elif not number_ok(scale) or scale <= 0:
+                    reason = "bad_scale"
+                elif (quote in factors and settle in factors
+                        and not math.isclose(factors[quote], factors[settle], rel_tol=1e-9)):
+                    reason = "basis_change"   # the close ratio is not the forecast's outcome
+                else:
+                    cdf = [forecast.get(f"method_cdf_{label}") for label in labels]
+                    if any(not number_ok(v) for v in cdf):
+                        reason = "bad_cdf"
+                if reason is not None:
+                    unscored.append((quote, settle if isinstance(settle, str) else None, reason))
+                    continue
+                y = math.log(bars[settle]/bars[quote])/float(scale)
+                a = [min(1., max(0., float(f)))-g for f, g in zip(cdf, reference)]
+                b = [(1. if y <= float(z) else 0.)-g for z, g in zip(z_grid, reference)]
+                rows.append((settle, quote, symbol, math.fsum(x*v for x, v in zip(a, b)), math.fsum(x*x for x in a)))
+        self._rows, self._unscored = rows, unscored
+        return rows
+
+    def accuracy(self, day, symbols):
+        """Return ``({symbol: weight}, record)`` from the rows settled and quoted strictly before ``day``.
+
+        With ``n`` scored rows, sums ``S_ab``, ``S_aa`` and ``abar = S_aa / n``, the pooled weight is shrunk toward
+        1 (the forecast at face value) by ``k`` pseudo-rows: ``(S_ab + k abar) / (S_aa + k abar)``; each name's own
+        sums are shrunk toward the pooled value ``P`` by ``k`` pseudo-rows: ``(s_ab + k P abar) / (s_aa + k abar)``.
+        Both are bounded to ``[0, 1]`` and rounded. A name with no scored row takes ``P``. With no scored row at all
+        the weight is 1 and the record says ``no_history``; past :attr:`NO_HISTORY_GRACE_DAYS` after the study's
+        first forecast that refuses instead, since every short-dated forecast quoted then has settled.
+        """
+        from datetime import date
+
+        k = float(self.kelly["accuracy"]["shrink_rows"])
+        own, pool = {}, ([], [])
+        for settle, quote, symbol, ab, aa in self._scored_rows():
+            if settle < day and quote < day:
+                sums = own.setdefault(symbol, ([], []))
+                sums[0].append(ab)
+                sums[1].append(aa)
+                pool[0].append(ab)
+                pool[1].append(aa)
+        n = len(pool[0])
+        names = sorted(set(symbols))
+        unscored = Counter(reason for quote, settle, reason in self._unscored
+                           if quote < day and (settle is None or settle < day))
+        if not n:
+            first = min((q for s in self.study.params["symbols"] for q, _e in self.study._forecasts[s]), default=None)
+            if (first is not None and (date.fromisoformat(day)-date.fromisoformat(first)).days
+                    > self.NO_HISTORY_GRACE_DAYS):
+                raise ValueError(f"accuracy_no_history: no forecast row scored before {day}, "
+                                 f"{self.NO_HISTORY_GRACE_DAYS}+ days after the first forecast ({first}); "
+                                 f"unscored {dict(sorted(unscored.items()))}")
+            weights = {s: 1. for s in names}
+            pooled = None
+        else:
+            s_ab, s_aa = math.fsum(pool[0]), math.fsum(pool[1])
+            bar = s_aa/n
+            pooled = self._bounded(s_ab+k*bar, s_aa+k*bar)
+            weights = {}
+            for s in names:
+                ab, aa = own.get(s, ([], []))
+                weights[s] = self._bounded(math.fsum(ab)+k*pooled*bar, math.fsum(aa)+k*bar)
+        values = sorted(weights.values())
+        record = {"shrink_rows": self.kelly["accuracy"]["shrink_rows"], "scored_rows": n, "pooled": pooled,
+                  "names": len(values), "min": values[0] if values else None,
+                  "median": statistics.median(values) if values else None, "max": values[-1] if values else None,
+                  "fallback_pooled": sum(1 for s in names if s not in own) if n else 0,
+                  "no_history": not n, "unscored": dict(sorted(unscored.items())), "weights": dict(weights)}
+        return weights, record
+
+    @classmethod
+    def _bounded(cls, ab, aa):
+        """The least-squares pool weight ``ab / aa`` in ``[0, 1]``; 1 when the forecast never departs from ``G``."""
+        if not aa > 0:
+            return 1.
+        return round(min(1., max(0., ab/aa)), cls.DIGITS)
+
+    def tilt(self, dte):
+        """The days-to-expiry multiplier: ``1 - lam (1 - min(dte, L) / L)``, 1 when undeclared."""
+        if "dte_tilt" not in self.kelly:
+            return 1.
+        span = self.DTE_LONG_END
+        return 1.-float(self.kelly["dte_tilt"])*(1.-min(max(int(dte), 0), span)/span)
+
+    def apply(self, day, configured, metadata):
+        """Return ``(configured with value_adjust, the week record)``; the groups' other keys are unchanged."""
+        weights, record = None, {}
+        if "accuracy" in self.kelly:
+            weights, record["accuracy"] = self.accuracy(day, [m["symbol"] for m in metadata])
+        out, multipliers = [], {}
+        for group, meta in zip(configured, metadata, strict=True):
+            m = (1. if weights is None else weights[meta["symbol"]])*self.tilt(meta["dte"])
+            m = round(m, self.DIGITS)
+            multipliers[group["id"]] = m
+            losses, masses = group["losses"], group["masses"]
+            expected = [math.fsum([float(c), *(-float(p)*float(row[j]) for p, row in zip(masses, losses))])
+                        for j, c in enumerate(group["credit"])]
+            out.append({**group, "value_adjust": [(m-1.)*e for e in expected]})
+        values = sorted(multipliers.values())
+        record["multiplier"] = {"groups": len(values), "min": values[0] if values else None,
+                                "median": statistics.median(values) if values else None,
+                                "max": values[-1] if values else None}
+        if "dte_tilt" in self.kelly:
+            record["dte_tilt"] = {"lam": self.kelly["dte_tilt"], "long_end": self.DTE_LONG_END}
+        return out, record, multipliers
+
+
+class RegimeEdgeShrink:
+    """Shrink each candidate's forecast expected profit ``e_j`` by volatility regime, from this account's settled books.
+
+    Opt-in: ``kelly.calibration = {"method": "shrink_by_regime", "window_weeks": W, "min_obs": N, "regimes":
+    {"variable": "basket_vol", "edges": [..]}}``. Absent, no code here runs and every program, record and result is
+    byte for byte what it was.
+
+    **History available inside a run.** Only this method's own account: :attr:`FundedOptionAccount.closed`, the books it
+    traded, filled and settled in this walk. Each book is stamped at its decision with ``calibration`` =
+    ``{"expected", "regime", "week"}``: ``expected`` is the FORECAST expected profit ``sum_j e_j q_j`` of the quantities
+    chosen (``e_j = credit_j - masses . losses_j``, before any edge weight or shrink), scaled by the filled fraction when
+    a fill is partial; ``regime`` the volatility regime of its decision week. A book counts for a decision on ``day``
+    when it settled strictly before ``day`` (``close_date < day``: the same strict cut as :class:`EdgeWeights`) and no
+    more than ``window_weeks`` weeks before it. Nothing else is read: no forecast row, no book still open, no order that
+    did not fill, no other method's account, no outcome of ``day`` or later. (The accuracy weight reads every
+    forecast row of the study; this reads only what this method traded.)
+
+    **The shrink.** Per regime ``r`` with ``n_r`` counted books, ``y_b`` the book's realised profit (``closed["pnl"]``,
+    credit and fees and hedge included) and ``e_b`` its stamped expected profit, the shrink factor is the least-squares
+    scale of realised on expected through the origin, bounded to ``[0, 1]`` and rounded to :attr:`DIGITS` places::
+
+        lambda_r = clip(sum y_b e_b / sum e_b^2, 0, 1)      when n_r >= min_obs and sum e_b^2 > 0, else 1 (cold).
+
+    Cold is face value, not "trade nothing": inside one run a method that traded nothing would never settle a book and
+    could never leave the cold state. For the same reason a regime whose window empties (every book older than
+    ``window_weeks``) is cold again, so a method shrunk to 0 re-opens at face value once its evidence ages out, and
+    learns again. The residual spread ``nu_r`` (sd of ``y_b - lambda_r e_b`` over mean ``|e_b|``) is recorded, not used.
+
+    **Where it enters.** The week's ``e_j`` only: the group's ``value_adjust`` gains ``(lambda - 1) x (e_j + adjust_j)``
+    so the scorer's expected profit of every item is ``lambda x`` the (already weighted) forecast's. Its sign never
+    changes; the losses, scenario terms, dispersion charge, reserves, caps, hedge and fills are untouched; stage one
+    reads the same groups. A cold week (``lambda == 1``) adds nothing: its programs equal the uncalibrated method's.
+
+    **Forecast error does NOT widen the scenario dispersion here (decision).** The 17 centred scenarios carry one basket
+    factor and no name-level noise; the only name-level dispersion in the utility is the quadratic charge on payoff
+    deviation, which has no slot for an error on the MEAN. Widening it would change the solver shared by every method,
+    and an error independent of the basket factor needs the sampled-scenario set (critique item 1), not a patch to the
+    17. The shrunk mean already scales the sizing; ``nu`` is recorded so that item can use it.
+
+    ``regimes.variable`` is ``basket_vol``: the week's trailing daily basket volatility (``kelly.sigma_daily``, strictly
+    before the decision day); ``edges`` ascending daily-vol cut points, regime ``bisect_right(edges, sigma)``; ``[]`` is
+    one pooled regime.
+    """
+
+    KEY = "calibration"
+    METHOD = "shrink_by_regime"
+    KEYS = frozenset({"method", "window_weeks", "regimes", "min_obs"})
+    REGIME_KEYS = frozenset({"variable", "edges"})
+    DIGITS = 9
+
+    @classmethod
+    def declared(cls, kelly):
+        """Return whether a kelly block declares the key."""
+        return isinstance(kelly, dict) and cls.KEY in kelly
+
+    @classmethod
+    def valid(cls, kelly):
+        """Return whether the declared block is well formed (an absent key is valid)."""
+        if cls.KEY not in kelly:
+            return True
+        block = kelly[cls.KEY]
+        if not isinstance(block, dict) or set(block) != cls.KEYS or block["method"] != cls.METHOD:
+            return False
+        regimes = block["regimes"]
+        if (not isinstance(regimes, dict) or set(regimes) != cls.REGIME_KEYS or regimes["variable"] != "basket_vol"
+                or not isinstance(regimes["edges"], list)):
+            return False
+        edges = regimes["edges"]
+        return (type(block["window_weeks"]) is int and 1 <= block["window_weeks"] <= 520
+                and type(block["min_obs"]) is int and block["min_obs"] >= 2
+                and all(number_ok(e) and e > 0 for e in edges)
+                and all(a < b for a, b in zip(edges, edges[1:])))
+
+    def __init__(self, kelly):
+        self.block = kelly[self.KEY]
+        self.edges = [float(e) for e in self.block["regimes"]["edges"]]
+
+    def regime(self, sigma_daily):
+        """Return the regime index of a week's trailing daily basket volatility."""
+        import bisect
+
+        return bisect.bisect_right(self.edges, float(sigma_daily))
+
+    @staticmethod
+    def _filled_fraction(book):
+        """The fraction of the selected quantities that filled (1 unless the fill was resized)."""
+        for leg in book.get("legs", []):
+            if leg.get("selected_quantity"):
+                return leg["quantity"]/leg["selected_quantity"]
+        return 1.
+
+    def history(self, day, closed):
+        """Return ``{regime: [(expected, realised)]}`` of the books settled in ``[day - window, day)``."""
+        from datetime import date, timedelta
+
+        start = (date.fromisoformat(day)-timedelta(weeks=self.block["window_weeks"])).isoformat()
+        rows = {}
+        for book in closed:
+            stamp = book.get("calibration")
+            if stamp is None or not start <= book["close_date"] < day:
+                continue
+            rows.setdefault(stamp["regime"], []).append((stamp["expected"]*self._filled_fraction(book), book["pnl"]))
+        return rows
+
+    def factors(self, day, closed):
+        """Return ``{regime: {"n", "slope", "lambda", "nu", "cold"}}`` for every regime with a counted book."""
+        out = {}
+        for regime, rows in sorted(self.history(day, closed).items()):
+            see = math.fsum(e*e for e, _y in rows)
+            n = len(rows)
+            slope = math.fsum(e*y for e, y in rows)/see if see > 0 else None
+            cold = n < self.block["min_obs"] or slope is None
+            lam = 1. if cold else round(min(1., max(0., slope)), self.DIGITS)
+            mean_abs = math.fsum(abs(e) for e, _y in rows)/n
+            nu = (math.sqrt(math.fsum((y-lam*e)**2 for e, y in rows)/n)/mean_abs) if mean_abs > 0 else None
+            out[regime] = {"n": n, "slope": slope, "lambda": lam, "nu": nu, "cold": cold}
+        return out
+
+    @staticmethod
+    def _expected(group):
+        """The group's forecast expected profit per contract, exactly summed (as :meth:`EdgeWeights.apply`)."""
+        losses, masses = group["losses"], group["masses"]
+        return [math.fsum([float(c), *(-float(p)*float(row[j]) for p, row in zip(masses, losses))])
+                for j, c in enumerate(group["credit"])]
+
+    def apply(self, day, configured, metadata, closed, sigma_daily, multipliers=None):
+        """Return ``(configured with the shrink, the week record, per-group multipliers or None)``.
+
+        ``multipliers`` are the edge weights' (None when there are none); the returned map is ``m x lambda`` and is
+        None when neither moves a value, so the caller's book fields are exactly as before.
+        """
+        regime = self.regime(sigma_daily)
+        factors = self.factors(day, closed)
+        current = factors.get(regime)
+        lam = 1. if current is None else current["lambda"]
+        record = {"method": self.METHOD, "window_weeks": self.block["window_weeks"], "min_obs": self.block["min_obs"],
+                  "edges": list(self.edges), "sigma_daily": sigma_daily, "regime": regime, "lambda": lam,
+                  "cold": True if current is None else current["cold"],
+                  "factors": {str(r): dict(f) for r, f in factors.items()},
+                  "books": sum(f["n"] for f in factors.values())}
+        if lam == 1.:
+            return configured, record, multipliers
+        out = []
+        for group in configured:
+            adjust = group.get("value_adjust")
+            expected = self._expected(group)
+            adjust = [0.]*len(expected) if adjust is None else list(adjust)
+            out.append({**group, "value_adjust": [a+(lam-1.)*(e+a) for e, a in zip(expected, adjust)]})
+        merged = {meta["id"]: round((1. if multipliers is None else multipliers[meta["id"]])*lam, self.DIGITS)
+                  for meta in metadata}
+        return out, record, merged
+
+    def stamp(self, books, configured, metadata, quantities, regime, day):
+        """Stamp each selected book with the forecast expected profit and the regime the later weeks will read."""
+        index = {m["id"]: i for i, m in enumerate(metadata)}
+        for book in books:
+            i = index[book["id"]]
+            expected = math.fsum(e*q for e, q in zip(self._expected(configured[i]), quantities[i], strict=True))
+            book["calibration"] = {"expected": expected, "regime": regime, "week": day}
+
+
 #: A0010's ordered formulation ids and whole-spec digests (ADR-0297/0313).
 #: The queue example and each research template are pinned to this authority by tests.
 LOCKED_FORMULATION_HASHES = MappingProxyType({
@@ -2615,6 +3020,20 @@ class WeeklyOptionPortfolioStudy:
         HiGHS time limit in place of the document's), incumbent_start (bool:
         a stage one stopped at its limit WITH an incumbent starts the climb
         from that incumbent), cash_floor and repair (bools, see kelly_local).
+        The joint-scenario arm (owner-approved P2 item C1): a local-search
+        kelly block may add joint_scenarios {method "empirical_copula",
+        scenarios, window, block, seed} (index_options.joint_scenarios):
+        the scored program's 17 basket-move scenarios are replaced by
+        that many sampled joint settlements, each group on an atom of its
+        own forecast grid, the names tied by block-bootstrapped historical
+        days strictly before the decision (read from the optional
+        per-symbol input copula_bars when given, else from bars). A name
+        the window cannot cover is dropped with its candidates; a history
+        too short for the spec is kelly_risk_input
+        (joint_insufficient_history). Absent, nothing changes.
+        Opt-in record_stage1_selection (bool): the week's stage-one evidence also carries the full stage-one
+        selection with the digests of the stage-one program (program_sha256) and of the selection itself, so a later
+        run reuses stage one with no re-solve and no integer re-derivation; a program that differs refuses.
         Optional method key sizer (ADR-0300, exclusive with kelly) keeps the
         method's dollar program as stage 1, unchanged (its books and leg
         ratios, under every cap it declares), and sizes the selected books
@@ -2666,7 +3085,24 @@ class WeeklyOptionPortfolioStudy:
     #: An optional kelly key (ADR-0301): ``max_groups`` keeps, of the ``lp`` screen's survivors, only that many with
     #: the largest standalone relaxed value before the joint growth program is built (the solver's group_screen_keep).
     _KELLY_OPTIONAL_KEYS = {"max_groups", "accept_uncertified", "search", "warm_start", "local_search",
-                            "settleable_only"}
+                            "settleable_only", "risk", CloseCandidates.KEY, *EdgeWeights.KEYS, "calibration"}
+    #: ADR-0319: ``risk`` ({cvar: {alpha, weight}, concentration: {by, weight, power}, replace_name_charge}) prices the
+    #: tail loss and the reserve concentration inside the local search's objective
+    #: (:meth:`~index_options.kelly_local.KellyLocalSearch.validate_risk`). It needs a ``local_search`` (the climb is
+    #: what scores it) and is handed to the search as its ``risk`` option; absent, nothing changes, byte for byte.
+    #: ADR-0318: ``accuracy``, ``dte_tilt`` and ``name_spread`` (:class:`EdgeWeights`) are declared only on a stage-one
+    #: local-search method (ADR-0307, not the multi-start) without a calibration block; absent, nothing changes.
+    #: The joint-scenario arm (owner-approved P2 item C1, ``index_options.joint_scenarios``): ``joint_scenarios``
+    #: replaces the 17 basket-move scenarios of the scored one-stage program by ``scenarios`` sampled joint
+    #: settlements (an empirical copula over the forecast marginals); only beside ``local_search`` (the program is
+    #: scored, never built), never with a daily re-struck hedge. Absent, every week is unchanged byte for byte.
+    _JOINT_SCENARIOS = "joint_scenarios"
+    _KELLY_OPTIONAL_KEYS = _KELLY_OPTIONAL_KEYS | {_JOINT_SCENARIOS}
+    #: The optional per-symbol input the copula may read its history from (rows ``{symbol, date, close}``, every date
+    #: before the last entry): a longer point-in-time daily-bars source than the study's own ``bars`` slice. Absent,
+    #: the copula reads the study's ``bars`` over its history calendar.
+    COPULA_BARS = "copula_bars"
+    _JOINT_SHORT = "joint_insufficient_history"
     #: ADR-0315 Amendment 2: ``settleable_only`` (only ``true``) drops, before anything else reads the week, every
     #: candidate whose book could not be carried to its expiry on the decision's basis (:meth:`_settleable`); each is
     #: refused ``unsettleable_expiry``. Absent means the candidate set is untouched, byte for byte.
@@ -2683,9 +3119,23 @@ class WeeklyOptionPortfolioStudy:
     #: The dollar program the local search starts from: the sized arms' stage 1, declared inside the block because the
     #: kelly method itself carries rho 0 and no shock (the utility program refuses a radius).
     _LOCAL_START_KEYS = {"rho", "shock"}
+    #: The start block's one optional key: ``warm`` ("none", the default and the same as absent, or "previous_week" /
+    #: "previous_climb") offers stage one's MIP the previous decision week's stage-one selection (or its climb's
+    #: picks) mapped by contract as a feasible start. Absent, stage one starts from cash exactly as before.
+    _LOCAL_START_WARM = ("none", "previous_week", "previous_climb")
+    #: Opt-in keys of the start block (ADR-0302 relax-and-fix for stage one): ``strategy`` ("milp", the default and what
+    #: an absent key means, or "relax_fix": the dollar program's LP relaxation, then the integer program on its
+    #: support, :meth:`TransportPortfolioSolve._solve_dollar_relax_fix`) and ``search`` (relax_fix only: the seeded
+    #: neighbourhood search's {iterations, neighbourhood, node_limit, seed}). Absent, the week is solved and recorded
+    #: exactly as before.
+    _LOCAL_START_OPTIONAL = {"strategy", "search"}
+    _LOCAL_START_STRATEGIES = ("milp", "relax_fix")
     #: ADR-0307 Amendment 1 (the FAST variant): opt-in keys of the block that steer stage one, read here and never
     #: handed to the search (``cash_floor`` and ``repair`` are the search's own, ``KellyLocalSearch.OPTION_KEYS``).
     _LOCAL_STAGE1_KEYS = ("stage1_time_limit", "incumbent_start")
+    #: Opt-in record key of the block (bool): it changes what a week's evidence CARRIES, never a decision, so it is
+    #: read here and never handed to the search or to a stage-one key.
+    _LOCAL_RECORD_KEYS = ("record_stage1_selection",)
     #: ``accept_uncertified`` (ADR-0301 amendment): a week whose certification the relax_fix strategy DECLINED (a support
     #: incumbent exists, too many actions stayed free to certify within the limit) trades that incumbent instead of
     #: skipping; the gap to the relaxation's bound is recorded (``kelly.uncertified``). A failed relaxation still skips.
@@ -2796,6 +3246,7 @@ class WeeklyOptionPortfolioStudy:
                 raise ValueError("insufficient strictly prior session history")
         self._nodes, self._forecasts, self._contexts = {}, {}, {}
         self._quotes, self._factors, self._bars, self._by_day = {}, {}, {}, {}
+        self._copula_bars = {}
         for symbol in symbols:
             local = {**p["bridge"], "symbol": symbol}
             if self.clocks is not None:
@@ -2814,6 +3265,9 @@ class WeeklyOptionPortfolioStudy:
                 quote_view.symbol = symbol
             for name, rows in data.items():
                 if name == "chain_index":
+                    continue
+                if name == self.COPULA_BARS:
+                    self._copula_bars[symbol] = self._copula_rows(symbol, rows, local["end_before"])
                     continue
                 field = "date" if name in ("chain", "bars") else "quote_date"
                 lower = self.clocks["history_start"] if self.clocks and name == "bars" else local["start"]
@@ -2840,6 +3294,8 @@ class WeeklyOptionPortfolioStudy:
             self._nodes[symbol], self._forecasts[symbol], self._contexts[symbol] = node, forecasts, contexts
             self._quotes[symbol], self._factors[symbol], self._bars[symbol] = quotes, factors, bars
             self._by_day[symbol] = by_day
+        if self._copula_bars and set(self._copula_bars) != set(symbols):
+            raise ValueError("copula_bars must be given for every symbol or for none")
         if self.clocks:
             self.history_calendar = list(self.clocks["sessions"])
             for symbol, bars in self._bars.items():
@@ -2943,6 +3399,9 @@ class WeeklyOptionPortfolioStudy:
         if not isinstance(p["methods"], list) or not p["methods"]:
             raise ValueError("methods must be a nonempty declared list")
         for method in p["methods"]:
+            if isinstance(method, dict) and CloseCandidates.problems(method):
+                # P2: the feature's own named refusals (hedge, calibration, limits, sizer, edge weights, multistart).
+                raise ValueError("; ".join(CloseCandidates.problems(method)))
             if (not isinstance(method, dict)
                     or set(method)-cls._OPTIONAL_METHOD_KEYS != cls._METHOD_KEYS
                     or any(not number_ok(v) or v < 0 for v in cls._charge(method).values())
@@ -2987,6 +3446,13 @@ class WeeklyOptionPortfolioStudy:
                 # ADR-0302: the search and the warm start act inside the solver's relax_fix strategy; the solver block
                 # they extend must accept them (a direct utility solve has no incumbent to search from).
                 defects = TransportPortfolioSolve.validate_params(cls._kelly_solver_params(p["solver"], method["kelly"]))
+                if defects:
+                    raise ValueError("; ".join(defects))
+            local_block = method["kelly"].get("local_search") if isinstance(method.get("kelly"), dict) else None
+            start = local_block.get("start") if isinstance(local_block, dict) else None
+            if isinstance(start, dict) and start.get("strategy") == "relax_fix":
+                # The relax_fix stage one returns an uncertified incumbent: the solver block it extends must accept it.
+                defects = TransportPortfolioSolve.validate_params(cls._relax_fix_params(p["solver"], start))
                 if defects:
                     raise ValueError("; ".join(defects))
             if "kelly" in method and not cls._gap_within(p["solver"], method["kelly"]):
@@ -3238,6 +3704,34 @@ class WeeklyOptionPortfolioStudy:
             params["utility_warm_start"] = dict(kelly["warm_start"])
         return params
 
+    @staticmethod
+    def _relax_fix_params(solver, start):
+        """The stage-one solver block of a relax_fix start: the document's, with the start's own search or none.
+
+        An inherited ``utility_search`` or ``utility_warm_start`` (the document's block may carry them for a utility
+        arm) is dropped: absent ``start.search`` means no neighbourhood search. The dollar program ignores
+        ``utility_solve``, but ``validate_params`` still ties a declared search to ``utility_solve`` relax_fix, so a
+        document that sets ``utility_solve`` "direct" cannot declare ``start.search`` (refused at validation).
+        """
+        params = {k: v for k, v in solver.items() if k not in ("utility_search", "utility_warm_start")}
+        params["dollar_solve"] = "relax_fix"
+        if "search" in start:
+            params["utility_search"] = dict(start["search"])
+        return params
+
+    @classmethod
+    def _start_strategy_valid(cls, start):
+        """Whether a start block's optional ``strategy`` and ``search`` are well formed (``search`` needs relax_fix)."""
+        from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+
+        strategy = start.get("strategy", cls._LOCAL_START_STRATEGIES[0])
+        if type(strategy) is not str or strategy not in cls._LOCAL_START_STRATEGIES:
+            return False
+        if "search" not in start:
+            return True
+        return (strategy == "relax_fix" and start["search"] is not None
+                and not TransportPortfolioSolve.strategy_problems(start["search"], None))
+
     @classmethod
     def _local_search_valid(cls, kelly):
         """Return whether a kelly block's optional ``local_search`` is well formed and combines with nothing it cannot.
@@ -3262,13 +3756,27 @@ class WeeklyOptionPortfolioStudy:
             return False
         start = search["start"]
         return (not KellyLocalSearch.validate_params({k: v for k, v in search.items()
-                                                      if k not in ("start", *cls._LOCAL_STAGE1_KEYS)})
+                                                      if k not in ("start", *cls._LOCAL_STAGE1_KEYS,
+                                                                   *cls._LOCAL_RECORD_KEYS)})
+                and all(type(search[k]) is bool for k in cls._LOCAL_RECORD_KEYS if k in search)
                 and ("stage1_time_limit" not in search or (number_ok(search["stage1_time_limit"])
                                                            and search["stage1_time_limit"] > 0))
                 and ("incumbent_start" not in search or type(search["incumbent_start"]) is bool)
-                and isinstance(start, dict) and set(start) == cls._LOCAL_START_KEYS
+                and isinstance(start, dict)
+                and set(start)-cls._LOCAL_START_OPTIONAL-{"warm"} == cls._LOCAL_START_KEYS
+                and ("warm" not in start or start["warm"] in cls._LOCAL_START_WARM)
+                and cls._start_strategy_valid(start)
+                # The MIP warm start seeds the plain MILP; relax_fix solves other programs, so the pair is refused.
+                and not (start.get("strategy") == "relax_fix" and start.get("warm", "none") != "none")
                 and number_ok(start["rho"]) and start["rho"] >= 0
                 and cls._shock_valid(start["shock"]) and "scope" not in start["shock"])
+
+    @classmethod
+    def _risk_valid(cls, kelly):
+        """Return whether a kelly block's ``risk`` declaration is well formed and rides on a ``local_search``."""
+        from .kelly_local import KellyLocalSearch
+
+        return isinstance(kelly.get("local_search"), dict) and not KellyLocalSearch.validate_risk(kelly["risk"])
 
     @classmethod
     def _kelly_valid(cls, method):
@@ -3278,6 +3786,16 @@ class WeeklyOptionPortfolioStudy:
                 and ("max_groups" not in kelly or (type(kelly["max_groups"]) is int and kelly["max_groups"] >= 1))
                 and ("accept_uncertified" not in kelly or type(kelly["accept_uncertified"]) is bool)
                 and ("settleable_only" not in kelly or kelly["settleable_only"] is True)
+                and CloseCandidates.well_formed(kelly)
+                and (not EdgeWeights.declared(kelly)
+                     or (EdgeWeights.valid(kelly) and isinstance(kelly.get("local_search"), dict)
+                         and "start" in kelly["local_search"] and "calibration" not in method))
+                and (cls._JOINT_SCENARIOS not in kelly or cls._joint_scenarios_valid(method))
+                and (not RegimeEdgeShrink.declared(kelly)
+                     or (RegimeEdgeShrink.valid(kelly) and isinstance(kelly.get("local_search"), dict)
+                         and "start" in kelly["local_search"] and "calibration" not in method
+                         and "accuracy" not in kelly))
+                and ("risk" not in kelly or cls._risk_valid(kelly))
                 and cls._kelly_strategy_valid(kelly)
                 and cls._local_search_valid(kelly)
                 and number_ok(kelly["fraction"]) and 0 < kelly["fraction"] <= 1
@@ -3478,6 +3996,118 @@ class WeeklyOptionPortfolioStudy:
                 + [{"id": f"market:{move}", "weight": weights[str(move)],
                     "terms": {key: (row-centre[key]).tolist() for key, row in deviations[move].items()}}
                    for move in modelled])
+
+    @classmethod
+    def _joint_scenarios_valid(cls, method):
+        """Return whether a kelly method's ``joint_scenarios`` may be declared.
+
+        It needs a well-formed spec, the local search beside it (the sampled program is scored, never built), and no
+        daily re-struck hedge (whose scenarios are seeded re-hedge paths per basket move, ADR-0316 A1, which the
+        sampled set does not carry).
+        """
+        hedge = method.get("hedge")
+        overlay = HEDGE_KINDS.get(hedge.get("kind")) if isinstance(hedge, dict) else None
+        return (not joint_scenario_defects(method["kelly"][cls._JOINT_SCENARIOS])
+                and isinstance(method["kelly"].get("local_search"), dict)
+                and not (overlay is not None and overlay.REBALANCES))
+
+    @staticmethod
+    def _copula_rows(symbol, rows, end_before):
+        """Return one symbol's ``copula_bars`` as ``{date: close}`` (a nonfinite or nonpositive close kept as NaN).
+
+        Refused: a row of another symbol, a noncanonical or duplicate date, or a date at or after ``end_before`` (the
+        last entry bound): the copula reads only dates strictly before each decision, and none after the entries.
+        """
+        out = {}
+        for row in rows:
+            day = row.get("date") if isinstance(row, dict) else None
+            if (row.get("symbol") != symbol if isinstance(row, dict) else True) or not isinstance(day, str):
+                raise ValueError("copula_bars contains another symbol or an undated row")
+            try:
+                canonical = date.fromisoformat(day).isoformat() == day
+            except ValueError:
+                canonical = False
+            if not canonical or day in out or not day < end_before:
+                raise ValueError("copula_bars holds a noncanonical, duplicate or post-entry date: "+symbol)
+            close = row.get("close")
+            out[day] = float(close) if number_ok(close) and close > 0 else math.nan
+        return out
+
+    def _joint_history(self, day, spec, names):
+        """Return the copula's daily log returns strictly before ``day`` for ``names``, and the names it drops.
+
+        Source: ``copula_bars`` when the study received them (the longer point-in-time history), else the study's
+        ``bars`` over its history calendar. The reference dates are the source's dates before ``day`` that at least
+        half of ``names`` carry (the history calendar for ``bars``); the last ``window + 1`` of them give the returns.
+        A name missing any of those dates, or with a nonfinite return there, is dropped (and so are its candidates).
+        Returns ``{"source", "names", "dropped", "matrix" ((M, names) array), "returns" (M), "first", "last"}``.
+        """
+        import numpy as np
+
+        if self._copula_bars:
+            source, closes = self.COPULA_BARS, {s: self._copula_bars[s] for s in names}
+            counts = Counter(d for s in names for d in closes[s] if d < day)
+            dates = sorted(d for d, k in counts.items() if 2*k >= len(names))
+        else:
+            source, closes = "bars", {s: self._bars[s] for s in names}
+            dates = [d for d in self.history_calendar if d < day]
+        dates = dates[-(spec["window"]+1):]
+        kept, columns = [], []
+        with np.errstate(divide="ignore", invalid="ignore"):
+            for s in names:
+                series = np.array([closes[s].get(d, math.nan) for d in dates], dtype=float)
+                returns = np.diff(np.log(series))
+                if len(dates) >= 2 and np.all(np.isfinite(returns)):
+                    kept.append(s)
+                    columns.append(returns)
+        rows = max(0, len(dates)-1)
+        return {"source": source, "names": kept, "dropped": [s for s in names if s not in kept],
+                "matrix": np.column_stack(columns) if columns else np.zeros((rows, 0)), "returns": rows,
+                "first": dates[0] if dates else None, "last": dates[-1] if dates else None}
+
+    def _joint_week_history(self, day, spec, groups, metadata, record):
+        """Read the joint-scenario history for the week's candidate names; drop the names it cannot cover.
+
+        Returns ``(groups, metadata, history)`` without the dropped names' candidates. The counts in ``record`` are
+        rewritten for the candidates the week can trade, ``record["kelly"]["joint_scenarios"]`` records the history,
+        and a history too short for the spec makes the week a ``kelly_risk_input`` (status ``joint_insufficient_history``).
+        """
+        history = self._joint_history(day, spec, sorted({m["symbol"] for m in metadata}))
+        if history["dropped"]:
+            kept = [i for i, m in enumerate(metadata) if m["symbol"] not in history["dropped"]]
+            groups, metadata = [groups[i] for i in kept], [metadata[i] for i in kept]
+            record.update(candidate_books=len(groups), candidate_contracts=self._candidate_contracts(groups, metadata),
+                          eligible_by_symbol=dict(Counter(m["symbol"] for m in metadata)))
+            if self.pairs is not None:
+                record["eligible_by_pair"] = dict(Counter(m["pair_id"] for m in metadata))
+                record["fitted"] = sum(bool(m["method_fitted"]) for m in metadata)
+                record["fallback"] = len(metadata)-record["fitted"]
+            record["kelly"]["candidates"] = len(metadata)
+        minimum = joint_scenario_generator(spec).minimum(self.params["correlation_min_pairs"])
+        record["kelly"][self._JOINT_SCENARIOS] = {
+            "history_source": history["source"], "history_returns": history["returns"],
+            "history_first": history["first"], "history_last": history["last"], "history_minimum": minimum,
+            "dropped": list(history["dropped"])}
+        if record["kelly"]["status"] == "estimated" and history["returns"] < minimum:
+            record["kelly"]["status"] = self._JOINT_SHORT
+        return groups, metadata, history
+
+    def _joint_utility(self, day, spec, program, configured, metadata, history, record):
+        """Replace the scored program's basket-move scenarios by the spec's sampled joint scenarios (atom form).
+
+        Each group's horizon is the sessions its DTE spans, counted back from ``day`` on the history calendar
+        (:meth:`_horizon_sessions`: no future session is read). The toolkit derives each scenario's profit from the
+        group's own loss rows, centred on the sampled mean, so every item's expectation stays its forecast's.
+        """
+        horizons = {dte: self._horizon_sessions(day, dte) for dte in sorted({int(meta["dte"]) for meta in metadata})}
+        draw = joint_scenario_generator(spec).draw({
+            "day": day, "names": history["names"], "returns": history["matrix"],
+            "min_returns": self.params["correlation_min_pairs"],
+            "groups": [{"id": g["id"], "name": meta["symbol"], "horizon": horizons[int(meta["dte"])],
+                        "masses": g["masses"]} for g, meta in zip(configured, metadata, strict=True)]})
+        program["utility"]["joint"] = []
+        program["utility"]["atom_scenarios"] = {"weights": draw["weights"], "atoms": draw["atoms"]}
+        record["kelly"][self._JOINT_SCENARIOS].update(draw["record"])
 
     def _horizon_sessions(self, day, days):
         """Return how many sessions the calendar holds in the ``days`` calendar days ending at ``day``, at least 1."""
@@ -4436,8 +5066,50 @@ class WeeklyOptionPortfolioStudy:
     #: The local-search certificate's fixed fields: it bounds nothing, so it is never read as a certified solve.
     _LOCAL_OUTCOME = "local_search"
 
+    @staticmethod
+    def _contract_key(meta, item):
+        """The identity of one leg across weeks: underlying, expiry, right, strike and side (the group id carries the day)."""
+        return (meta["symbol"], meta["expiry"], item["right"], item["strike"], item["sign"],
+                bool(item.get("hedged")))
+
+    @staticmethod
+    def _contract_book(groups, metadata, quantities):
+        """``{(symbol, expiry, right, strike, sign): quantity}`` of the positive quantities (by contract, not by index)."""
+        meta = {m["id"]: m for m in metadata}
+        book = {}
+        for group, row in zip(groups, quantities):
+            m = meta.get(group["id"])
+            if m is None or len(row) != len(m["items"]):
+                continue
+            for item, quantity in zip(m["items"], row):
+                if quantity:
+                    key = WeeklyOptionPortfolioStudy._contract_key(m, item)
+                    book[key] = book.get(key, 0)+int(quantity)
+        return book
+
+    def _warm_remember(self, method_id, mode, groups, metadata, quantities):
+        """Keep, per method, the contract book of the week's stage-one selection or climb picks (None when none)."""
+        if not hasattr(self, "_warm_books"):
+            self._warm_books = {}
+        self._warm_books[method_id] = (None if quantities is None
+                                       else self._contract_book(groups, metadata, quantities))
+
+    def _warm_start_quantities(self, method_id, groups, metadata):
+        """The previous book mapped onto this week's groups by contract (a contract gone gets 0), or None."""
+        book = getattr(self, "_warm_books", {}).get(method_id)
+        if not book:
+            return None
+        meta = {m["id"]: m for m in metadata}
+        out = []
+        for group in groups:
+            m = meta.get(group["id"])
+            if m is None or len(m["items"]) != len(group["capacity"]):
+                return None
+            out.append([book.get(self._contract_key(m, i), 0) for i in m["items"]])
+        return out if any(any(row) for row in out) else None
+
     def _local_search_week(self, day, method, kelly, program, configured, metadata, account, components, mult,
-                           derived, recorded):
+                           derived, recorded, close=None):
         """Return one local-search week (ADR-0307): the stage-one start, the climb, and the evidence for a replay.
 
         Stage one is the dollar program of the method's ``local_search.start`` (its radius and shock gate, the dollar
@@ -4452,6 +5124,8 @@ class WeeklyOptionPortfolioStudy:
         from .kelly_local import KellyLocalSearch
 
         p, search = self.params, kelly["local_search"]
+        if "risk" in kelly:
+            search = {**search, "risk": kelly["risk"]}      # ADR-0319: the priced risk terms ride on the search
         if "multistart" in search:
             return self._multistart_week(day, search, program, derived, recorded)
         start = search["start"]
@@ -4467,17 +5141,40 @@ class WeeklyOptionPortfolioStudy:
             # integers before it is recorded (the value every route recomputes), and a solver bound below that value
             # (2020Q1 week 2020-02-18: 46.7 under it, the loaded duals 138.0 under it) is the start's named audit.
             solver_params = {**solver_params, "incumbent_audit": "uncertified"}
+        relax_fix = start.get("strategy") == "relax_fix"
+        if relax_fix:
+            solver_params = self._relax_fix_params(solver_params, start)
         if "stage1_time_limit" in search:
             # ADR-0307 Amendment 1: stage one's own time limit (the integer program is never built here).
             solver_params = {**solver_params, "solver_options": {**solver_params.get("solver_options", {}),
                                                                  "time_limit": search["stage1_time_limit"]}}
         solver = self._solver(solver_params)
+        record_selection = search.get("record_stage1_selection", False)
+        program_sha256 = None
+        if record_selection:
+            try:
+                program_sha256 = self._stage1_program_sha256(dollar, solver_params)
+            except Exception as exc:  # a non-finite program value: name the week
+                raise RecordedCheckRefusal("stage-one program cannot be digested: "+str(exc),
+                                           "stage1_program_digest", "other", week=day)
         if derived is not None:
             claim = derived["stage1"]
-            if not isinstance(claim, dict) or set(claim) != {"actions", "certificates"}:
+            base = {"actions", "certificates"}
+            if (not isinstance(claim, dict)
+                    or set(claim) not in (base, base | set(self._STAGE1_SELECTION_KEYS)) or (
+                        len(claim) > len(base) and not record_selection)):
                 raise ValueError("derived local-search week lacks its stage-one evidence")
             try:
-                first = solver.derived(dollar, claim["actions"], claim["certificates"])["selection"]
+                if "selection" in claim:
+                    # The recorded selection stands in for the re-solve AND the integer re-derivation: it is checked
+                    # against this program's digest and its own, then audited by ``_recorded`` exactly as a record is.
+                    self._check_stage1_selection(claim, program_sha256, day)
+                    if TransportPortfolioSolve.actions(claim["selection"]) != claim["actions"]:
+                        raise RecordedCheckRefusal("recorded stage-one actions differ from the recorded selection",
+                                                   "stage1_selection_actions", "file", week=day)
+                    first = solver._recorded(dollar, claim["selection"], claim["certificates"])
+                else:
+                    first = solver.derived(dollar, claim["actions"], claim["certificates"])["selection"]
             except QuoteIndexIntegrityError:
                 raise
             except Exception as exc:  # name the week of any refusal, typed or not
@@ -4486,22 +5183,50 @@ class WeeklyOptionPortfolioStudy:
                 exc.week = day
                 raise exc
         elif recorded is None:
+            warm = start.get("warm", "none")
+            offered = None
+            if warm != "none":
+                offered = self._warm_start_quantities(method["id"], dollar_groups, metadata)
+                solver.warm_quantities = offered
             first = solver.run(None, dollar)["selection"]
         else:
             claim = recorded.get("stage1")
             if not isinstance(claim, dict) or "selection" not in claim or "certificates" not in claim:
                 raise ValueError("eligible decision lacks recorded solve evidence")
+            if record_selection or any(k in claim for k in self._STAGE1_SELECTION_KEYS[1:]):
+                self._check_stage1_selection(claim, program_sha256, day)
             first = solver._recorded(dollar, claim["selection"], claim["certificates"])
         screen = dict(solver.last_screen)
         timed_out = "timeout" in first
+        warm = start.get("warm", "none")
         # ADR-0307 Amendment 1: a stage one stopped at its limit WITH an incumbent (the "return" policy's timeout
         # envelope, candidate actions present) starts the climb from that incumbent when the block says so.
         incumbent = timed_out and search.get("incumbent_start", False) and first.get("candidate") is not None
-        scorer = TransportActionScore(program, {"parity_tolerance": p["solver"]["parity_tolerance"]})
+        score_params = {"parity_tolerance": p["solver"]["parity_tolerance"]}
+        holds, hold_start, closing = None, True, None
+        if close is None:
+            scorer = TransportActionScore(program, score_params)
+        else:
+            # P2 (close_candidates): the program carries one hold/close group per closable open book after the
+            # candidates. The reference selection keeps every hold (or closes every hold when keeping breaches the
+            # wealth floor); a week where neither reference is feasible falls back to the plain program.
+            scorer = TransportActionScore(close["program"], score_params)
+            holds = list(range(len(program["groups"]), len(close["program"]["groups"])))
+            nothing = [[0]*len(g["capacity"]) for g in program["groups"]]
+            if scorer.check_feasible([*nothing, *([1] for _ in holds)])["feasible"]:
+                closing = "hold_start"
+            elif scorer.check_feasible([*nothing, *([0] for _ in holds)])["feasible"]:
+                closing, hold_start = "close_start", False
+            else:
+                closing, holds = "dropped_infeasible_baseline", None
+                scorer = TransportActionScore(program, score_params)
+        start = first["candidate"]["quantities"] if incumbent else None if timed_out else first["quantities"]
+        if holds and start is not None:
+            start = [*start, *([1 if hold_start else 0] for _ in holds)]
         out = KellyLocalSearch(scorer, {k: v for k, v in search.items()
-                                        if k not in ("start", *self._LOCAL_STAGE1_KEYS)}).run(
-            first["candidate"]["quantities"] if incumbent else None if timed_out else first["quantities"],
-            "stage1_incumbent" if incumbent else "stage1")
+                                        if k not in ("start", *self._LOCAL_STAGE1_KEYS,
+                                                     *self._LOCAL_RECORD_KEYS)}, holds, hold_start).run(
+            start, "stage1_incumbent" if incumbent else "stage1")
         local = out["record"]
         if timed_out and not incumbent:
             local["start_kind"] = "stage1_timeout_cash"
@@ -4509,6 +5234,30 @@ class WeeklyOptionPortfolioStudy:
             local["stage1_timeout"] = first["timeout"] if timed_out else None
         if "audit" in first:
             local["stage1_audit"] = dict(first["audit"])
+        if warm != "none":
+            # Opt-in record of a live solve; a recorded replay echoes the recorded one (it never solves stage one,
+            # and the replay compares the whole record); a derived week has none.
+            if recorded is not None:
+                echoed = recorded.get("kelly", {}).get("local", {}).get("stage1_warm")
+                if echoed is not None:
+                    local["stage1_warm"] = dict(echoed)
+            elif derived is None:
+                started = solver.last_start or {"used": False, "reason": "no_previous_book", "objective": None,
+                                                "scored": None, "scale": None}
+                # No wall-clock in the record: the replay compares kelly.local whole.
+                local["stage1_warm"] = {"mode": warm, **{k: v for k, v in started.items() if k != "seconds"}}
+            carried = first["candidate"] if timed_out else first
+            self._warm_remember(method["id"], warm, program["groups"] if warm == "previous_climb" else dollar_groups,
+                                metadata,
+                                out["quantities"] if warm == "previous_climb"
+                                else carried["quantities"] if carried is not None else None)
+        if relax_fix:
+            # The strategy, its LP bound, the restricted program's objective, its seconds and its support size. A live
+            # solve reads them off the solver; a recorded replay carries the recorded ones (a measurement, never
+            # re-derived: its selection is what the replay checks); a foreign worker's derived week has none.
+            local["stage1_solve"] = (dict(solver.last_dollar_solve) if solver.last_dollar_solve is not None
+                                     else None if recorded is None
+                                     else (recorded.get("kelly", {}).get("local", {}) or {}).get("stage1_solve"))
         stage1_certificates = [{k: v for k, v in c.items() if k != "binding"} for c in first.get("certificates", [])]
         certificate = {"strategy_outcome": self._LOCAL_OUTCOME, "certified": False, "objective": local["end_value"],
                        "bound": None, "gap": None, "seconds": None, "bound_source": None}
@@ -4533,10 +5282,80 @@ class WeeklyOptionPortfolioStudy:
                 raise refusal
         if recorded is not None and (recorded.get("selection", {}).get("quantities") != out["quantities"]):
             raise ValueError("recorded local-search selection differs from this host's replay")
-        return {"selection": out["selection"], "local": local, "screen": screen,
-                "stage1": {"selection": {k: v for k, v in first.items() if k != "certificates"},
-                           "certificates": stage1_certificates},
+        stage1 = {"selection": {k: v for k, v in first.items() if k != "certificates"},
+                  "certificates": stage1_certificates}
+        if record_selection:
+            from dskit.pipeline.base import value_hash
+
+            stage1.update(program_sha256=program_sha256, selection_sha256=value_hash(stage1["selection"]))
+        week = {"selection": out["selection"], "local": local, "screen": screen, "stage1": stage1,
                 "certificates": [*stage1_certificates, certificate]}
+        if close is not None:
+            ids = close["week"]["books"] if holds else []
+            week["close"] = {"state": closing, "books": ids,
+                             "closing": [key for key, g in zip(ids, holds or ()) if out["quantities"][g][0] == 0]}
+        return week
+
+    def _close_program(self, program, week, metadata, terms, kelly, kelly_record, account, method, components):
+        """The week's one-stage program with the closable books' hold groups added (P2).
+
+        The groups follow the candidates; their scenario terms join the candidates' before the centring, the name
+        aggregate covers them, the shared reserve caps list them (their reserve row is zero) and the utility's ``w0``
+        carries the scenario-free close proceeds the hold items are measured against.
+        """
+        joint_terms = {move: {**terms[move], **week["terms"][move]} for move in terms}
+        utility = {**program["utility"], "w0": program["utility"]["w0"]+week["shift"],
+                   "aggregate": {**program["utility"]["aggregate"], **{m["id"]: m["symbol"] for m in week["meta"]}},
+                   "joint": self._centred_scenarios(joint_terms, kelly["moves"], kelly_record["weights"],
+                                                    kelly_record["quiet"])}
+        limits = self._limits(account, method, components, solve=True)
+        return {**program, "groups": [*program["groups"], *week["groups"]],
+                "caps": self._caps(limits, [*metadata, *week["meta"]]), "utility": utility}
+
+    #: The keys a recorded stage-one selection adds to a week's (or an action entry's) ``stage1`` evidence.
+    _STAGE1_SELECTION_KEYS = ("selection", "program_sha256", "selection_sha256")
+
+    @staticmethod
+    def _stage1_program_sha256(dollar, solver_params):
+        """Return the digest of the stage-one program a recorded selection is valid for.
+
+        The dollar program (groups, caps, joint rows) and the solver parameters the selection was solved under, each
+        number by its exact value (numpy arrays and scalars by their Python values), so two hosts that build the same
+        program agree and any changed group, cap, shock row or solver parameter does not.
+        """
+        import numpy as np
+        from dskit.pipeline.base import value_hash
+
+        def plain(value):
+            if isinstance(value, float):
+                return float(f"{value:.12g}")   # 12 significant digits: a last-bit BLAS difference is not a program
+            if isinstance(value, np.ndarray):
+                return plain(value.tolist())
+            if isinstance(value, np.generic):
+                return plain(value.item())
+            if isinstance(value, dict):
+                return {str(k): plain(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [plain(v) for v in value]
+            return value
+
+        return value_hash({"program": plain(dollar), "solver": plain(solver_params)})
+
+    @classmethod
+    def _check_stage1_selection(cls, claim, program_sha256, day):
+        """Refuse a recorded stage-one selection whose program or own digest is not this week's, never reuse it."""
+        from dskit.pipeline.base import value_hash
+        from dskit.pipeline.libs.pyomo import RecordedCheckRefusal
+
+        if program_sha256 is None or any(key not in claim for key in cls._STAGE1_SELECTION_KEYS):
+            raise RecordedCheckRefusal("recorded stage-one selection is not declared by this method",
+                                       "stage1_selection_shape", "file", week=day)
+        if claim["program_sha256"] != program_sha256:
+            raise RecordedCheckRefusal("recorded stage-one selection belongs to a different stage-one program",
+                                       "stage1_program_digest", "replay", week=day)
+        if claim["selection_sha256"] != value_hash(claim["selection"]):
+            raise RecordedCheckRefusal("recorded stage-one selection differs from its digest",
+                                       "stage1_selection_digest", "file", week=day)
 
     def _multistart_week(self, day, search, program, derived, recorded):
         """Return one multi-start local-search week (ADR-0315): no stage one, the LP-rounded starts and the climbs.
@@ -4661,6 +5480,30 @@ class WeeklyOptionPortfolioStudy:
                       fees=fees, stress_extra=stress, status="filled")
         return filled, None
 
+    def _close_fills(self, closer, account, pending, day):
+        """Execute the closes decided last session at today's quotes (P2); a close that cannot fill leaves its book held.
+
+        Closes run after today's settlements and before today's entry fills. Each is priced by
+        :meth:`CloseCandidates.fill` from today's quotes only (the decision saw date-D quotes, the fill never moves
+        them), then taken by :meth:`FundedOptionAccount.close_early`. The outcome joins the decision's own record.
+        """
+        done, refused = [], []
+        for key in pending["ids"]:
+            book = account.open.get(key)
+            if book is None:
+                refused.append({"id": key, "reason": "not_open"})
+                continue
+            fields, reason = closer.fill(book, day)
+            if fields is None:
+                refused.append({"id": key, "reason": reason})
+                continue
+            pnl = fields.pop("pnl")
+            account.close_early(day, key, pnl, close_decision_date=pending["date"], **fields)
+            done.append({"id": key, "fill_date": day, "pnl": pnl, "close_proceeds": fields["close_proceeds"],
+                         "close_fees": fields["close_fees"]})
+        record = pending["record"]["kelly"]["close_candidates"]
+        record["filled"], record["unfilled"] = done, refused
+
     def _settlements(self, account, day):
         """Use only today's observed underlying for today's maturing books."""
         from dskit.pipeline.option_structures import structure_payoff
@@ -4690,6 +5533,26 @@ class WeeklyOptionPortfolioStudy:
         ledger's ``fixed`` forward hedge and the ``hedge`` object's forwards; the passes are merged back into the
         account's order. With no hedged book this is the single pass it always was.
         """
+        early = [b for b in trades if b.get("closed_early")]
+        if early:
+            # P2: books closed before expiry replay in their own pass under the ledger's exit rule (the same quotes
+            # the account closed at); the rest run as ever. Hedged books are refused beside close_candidates.
+            kept = [b for b in trades if not b.get("closed_early")]
+            position = {id(b): i for i, b in enumerate(trades)}
+            passes = [(kept, self._ledger_pass(kept, charge)), (early, self._ledger_pass(early, charge, exits=True))]
+            merged = {"trades": [], "marks": []}
+            for books, done in passes:
+                for row in done["trades"]:
+                    row["order_index"] = position[id(books[row["order_index"]])]
+                    merged["trades"].append(row)
+                for row in done["marks"]:
+                    row["order_index"] = position[id(books[row["order_index"]])]
+                    merged["marks"].append(row)
+            merged["trades"].sort(key=lambda r: r["order_index"])
+            merged["marks"].sort(key=lambda r: r["order_index"])
+            merged["summary"] = {**passes[0][1]["summary"], "early_closed": passes[1][1]["summary"]} if kept \
+                else passes[1][1]["summary"]
+            return merged
         held = [b for b in trades if b.get("hedge", {}).get("units")]
         if not held:
             return self._ledger_pass(trades, charge)
@@ -4713,7 +5576,7 @@ class WeeklyOptionPortfolioStudy:
             else passes[1][1]["summary"]
         return merged
 
-    def _ledger_pass(self, trades, charge=None, hedge=None):
+    def _ledger_pass(self, trades, charge=None, hedge=None, exits=False):
         """One shared-ledger pass over ``trades`` (all unhedged, or all hedged with ``hedge`` supplying the forwards)."""
         from dskit.pipeline.libs.option_ledger import OptionStructureLedger
 
@@ -4725,7 +5588,8 @@ class WeeklyOptionPortfolioStudy:
             structures[b["id"]] = [[leg["right"], leg["sign"]*leg["quantity"]] for leg in b["legs"]]
             orders.append({"date": b["fill_date"], "symbol": symbol, "expiration": expiry,
                            "strikes": [leg["strike"] for leg in b["legs"]], "structure": b["id"],
-                           **({"hedge_units": b["hedge"]["units"]} if hedge else {})})
+                           **({"hedge_units": b["hedge"]["units"]} if hedge else {}),
+                           **({"exit": b["close_date"]} if exits else {})})
             for day in self.calendar:
                 if not b["fill_date"] <= day <= expiry:
                     continue
@@ -4752,7 +5616,7 @@ class WeeklyOptionPortfolioStudy:
                                  "ask": raw["ask"]/factor if number_ok(raw["ask"]) else raw["ask"],
                                  "underlying": underlying}
         fields = ("symbol", "date", "expiration", "strike", "right", "bid", "ask", "underlying")
-        order_fields = ("date", "symbol", "expiration", "strikes", "structure")
+        order_fields = ("date", "symbol", "expiration", "strikes", "structure") + (("exit",) if exits else ())
         ledger_inputs = {"chain": list(rows.values()), "orders": orders}
         if self.adjustments:
             ledger_inputs["adjustments"] = [event.record() for event in self.adjustments.values()]
@@ -4760,7 +5624,7 @@ class WeeklyOptionPortfolioStudy:
             "chain_fields": {k: k for k in fields}, "order_fields": {k: k for k in order_fields},
             "structures": structures, "multiplier": self.params["bridge"]["solver"]["multiplier"],
             "fee_per_contract": self.params["bridge"]["solver"]["fee_per_contract_usd"],
-            "fill": "nbbo", "close_rule": "expiry"}
+            "fill": "nbbo", "close_rule": "exit" if exits else "expiry"}
         if hedge:
             # The units are already truncated (once, by the overlay): the ledger must not round them again.
             first = trades[0]["hedge"]["rates"]
@@ -4774,8 +5638,12 @@ class WeeklyOptionPortfolioStudy:
                 # ADR-0316 Amendment 3: the hedged search's books are marked as of one day (a carried option mark
                 # carries its forward); the replay-hedge ids keep the independent mark they were recorded under.
                 ledger_params["hedge"]["mark_carry"] = "with_legs"
-            ledger_inputs["hedge_forwards"] = [row for index, b in enumerate(trades)
-                                               for row in hedge.forward_rows(b, index)]
+            forwards = []
+            for index, b in enumerate(trades):
+                forwards.extend(hedge.forward_rows(b, index))
+                if isinstance(getattr(hedge, "forwards", None), ParityForwards):
+                    hedge.forwards.release()   # memory only: one book's daily chains at a time (rebuilt alike on a reread)
+            ledger_inputs["hedge_forwards"] = forwards
         ledger = OptionStructureLedger("ledger", ledger_params).run(None, ledger_inputs)
         if len(ledger["trades"]) != len(trades):
             raise ValueError("shared ledger refused an admitted book")
@@ -4854,7 +5722,7 @@ class WeeklyOptionPortfolioStudy:
                 "losses": sum(t["pnl"] < 0 for t in trades),
                 "unfilled": len(rejected), "contracts": sum(t["contracts"] for t in trades),
                 "unbounded_books": sum(not math.isfinite(t["max_loss"]) for t in trades),
-                "fees": sum(t["fees"] for t in trades), "ledger_summary": ledger["summary"]}
+                "fees": sum(t["fees"]+t.get("close_fees", 0.) for t in trades), "ledger_summary": ledger["summary"]}
         if "decision_weeks" in self.params:
             # A check week is timing only: the key makes every read of the result refuse it as evidence.
             result["decision_weeks"] = list(self.params["decision_weeks"])
@@ -4872,6 +5740,22 @@ class WeeklyOptionPortfolioStudy:
         for quotes in self._quotes.values():
             if isinstance(quotes, _SQLiteQuoteView):
                 quotes.close(verify=verify)
+
+    def _release_week(self, hedge=None):
+        """Release what one recorded decision week built (memory only: no value, order, seed or option changes).
+
+        The latest prepared week (read again only for the same day), the hedge's cached chains (rebuilt alike from the
+        immutable quotes when a fill or the end-of-run marks read them), each quote index's page cache, and then
+        the freed heap (:func:`_return_freed_memory`). What later weeks read stays: the account and its open books,
+        the records, the inputs, the accuracy rows and the beta and component caches.
+        """
+        self._prepared_cache = {}
+        if hedge is not None and isinstance(getattr(hedge, "forwards", None), ParityForwards):
+            hedge.forwards.release()
+        for quotes in self._quotes.values():
+            if isinstance(quotes, _SQLiteQuoteView):
+                quotes.release_memory()
+        _return_freed_memory()
 
     def _method(self, method, progress, *, recorded=None, derived=None, events=None):
         self._verify_quote_indexes()
@@ -4928,6 +5812,8 @@ class WeeklyOptionPortfolioStudy:
         through ``TransportPortfolioSolve.derived`` so every valuation is this
         host's own. The two are exclusive.
         """
+        if hasattr(self, "_warm_books"):
+            self._warm_books.pop(method["id"], None)   # a run starts cold whatever ran before on this study
         import copy
         from dskit.pipeline.libs.option_ledger import FundedOptionAccount
         from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportPortfolioSolve
@@ -4939,6 +5825,12 @@ class WeeklyOptionPortfolioStudy:
         hedge = calibrated = limited = None
         warm_weeks = Counter()
         local = (self._kelly(method) or {}).get("local_search")
+        # ADR-0318: the optional edge weights (None, and nothing below reads them, when no key is declared).
+        edge_weights = (EdgeWeights(self, self._kelly(method))
+                        if any(key in (self._kelly(method) or {}) for key in EdgeWeights.EDGE_KEYS) else None)
+        # The optional regime shrink of the forecast edge (None, and nothing below reads it, when undeclared).
+        edge_shrink = (RegimeEdgeShrink(self._kelly(method))
+                        if RegimeEdgeShrink.declared(self._kelly(method)) else None)
         present = self._BLOCKS.present(method)
         if present:
             # A local-search method's hedge is derived: the search is rerun on this host over this host's own hedged
@@ -5001,11 +5893,17 @@ class WeeklyOptionPortfolioStudy:
         charge = self._charge(method)
         hedged_search = hedge is not None and self._hedged_search(method)
         decisions, rejected, snapshots, pending = [], [], [], None
+        close_spec = CloseCandidates.spec(self._kelly(method))
+        closer = None if close_spec is None else CloseCandidates(self, close_spec)
+        pending_closes = raw_menu = close_week = close_program = None
         for day in self.calendar:
             self._apply_adjustments(account, day, charge)
             if hedge is not None:
                 hedge.rehedge(account.open.values(), day, charge)   # ADR-0316: a no-op unless the hedge rebalances
             deposited = account.advance(day, self._settlements(account, day))
+            if pending_closes is not None:
+                self._close_fills(closer, account, pending_closes, day)
+                pending_closes = None
             if pending is not None:
                 survivors, refusals = [], []
                 for book in pending["books"]:
@@ -5053,6 +5951,10 @@ class WeeklyOptionPortfolioStudy:
                               "status": self._WEEK_NOT_SELECTED}
                 else:
                     groups, metadata, refusals = self._prepare(day)
+                    raw_menu = None if closer is None else (groups, metadata)   # P2: the held books' forecasts live here
+                    # Memory only: this day is prepared once here; the raw menu is freed as soon as the hedge and the
+                    # filters below have replaced it, instead of living through stage one and the climb.
+                    self._prepared_cache = {}
                     if (self._kelly(method) or {}).get("settleable_only"):
                         # ADR-0315 Amendment 2: per method and outside _prepare, so the shared prepared week is untouched.
                         groups, metadata, excluded = self._settleable_candidates(groups, metadata)
@@ -5156,6 +6058,11 @@ class WeeklyOptionPortfolioStudy:
                             "candidates": len(metadata), **weights,
                             "status": (weights["status"] if w0 > 0 else "nonpositive_capital")
                             if metadata or not estimate["dropped"] else "no_candidate_with_history"}
+                    joint_history = None
+                    if kelly is not None and self._JOINT_SCENARIOS in kelly:
+                        # The joint-scenario arm reads its copula history now, so a week without it solves nothing.
+                        groups, metadata, joint_history = self._joint_week_history(
+                            day, kelly[self._JOINT_SCENARIOS], groups, metadata, record)
                     sizer = self._sizer(method)
                     if sizer is not None:
                         # ADR-0300: the sizer's risk inputs are read before stage 1, as the kelly estimate is, so a week
@@ -5193,6 +6100,19 @@ class WeeklyOptionPortfolioStudy:
                                        **({} if risk is None else {"risk_charge": dict(risk)}),
                                        **({} if adjusts is None else {"value_adjust": adjusts[g["id"]]})}
                                       for g, meta in zip(groups, metadata)]
+                        edge_multipliers = None
+                        if edge_weights is not None:
+                            # ADR-0318: the weighted edge enters the groups themselves, so the start program, the
+                            # search's scorer and every replay of this week read the same value_adjust.
+                            configured, record["kelly"]["edge_weights"], edge_multipliers = edge_weights.apply(
+                                day, configured, metadata)
+                        cal_regime = None
+                        if edge_shrink is not None:
+                            # The regime shrink of the edge, from the books this account settled before ``day``.
+                            cal_regime = edge_shrink.regime(record["kelly"]["sigma_daily"])
+                            configured, record["kelly"]["calibration"], edge_multipliers = edge_shrink.apply(
+                                day, configured, metadata, account.closed, record["kelly"]["sigma_daily"],
+                                edge_multipliers)
                         solver_params = p["solver"]
                         if kelly is not None and any(key in kelly for key in ("max_groups", *self._KELLY_STRATEGY_KEYS)):
                             solver_params = self._kelly_solver_params(p["solver"], kelly)
@@ -5222,6 +6142,9 @@ class WeeklyOptionPortfolioStudy:
                                 "aggregate": {meta["id"]: meta["symbol"] for meta in metadata},
                                 "joint": self._centred_scenarios(terms, kelly["moves"], record["kelly"]["weights"],
                                                                  record["kelly"]["quiet"])}
+                            if "name_spread" in kelly:
+                                # ADR-0318: the declared multiplier on every name's own dispersion charge.
+                                program["utility"]["charge_scale"] = kelly["name_spread"]
                             if hedged_search and hedge.overlay.REBALANCES:
                                 # ADR-0316 Amendment 1: a daily re-struck hedge is scored on seeded PATHS per move, so
                                 # the re-hedge P&L and costs along each path are in the scenarios the objective sizes on.
@@ -5232,6 +6155,20 @@ class WeeklyOptionPortfolioStudy:
                                     "paths": hedge.overlay.params["rehedge_paths"],
                                     "seed": hedge.overlay.params["rehedge_seed"],
                                     "scenarios": len(program["utility"]["joint"])}
+                            if joint_history is not None:
+                                if hedged_search and hedge.overlay.REBALANCES:
+                                    raise ValueError("joint_scenarios cannot score a daily re-struck hedge's paths")
+                                self._joint_utility(day, kelly[self._JOINT_SCENARIOS], program, configured, metadata,
+                                                    joint_history, record)
+                        close_week = close_program = None
+                        if closer is not None:
+                            close_week = closer.week(day, account, raw_menu, mult, estimate["betas"],
+                                                     [*kelly["moves"], 0.], record["kelly"]["w0"],
+                                                     record["kelly"]["wealth_lo"])
+                            record["kelly"][CloseCandidates.KEY] = close_week["record"]
+                            if close_week["groups"]:
+                                close_program = self._close_program(program, close_week, metadata, terms, kelly,
+                                                                    record["kelly"], account, method, components)
                         local_week = None
                         if local is not None:
                             # ADR-0307: the one-stage program above is only SCORED (never built as a model): the week
@@ -5243,7 +6180,8 @@ class WeeklyOptionPortfolioStudy:
                             local_week = self._local_search_week(
                                 day, method, kelly, program, configured, metadata, account, components, mult,
                                 None if derived_decisions is None else derived_decisions[day],
-                                None if recorded_decisions is None else recorded_decisions[day])
+                                None if recorded_decisions is None else recorded_decisions[day],
+                                None if close_program is None else {"week": close_week, "program": close_program})
                             selection = local_week["selection"]
                         elif policy:
                             from dskit.pipeline.libs.pyomo import TransportActionScore
@@ -5305,6 +6243,17 @@ class WeeklyOptionPortfolioStudy:
                         books = [] if timed_out else self._books(candidate, metadata, charge)
                         if calibrated is not None and books:
                             self._calibration_fields(books, program, candidate, metadata, adjusts)
+                        if edge_multipliers is not None and books:
+                            # ADR-0318: ``expected`` is the weighted value the search saw; ``expected_raw`` the forecast's.
+                            index = {m["id"]: i for i, m in enumerate(metadata)}
+                            for book in books:
+                                i = index[book["id"]]
+                                adjust = math.fsum(a*q for a, q in zip(configured[i]["value_adjust"],
+                                                                       candidate["quantities"][i], strict=True))
+                                book.update(edge_multiplier=edge_multipliers[book["id"]],
+                                            expected_raw=book["expected"]-adjust)
+                        if edge_shrink is not None and books:
+                            edge_shrink.stamp(books, configured, metadata, candidate["quantities"], cal_regime, day)
                         status = "timeout_skipped" if timed_out else "selected" if books else "cash"
                         certificates = [{k: v for k, v in c.items() if k != "binding"}
                                         for c in selection.get("certificates", [])]
@@ -5368,6 +6317,11 @@ class WeeklyOptionPortfolioStudy:
                                 solve_certificate = (selection.get("certificates") or [{}])[0]
                             record["kelly"]["solve"] = {k: solve_certificate.get(k)
                                                         for k in ("strategy_outcome", "bound_source")}
+                        if local_week is not None and local_week.get("close") is not None:
+                            outcome = local_week["close"]
+                            record["kelly"][CloseCandidates.KEY].update(state=outcome["state"], closing=list(outcome["closing"]))
+                            if outcome["closing"]:
+                                pending_closes = {"ids": list(outcome["closing"]), "record": record, "date": day}
                         if books:
                             pending = {"books": books, "components": components, "record": record}
                 decisions.append(record)
@@ -5395,6 +6349,12 @@ class WeeklyOptionPortfolioStudy:
                             "solver_certificates": [{k: cert.get(k)
                                 for k in ("objective", "bound", "gap", "seconds")} for cert in certs],
                             "provisional": True})
+                # Memory only (owner 2026-11-16): the week is recorded, so nothing that built it is read again; drop
+                # the menu, the scored program, its scenarios and the search's working state before the next week.
+                groups = metadata = configured = program = terms = rows = local_week = solver = None
+                raw_menu = close_week = close_program = None
+                selection = candidate = edge_multipliers = adjusts = exposure_rows = scorer = request = None
+                self._release_week(hedge)
                 if progress is not None:
                     progress(method["id"], len(decisions), len(self.weeks), record["status"])
             snapshot = {"date": day, "deposit": deposited, "contributions": account.contributions,
@@ -5413,6 +6373,12 @@ class WeeklyOptionPortfolioStudy:
         if derived_decisions is not None and set(derived_decisions) != consumed:
             raise ValueError("derived actions for an ineligible week")
         result = self._finish(method, account, decisions, rejected, snapshots, hedge)
+        if closer is not None:
+            early = [t for t in account.closed if t.get("closed_early")]
+            result[CloseCandidates.KEY] = {"spec": dict(close_spec), "closed": len(early),
+                                           "pnl": sum(t["pnl"] for t in early),
+                                           "close_fees": sum(t["close_fees"] for t in early),
+                                           "ids": [t["id"] for t in early]}
         if calibrated is not None:
             result["calibration"] = calibrated.record(warm_weeks)
         if limited is not None:

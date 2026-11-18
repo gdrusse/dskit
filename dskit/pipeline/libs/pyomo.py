@@ -4044,7 +4044,7 @@ class TransportPortfolioSolve(PyomoSolve):
     _PARAMS = PyomoSolve._PARAMS + (
         "absolute_gap", "relative_gap", "parity_tolerance", "timeout_policy",
         "group_screen", "group_screen_keep", "utility_solve", "utility_search", "utility_warm_start",
-        "incumbent_audit")
+        "incumbent_audit", "dollar_solve")
     #: ADR-0316 Amendment 3: what a primary incumbent whose VALUE checks miss becomes. ``raise`` (the default, every
     #: program before the amendment) refuses it; ``uncertified`` (timeout_policy ``return`` only) returns it as the
     #: non-executable ``incumbent_audit`` timeout envelope, its audited book the ``candidate`` and the first miss
@@ -4095,6 +4095,18 @@ class TransportPortfolioSolve(PyomoSolve):
     #: fixed at zero (exact, so the final bound holds for the whole program); ``direct`` hands HiGHS the whole
     #: integer program, whose root probing on a hundred thousand interior integer variables never ends.
     UTILITY_SOLVES = ("relax_fix", "direct")
+    #: How a DOLLAR program is solved (a utility program ignores it): ``milp`` (the default, every program before this
+    #: key) hands HiGHS the whole integer program; ``relax_fix`` (opt-in, needs timeout_policy ``return``) solves the LP
+    #: relaxation, solves the integer program restricted to the relaxation's support, optionally improves that
+    #: incumbent by the ADR-0302 neighbourhood search (``utility_search``), and returns it bounded by the relaxation:
+    #: certified when the relaxation's bound is within the document's gap of it, otherwise an uncertified ``gap``
+    #: timeout envelope (:meth:`_solve_dollar_relax_fix`). A start for a caller that improves it, never a certified optimum.
+    DOLLAR_SOLVES = ("milp", "relax_fix")
+    #: What the last ``relax_fix`` dollar solve did (None: not declared or not reached); see :meth:`_solve_dollar_relax_fix`.
+    last_dollar_solve = None
+    DOLLAR_SOLVE_RECORD_KEYS = ("strategy", "outcome", "actions", "support_actions", "lp_bound", "restricted_objective",
+                                "restricted_termination", "final_objective", "lp_seconds", "restricted_seconds",
+                                "search_seconds", "seconds", "search")
     #: Share of the time limit the incumbent search (the support-reduced program) may take before certification.
     UTILITY_INCUMBENT_SHARE = .4
     #: A relaxed action below this many contracts is outside the incumbent search's support.
@@ -4153,6 +4165,11 @@ class TransportPortfolioSolve(PyomoSolve):
         strategy = params.get("utility_solve", cls.UTILITY_SOLVES[0])
         if not isinstance(strategy, str) or strategy not in cls.UTILITY_SOLVES:
             problems.append("utility_solve must be one of "+", ".join(cls.UTILITY_SOLVES))
+        dollar = params.get("dollar_solve", cls.DOLLAR_SOLVES[0])
+        if not isinstance(dollar, str) or dollar not in cls.DOLLAR_SOLVES:
+            problems.append("dollar_solve must be one of "+", ".join(cls.DOLLAR_SOLVES))
+        elif dollar == "relax_fix" and policy != "return":
+            problems.append("dollar_solve relax_fix returns an uncertified incumbent and requires timeout_policy return")
         problems.extend(cls.strategy_problems(params.get("utility_search"), params.get("utility_warm_start")))
         if ((params.get("utility_search") is not None or params.get("utility_warm_start") is not None)
                 and strategy != "relax_fix"):
@@ -4329,6 +4346,16 @@ class TransportPortfolioSolve(PyomoSolve):
 
     #: The keys of a ``utility`` block, every one explicit.
     UTILITY_KEYS = frozenset({"w0", "gamma", "n_tangents", "core", "wealth_lo", "aggregate", "joint"})
+    #: ADR-0318: the one optional key. ``charge_scale`` (finite, at least 1) multiplies every name's dispersion charge,
+    #: ``charge_scale x gamma x S_a^2 / (2 w0)``; absent is 1 and the block, its identity and every value are unchanged.
+    UTILITY_OPTIONAL_KEYS = frozenset({"charge_scale"})
+    #: The optional compact form of SAMPLED joint scenarios (the index_options joint-scenario arm):
+    #: ``{"weights": [S floats], "atoms": {group id: [S ints]}}`` with ``joint`` the empty list. Scenario ``s`` puts
+    #: every group on atom ``atoms[id][s]`` of its own grid; the group's term is its PROFIT there beyond the
+    #: weighted sampled mean, derived from the group's own ``losses`` (``-(losses[k] - sum_s w_s losses[k_s])``), so a
+    #: sampled scenario cannot drift from the losses the expectation is priced on and every item's weighted
+    #: deviation is zero. Absent, every path below is unchanged. Scored only: :meth:`build_model` refuses it.
+    UTILITY_ATOM_KEY = "atom_scenarios"
     #: How far the scenario weights may miss one in total (float sums of configured weights).
     UTILITY_WEIGHT_TOLERANCE = 1e-9
 
@@ -4356,7 +4383,11 @@ class TransportPortfolioSolve(PyomoSolve):
         """
         if utility is None:
             return None
-        if (not isinstance(utility, dict) or set(utility) != cls.UTILITY_KEYS
+        atom = isinstance(utility, dict) and cls.UTILITY_ATOM_KEY in utility
+        if (not isinstance(utility, dict)
+                or set(utility)-cls.UTILITY_OPTIONAL_KEYS-{cls.UTILITY_ATOM_KEY} != cls.UTILITY_KEYS
+                or ("charge_scale" in utility and (not number_ok(utility["charge_scale"])
+                                                   or utility["charge_scale"] < 1))
                 or not number_ok(utility["w0"]) or utility["w0"] <= 0
                 or not number_ok(utility["gamma"]) or utility["gamma"] < 1
                 or type(utility["n_tangents"]) is not int or utility["n_tangents"] < 2
@@ -4365,10 +4396,18 @@ class TransportPortfolioSolve(PyomoSolve):
                 or not isinstance(utility["aggregate"], dict)
                 or set(utility["aggregate"]) != {g["id"] for g in groups}
                 or any(not isinstance(v, str) or not v for v in utility["aggregate"].values())
-                or not isinstance(utility["joint"], list) or not utility["joint"]):
+                or not isinstance(utility["joint"], list) or bool(utility["joint"]) == atom):
             raise ValueError("invalid utility block")
         if any(g["radius"] != 0 for g in groups) or any(charge is not None for charge in charges):
             raise ValueError("a utility objective needs radius 0 and no priced risk charge")
+        if atom:
+            checked = {**utility, "w0": float(utility["w0"]), "gamma": float(utility["gamma"]),
+                       "core": float(utility["core"]), "wealth_lo": float(utility["wealth_lo"]),
+                       "aggregate": dict(utility["aggregate"]), "joint": [],
+                       cls.UTILITY_ATOM_KEY: cls._checked_atom_scenarios(utility[cls.UTILITY_ATOM_KEY], groups)}
+            if "charge_scale" in utility:
+                checked["charge_scale"] = float(utility["charge_scale"])
+            return checked
         sizes = {g["id"]: len(g["capacity"]) for g in groups}
         seen, total = set(), 0.
         for scenario in utility["joint"]:
@@ -4383,8 +4422,11 @@ class TransportPortfolioSolve(PyomoSolve):
             total += float(scenario["weight"])
         if abs(total-1.) > cls.UTILITY_WEIGHT_TOLERANCE:
             raise ValueError("utility scenario weights must sum to one")
-        return {**utility, "w0": float(utility["w0"]), "gamma": float(utility["gamma"]), "core": float(utility["core"]),
-                "wealth_lo": float(utility["wealth_lo"]), "aggregate": dict(utility["aggregate"])}
+        checked = {**utility, "w0": float(utility["w0"]), "gamma": float(utility["gamma"]), "core": float(utility["core"]),
+                   "wealth_lo": float(utility["wealth_lo"]), "aggregate": dict(utility["aggregate"])}
+        if "charge_scale" in utility:
+            checked["charge_scale"] = float(utility["charge_scale"])
+        return checked
 
     @staticmethod
     def _expected_profit(groups):
@@ -4394,11 +4436,59 @@ class TransportPortfolioSolve(PyomoSolve):
         return [np.asarray(TransportPortfolioSolve._effective_credit(g), dtype=float)
                 - np.asarray(g["masses"], dtype=float) @ np.asarray(g["losses"], dtype=float) for g in groups]
 
-    @staticmethod
-    def _utility_scenarios(groups, utility):
-        """Return every utility scenario as ``(id, weight, {group index: profit coefficients beyond the expectation})``."""
+    @classmethod
+    def _checked_atom_scenarios(cls, spec, groups):
+        """Validate the compact sampled scenarios (:attr:`UTILITY_ATOM_KEY`) and return a normalized copy.
+
+        ``weights`` is a list of at least two finite nonnegative numbers summing to one; ``atoms`` maps EVERY group id
+        to one int per scenario, each an index into that group's grid (``0 <= k < len(masses)``).
+        """
+        if (not isinstance(spec, dict) or set(spec) != {"weights", "atoms"}
+                or not isinstance(spec["weights"], list) or len(spec["weights"]) < 2
+                or any(not number_ok(w) or w < 0 for w in spec["weights"])
+                or not isinstance(spec["atoms"], dict) or set(spec["atoms"]) != {g["id"] for g in groups}):
+            raise ValueError("invalid atom scenarios")
+        if abs(math.fsum(float(w) for w in spec["weights"])-1.) > cls.UTILITY_WEIGHT_TOLERANCE:
+            raise ValueError("utility scenario weights must sum to one")
+        n = len(spec["weights"])
+        for g in groups:
+            row, k = spec["atoms"][g["id"]], len(g["masses"])
+            if not isinstance(row, list) or len(row) != n or any(type(a) is not int or not 0 <= a < k for a in row):
+                raise ValueError("invalid atom scenarios")
+        return {"weights": [float(w) for w in spec["weights"]],
+                "atoms": {key: list(row) for key, row in spec["atoms"].items()}}
+
+    @classmethod
+    def _atom_tables(cls, groups, utility):
+        """Return the sampled scenarios' weights and, per group index, ``(table, atoms)``.
+
+        ``table[k]`` is the group's profit per contract at atom ``k`` beyond the weighted sampled mean loss,
+        ``centre - losses[k]`` with ``centre = sum_s w_s losses[atoms[s]]``; ``atoms`` the group's atom per scenario.
+        """
         import numpy as np
 
+        spec = utility[cls.UTILITY_ATOM_KEY]
+        weights = np.asarray(spec["weights"], dtype=float)
+        tables = {}
+        for i, g in enumerate(groups):
+            losses = np.asarray(g["losses"], dtype=float)
+            atoms = np.asarray(spec["atoms"][g["id"]], dtype=np.intp)
+            frequency = np.bincount(atoms, weights=weights, minlength=losses.shape[0])
+            tables[i] = (frequency @ losses)[None, :]-losses, atoms
+        return weights, tables
+
+    @classmethod
+    def _utility_scenarios(cls, groups, utility, atom_tables=None):
+        """Return every utility scenario as ``(id, weight, {group index: profit coefficients beyond the expectation})``.
+
+        With :attr:`UTILITY_ATOM_KEY` the rows are views into each group's atom table (``sample:<s>`` ids);
+        ``atom_tables`` (:meth:`_atom_tables` of the same program) is reused when given instead of rebuilt.
+        """
+        import numpy as np
+
+        if cls.UTILITY_ATOM_KEY in utility:
+            weights, tables = atom_tables if atom_tables is not None else cls._atom_tables(groups, utility)
+            return [(f"sample:{s}", float(weight), _AtomTerms(tables, s)) for s, weight in enumerate(weights)]
         lookup = {g["id"]: i for i, g in enumerate(groups)}
         return [(scenario["id"], float(scenario["weight"]),
                  {lookup[key]: np.asarray(row, dtype=float) for key, row in scenario["terms"].items()})
@@ -4416,8 +4506,19 @@ class TransportPortfolioSolve(PyomoSolve):
         return lo, hi
 
     @classmethod
-    def _utility_envelope(cls, groups, utility, expected, scenarios):
+    def _utility_envelope(cls, groups, utility, expected, scenarios, atom_tables=None):
         """Return the one tangent envelope of a program: knots from ``wealth_lo`` to the highest reachable wealth."""
+        import numpy as np
+
+        if cls.UTILITY_ATOM_KEY in utility:
+            # Sampled scenarios: each group's highest reachable gain per atom, gathered per scenario (vectorized).
+            weights, tables = atom_tables if atom_tables is not None else cls._atom_tables(groups, utility)
+            totals = np.zeros(len(weights))
+            for i, (table, atoms) in tables.items():
+                capacity = np.asarray(groups[i]["capacity"], dtype=float)
+                totals += (np.maximum(0., np.asarray(expected[i], dtype=float)[None, :]+table) @ capacity)[atoms]
+            return _TangentEnvelope(utility["w0"], utility["gamma"], utility["wealth_lo"],
+                                    utility["w0"]+float(totals.max()), utility["n_tangents"], utility["core"])
         every = range(len(groups))
         highest = max((cls._scenario_range(expected, terms, groups, every)[1] for _id, _w, terms in scenarios),
                       default=0.)
@@ -4465,6 +4566,9 @@ class TransportPortfolioSolve(PyomoSolve):
             members.setdefault(utility["aggregate"][g["id"]], []).append(i)
             ceiling[i] = cls.SD_PER_MAD*float(own @ np.asarray(g["capacity"], dtype=float))
         slope = utility["gamma"]/(2.*utility["w0"])
+        if "charge_scale" in utility:
+            # ADR-0318: the declared multiplier on every name's own charge (absent: the slope above, unchanged).
+            slope = utility["charge_scale"]*slope
         lines = {name: _ChargeLines(slope, sum(ceiling[i] for i in indices), utility["n_tangents"])
                  for name, indices in members.items()}
         return {"rows": rows, "charge": charge, "members": members, "lines": lines}
@@ -4772,6 +4876,8 @@ class TransportPortfolioSolve(PyomoSolve):
         )
 
         groups, caps, duals, joint, charges, utility = self._checked(inputs)
+        if utility is not None and self.UTILITY_ATOM_KEY in utility:
+            raise ValueError("sampled atom scenarios are scored (TransportActionScore), never built as a model")
         self._groups, self._caps, self._duals, self._joint = groups, caps, duals, joint
         self._charges, self._utility = charges, utility
         self._charged = any(charge is not None for charge in charges)
@@ -4844,11 +4950,116 @@ class TransportPortfolioSolve(PyomoSolve):
             return self._solve_relax_fix(solver, model)
         if getattr(self, "_utility", None) is not None:
             model._transport_outcome, model._transport_bound_source = "direct", "solver"
-        result = self._solve_once(solver, model)
+        if (getattr(self, "_utility", None) is None
+                and self.params.get("dollar_solve", self.DOLLAR_SOLVES[0]) == "relax_fix"):
+            # The warm start (stage1 start.warm) is refused alongside relax_fix at validation: nothing seeds here.
+            result = self._solve_dollar_relax_fix(solver, model)
+        else:
+            if self.warm_quantities is not None:
+                self._seed_start(model, self.warm_quantities, solver)
+            result = self._solve_once(solver, model)
         if (getattr(self, "_utility", None) is None and self.params.get("incumbent_audit", "raise") == "uncertified"
                 and not getattr(model, "_transport_no_incumbent", False)):
             self._priced_incumbent(model)
         return result
+
+    #: Opt-in MIP start of a dollar program (stage one of the weekly Kelly local search): per-group integer
+    #: quantities aligned with the program's groups, set by the caller before :meth:`run`. None (the default) leaves
+    #: the cash start, byte for byte. :attr:`last_start` records what became of it (None when none was offered).
+    warm_quantities = None
+    last_start = None
+    #: Capacity-fraction ladder of the start's repair: a start the program's rows refuse is scaled down (floor)
+    #: before the cash fallback.
+    START_SCALES = (1., .5, .25, .125)
+
+    #: Seconds the LP completion of one start attempt may take (it is a fully fixed LP, normally well under a second).
+    START_LP_SECONDS = 60.
+
+    def _seed_start(self, model, quantities, solver=None):
+        """Load a feasible, completed incumbent for a dollar program's MIP start, or leave the cash start.
+
+        ``quantities`` are clipped to capacity, exclusive pairs netted to their larger side, and the result checked by
+        the scorer's own rows (:class:`TransportActionScore`); an infeasible start is scaled down along
+        :attr:`START_SCALES`. The accepted actions (and the exclusive sides they imply) are fixed and the remaining
+        continuous variables (reserves, transport duals, risk-charge variables) solved as a linear program, so the
+        solver is offered a COMPLETE point; everything is then released. Any refusal, an infeasible completion
+        included, restores the cash start. :attr:`last_start` records ``used``, ``reason`` (why not), the start's
+        ``objective`` (the completed model's profit), ``scored`` (the scorer's value), the ``scale`` that was feasible
+        and the seconds spent here.
+        """
+        from pyomo.environ import Var, value
+
+        began = time.perf_counter()
+        record = {"used": False, "reason": None, "objective": None, "scored": None, "scale": None, "seconds": 0.}
+        self.last_start = record
+
+        def finish(reason=None):
+            record["reason"] = reason
+            record["seconds"] = time.perf_counter()-began
+        if self._utility is not None:
+            return finish("utility_program")
+        groups = self._groups
+        if (not isinstance(quantities, (list, tuple)) or len(quantities) != len(groups)
+                or any(not isinstance(row, (list, tuple)) or len(row) != len(g["capacity"])
+                       for g, row in zip(groups, quantities))):
+            return finish("shape")
+        base = []
+        for i, (g, row) in enumerate(zip(groups, quantities)):
+            if i not in self._active:
+                base.append([0]*len(g["capacity"]))
+                continue
+            row = [min(max(int(q), 0), cap) for q, cap in zip(row, g["capacity"])]
+            for a, b in g["exclusive"]:
+                if row[a] and row[b]:
+                    row[a if row[a] < row[b] else b] = 0   # keep the larger side (ties keep a)
+            base.append(row)
+        if not any(any(row) for row in base):
+            return finish("all_zero")
+        score = TransportActionScore(self._program(), {"parity_tolerance": self.params["parity_tolerance"]})
+        reason = "infeasible"
+        for scale in self.START_SCALES:
+            trial = [[int(math.floor(q*scale)) for q in row] for row in base]
+            if not any(any(row) for row in trial):
+                break
+            try:
+                scored = score.evaluate(trial)
+            except ValueError:
+                continue
+            if self._complete_start(model, trial):
+                capable = getattr(solver, "warm_start_capable", None)
+                if not (callable(capable) and capable()):
+                    for variable in model.component_data_objects(Var):
+                        variable.set_value(0, skip_validation=True)
+                    return finish("solver_not_warm_start_capable")
+                record.update(used=True, objective=float(value(model.profit)), scored=float(scored["value"]),
+                              scale=scale)
+                return finish()
+            reason = "completion_infeasible"
+        for variable in model.component_data_objects(Var):
+            variable.set_value(0, skip_validation=True)    # the cash start again
+        return finish(reason)
+
+    def _complete_start(self, model, quantities):
+        """Fix ``quantities`` (and their exclusive sides), solve the rest as an LP, release; True on an optimum."""
+        for (i, j) in model.x:
+            model.x[i, j].fix(quantities[i][j])
+        for (i, k) in model.side:
+            a, _b = self._groups[i]["exclusive"][k]
+            model.side[i, k].fix(1 if quantities[i][a] else 0)
+        try:
+            try:
+                lp = self._resolve_solver()
+                lp.options["time_limit"] = min(float(lp.options.get("time_limit") or self.START_LP_SECONDS),
+                                               self.START_LP_SECONDS)
+                results = lp.solve(model)
+            except RuntimeError:   # appsi raises when the fixed point has no solution to load
+                return False
+            return str(getattr(results.solver, "termination_condition", "")) == "optimal"
+        finally:
+            for (i, j) in model.x:
+                model.x[i, j].unfix()
+            for key in model.side:
+                model.side[key].unfix()
 
     def _priced_incumbent(self, model):
         """Price a loaded dollar incumbent's continuous part at its integers (ADR-0316 Amendment 4).
@@ -5174,6 +5385,98 @@ class TransportPortfolioSolve(PyomoSolve):
         model._transport_outcome, model._transport_bound_source = "relaxation_failed", "none"
         return SimpleNamespace(solver=SimpleNamespace(status="aborted", termination_condition="maxTimeLimit"),
                                problem=None, solution=())
+
+    def _solve_dollar_relax_fix(self, solver, model):
+        """Relax-and-fix for a dollar program (opt-in ``dollar_solve`` ``relax_fix``): a start, bounded by its relaxation.
+
+        The same pieces as the utility strategy (:meth:`_solve_relax_fix`), without its certification round: solve the
+        LP relaxation (:meth:`_relaxation`); solve the integer program with every action the relaxation holds below
+        :attr:`UTILITY_SUPPORT_EPS` fixed at zero, from the cash start, under the document's own HiGHS gaps; when
+        ``utility_search`` is declared, improve that incumbent by the seeded neighbourhood search
+        (:meth:`_search_incumbent`, exact dollar audit). Every action's bound is restored afterwards. The relaxation
+        bounds the WHOLE program, so it is the record's bound (``_transport_outside`` equal to it makes
+        :meth:`_build_solve_record` take it): an incumbent within the document's gap of it is certified, any other is
+        labelled ``maxTimeLimit`` so :meth:`extract` returns it as the uncertified ``gap`` envelope (``timeout_policy``
+        ``return``; :meth:`validate_params`), the shape a start already arrives in. The week's wall clock is the
+        document's ``time_limit``: the restricted solve takes :attr:`UTILITY_INCUMBENT_SHARE` of it when a search is
+        declared (the whole remainder otherwise), the search at most :attr:`UTILITY_SEARCH_SHARE` of it inside what
+        is left, so the total stays within the limit (HiGHS's own overshoot aside). A relaxation that does not solve
+        falls back to the plain integer program on the remaining time. A restricted solve with no incumbent leaves the
+        solver's own record (the no-incumbent envelope). What happened is left in ``last_dollar_solve``.
+        """
+        saved = solver.options.get("time_limit")
+        try:
+            return self._dollar_relax_fix(solver, model)
+        finally:
+            if saved is not None:   # the stages' shrinking limits are not the document's: the pricing solve sees its own
+                solver.options["time_limit"] = saved
+
+    def _dollar_relax_fix(self, solver, model):
+        """The body of :meth:`_solve_dollar_relax_fix`."""
+        from pyomo.environ import Var
+
+        self.last_dollar_solve = None
+        model._transport_bound = model._transport_outside = None
+        model._transport_declined = False
+        budget = float(self.params.get("solver_options", {}).get("time_limit", 0) or 0)
+        clock = time.perf_counter()
+        remaining = lambda: None if not budget else max(1., budget-(time.perf_counter()-clock))
+        search = self.params.get("utility_search")
+        record = dict.fromkeys(self.DOLLAR_SOLVE_RECORD_KEYS)
+        record.update(strategy="relax_fix", actions=len(model.x))
+        relaxed = self._relaxation(solver, model, remaining())
+        record["lp_seconds"] = round(time.perf_counter()-clock, 3)
+        for variable in model.component_data_objects(Var, active=True):
+            if not variable.fixed:   # the cash start of build_model: the relaxed point is no integer start
+                variable.set_value(0)
+        if relaxed is None:
+            self.log.info("dollar relax_fix: the relaxation did not solve; the plain integer program on the rest")
+            result = self._solve_once(solver, model, remaining())
+            record.update(outcome="relaxation_failed", seconds=round(time.perf_counter()-clock, 3))
+            self.last_dollar_solve = record
+            return result
+        bound, stakes, _costs = relaxed
+        capacity = {key: model.x[key].ub for key in model.x}
+        outside = [key for key, stake in stakes.items() if stake < self.UTILITY_SUPPORT_EPS]
+        record.update(lp_bound=bound, support_actions=len(stakes)-len(outside))
+        began = time.perf_counter()
+        for key in outside:
+            model.x[key].setub(0)
+        try:
+            share = None if not budget else max(1., (self.UTILITY_INCUMBENT_SHARE if search is not None else 1.)
+                                                 * (remaining() if search is None else budget))
+            result = self._solve_once(solver, model, None if share is None else min(share, remaining()))
+        finally:
+            for key in outside:
+                model.x[key].setub(capacity[key])
+        record["restricted_seconds"] = round(time.perf_counter()-began, 3)
+        record["restricted_termination"] = self._termination(result)
+        incumbent = None if getattr(model, "_transport_no_incumbent", False) else self._objective_value(model)
+        record["restricted_objective"] = incumbent
+        if incumbent is not None and search is not None:
+            allowance = None if not budget else min(self.UTILITY_SEARCH_SHARE*budget,
+                                                    budget-(time.perf_counter()-clock))
+            began = time.perf_counter()
+            if allowance is None or allowance >= 1.:
+                record["search"] = self._search_incumbent(solver, model, bound, stakes, allowance)
+                incumbent = self._objective_value(model)
+            record["search_seconds"] = round(time.perf_counter()-began, 3)
+        if incumbent is None:
+            record.update(outcome="no_incumbent", seconds=round(time.perf_counter()-clock, 3))
+        else:
+            allowance = max(self.params["absolute_gap"], self.params["relative_gap"]*abs(incumbent))
+            certified = bound-incumbent <= allowance
+            # The relaxation covers every solution, the restricted ones and the rest: it is the bound, whole.
+            model._transport_bound = model._transport_outside = bound
+            model._transport_declined = not certified
+            record.update(outcome="relaxation_certified" if certified else "incumbent", final_objective=incumbent,
+                          seconds=round(time.perf_counter()-clock, 3))
+        self.log.info("dollar relax_fix: relaxation %.1fs, support %d of %d actions, restricted solve %.1fs (%s), "
+                      "search %.1fs, %s", record["lp_seconds"], record["support_actions"], record["actions"],
+                      record["restricted_seconds"], record["restricted_termination"], record["search_seconds"] or 0.,
+                      record["outcome"])
+        self.last_dollar_solve = record
+        return result
 
     def _solve_relax_fix(self, solver, model):
         """The utility strategy: relax, search the support for an incumbent, certify on the reduced-cost-fixed program.
@@ -5670,8 +5973,9 @@ class TransportPortfolioSolve(PyomoSolve):
             if variable.parent_component() is model.x:
                 variable.fix()
         name = self.params.get("solver", DEFAULT_SOLVER)
+        solver = self._resolve_solver()
         try:
-            results = self._resolve_solver().solve(model)
+            results = solver.solve(model)
         except RuntimeError as exc:
             # appsi raises instead of returning when the fixed actions are infeasible. Only a utility program
             # converts it (its foreign actions can breach the wealth floor); a dollar program keeps the raise, except
@@ -5682,7 +5986,7 @@ class TransportPortfolioSolve(PyomoSolve):
                                            "dual_pricing", "pricing") from exc
             if self.params.get("incumbent_audit", "raise") != "uncertified":
                 raise
-            results = self._price_apart(model)
+            results = self._price_apart(model, self._highs_status(solver))
         priced = SolveRecord.from_solve(model, results, name, 0.)
         if priced.termination != "optimal":
             raise RecordedCheckRefusal("recorded actions could not be priced: "+str(priced.termination),
@@ -5691,7 +5995,7 @@ class TransportPortfolioSolve(PyomoSolve):
     #: ADR-0316 Amendment 5: the audit check of an incumbent whose fixed actions the pricing LP found infeasible.
     ACTION_ROWS_CHECK = "action_rows"
 
-    def _price_apart(self, model):
+    def _price_apart(self, model, status=None):
         """Price a dollar program's fixed actions with its action rows deactivated (ADR-0316 Amendment 5).
 
         ``model.rows`` holds every row of a dollar program, and each reads only the actions, the exclusive sides and
@@ -5702,20 +6006,101 @@ class TransportPortfolioSolve(PyomoSolve):
         over a cap are feasible to the scorer and infeasible to the fixed LP (2021Q1
         ``kelly075_ls_fast_hedged_static_lp``, week 2021-03-01). The rows are restored whatever happens, and the model
         is marked ``_transport_priced_apart`` so :meth:`extract` returns the ``incumbent_audit`` envelope with check
-        :attr:`ACTION_ROWS_CHECK`. A second infeasibility is refused as ``dual_pricing``.
+        :attr:`ACTION_ROWS_CHECK`. A second raise, or a rows-off price no action row explains, goes to
+        :meth:`_price_linear` (ADR-0316 Amendment 6); a raise there too is refused as ``dual_pricing``, naming HiGHS's
+        model status of every attempt (``status``: the first, rows-on solve's).
         """
         self.log.warning("fixed actions infeasible to the pricing LP at its own tolerance: priced apart from their "
-                         "action rows, which the scorer judges (incumbent_audit %s)", self.ACTION_ROWS_CHECK)
+                         "action rows, which the scorer judges (incumbent_audit %s; HiGHS model status %s)",
+                         self.ACTION_ROWS_CHECK, status)
+        solver = self._resolve_solver()
         model.rows.deactivate()
         try:
-            results = self._resolve_solver().solve(model)
-        except RuntimeError as exc:
-            raise RecordedCheckRefusal("recorded actions could not be priced: infeasible apart from their rows",
-                                       "dual_pricing", "pricing") from exc
+            results = solver.solve(model)
+        except RuntimeError:
+            results = None
         finally:
             model.rows.activate()
-        model._transport_priced_apart = True
-        return results
+        if results is not None:
+            try:
+                explained = self._rows_audit(self._action_quantities(model)) is not None
+            except ValueError:
+                explained = True        # integers the scorer refuses: extract refuses them by name, as before
+            if explained:
+                model._transport_priced_apart = True
+                return results
+        apart = "Optimal, no action row over its bound" if results is not None else self._highs_status(solver)
+        return self._price_linear(model, results, [("rows", status), ("apart", apart)])
+
+    def _price_linear(self, model, apart, statuses):
+        """Price fixed actions as a linear program, when the integer-typed pricing raised (ADR-0316 Amendment 6).
+
+        appsi hands HiGHS a fixed action as an INTEGER column (bounds equal to its value), so every pricing solve
+        above runs HiGHS's MIP solver, which re-checks its final point against ``mip_feasibility_tolerance``. That
+        check is absolute: with the stage one's 1e-9, a row whose fixed actions fold to a constant of about 1e7 (a
+        large book's loss at a far grid point) misses it by floating-point rounding alone, and HiGHS ends "MIP solver
+        claims optimality, but with ... primal infeasibilities ... Setting model status to Solve error", rows on or
+        off (2021Q1 ``..._dte_risk_s_lp`` week 8, ``..._dte25_s_lp`` week 5, 2020Q1 ``ls075hs5``). Here the
+        exclusive sides are fixed as the actions imply (:meth:`_complete_start`) and every fixed integer variable is
+        typed continuous for this solve only: the feasible set is the same point, and HiGHS solves an LP at its LP
+        tolerance (so an action row over its bound by less than HiGHS's LP feasibility tolerance, about 1e-7, prices
+        rows on without the ``action_rows`` audit the integer-typed route would have recorded; the scorer still judges
+        every row at ``parity_tolerance``). Rows on first: an optimum there is the incumbent's ordinary price (no audit
+        of its own). Rows off
+        next (``apart`` None only): the :attr:`ACTION_ROWS_CHECK` envelope, as :meth:`_price_apart`. Domains, sides
+        and rows are restored whatever happens. ``apart`` (a rows-off price no action row explains) is returned
+        marked apart when the rows-on LP raises too, so :meth:`extract` refuses it by name exactly as before.
+        """
+        from pyomo.environ import Reals, Var, value
+
+        statuses, relaxed = list(statuses), []
+        try:
+            for (i, k) in model.side:
+                a, _b = self._groups[i]["exclusive"][k]
+                model.side[i, k].fix(1 if value(model.x[i, a]) else 0)
+            relaxed = [(v, v.domain) for v in model.component_data_objects(Var)
+                       if v.fixed and not v.is_continuous()]
+            if any(not v.is_continuous() for v in model.component_data_objects(Var) if not v.fixed):
+                statuses.append(("linear", "unfixed integer variable"))
+            else:
+                for v, _domain in relaxed:
+                    v.domain = Reals
+                for rows in ((True,) if apart is not None else (True, False)):
+                    if not rows:
+                        model.rows.deactivate()
+                    solver = self._resolve_solver()
+                    try:
+                        results = solver.solve(model)
+                    except RuntimeError:
+                        statuses.append(("linear" if rows else "linear_apart", self._highs_status(solver)))
+                        continue
+                    self.log.warning("fixed actions priced as a linear program (rows %s) after the integer-typed "
+                                     "pricing raised: %s", "on" if rows else "off",
+                                     ", ".join(f"{k} {s}" for k, s in statuses))
+                    if not rows:
+                        model._transport_priced_apart = True
+                    return results
+        finally:
+            model.rows.activate()
+            for v, domain in relaxed:
+                v.domain = domain
+            for key in model.side:
+                model.side[key].unfix()
+        if apart is not None:
+            model._transport_priced_apart = True
+            return apart
+        raise RecordedCheckRefusal("recorded actions could not be priced: infeasible apart from their rows (HiGHS "
+                                   "model status: " + ", ".join(f"{k} {s}" for k, s in statuses) + ")",
+                                   "dual_pricing", "pricing")
+
+    @staticmethod
+    def _highs_status(solver):
+        """HiGHS's own model status after a solve appsi raised on (its words name no status), or None off HiGHS."""
+        try:
+            highs = solver._solver_model
+            return str(highs.modelStatusToString(highs.getModelStatus()))
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            return None
 
     def _rows_audit(self, quantities):
         """Return the :attr:`ACTION_ROWS_CHECK` audit of integer ``quantities`` (the actions as priced, before any
@@ -6023,6 +6408,30 @@ class _TransportActionInfeasible(ValueError):
     """A quantity vector fails a declared transport constraint."""
 
 
+class _AtomTerms(Mapping):
+    """One sampled scenario's terms, ``{group index: profit coefficients beyond the expectation}``, read on access.
+
+    Each value is a view of the group's atom-table row the scenario lands on
+    (:meth:`TransportPortfolioSolve._atom_tables`), so ``S`` scenarios over ``G`` groups hold ``S`` small objects
+    instead of ``S x G`` arrays; anything that reads a scenario's terms as a mapping reads the same numbers.
+    """
+
+    __slots__ = ("_tables", "_s")
+
+    def __init__(self, tables, s):
+        self._tables, self._s = tables, s
+
+    def __getitem__(self, i):
+        table, atoms = self._tables[i]
+        return table[atoms[self._s]]
+
+    def __iter__(self):
+        return iter(self._tables)
+
+    def __len__(self):
+        return len(self._tables)
+
+
 class TransportActionScore:
     """Value and check finite integer actions against a shared transport program.
 
@@ -6095,13 +6504,16 @@ class TransportActionScore:
         (self.groups, self.caps, self.duals, self.joint,
          self.charges, self.utility) = TransportPortfolioSolve._checked_program(self.program)
         identity = {"groups": self.groups, "caps": self.caps, "joint_rows": self.joint}
-        self.scenarios = self.envelope = self.expected = self.charge_plan = None
+        self.scenarios = self.envelope = self.expected = self.charge_plan = self.atom_tables = None
         if self.utility is not None:
             identity["utility"] = self.utility
             solve = TransportPortfolioSolve
             self.expected = solve._expected_profit(self.groups)
-            self.scenarios = solve._utility_scenarios(self.groups, self.utility)
-            self.envelope = solve._utility_envelope(self.groups, self.utility, self.expected, self.scenarios)
+            if solve.UTILITY_ATOM_KEY in self.utility:
+                self.atom_tables = solve._atom_tables(self.groups, self.utility)
+            self.scenarios = solve._utility_scenarios(self.groups, self.utility, self.atom_tables)
+            self.envelope = solve._utility_envelope(self.groups, self.utility, self.expected, self.scenarios,
+                                                    self.atom_tables)
             self.charge_plan = solve._charge_plan(self.groups, self.utility)
         self.program_identity = hashlib.sha256(json.dumps(
             identity, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -6195,6 +6607,15 @@ class TransportActionScore:
         import numpy as np
 
         mean = sum(float(np.dot(row, q)) for row, q in zip(self.expected, quantities))
+        if self.atom_tables is not None:
+            # Sampled scenarios: each held group's per-atom profit, gathered onto the scenarios (vectorized).
+            _weights, tables = self.atom_tables
+            total = np.full(len(self.scenarios), self.utility["w0"]+mean)
+            for i, (table, atoms) in tables.items():
+                q = np.asarray(quantities[i], dtype=float)
+                if q.any():
+                    total += (table @ q)[atoms]
+            return [name for name, _weight, _terms in self.scenarios], [float(w) for w in total]
         names, wealth = [], []
         for name, _weight, terms in self.scenarios:
             names.append(name)
@@ -6218,8 +6639,11 @@ class TransportActionScore:
         sd = math.sqrt(sum(sum(exact_sd[i] for i in indices)**2 for indices in plan["members"].values()))
         dispersion = math.sqrt(sum(total**2 for total in totals.values()))
         ratio = sd/dispersion if dispersion > self.BOOK_NOISE*self.utility["w0"] else None
+        gamma = self.utility["gamma"]
+        if "charge_scale" in self.utility:
+            gamma = self.utility["charge_scale"]*gamma   # ADR-0318: the charge applies gamma times the multiplier
         return {"sd": float(sd), "dispersion": float(dispersion), "ratio": ratio,
-                "effective_fraction": None if ratio is None else ratio**2/self.utility["gamma"]}
+                "effective_fraction": None if ratio is None else ratio**2/gamma}
 
     def _utility_components(self, quantities):
         """Value the quantities under the tangent envelope and the charge lines (what the program maximizes), and exactly."""

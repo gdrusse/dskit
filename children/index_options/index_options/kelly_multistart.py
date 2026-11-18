@@ -102,8 +102,8 @@ class KellyMultiStart(KellyLocalSearch):
         defects = cls.validate_params(params)
         if defects:
             return defects
-        if any(key in params for key in cls.OPTION_KEYS):
-            return [f"local_search {list(cls.OPTION_KEYS)} are the fast variant's and are not used with multistart"]
+        if any(key in params for key in cls.BOOL_KEYS):
+            return [f"local_search {list(cls.BOOL_KEYS)} are the fast variant's and are not used with multistart"]
         if params["restarts"] != 0:
             return ["local_search restarts must be 0 with multistart (the starts replace them)"]
         if (not isinstance(multistart, dict) or not set(cls.MULTISTART_KEYS) <= set(multistart)
@@ -170,6 +170,9 @@ class KellyMultiStart(KellyLocalSearch):
         slope = self.slopes_ext[self.item_key]
         added = slope*((total+self.add_spread)**2-total**2)
         removed = slope*(total**2-(total+self.remove_spread)**2)
+        if self.risk_on:
+            shift = self._risk_shift()      # ADR-0319: the priced risk terms, first order (ranking only)
+            return marginal-added-shift, removed-marginal+shift
         return marginal-added, removed-marginal
 
     # --- the pair add move -------------------------------------------------------------------------------------
@@ -231,17 +234,17 @@ class KellyMultiStart(KellyLocalSearch):
         values, kinds = [self.value()], {"add": 0, "remove": 0, "swap": 0, "pair": 0}
         for _ in range(self.params["moves"]):
             if stop is not None and self.evaluations >= stop:
-                return values, kinds, False
+                return self._settled(values), kinds, False
             found = self._best_move()
             if found is None:
-                return values, kinds, True
+                return self._settled(values), kinds, True
             _gain, changes = found
             steps = list(changes.values())
             kinds["pair" if steps == [1, 1] else "swap" if len(steps) == 2
                   else "add" if steps[0] > 0 else "remove"] += 1
             self._apply(changes)
             values.append(self.value())
-        return values, kinds, False
+        return self._settled(values), kinds, False
 
     # --- the starts ------------------------------------------------------------------------------------------
 
@@ -322,12 +325,33 @@ class KellyMultiStart(KellyLocalSearch):
         if self.K:
             fits &= ((self.jtot[None, :]+self.J) <= self.j_up+self.tol).all(axis=1)
         ids = np.flatnonzero(fits)
-        wealth = self.W[None, :]+self.D[ids]
-        ids, wealth = ids[(wealth >= self.lo-self.tol).all(axis=1)], wealth[(wealth >= self.lo-self.tol).all(axis=1)]
-        if not len(ids):
-            return []
-        values = (self.w0*(tangent_utility(wealth, self.w0, self.gamma)[0] @ self.weights)
-                  - self.slopes_ext[self.item_key[ids]]*self.own[ids]**2)
+        if getattr(self.scorer, "atom_tables", None) is None:
+            wealth = self.W[None, :]+self.D[ids]
+            ids, wealth = ids[(wealth >= self.lo-self.tol).all(axis=1)], wealth[(wealth >= self.lo-self.tol).all(axis=1)]
+            if not len(ids):
+                return []
+            utility = tangent_utility(wealth, self.w0, self.gamma)[0] @ self.weights
+        else:
+            # Sampled joint scenarios (hundreds): the floor check and the utilities in row blocks, so no
+            # items x scenarios temporary is built (the plain path above stays exactly as it was).
+            ids = ids[self._floor_ok(ids)]
+            if not len(ids):
+                return []
+            rows = max(1, self.FLOOR_CHUNK_ELEMENTS//max(1, self.S))
+            utility = np.concatenate([tangent_utility(self.W[None, :]+self.D[ids[a:a+rows]], self.w0, self.gamma)[0]
+                                      @ self.weights for a in range(0, len(ids), rows)])
+        values = self.w0*utility-self.slopes_ext[self.item_key[ids]]*self.own[ids]**2
+        if self.risk_on:
+            # ADR-0319: the one-contract priced risk terms, in the same row blocks (the exact trial confirms each single).
+            if self.cvar_weight:
+                rows = max(1, self.FLOOR_CHUNK_ELEMENTS//max(1, self.S))
+                tails = np.concatenate([self._cvar_rows(self.W[None, :]+self.D[ids[a:a+rows]])
+                                        for a in range(0, len(ids), rows)])
+                values = values-self.cvar_weight*np.maximum(0., tails)
+            if self.conc_weight:
+                r = self.rtot[self.conc_key[self.gid[ids]]]
+                values = values-self.conc_weight*self.w0*(((r+self.dres[ids])/self.w0)**self.conc_power
+                                                          - (r/self.w0)**self.conc_power)
         keep = values > self.value()+self.IMPROVEMENT*self.w0
         ids, values = ids[keep], values[keep]
         out, groups = [], set()
@@ -482,7 +506,7 @@ class KellyMultiStart(KellyLocalSearch):
         nested = self._nested(best_q)
         selection = self.scorer.evaluate(nested)
         exact = selection["utility"]["exact"]
-        if abs(exact-end_value) > self.PARITY*max(1., abs(exact), self.w0):
+        if abs(self._explains(exact)-end_value) > self.PARITY*max(1., abs(exact), self.w0):
             raise ValueError("the multi-start search's score differs from the exact recompute of its selection")
         start_q = cash.copy()
         if chosen is not None:
@@ -502,6 +526,8 @@ class KellyMultiStart(KellyLocalSearch):
                                  "climbs": climbs, "chosen_start": chosen,
                                  "chosen_kind": None if chosen is None else starts[chosen][0],
                                  "cash_floor": bool(floor)}}
+        if self.risk_on:
+            record["risk"] = self.risk_terms()
         if stats is not None:
             record["prepare_evaluations"] = prepared
             kinds = {}

@@ -1437,6 +1437,41 @@ class FundedOptionAccount:
         self.day = day
         return contributed
 
+    def close_early(self, day, key, pnl, **fields):
+        """Close one open book BEFORE its expiry at a realized profit (opt-in; :meth:`advance` is unchanged).
+
+        The book's reserve is released with it and the cash moves by the closing trade alone: the entry credit
+        was banked at :meth:`admit`, so cash changes by ``pnl - credit`` (the closing cash less its fees),
+        exactly as a settlement does. ``fields`` (the closing fill's audit) ride on the closed record.
+
+        Parameters
+        ----------
+        day : str
+            The account's current date (call after :meth:`advance` of the same session).
+        key : str
+            ID of an open book whose expiry is after ``day``.
+        pnl : float
+            Total realized profit of the book, including its original credit and every fee.
+        **fields
+            Extra audit fields stored on the closed record (``closed_early`` is always set).
+
+        Raises
+        ------
+        ValueError
+            The date is not the account date, the book is not open or already due, or the loss exceeds the
+            book's reserve by more than its closing fees (``fields["close_fees"]``, default 0).
+        """
+        self._day(day)
+        book = self.open.get(key)
+        if day != self.day or book is None or book["expiry"] <= day or not number_ok(pnl):
+            raise ValueError("early close needs the account date and an open, unexpired book with a finite P&L")
+        if pnl < -book["reserve"]-float(fields.get("close_fees", 0.))-1e-5:
+            raise ValueError("early close loss exceeds the book's reserve")
+        self.open.pop(key)
+        self.cash += float(pnl)-book["credit"]
+        self.realized += float(pnl)
+        self.closed.append({**book, **fields, "pnl": float(pnl), "close_date": day, "closed_early": True})
+
     def remaining(self, members, fraction):
         """Return headroom after all open reserves for the supplied names.
 
