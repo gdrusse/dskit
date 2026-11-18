@@ -1,7 +1,9 @@
 # WSL runbook: crypto_trading stage A (data pulls) and stage B (features, kill test)
 
 Pull the Kalshi, Binance, Coinbase and Deribit data through onboarding, then build the feature tables and the kill test.
-Nothing has been pulled yet. **Done when** every pull was acquired and gated `pass` (`warn` is expected, section 5; 7e is HELD, and
+This is the original acquisition procedure; later pulls and studies are summarized in
+[the current lane note](../RE-ENTRY.md). Reconcile existing snapshots before repeating a step.
+**Done when** every pull was acquired and gated `pass` (`warn` is expected, section 5; 7e is HELD, and
 acquired without a gate if ever run), `verify` is clean and the runs exit 0. **Order:** 0 to 5; 7a to 7c (register, markets, COUNT the
 archive); 8; 7d (after the count); B1 to B6; 7e only after the ADR it names.
 

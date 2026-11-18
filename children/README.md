@@ -88,7 +88,7 @@ _skeleton/
   production and lands in `docs/decisioning/actions.csv`; the README
   is generated. Path to production is owner `journal promote` only.
   Hooks record pipeline runs and onboarding verbs automatically.
-  Research writes `docs/research/<slug>.md`. An uninitialized child
+  Research writes `docs/research/<topic>/<date>-<name>.md`. An uninitialized child
   refuses. The process is in each child's `docs/decisioning/README.md`
   (generated) and in `dskit/journal/README.md`.
 - **Durable handoffs are memos.** Completed-study evidence, implementation
@@ -118,11 +118,11 @@ _skeleton/
   path that re-declares any of this WILL drift from the backtest, and a
   parity test is a patch over the duplication, not a fix for it. Never add a
   third config file to solve this — that duplicates both.
-- **"One per key" is a grammar problem, not a config problem.** A design
-  fitting one model per symbol/venue/cohort currently has to be written
-  longhand — N filter + N train + N score nodes per document. Before hand-
-  expanding a fan-out, check `TODO.md`: the generic `foreach` gap is open,
-  and hand-expansion is the interim, not the answer.
+- **One model per key uses `foreach` (ADR-0039).** Declare `keys` and a
+  template `pipeline`; document construction expands one instance per key.
+  Whole-value `$each` params and `__each` input ports bind the instances.
+  Node-level artifact pins and nested fan-out are unsupported; see
+  `dskit/pipeline/README.md` and `examples/pipeline/foreach-fanout.json`.
 - **A child ships the venue, never the loop.** Running forward is
   `dskit.production`'s job: the cadence, the guards, the hash-chained ledger,
   the authority stack and the monitors are all generic and already built. What
@@ -149,8 +149,11 @@ here. Nothing inside changes — that was the point.
 Incubating today: `index_options` (offline cash-index and ETF-option research),
 `stock_options` (stock/market forecasts with listed-stock option action sets; no
 trading), `intraday_equities` (US-equity intraday bars), `intraday_poc`,
-`crypto_trading` (crypto trading research; stage A data pulls and stage B features and kill test configured, focus awaiting ratification),
-`correlation_arb` (correlation arbitrage and relative value; stage 0 configured, nothing pulled), and
+`crypto_trading` (crypto distributions and prediction-market research; retained-history
+comparisons are documented in its lane note),
+`correlation_arb` (correlation arbitrage and relative value; stage 0 configured),
+`statistical_arbitrage` (equity networks and option relative-value prediction),
+`portfolio_policy` (advisory hold-vs-redeploy analysis), and
 `pmquant` (prediction-market ladders — Kalshi and Polymarket; its
 `configs/run-e2e.json` runs the stat test, the transformer and the Kelly MIO
 in one document). Worked sketches of the

@@ -1,14 +1,15 @@
 # crypto_trading — a dskit child
 
-Research child for **crypto trading opportunities**. Status: **stage A (data
-pulls) and stage B (feature table and kill test, for the 15-minute and the hourly
-series) are configured and tested offline on synthetic stores; nothing has been pulled or
-run on real data.** The target is a
+Research child for **crypto trading opportunities**. Data acquisition, feature
+panels, model selection and retained-history comparisons have been implemented
+and run. The current research status and protected evaluation rules are in
+[the lane note](docs/RE-ENTRY.md); retrospective results do not authorize
+live trading. The target is a
 calibrated short-horizon BTC/ETH distribution at each Kalshi crypto contract's
 settlement (CF Benchmarks RTI, 60-second average), used to quote as maker. Stage B
 asks the first falsification question (does a simple realised-vol fair value beat the
-market mid after fees?); models come only if it survives. The focus areas in
-`docs/research/` still await owner ratification.
+market mid after fees?). The stage descriptions below explain the shipped
+components; current selections and remaining gates belong to the lane note.
 
 | Source (`configs/source-*.json`) | Pulls | Suite (`configs/suite-*.json`) |
 |---|---|---|
@@ -72,7 +73,8 @@ Known issues and what is not modelled: the runbook's last section.
 
 ## Feature selection (family and scale ablation)
 
-Owner-approved 2026-10-09; nothing has been run. Per model class (sequence: PatchTST and its kin; tabular: the
+The original owner-approved 2026-10-09 ablation design is described here;
+its templates still require the configured zoo/grid bindings below. Per model class (sequence: PatchTST and its kin; tabular: the
 3-component mixture MLP) the predictor is run once per arm of `features-arms.json` (`all`, ten `minus_<family>`,
 six `minus_scale_<n>`) on W1 only (2023-06-20 up to but excluding 2026-05-01): expanding walk-forward folds, a
 1-day embargo, the same folds, rows and seeds in every arm, scored by weighted CRPS (CRPS plus tail CRPS). An
@@ -102,7 +104,8 @@ over the three seams — a connector (onboarding), registered node kinds
 
 ## Stage C: the minute panel and the zoo
 
-`configs/run-panel-build.json` builds one memory-mapped panel (W1 + embargo + W2 bars, 91 feature columns, 15 labels) that `configs/source-panel-minute.json` publishes as the `panel-minute` blob source. Selection and zoo read it through dskit's `array_panel` / `panel_torch` / `panel_score` packs (ADR-0260): an arm is a `ColumnSelector`, a zoo cell is a `PanelTrain` + `PanelScore` lane, and a lane trains on the GPU. `configs/zoo-lanes-recipe.json` + `crypto_trading/zoo_lanes.py` generate `configs/workflow-zoo-w1.json` (5 models x 4 losses x pooled/BTC/ETH, plus two baselines, 66 lanes) and the single-read `workflow-zoo-w2.json` skeleton (frozen finalists, W2's fixed bounds). Each model class reads its own selected features (`features.classes.<class>.from`, default: all families). After the zoo, `zoo_lanes pick` ranks the models against the baselines (`zoo-pick.json`); the HPO pipeline (`workflow-hpo.json`: search on the first 4 folds over `default`, the options child's bundles a-d and, from the recipe's optional `hpo.space`, `n_draws` seeded random draws s01.. of width/depth/trunk/dropout/lr/weight decay/batch size, freeze to `hpo-frozen.json`, tuned vs default on folds 5-14; `zoo_hpo.py`) and the production pipeline (`workflow-production.json`: initial fit, retrain every `retrain_days`, forward blocks scored against the baselines, every retrain's model indexed in `models.json`; `zoo_production.py`) are regenerated from the recipe with `--hpo-out` / `--production-out`. The production window defaults to W2 and refuses anything past it unless the recipe sets `allow_past_w2`. Nothing in the zoo has been run beyond a one-fold timing probe.
+`configs/run-panel-build.json` builds one memory-mapped panel (W1 + embargo + W2 bars, 91 feature columns, 15 labels) that `configs/source-panel-minute.json` publishes as the `panel-minute` blob source. Selection and zoo read it through dskit's `array_panel` / `panel_torch` / `panel_score` packs (ADR-0260): an arm is a `ColumnSelector`, a zoo cell is a `PanelTrain` + `PanelScore` lane, and a lane trains on the GPU. `configs/zoo-lanes-recipe.json` + `crypto_trading/zoo_lanes.py` generate `configs/workflow-zoo-w1.json` (5 models x 4 losses x pooled/BTC/ETH, plus two baselines, 66 lanes) and the single-read `workflow-zoo-w2.json` skeleton (frozen finalists, W2's fixed bounds). Each model class reads its own selected features (`features.classes.<class>.from`, default: all families). After the zoo, `zoo_lanes pick` ranks the models against the baselines (`zoo-pick.json`); the HPO pipeline (`workflow-hpo.json`: search on the first 4 folds over `default`, the options child's bundles a-d and, from the recipe's optional `hpo.space`, `n_draws` seeded random draws s01.. of width/depth/trunk/dropout/lr/weight decay/batch size, freeze to `hpo-frozen.json`, tuned vs default on folds 5-14; `zoo_hpo.py`) and the production pipeline (`workflow-production.json`: initial fit, retrain every `retrain_days`, forward blocks scored against the baselines, every retrain's model indexed in `models.json`; `zoo_production.py`) are regenerated from the recipe with `--hpo-out` / `--production-out`. The production window defaults to W2 and refuses anything past it unless the recipe sets `allow_past_w2`. Historical zoo and later retained-set studies have run; see
+[the lane note](docs/RE-ENTRY.md) for the frozen recommendation and its limits.
 
 **W4 take test (owner 2026-10-11).** `configs/run-w4-take.json` asks one question over W4 (2026-08-01 to 2026-09-15, W5 never read): does taking the frozen GRU's P(YES) at the touch, one contract, earn money after Kalshi's fee? The fair value is dskit's `PanelHorizonFairValue` (ADR-0262) on the W3 refit (`configs/production-args-w4.json` over `workflow-production.json`, on the panel `run-panel-build-w4.json` builds); one `BucketedBinaryScore` per margin of a grid fixed in the document. Commands: runbook B8.
 
@@ -121,25 +124,30 @@ python -m dskit.onboarding register-source mysource --root ./ob \
     --connector crypto_trading.connectors:SampleConnector \
     --config @configs/source-sample.json --activate
 
-python -m dskit.onboarding acquire --root ./ob \  # 3. pull history, then check it
+# 3. pull history, then check it
+python -m dskit.onboarding acquire --root ./ob \
     --source mysource --stream samples --mode backfill
 python -m dskit.onboarding validate --root ./ob \
     --suite configs/suite-sample.json --snapshot <snapshot-vid>
 
-python -m dskit.onboarding certify --root ./ob \  # 4. OPTIONAL — governance only
+# 4. OPTIONAL — governance only
+python -m dskit.onboarding certify --root ./ob \
     --result <result-vid> --decision certified --by you
 python -m dskit.onboarding publish --root ./ob \
     --dataset mydata --certification <cert-vid>
 
-python -m dskit.pipeline run configs/run-sample.json \   # 5. fit / score
+# 5. fit / score
+python -m dskit.pipeline run configs/run-sample.json \
     --asof 2026-01-01 --adapter crypto_trading
 # execute rows land in docs/decisioning/actions.csv automatically
 
 python -m dskit.journal research "a question" --topic a-question  # 5b. research note
-python -m dskit.journal promote A0001 --criteria empirical  # owner path
+python -m dskit.journal promote A0001 --criteria empirical \
+    --label baseline --purpose compare --relevant-files pipeline_runs/base --locked N  # owner only
 
-python -m dskit.assets init --store ./crypto_trading_store \  # 6. OPTIONAL — a
-    --model configs/asset-model.json                       #    governed catalog
+# 6. OPTIONAL — a governed catalog
+python -m dskit.assets init --store ./crypto_trading_store \
+    --model configs/asset-model.json
 ```
 
 Each command prints the `version_id` the next one wants.

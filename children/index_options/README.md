@@ -1,10 +1,14 @@
 # index_options
 
-Offline, synthetic-only index-options research scaffold. S0 proves ingestion,
-instrument matching and exact expiry cashflows, **not an edge or an executable
-strategy**. No models, broker, vendor adapter, real market data or serving loop.
-ADR-0182 adds a separate real-data research track (Cboe index history, a chain
-recorder, VIX-proxy condor backtest; see below) — still no broker or serving.
+Offline options research with synthetic fixtures, onboarded market-data
+readers, predictive distributions, quarterly forecast tooling and MIO account
+studies. S0 remains the synthetic ingestion/instrument/cashflow scaffold;
+the later research tracks are described below. There is no broker execution
+or serving loop, and research results are not evidence of an executable edge.
+Read [the lane note](docs/RE-ENTRY.md) and the owner-locked
+[study path](docs/decisioning/path.csv) before running a study. Forecast and
+MIO authorizations, sealed periods and source pins remain binding; experimental
+work on other branches is not part of this checkout.
 
 ## Install and test (WSL2)
 
@@ -759,7 +763,7 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # run-equity-condor-robust-backtest-v2.json (ADR-0258: the robust
                            # condor replay with fill_session next, a fills stream, exercise flags)
                            # run-forecast-dispersion-ic.json (ADR-0259: T2 of the edge-and-harvest
-                           # note, the forecast-dispersion IC on the v2 saved inputs; not yet run)
+                           # note, the forecast-dispersion IC on the v2 saved inputs; run 2026-10-10, T2 failed)
                            # run-theta-chain-census.json, run-theta-chain-features.json (ADR-0265: the
                            # H-census and the NBBO chain-day features over the ThetaData sample at
                            # /home/russell/data/thetadata/options-tested, read-only, end_before 2026-01-01)

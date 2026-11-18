@@ -131,14 +131,14 @@ python -m dskit.pipeline run  <doc.json> --asof <YYYY-MM-DD> [--adapter yourpkg]
 python -m dskit.pipeline walkforward <doc.json> --asof <YYYY-MM-DD>  # one run per fold + summary
 python -m dskit.pipeline plan <doc.json>         # resolved DAG, no execution
 python -m dskit.pipeline runs [--root DIR]       # cross-run table: name/asof/hashes/metrics
-python -m dskit.pipeline skill <walk dir>        # forecast vs the training mean (ADR-0067)
-python -m dskit.pipeline ordering <walk dir>     # size (calibration slope) vs order (ADR-0068)
-python -m dskit.pipeline bar <walk dir>...       # the many-attempts bar (ADR-0069)
+python -m dskit.pipeline skill <walk-dir>        # forecast vs the training mean (ADR-0067)
+python -m dskit.pipeline ordering <walk-dir>     # size (calibration slope) vs order (ADR-0068)
+python -m dskit.pipeline bar <walk-dir>...       # the many-attempts bar (ADR-0069)
 python -m dskit.pipeline validate <doc.json>     # shape + identity hash
 # also: demo / synthetic (legacy stage-list grammar)
 
 python -m dskit.assets     init|validate-model|register|get|list|state|transition|lineage|ingest-run|sync-published
-python -m dskit.onboarding init|register-source|acquire|validate|certify|publish|verify
+python -m dskit.onboarding init|register-source|authorize|acquire|watch|validate|certify|publish|verify
 python -m dskit.journal    init|record|research|promote|render|exec
 python -m dskit.production validate|plan|serve|ready|status|verify|reconcile|adopt
 python -m dskit.production arm-request|approve-arm|disarm|halt|reduce|resume

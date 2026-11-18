@@ -1620,8 +1620,11 @@ recorded owner approval.
       `kinds_table.py` and `kinds_report.py`/`kinds_search.py` node
       (permanent — a node that writes is not servable). Next: `kinds_banking`'s
       `Eligibility` and `EventBank`, whose module names no I/O and no `ctx`.
-- [ ] Phase 3 (`exchange_calendars`, prometheus/otel sinks, the stream seam,
-      migrating the onboarding packs onto `resilience.py`).
+- [ ] Phase 3 remaining work: migration of onboarding packs onto
+      `resilience.py` still needs its own completion evidence. The exchange
+      calendar, Prometheus/Otel sinks and `StreamFeed` already ship in
+      `dskit/production/libs/` and `dskit/production/feed.py`; their APIs are
+      documented in `dskit/production/README.md`.
 
 **Two things the plan deliberately leaves open, recorded so they are met as
 decisions rather than surprises.**
@@ -1637,11 +1640,11 @@ decisions rather than surprises.**
   emptying the paging path changes the document's identity. Recorded here
   because the founding ADR deferred it as its own change.
 
-**The goal.** dskit runs documents in batch; it has no seam for running a
+**Original motivation (historical; the production package now ships).**
+At proposal time, dskit ran documents in batch and had no seam for running a
 fitted model FORWARD on a cadence. `children/intraday_poc/intraday_poc/live.py`
-is the only forward loop that exists, it is 1,367 hand-rolled lines, and it is
-where most of that child's HIGH-severity defects live. That is the signal:
-the loop is generic capability sitting in tier 3.
+was then the only forward loop. The proposal identified it as generic
+capability sitting in tier 3; the current package is `dskit.production`.
 
 **What is generic** (belongs in `dskit/`) — restore a run's artifacts with
 the hash verification the packs already do; poll a registered source on a
