@@ -5197,6 +5197,12 @@ class WeeklyOptionPortfolioStudy:
                 self._check_stage1_selection(claim, program_sha256, day)
             first = solver._recorded(dollar, claim["selection"], claim["certificates"])
         screen = dict(solver.last_screen)
+        warm = start.get("warm", "none")
+        # What the week still reads off stage one after the release: the warm start's record (a live solve), the
+        # relax-and-fix record and, for a stage-one warm mode, the groups its book is remembered on. Small values only.
+        started = solver.last_start
+        dollar_solve = None if solver.last_dollar_solve is None else dict(solver.last_dollar_solve)
+        warm_groups = dollar_groups if warm not in ("none", "previous_climb") else None
         # Memory only (owner 2026-11-16): stage one is done; its solver (with its checked copy of the dollar program),
         # its pyomo model, the HiGHS instance and the group-screen LPs are never read again. The model and solver are
         # cyclic garbage the collector would free only at a rare full pass, and glibc keeps HiGHS's freed heap, so
@@ -5204,7 +5210,6 @@ class WeeklyOptionPortfolioStudy:
         solver = dollar = dollar_groups = None
         self._release_stage_one()
         timed_out = "timeout" in first
-        warm = start.get("warm", "none")
         # ADR-0307 Amendment 1: a stage one stopped at its limit WITH an incumbent (the "return" policy's timeout
         # envelope, candidate actions present) starts the climb from that incumbent when the block says so.
         incumbent = timed_out and search.get("incumbent_start", False) and first.get("candidate") is not None
@@ -5248,12 +5253,12 @@ class WeeklyOptionPortfolioStudy:
                 if echoed is not None:
                     local["stage1_warm"] = dict(echoed)
             elif derived is None:
-                started = solver.last_start or {"used": False, "reason": "no_previous_book", "objective": None,
+                started = started or {"used": False, "reason": "no_previous_book", "objective": None,
                                                 "scored": None, "scale": None}
                 # No wall-clock in the record: the replay compares kelly.local whole.
                 local["stage1_warm"] = {"mode": warm, **{k: v for k, v in started.items() if k != "seconds"}}
             carried = first["candidate"] if timed_out else first
-            self._warm_remember(method["id"], warm, program["groups"] if warm == "previous_climb" else dollar_groups,
+            self._warm_remember(method["id"], warm, program["groups"] if warm == "previous_climb" else warm_groups,
                                 metadata,
                                 out["quantities"] if warm == "previous_climb"
                                 else carried["quantities"] if carried is not None else None)
@@ -5261,7 +5266,7 @@ class WeeklyOptionPortfolioStudy:
             # The strategy, its LP bound, the restricted program's objective, its seconds and its support size. A live
             # solve reads them off the solver; a recorded replay carries the recorded ones (a measurement, never
             # re-derived: its selection is what the replay checks); a foreign worker's derived week has none.
-            local["stage1_solve"] = (dict(solver.last_dollar_solve) if solver.last_dollar_solve is not None
+            local["stage1_solve"] = (dollar_solve if dollar_solve is not None
                                      else None if recorded is None
                                      else (recorded.get("kelly", {}).get("local", {}) or {}).get("stage1_solve"))
         stage1_certificates = [{k: v for k, v in c.items() if k != "binding"} for c in first.get("certificates", [])]

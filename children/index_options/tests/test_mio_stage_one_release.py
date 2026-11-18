@@ -60,6 +60,63 @@ def test_releasing_stage_one_before_the_climb_changes_no_result(name, monkeypatc
     assert alive == [0]*len(calls), "the stage-one model is collected before the climb's scorer is built"
 
 
+def _spy_release(monkeypatch):
+    """Count the releases (the real one still runs): every check below reads stage one AFTER it is dropped."""
+    calls = []
+    real = WeeklyOptionPortfolioStudy._release_stage_one
+
+    def spy():
+        calls.append(True)
+        real()
+    monkeypatch.setattr(WeeklyOptionPortfolioStudy, "_release_stage_one", staticmethod(spy))
+    return calls
+
+
+@pytest.mark.parametrize("mode", ["previous_week", "previous_climb"])
+def test_a_live_warm_week_reads_its_start_and_remembers_its_book_after_the_release(monkeypatch, mode):
+    from test_ledger_studies import SHOCK10, _local_world
+
+    # The fixture's weeks share no expiry: carry a leg by right, strike and side so week two is offered a book.
+    monkeypatch.setattr(WeeklyOptionPortfolioStudy, "_contract_key",
+                        staticmethod(lambda meta, item: (meta["symbol"], item["right"], item["strike"], item["sign"])))
+    remembered = []
+    remember = WeeklyOptionPortfolioStudy._warm_remember
+
+    def spy(self, method_id, warm, groups, metadata, quantities):
+        remembered.append(groups)
+        return remember(self, method_id, warm, groups, metadata, quantities)
+    monkeypatch.setattr(WeeklyOptionPortfolioStudy, "_warm_remember", spy)
+    calls = _spy_release(monkeypatch)
+    params, data, method = _local_world(search={"start": {"rho": 0., "shock": {**SHOCK10, "loss_fraction": 1.},
+                                                          "warm": mode}})
+    result = WeeklyOptionPortfolioStudy(params, data)._method(method, None)
+    weeks = [w for w in result["decisions"] if "local" in w.get("kelly", {})]
+    assert len(weeks) >= 2 and len(calls) == len(weeks) == len(remembered)
+    records = [w["kelly"]["local"]["stage1_warm"] for w in weeks]
+    assert all(r["mode"] == mode for r in records)
+    assert records[0]["reason"] == "no_previous_book" and records[1]["reason"] != "no_previous_book"
+    for groups in remembered:   # stage one's groups (its radius) or the climb's program groups: never the dropped None
+        assert groups and (mode == "previous_climb" or all(g["radius"] == 0. for g in groups))
+    remembered.clear()
+    again = WeeklyOptionPortfolioStudy(params, data)._method(method, None, recorded=result)
+    assert again == result and remembered and all(remembered)
+
+
+def test_a_live_relax_fix_week_records_its_dollar_solve_after_the_release(monkeypatch):
+    from test_ledger_studies import _local_world
+    from test_local_start_relax_fix import RECORD_KEYS, RELAX
+
+    calls = _spy_release(monkeypatch)
+    params, data, method = _local_world(RELAX)
+    result = WeeklyOptionPortfolioStudy(params, data)._method(method, None)
+    weeks = [w for w in result["decisions"] if "local" in w.get("kelly", {})]
+    assert weeks and len(calls) == len(weeks)
+    for week in weeks:
+        solve = week["kelly"]["local"]["stage1_solve"]
+        assert set(solve) == RECORD_KEYS and solve["strategy"] == "relax_fix"
+    assert WeeklyOptionPortfolioStudy(params, data)._method(method, None, recorded=result) == result
+
+
 def test_the_worker_puts_arrow_on_the_system_allocator_unless_told_otherwise(monkeypatch):
     import pyarrow as pa
 
