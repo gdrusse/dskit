@@ -28,25 +28,30 @@ python -m dskit.onboarding register-source mysource --root ./ob \
     --connector correlation_arb.connectors:SampleConnector \
     --config @configs/source-sample.json --activate
 
-python -m dskit.onboarding acquire --root ./ob \  # 3. pull history, then check it
+# 3. pull history, then check it
+python -m dskit.onboarding acquire --root ./ob \
     --source mysource --stream samples --mode backfill
 python -m dskit.onboarding validate --root ./ob \
     --suite configs/suite-sample.json --snapshot <snapshot-vid>
 
-python -m dskit.onboarding certify --root ./ob \  # 4. OPTIONAL — governance only
+# 4. OPTIONAL — governance only
+python -m dskit.onboarding certify --root ./ob \
     --result <result-vid> --decision certified --by you
 python -m dskit.onboarding publish --root ./ob \
     --dataset mydata --certification <cert-vid>
 
-python -m dskit.pipeline run configs/run-sample.json \   # 5. fit / score
+# 5. fit / score
+python -m dskit.pipeline run configs/run-sample.json \
     --asof 2026-01-01 --adapter correlation_arb
 # execute rows land in docs/decisioning/actions.csv automatically
 
 python -m dskit.journal research "a question" --topic a-question  # 5b. research note
-python -m dskit.journal promote A0001 --criteria empirical  # owner path
+python -m dskit.journal promote A0001 --criteria empirical \
+    --label baseline --purpose compare --relevant-files pipeline_runs/base --locked N  # owner only
 
-python -m dskit.assets init --store ./correlation_arb_store \  # 6. OPTIONAL — a
-    --model configs/asset-model.json                       #    governed catalog
+# 6. OPTIONAL — a governed catalog
+python -m dskit.assets init --store ./correlation_arb_store \
+    --model configs/asset-model.json
 ```
 
 Each command prints the `version_id` the next one wants.

@@ -6,7 +6,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 
 | Lane | Note | State (one line, dated) |
 |---|---|---|
-| dskit core | "Core" below | 2026-11-15: ADR-0296 device selection and ADR-0317 fault study reviewed and integrated; storage/worktree receipts retain unfinished work and frozen runtimes. |
+| dskit core | "Core" below | 2026-11-17: current documentation reconciled with code; storage maintenance and legacy migration remain paused. |
 | index_options | children/index_options/docs/RE-ENTRY.md | 2026-11-19: MIO speed panel complete (8/8 states); relax faster 8/8, utility +9%, now default; warm dropped; Q1 risk/both accepted 11-18. |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-19: historical 600-entry audit complete; method24 two-cell Kalshi recommendation beat market scores in later W4/W5; retrospective; protected tests closed; two final reviews passed |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
@@ -19,32 +19,43 @@ history questions, the memos and ADRs are reached from the lane note's links.
 
 ## Core (dskit itself)
 
-**Now.** 2026-11-15: reusable device selection (ADR-0296, candidate
-`94e785ac`) and saved-fit forecast faults (ADR-0317, `c38e2b28`)
-passed two fresh independent final lenses each, with zero Critical/Major.
-Explicit-device defaults and frozen studies are unchanged. The stress replay
-and fitted-method refusal fix are also integrated; PR #19 is merged.
+**Now.** 2026-11-17: documentation audit corrected current guides against
+shipped code (candidate `62c2c67e`); see
+`docs/memos/2026-11-17-documentation-code-audit.md` for checks and scope.
+ADR-0296 device selection (`94e785ac`) and
+ADR-0317 saved-fit forecast faults (`c38e2b28`) remain reviewed and integrated,
+with two clean final lenses each. PR #19 is merged; explicit-device defaults
+and frozen study identities remain unchanged. Host maintenance recovered
+113.2 GiB on C: after WSL compaction; recorders and mounts were restored.
+Disk/RAM admission, a data catalog, shared agent guidance and a 15-minute
+storage monitor are installed locally; those workstation tools are outside
+this repository. The alert/hook follow-up passed 25 focused tests.
 
-**Next.** Reconcile remaining reusable candidates individually from the
-review-eligibility manifests. Keep canonical data outside new worktrees and
-check the storage guard before bulk work. Maintenance receipts distinguish
-retired code copies from retained results, dirty work and runtime pins.
-The shared .venv retains an editable import path to the preserved
-`/home/russell/wt/claude-sonnet-5-5` checkout; verify import locations before
-using new main code and do not repoint an environment underneath running jobs.
+**Next.** Continue reusable candidates only through their existing review
+gates. Keep canonical data outside new worktrees and check the storage guard
+before bulk work. Classify legacy data before migration. The shared .venv
+still imports from the preserved `/home/russell/wt/claude-sonnet-5-5`
+checkout; verify imports before using new main code and never repoint an
+active environment. Existing worktree receipts retain unique work and pins.
 
-**Blocked / owner decisions.** Unreviewed experiments retain their gates.
-ADR-0284's last recorded Mac-only dispatch review has four path-mapping
-Majors; this maintenance did not clear it. Windows C: remains low even after
-WSL files were removed; compaction needs a planned interruption.
+**Blocked / owner decisions.** Storage work is incomplete and paused at the
+owner's request. Retirement of the empty 384 GiB D: image and its six pending
+ADR-0313 jobs was approved, as was a WSL upgrade and isolated reclaim test;
+none was executed before the pause. Keep the current MIO batch running.
+WSL remains 2.7.10; automatic disk shrinking is not enabled, and a full distro
+backup was not made. Resume maintenance only when the owner resumes it.
+ADR-0284 still has four recorded Mac path-mapping Majors; this work did not
+clear them. Unreviewed experiments retain their design and study gates.
 
 **Read first.** ADR-0296/0317 in `docs/architecture/decision-log.md`;
 `/home/russell/storage-investigation/2026-11-15/worktree-closeout/maintenance-summary.json`;
-`/home/russell/storage-investigation/storage-policy.json`.
+`/home/russell/storage-investigation/storage-policy.json`;
+`/home/russell/storage-investigation/storage-migration-plan.json`;
+`/home/russell/storage-investigation/2026-11-15/followup/verification.json`.
 
-**Do not.** Rewrite frozen source pins to accept changed code, delete protected
-results or unique unfinished work, or treat development review as real-run or
-deployment approval. ADR-0284 still needs fresh clean reviews. Earlier notes:
+**Do not.** Count WSL free space as additional C: capacity, claim automatic
+reclaim is active, delete protected results or rewrite frozen source pins.
+Development review is not real-run or deployment approval. Earlier notes:
 `docs/archive/re-entry/dskit-core.md`.
 
 ## Protocol

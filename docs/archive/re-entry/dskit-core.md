@@ -1,3 +1,78 @@
+<!-- Archived by documentation wrap, 2026-11-17. -->
+
+## Core (dskit itself)
+
+**Now.** 2026-11-15: ADR-0296 device selection (`94e785ac`) and
+ADR-0317 saved-fit forecast faults (`c38e2b28`) remain reviewed and integrated,
+with two clean final lenses each. PR #19 is merged; explicit-device defaults
+and frozen study identities remain unchanged. Host maintenance recovered
+113.2 GiB on C: after WSL compaction; recorders and mounts were restored.
+Disk/RAM admission, a data catalog, shared agent guidance and a 15-minute
+storage monitor are installed locally; those workstation tools are outside
+this repository. The alert/hook follow-up passed 25 focused tests.
+
+**Next.** Continue reusable candidates only through their existing review
+gates. Keep canonical data outside new worktrees and check the storage guard
+before bulk work. Classify legacy data before migration. The shared .venv
+still imports from the preserved `/home/russell/wt/claude-sonnet-5-5`
+checkout; verify imports before using new main code and never repoint an
+active environment. Existing worktree receipts retain unique work and pins.
+
+**Blocked / owner decisions.** Storage work is incomplete and paused at the
+owner's request. Retirement of the empty 384 GiB D: image and its six pending
+ADR-0313 jobs was approved, as was a WSL upgrade and isolated reclaim test;
+none was executed before the pause. Keep the current MIO batch running.
+WSL remains 2.7.10; automatic disk shrinking is not enabled, and a full distro
+backup was not made. Resume maintenance only when the owner resumes it.
+ADR-0284 still has four recorded Mac path-mapping Majors; this work did not
+clear them. Unreviewed experiments retain their design and study gates.
+
+**Read first.** ADR-0296/0317 in `docs/architecture/decision-log.md`;
+`/home/russell/storage-investigation/2026-11-15/worktree-closeout/maintenance-summary.json`;
+`/home/russell/storage-investigation/storage-policy.json`;
+`/home/russell/storage-investigation/storage-migration-plan.json`;
+`/home/russell/storage-investigation/2026-11-15/followup/verification.json`.
+
+**Do not.** Count WSL free space as additional C: capacity, claim automatic
+reclaim is active, delete protected results or rewrite frozen source pins.
+Development review is not real-run or deployment approval. Earlier notes:
+`docs/archive/re-entry/dskit-core.md`.
+
+
+---
+
+## 2026-11-15 — before host-storage closeout
+
+## Core (dskit itself)
+
+**Now.** 2026-11-15: reusable device selection (ADR-0296, candidate
+`94e785ac`) and saved-fit forecast faults (ADR-0317, `c38e2b28`)
+passed two fresh independent final lenses each, with zero Critical/Major.
+Explicit-device defaults and frozen studies are unchanged. The stress replay
+and fitted-method refusal fix are also integrated; PR #19 is merged.
+
+**Next.** Reconcile remaining reusable candidates individually from the
+review-eligibility manifests. Keep canonical data outside new worktrees and
+check the storage guard before bulk work. Maintenance receipts distinguish
+retired code copies from retained results, dirty work and runtime pins.
+The shared .venv retains an editable import path to the preserved
+`/home/russell/wt/claude-sonnet-5-5` checkout; verify import locations before
+using new main code and do not repoint an environment underneath running jobs.
+
+**Blocked / owner decisions.** Unreviewed experiments retain their gates.
+ADR-0284's last recorded Mac-only dispatch review has four path-mapping
+Majors; this maintenance did not clear it. Windows C: remains low even after
+WSL files were removed; compaction needs a planned interruption.
+
+**Read first.** ADR-0296/0317 in `docs/architecture/decision-log.md`;
+`/home/russell/storage-investigation/2026-11-15/worktree-closeout/maintenance-summary.json`;
+`/home/russell/storage-investigation/storage-policy.json`.
+
+**Do not.** Rewrite frozen source pins to accept changed code, delete protected
+results or unique unfinished work, or treat development review as real-run or
+deployment approval. ADR-0284 still needs fresh clean reviews. Earlier notes:
+`docs/archive/re-entry/dskit-core.md`.
+
 ## Archived 2026-11-15 before maintenance wrap
 
 ## Core (dskit itself)

@@ -23,8 +23,11 @@ for known work, with notes exactly:
 Do not invent Path to Production rows. Only the owner runs:
 
 ```bash
-python -m dskit.journal promote <ID> --criteria empirical|judgemental|n/a
+python -m dskit.journal promote <ID> --criteria empirical \
+    --label <label> --purpose <purpose> --relevant-files <evidence-path> --locked N
 ```
+
+`--criteria` accepts `empirical`, `judgemental` or `n/a`; `--locked` accepts `Y` or `N`.
 
 ## 3. Keep evidence files
 

@@ -7,16 +7,18 @@ dataset is, which model trains, what gates a deployment — lives in a JSON
 document with a stable identity hash. The packages never learn your domain;
 you never edit the packages.
 
-## The four pillars
+## Packages
 
-| Pillar | Package | One line |
+| Purpose | Package | One line |
 |---|---|---|
 | **Pull** | `dskit.onboarding` | connectors acquire data into immutable WORM snapshots; declarative suites validate; certification + publication make evidence |
 | **Store** | `dskit.assets` | a config-driven registry/catalog: content-addressed records, lifecycles, lineage — your asset model is a JSON document, kinds included |
 | **Run** | `dskit.pipeline` | one JSON document declares a whole process as a node DAG; one command plans, runs, and records it |
 | **Journal** | `dskit.journal` | per-child ledger of acquire / research / execute / production; CSV store; generated markdown; owner path-to-production |
+| **Serve** | `dskit.production` | release-bound execution, guards, accounting, monitoring and replay |
+| **Evaluate** | `dskit.evaluation` | event-log reports and declared acceptance criteria |
 
-They compose by files, never imports: onboarding **publishes** pointer manifests
+Their data handoffs use files: onboarding **publishes** pointer manifests
 that assets **syncs** into the catalog; pipeline runs leave run dirs that assets
 **ingests** as observations. Journal hooks label those commands in the child.
 Each pillar stands alone; together they are pull →
@@ -34,7 +36,7 @@ The core has **zero required dependencies** by design: documents must stay
 plannable on a machine with nothing installed. Heavy libraries are optional
 extras, imported only inside a node's `run()` / a connector's `read()`.
 
-## 60 seconds per pillar
+## Quick starts
 
 **Run** — a document in, a run directory out:
 
@@ -71,7 +73,7 @@ declared in `store.json`, not in code.
 
 ```bash
 python -m dskit.onboarding init --root ./ob
-python -m dskit.onboarding register-source vendor --catalog-source vendor-src \
+python -m dskit.onboarding register-source vendor --root ./ob --catalog-source vendor-src \
     --connector localfiles --config '{"path": "./data", "effective_field": "date"}' --activate
 python -m dskit.onboarding acquire  --root ./ob --source vendor --stream prices --mode backfill
 python -m dskit.onboarding validate --root ./ob --suite examples/onboarding/suite-basic.json --snapshot <vid>
@@ -92,7 +94,7 @@ python -m dskit.production ready    serve.json            # release-bound readin
 python -m dskit.production serve    serve.json --once     # one tick at the document's rung
 python -m dskit.production status   serve.json            # rung, breaker, health, last tick, pending refs
 python -m dskit.production verify   serve.json            # walk the hash chain; compare the head to the journal
-python -m dskit.production halt     serve.json --reason "spread blew out"
+python -m dskit.production halt     serve.json --reason operator
 python -m dskit.production outcomes serve.json            # join what happened onto every leg
 python -m dskit.production report   serve.json            # attribution, calibration, the value curve
 python -m dskit.production replay   ./serve/<series-id>   # re-run the tape; diff every field
@@ -158,7 +160,8 @@ and `children/<project>/` the incubator until a child graduates to its own repo.
 
 Each package's own `README.md` covers its config grammar and extension seams:
 [pipeline](dskit/pipeline/README.md) · [assets](dskit/assets/README.md) ·
-[onboarding](dskit/onboarding/README.md) · [journal](dskit/journal/README.md) · [evaluation](dskit/evaluation/README.md). Design history lives in
+[onboarding](dskit/onboarding/README.md) · [journal](dskit/journal/README.md) ·
+[production](dskit/production/README.md) · [evaluation](dskit/evaluation/README.md). Design history lives in
 `docs/architecture/decision-log.md` (ADRs — no decision undocumented).
 
 ## Tests

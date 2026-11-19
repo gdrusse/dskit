@@ -278,7 +278,8 @@ legacy stage-list grammar (below).
   (`document.expanded`, never emitted, never hashed), which is why every
   pre-ADR-0039 hash is unmoved. See `examples/pipeline/foreach-fanout.json`.
 - **Identity**: sha256 over canonical JSON with every `notes` stripped and the
-  top-level `env` / `outputs` / `schedule` sections excluded.
+  top-level `env` / `outputs` / `schedule` / `tracking` sections excluded
+  (`DOC_NON_IDENTITY_SECTIONS` in `document.py`).
 - **Roles** are declared BY the node class, never by the config:
   `data, labels, transform, tensor, accrual, gate, search, signal, train,
   score, stat_test, capital, report, fitted_transform`. The planner attaches

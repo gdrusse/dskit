@@ -5,8 +5,9 @@ Per-child action ledger (ADR-0056). CSV is the store; each child's
 
 ## Process
 
-Many things get tried. The Actions table is the full tape. Path to
-Production is the owner-selected linear chain (a subset of those IDs).
+Many things get tried. `actions.csv` is the full tape; the generated Actions
+table shows its latest 10 entries. Path to Production is the owner-selected
+linear chain (a subset of those IDs).
 
 ```
 acquire  →  research  →  execute  →  production

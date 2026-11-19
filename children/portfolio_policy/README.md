@@ -3,12 +3,11 @@
 Research child for **hold-vs-exit decisions on a long-term Schwab
 portfolio**: for each position, is the expected after-tax, after-cost value
 of holding passively at least the value of cashing out into an active
-strategy? Status: **base machinery complete (ADR-0279), skeptic-reviewed;
-position summary (A0002) reviewed; risk inputs from Schwab daily bars (A0003)
-built, not yet lens-reviewed; tax lots from Schwab transactions (A0004) built,
-round-1 review corrections applied, not yet re-reviewed; the hold verdict page and
-`weekly.sh` reviewed twice before the merge with both, not since; no real Schwab pull yet** —
-every rate in the documents is a placeholder the owner sets. The sections after
+strategy? The first real Schwab advisory run completed on 2026-10-30 using
+`bash weekly.sh 2026-10-30 --no-strategy`; implementation, review evidence and remaining
+connector limitations are summarized in [the lane note](docs/RE-ENTRY.md).
+The configured rates and market assumptions still require owner choices.
+Nothing in this child places an order. The sections after
 "Scoring a past decision run" are the skeleton's generic walkthrough.
 
 ## Hold vs redeploy (ADR-0279)
@@ -312,25 +311,30 @@ python -m dskit.onboarding register-source mysource --root ./ob \
     --connector portfolio_policy.connectors:SampleConnector \
     --config @configs/source-sample.json --activate
 
-python -m dskit.onboarding acquire --root ./ob \  # 3. pull history, then check it
+# 3. pull history, then check it
+python -m dskit.onboarding acquire --root ./ob \
     --source mysource --stream samples --mode backfill
 python -m dskit.onboarding validate --root ./ob \
     --suite configs/suite-sample.json --snapshot <snapshot-vid>
 
-python -m dskit.onboarding certify --root ./ob \  # 4. OPTIONAL — governance only
+# 4. OPTIONAL — governance only
+python -m dskit.onboarding certify --root ./ob \
     --result <result-vid> --decision certified --by you
 python -m dskit.onboarding publish --root ./ob \
     --dataset mydata --certification <cert-vid>
 
-python -m dskit.pipeline run configs/run-sample.json \   # 5. fit / score
+# 5. fit / score
+python -m dskit.pipeline run configs/run-sample.json \
     --asof 2026-01-01 --adapter portfolio_policy
 # execute rows land in docs/decisioning/actions.csv automatically
 
 python -m dskit.journal research "a question" --topic a-question  # 5b. research note
-python -m dskit.journal promote A0001 --criteria empirical  # owner path
+python -m dskit.journal promote A0001 --criteria empirical \
+    --label baseline --purpose compare --relevant-files pipeline_runs/base --locked N  # owner only
 
-python -m dskit.assets init --store ./portfolio_policy_store \  # 6. OPTIONAL — a
-    --model configs/asset-model.json                       #    governed catalog
+# 6. OPTIONAL — a governed catalog
+python -m dskit.assets init --store ./portfolio_policy_store \
+    --model configs/asset-model.json
 ```
 
 Each command prints the `version_id` the next one wants.

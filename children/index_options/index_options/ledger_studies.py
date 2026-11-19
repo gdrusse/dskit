@@ -5120,8 +5120,6 @@ class WeeklyOptionPortfolioStudy:
         scored, never built). Nothing the decision depends on reads the clock, so BOTH routes run the search again and
         refuse a selection that differs from the recorded or claimed one.
         """
-        import copy
-
         from dskit.pipeline.libs.pyomo import RecordedCheckRefusal, TransportActionScore, TransportPortfolioSolve
         from .kelly_local import KellyLocalSearch
 
@@ -5200,15 +5198,17 @@ class WeeklyOptionPortfolioStudy:
             first = solver._recorded(dollar, claim["selection"], claim["certificates"])
         screen = dict(solver.last_screen)
         warm = start.get("warm", "none")
-        started = None
-        if warm != "none" and recorded is None and derived is None:
-            started = copy.deepcopy(solver.last_start) or {
-                "used": False, "reason": "no_previous_book", "objective": None, "scored": None, "scale": None}
-        dollar_solve = copy.deepcopy(solver.last_dollar_solve) if relax_fix else None
-        # Retain the small procedure records, not the completed solver and its private program, during the climb.
-        # The warm contract map below uses configured: dollar_groups differs only in the unused radius field.
+        # What the week still reads off stage one after the release: the warm start's record (a live solve), the
+        # relax-and-fix record and, for a stage-one warm mode, the groups its book is remembered on. Small values only.
+        started = solver.last_start
+        dollar_solve = None if solver.last_dollar_solve is None else dict(solver.last_dollar_solve)
+        warm_groups = dollar_groups if warm not in ("none", "previous_climb") else None
+        # Memory only (owner 2026-11-16): stage one is done; its solver (with its checked copy of the dollar program),
+        # its pyomo model, the HiGHS instance and the group-screen LPs are never read again. The model and solver are
+        # cyclic garbage the collector would free only at a rare full pass, and glibc keeps HiGHS's freed heap, so
+        # without this they stay resident under the climb's scorer. No value, order, seed or option changes.
         solver = dollar = dollar_groups = None
-        _return_freed_memory()
+        self._release_stage_one()
         timed_out = "timeout" in first
         # ADR-0307 Amendment 1: a stage one stopped at its limit WITH an incumbent (the "return" policy's timeout
         # envelope, candidate actions present) starts the climb from that incumbent when the block says so.
@@ -5253,10 +5253,12 @@ class WeeklyOptionPortfolioStudy:
                 if echoed is not None:
                     local["stage1_warm"] = dict(echoed)
             elif derived is None:
+                started = started or {"used": False, "reason": "no_previous_book", "objective": None,
+                                                "scored": None, "scale": None}
                 # No wall-clock in the record: the replay compares kelly.local whole.
                 local["stage1_warm"] = {"mode": warm, **{k: v for k, v in started.items() if k != "seconds"}}
             carried = first["candidate"] if timed_out else first
-            self._warm_remember(method["id"], warm, program["groups"] if warm == "previous_climb" else configured,
+            self._warm_remember(method["id"], warm, program["groups"] if warm == "previous_climb" else warm_groups,
                                 metadata,
                                 out["quantities"] if warm == "previous_climb"
                                 else carried["quantities"] if carried is not None else None)
@@ -5264,7 +5266,7 @@ class WeeklyOptionPortfolioStudy:
             # The strategy, its LP bound, the restricted program's objective, its seconds and its support size. A live
             # solve reads them off the solver; a recorded replay carries the recorded ones (a measurement, never
             # re-derived: its selection is what the replay checks); a foreign worker's derived week has none.
-            local["stage1_solve"] = (dict(dollar_solve) if dollar_solve is not None
+            local["stage1_solve"] = (dollar_solve if dollar_solve is not None
                                      else None if recorded is None
                                      else (recorded.get("kelly", {}).get("local", {}) or {}).get("stage1_solve"))
         stage1_certificates = [{k: v for k, v in c.items() if k != "binding"} for c in first.get("certificates", [])]
@@ -5749,6 +5751,15 @@ class WeeklyOptionPortfolioStudy:
         for quotes in self._quotes.values():
             if isinstance(quotes, _SQLiteQuoteView):
                 quotes.close(verify=verify)
+
+    @staticmethod
+    def _release_stage_one():
+        """Free what a finished stage one left behind before the climb builds its scorer (memory only).
+
+        :meth:`_local_search_week` drops its last references to the stage-one solver and model first; collecting and
+        trimming here returns them, and HiGHS's freed heap, to the OS (:func:`_return_freed_memory`).
+        """
+        _return_freed_memory()
 
     def _release_week(self, hedge=None):
         """Release what one recorded decision week built (memory only: no value, order, seed or option changes).

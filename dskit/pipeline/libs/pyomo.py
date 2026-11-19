@@ -5973,8 +5973,9 @@ class TransportPortfolioSolve(PyomoSolve):
             if variable.parent_component() is model.x:
                 variable.fix()
         name = self.params.get("solver", DEFAULT_SOLVER)
+        solver = self._resolve_solver()
         try:
-            results = self._resolve_solver().solve(model)
+            results = solver.solve(model)
         except RuntimeError as exc:
             # appsi raises instead of returning when the fixed actions are infeasible. Only a utility program
             # converts it (its foreign actions can breach the wealth floor); a dollar program keeps the raise, except
@@ -5985,7 +5986,7 @@ class TransportPortfolioSolve(PyomoSolve):
                                            "dual_pricing", "pricing") from exc
             if self.params.get("incumbent_audit", "raise") != "uncertified":
                 raise
-            results = self._price_apart(model)
+            results = self._price_apart(model, self._highs_status(solver))
         priced = SolveRecord.from_solve(model, results, name, 0.)
         if priced.termination != "optimal":
             raise RecordedCheckRefusal("recorded actions could not be priced: "+str(priced.termination),
@@ -5994,7 +5995,7 @@ class TransportPortfolioSolve(PyomoSolve):
     #: ADR-0316 Amendment 5: the audit check of an incumbent whose fixed actions the pricing LP found infeasible.
     ACTION_ROWS_CHECK = "action_rows"
 
-    def _price_apart(self, model):
+    def _price_apart(self, model, status=None):
         """Price a dollar program's fixed actions with its action rows deactivated (ADR-0316 Amendment 5).
 
         ``model.rows`` holds every row of a dollar program, and each reads only the actions, the exclusive sides and
@@ -6005,20 +6006,101 @@ class TransportPortfolioSolve(PyomoSolve):
         over a cap are feasible to the scorer and infeasible to the fixed LP (2021Q1
         ``kelly075_ls_fast_hedged_static_lp``, week 2021-03-01). The rows are restored whatever happens, and the model
         is marked ``_transport_priced_apart`` so :meth:`extract` returns the ``incumbent_audit`` envelope with check
-        :attr:`ACTION_ROWS_CHECK`. A second infeasibility is refused as ``dual_pricing``.
+        :attr:`ACTION_ROWS_CHECK`. A second raise, or a rows-off price no action row explains, goes to
+        :meth:`_price_linear` (ADR-0316 Amendment 6); a raise there too is refused as ``dual_pricing``, naming HiGHS's
+        model status of every attempt (``status``: the first, rows-on solve's).
         """
         self.log.warning("fixed actions infeasible to the pricing LP at its own tolerance: priced apart from their "
-                         "action rows, which the scorer judges (incumbent_audit %s)", self.ACTION_ROWS_CHECK)
+                         "action rows, which the scorer judges (incumbent_audit %s; HiGHS model status %s)",
+                         self.ACTION_ROWS_CHECK, status)
+        solver = self._resolve_solver()
         model.rows.deactivate()
         try:
-            results = self._resolve_solver().solve(model)
-        except RuntimeError as exc:
-            raise RecordedCheckRefusal("recorded actions could not be priced: infeasible apart from their rows",
-                                       "dual_pricing", "pricing") from exc
+            results = solver.solve(model)
+        except RuntimeError:
+            results = None
         finally:
             model.rows.activate()
-        model._transport_priced_apart = True
-        return results
+        if results is not None:
+            try:
+                explained = self._rows_audit(self._action_quantities(model)) is not None
+            except ValueError:
+                explained = True        # integers the scorer refuses: extract refuses them by name, as before
+            if explained:
+                model._transport_priced_apart = True
+                return results
+        apart = "Optimal, no action row over its bound" if results is not None else self._highs_status(solver)
+        return self._price_linear(model, results, [("rows", status), ("apart", apart)])
+
+    def _price_linear(self, model, apart, statuses):
+        """Price fixed actions as a linear program, when the integer-typed pricing raised (ADR-0316 Amendment 6).
+
+        appsi hands HiGHS a fixed action as an INTEGER column (bounds equal to its value), so every pricing solve
+        above runs HiGHS's MIP solver, which re-checks its final point against ``mip_feasibility_tolerance``. That
+        check is absolute: with the stage one's 1e-9, a row whose fixed actions fold to a constant of about 1e7 (a
+        large book's loss at a far grid point) misses it by floating-point rounding alone, and HiGHS ends "MIP solver
+        claims optimality, but with ... primal infeasibilities ... Setting model status to Solve error", rows on or
+        off (2021Q1 ``..._dte_risk_s_lp`` week 8, ``..._dte25_s_lp`` week 5, 2020Q1 ``ls075hs5``). Here the
+        exclusive sides are fixed as the actions imply (:meth:`_complete_start`) and every fixed integer variable is
+        typed continuous for this solve only: the feasible set is the same point, and HiGHS solves an LP at its LP
+        tolerance (so an action row over its bound by less than HiGHS's LP feasibility tolerance, about 1e-7, prices
+        rows on without the ``action_rows`` audit the integer-typed route would have recorded; the scorer still judges
+        every row at ``parity_tolerance``). Rows on first: an optimum there is the incumbent's ordinary price (no audit
+        of its own). Rows off
+        next (``apart`` None only): the :attr:`ACTION_ROWS_CHECK` envelope, as :meth:`_price_apart`. Domains, sides
+        and rows are restored whatever happens. ``apart`` (a rows-off price no action row explains) is returned
+        marked apart when the rows-on LP raises too, so :meth:`extract` refuses it by name exactly as before.
+        """
+        from pyomo.environ import Reals, Var, value
+
+        statuses, relaxed = list(statuses), []
+        try:
+            for (i, k) in model.side:
+                a, _b = self._groups[i]["exclusive"][k]
+                model.side[i, k].fix(1 if value(model.x[i, a]) else 0)
+            relaxed = [(v, v.domain) for v in model.component_data_objects(Var)
+                       if v.fixed and not v.is_continuous()]
+            if any(not v.is_continuous() for v in model.component_data_objects(Var) if not v.fixed):
+                statuses.append(("linear", "unfixed integer variable"))
+            else:
+                for v, _domain in relaxed:
+                    v.domain = Reals
+                for rows in ((True,) if apart is not None else (True, False)):
+                    if not rows:
+                        model.rows.deactivate()
+                    solver = self._resolve_solver()
+                    try:
+                        results = solver.solve(model)
+                    except RuntimeError:
+                        statuses.append(("linear" if rows else "linear_apart", self._highs_status(solver)))
+                        continue
+                    self.log.warning("fixed actions priced as a linear program (rows %s) after the integer-typed "
+                                     "pricing raised: %s", "on" if rows else "off",
+                                     ", ".join(f"{k} {s}" for k, s in statuses))
+                    if not rows:
+                        model._transport_priced_apart = True
+                    return results
+        finally:
+            model.rows.activate()
+            for v, domain in relaxed:
+                v.domain = domain
+            for key in model.side:
+                model.side[key].unfix()
+        if apart is not None:
+            model._transport_priced_apart = True
+            return apart
+        raise RecordedCheckRefusal("recorded actions could not be priced: infeasible apart from their rows (HiGHS "
+                                   "model status: " + ", ".join(f"{k} {s}" for k, s in statuses) + ")",
+                                   "dual_pricing", "pricing")
+
+    @staticmethod
+    def _highs_status(solver):
+        """HiGHS's own model status after a solve appsi raised on (its words name no status), or None off HiGHS."""
+        try:
+            highs = solver._solver_model
+            return str(highs.modelStatusToString(highs.getModelStatus()))
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            return None
 
     def _rows_audit(self, quantities):
         """Return the :attr:`ACTION_ROWS_CHECK` audit of integer ``quantities`` (the actions as priced, before any
@@ -6418,7 +6500,10 @@ class TransportActionScore:
         if defects:
             raise ValueError("; ".join(defects))
         self.params = copy.deepcopy(params)
-        # _checked_program already copies groups, caps and joint rows. Copy only the utility block it normalizes.
+        # Memory only (owner 2026-11-16): the private copy IS the checked one. ``_checked_program`` deep-copies the
+        # groups, caps and joint rows itself; the utility block, whose scenario terms ``_checked_utility`` normalizes
+        # in place, is copied here. A second whole-program copy kept beside them was never read: same values, same
+        # identity, and the caller's program is still never mutated.
         if isinstance(program, dict) and "utility" in program:
             program = {**program, "utility": copy.deepcopy(program["utility"])}
         (self.groups, self.caps, self.duals, self.joint,
