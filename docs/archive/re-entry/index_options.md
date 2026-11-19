@@ -1,3 +1,81 @@
+<!-- Archived by Claude Opus 5.5 on 2026-11-19 at MIO takeover wrap -->
+
+# RE-ENTRY - index_options
+
+Updated 2026-11-19 by GPT-6; owner requested transfer to Claude.
+
+## Now
+
+- Combined MIO evaluation is INCOMPLETE. Only Jan 4, 2021 has real plain/relax results on both WSL and Mac; no universal best method is established.
+- Shared frozen runner v2 passed focused tests and WSL tiny plain/relax plus Mac tiny plain. Mac tiny relax remains unrun. These are runner checks, not additional real panel cases.
+- Jan 11 strict capture failed a 3-ULP rejected-order raw-hedge-unit comparison. Its artifacts remain ineligible. A narrowly scoped NEW private numerical-state diagnostic is approved in Phase 0 but implementation is unfinished.
+- Q2 two-date fixed-action compatibility passed; full-quarter compatibility is source-closed/tiny-qualified but unrun. The a1 live Q2 control completed but failed exact historical-pick acceptance; it is unpublished and rankings remain provisional.
+- Codex stopped substantive work at owner request; this worktree is transferred to Claude. Durable evidence is outside Git under the run directory named in the handoff.
+- Earlier ADR-0317/fitted-method fixes and device selection were integrated. ADR-0314 stock comparison remains provisional pending shared hedge-overlay defect scope; five stock arms completed, three were funding-infeasible. This handoff changes none of those decisions.
+
+## Next
+
+1. Follow the bounded handoff: finish existing Jan 11 diagnostic, qualify the native boundary, and run remaining prespecified real states with fresh resource admission. Reuse unchanged source closures; do not rebuild the framework or rerun Jan 4.
+2. Finish full Q2 fixed-action compatibility and authorized combined-feature tests when their gates permit. Report measured results and limitations in the final memo.
+3. Retain the separate shared hedge-overlay investigation and prior owner decisions; archived note contains its evidence links.
+
+## Blocked / owner decisions
+
+- No complete speed-panel or combined-feature conclusion. No completed final memo yet.
+- Official Q2 primary comparator/publication/dependency replacement requires a concrete owner decision after compatibility evidence; private numerical-state qualification does not waive it.
+- Prior hedge-overlay scope, stock funding policy, A0006 wording, hedge costs, parity-forward mark, hard-to-borrow, origin_two, E1b and config-manifest issues remain unresolved.
+
+## Read first
+
+- [Claude handoff and interim memo](../../../docs/memos/2026-11-19-mio-claude-handoff.md)
+- [Durable study state](/home/russell/data/index_options/runs/mio-combined-evaluation/v20261117/study-state.json)
+- [Locked Path](decisioning/path.csv)
+- [Implementation workflow](../../../docs/skills/implementation-workflow.md)
+- [Storage policy](/home/russell/storage-investigation/storage-policy.json)
+
+## Do not
+
+- Treat tiny fixtures as real panel results; accept failed strict captures; silently change frozen methods, gates or primary comparators; restart owner-halted Q1 risk/both; restart Luna.
+- Use 2024+ data, unseal protected holdouts, view forecasts/scores, edit locked Path or A0010, or claim optimality/profit conclusions from one state.
+- Run unguarded compute, add Windows and WSL RAM, lower reserves, delete protected data, or change another session's checkout. Do not merge unfinished work.
+
+<!-- Archived by GPT-6 on 2026-11-19 at owner handoff -->
+
+# RE-ENTRY - index_options
+
+Updated 2026-11-15 by GPT-6.
+
+## Now
+
+- Reusable ADR-0317 stress replay and the fitted-method refusal fix landed in `c38e2b28` (PR #19). Two fresh final lenses found zero Critical/Major; focused checks passed. Device selection in `94e785ac` has its own two clean final lenses and saved-fit/source-pin checks. These development integrations change no frozen run document, Path row, or study approval.
+- ADR-0314 daily stock replay is frozen on main at `82bf83d2`; the operational v11 bundle and final queues were independently cleared by Luna and Terra. The stock sleeve uses saved option books and a daily next-open share hedge; it never re-solves options.
+- All eight ADR-0307 Kelly 050/075 option-only baselines were reattested across 2019Q4, 2020Q1, 2021Q1 and 2021Q2. All eight stock arms were attempted under unchanged v11 policy: five completed with 218 fills total; 2019Q4-075 and both 2020Q1 arms are funding-infeasible at the exact settled-cash guard. They are not Z/time-outs.
+- The owner comparison is [on D:](D:/dskit-stock-hedge-owner-20261113/owner-eight-comparison.html), SHA256 `a2d9162626e3eb651d9de0587d6d23430637f09b4cebd5726a8d0e19915e077f`. [Final verification](/home/russell/mnt/adr0313-research/daily-stock-4q/final-stock-eight-verification.json) SHA256 `5750b14fb6a7bf4497198fa134f096b568c893ca8b8dd25499cc81bbb0d61143` binds all eight receipts and 45 completed output files. The owner reported a separate Claude multistart2 hedge run was wrong; it shares the pinned hedge_overlay.py blob. The economic comparison is provisional until the cause and ADR-0307 impact are scoped.
+- The final queue is terminal with no five-hour events or active lane worker. Its completion SHA256 is `3915bca7f3a835deadaa49ac5ad8ad07c22a62da44492a16a183d3b5d79496a7`; the transient OS exit remains independently unknown. No Claude process was stopped by this lane.
+
+## Next
+
+1. Scope the owner-reported Claude multistart2 hedge defect against the shared overlay and ADR-0307 baseline before treating the comparison as decision evidence. Preserve all pinned results.
+2. Owner decides whether a separately named cash-feasible stock policy is worth proposing for the three infeasible arms. Any funding, cap or cost change needs an ADR, synthetic failing tests and independent Luna/Terra review.
+3. Keep unrelated ADR-0313/0315 work in its own reviewed lane. Recheck WSL/Windows/C:/D: resources before any further compute.
+
+## Blocked / owner decisions
+
+- Unresolved shared hedge-overlay defect scope; funding policy for three infeasible stock sleeves; A0006 wording; placeholder hedge costs; parity-forward mark versus spot; hard-to-borrow unreadable window; origin_two shrinkage; E1b; gross-share hedge cost; stale test_configs manifest; and prior instantiator sign-off. This run decides none of them.
+
+## Read first
+
+- [ADR-0314 amendments](../../../docs/architecture/decision-log.md)
+- [Locked Path](decisioning/path.csv)
+- [Owner comparison](D:/dskit-stock-hedge-owner-20261113/owner-eight-comparison.html)
+- [Final verification](/home/russell/mnt/adr0313-research/daily-stock-4q/final-stock-eight-verification.json)
+
+## Do not
+
+- Edit Path or the nine A0010 formulations; unseal 2022-2023 economics before the owner's three picks; use 2024+ data; view forecasts or scores.
+- Use the provisional comparison as decision evidence until the shared hedge issue is scoped. Do not relabel a funding-infeasible arm as complete or Z, or infer OS exit zero from archived protocol completion.
+
+
 ## Archived 2026-11-15 before maintenance wrap
 
 # RE-ENTRY - index_options
