@@ -1,5 +1,32 @@
 # MIO evaluation: final memo for the 2026-11-19 session
 
+## Update, 22:40 UTC: all 8 prespecified states run
+
+On owner instruction ("run all of this"), all 8 frozen states were run on WSL. Each run used the native procedure, 1 thread and a 12 GiB cap, and was rescored independently. Utility is the exact rescored value; higher is better. The data is in `EV/speed-panel-results-20261119.json`.
+
+| State | Plain s / utility | Relax s / utility | Warm s / utility |
+|---|---|---|---|
+| Q2 Apr 1 (cold) | 499.0 / 0.00 (cash) | 179.8 / 173.48 | n/a |
+| Q2 Apr 20 | 505.3 / 973.57 | 192.2 / 842.44 | 572.8 / 577.23 |
+| Q2 Jun 8 | 169.8 / 1158.88 | 138.4 / 1497.05 | 194.1 / 1158.88 (same picks as plain) |
+| Q3 Jul 1 (cold) | 271.3 / 1489.02 | 154.5 / 1582.73 | n/a |
+| Q3 Jul 20 | 325.4 / 277.50 | 199.3 / 275.93 | 403.2 / 277.50 (same picks as plain) |
+| Q3 Aug 3 | 189.1 / 559.61 | 142.9 / 588.39 | 224.8 / 559.61 (same picks as plain) |
+| Q1 Jan 4 | 216.9 / 339.20 | 178.0 / 348.63 | n/a |
+| Q1 Jan 11 | 284.4 / 394.29 | 230.8 / 360.80 | 369.4 / 394.29 (same picks as plain) |
+
+- **Relax.** It was faster in 8 of 8 states. Total solve time was 1416 s against 2461 s for plain, 42% less. It scored higher in 5 of 8 states, and its summed utility was 5669 against 5192 (+9%). Its losses were Apr 20 (−13%), Jan 11 (−8.5%) and Jul 20 (−0.6%).
+- **Plain is not a certified baseline.** Its stage 1 stopped on the gap/time limit on Apr 1 and Apr 20. On Apr 1 it spent 499 s and ended in cash.
+- **Warm start.** It is a MIP start from the previous climb. In 4 of 5 states it reproduced plain's picks exactly while running 14–27% slower. On Apr 20 it was both slower and worse (577 against 974). It brings no benefit, so warm start is dropped.
+- **Decision revised:** on this evidence **relax is the default solve mode**, replacing the earlier plain default made on 2 states. Plain remains the reference when time allows.
+- **Disclosed state-capture tolerances:**
+  - Jan 11: one rejected-order `units_raw` difference of 3 ULP.
+  - Q2 and Q3: owner-accepted hedge-float noise of at most 4e-14 shares, under the class `owner_accepted_hedge_float_noise`; all integer fields exact. This covers 20 differences in Q2 and 13 in Q3, plus 2 eligible rejected-order differences in Q3.
+  - The strict a1 Q2 capture remains failed and preserved.
+- **Not run:**
+  - Mac duplicates: the owner waived reproducibility.
+  - Combined features beyond these arms; see `EV/combined-feature-inventory-20261119.json`. The Q1 risk/both arms were already re-run and accepted on 2026-11-18.
+
 2026-11-19, written by Claude Opus 5.5 after taking over from Codex
 ([handoff](2026-11-19-mio-claude-handoff.md)). The evidence lives outside Git:
 `RUN=/home/russell/data/index_options/runs/mio-combined-evaluation/v20261117`,

@@ -1,26 +1,27 @@
 # RE-ENTRY - index_options
 
-Updated 2026-11-19 by Claude Opus 5.5 (MIO takeover from Codex, wrapped).
+Updated 2026-11-19 by Claude Opus 5.5 (MIO speed panel complete; wrapped).
 
 ## Now
 
-- Combined MIO evaluation INCOMPLETE: 2/8 real speed states. Jan 4 (WSL+Mac) and Jan 11 (WSL) plain/relax done; relax ~19% faster in all three pairs, quality mixed (+2.8%, -2.5%, -8.5%). No universal best method.
-- Jan 11 private numerical state-only artifact released (a2): only the linked GME rejected-order `units_raw` differs (3 ULP). Old strict a1 artifact stays failed.
-- Full Q2 fixed-action compatibility ran all 14 decisions but FAILED strict comparison at a 6.6e-14 `hedge.counts.rounding_residual` diagnostic; later fields untraversed; no gate relaxed.
-- Frozen panel v3 lock binds the Jan 11 a2 case; Mac tiny plain+relax qualified. Evidence is outside Git (paths in the final memo).
-- ADR-0314 stock comparison remains provisional pending the shared hedge-overlay defect scope; unchanged here.
+- MIO speed panel COMPLETE: all 8 prespecified frozen states (Q1 Jan 4/Jan 11, Q2 Apr 1/Apr 20/Jun 8, Q3 Jul 1/Jul 20/Aug 3) ran plain and relax on WSL; warm on the 5 states with a prior book.
+- Relax: faster in 8/8 states (1416 s vs 2461 s total, -42%), higher utility in 5/8, summed utility +9%. Losses on Apr 20 (-13%), Jan 11 (-8.5%) and Jul 20 (-0.6%). Decision: relax is the default solve mode.
+- Warm (previous-climb MIP start): same picks as plain in 4/5, slower each time, and worse on Apr 20. Dropped.
+- Plain's stage 1 often stops at its gap/time limit (it ended in cash on Q2 Apr 1), so plain is not a certified baseline.
+- Q2 fixed-action accounting reproduces archived e2 economics (picks and P&L exact). The a1 live Q2 P&L gap comes from the solve, not the accounting.
+- Q1 risk/both were re-run and accepted on 2026-11-18 (+17,641 vs control +26,782); the old "owner-halted" note was stale.
+- Evidence lives outside Git under the run dir (paths in the final memo). The frozen-panel runner (v9 lock), the Q2/Q3 prefix capture with the disclosed noise class, the Q3 quote cache and the warm arm are all reviewed (no Critical/Major).
 
 ## Next
 
-1. Decided 2026-11-19 (owner delegated): plain is the default solve mode; the speed panel stops at 2 states. Full-Q2 strict check already matched picks, P&L and headline accounting before its diagnostic stop, so a1 reproduces e2 economics for fixed actions. No numerical traversal needed.
-2. Next study: solve reproducibility. The same code gives different picks across hosts (Jan 4 plain: Mac 357.66 vs WSL 339.20), and a1 live Q2 diverged from e2 by solve, not accounting. Make the weekly solve deterministic or certified, require identical picks on both hosts for Jan 4 and Jan 11, then rerank formulations.
-3. Warm start for Jan 11 (native overlap) still needs native-positive qualification; Mac real runs need >=16.5 GiB available.
+1. Owner decision: adopt relax as the production default. If adopted, rerun the affected quarter controls with relax under the official harness.
+2. Combined calibration + risk + joint-history arm: never run on real data; needs its Q2 lock and reviews (EV/combined-feature-inventory-20261119.json).
+3. Reproducibility (cross-host identical picks) is deferred by the owner; revisit before any production claim.
 
 ## Blocked / owner decisions
 
-- Official Q2 primary comparator/publication/dependency change needs a concrete owner decision (skeptic-review.md:36); the private numerical extension does not cover it.
-- Q1 risk/both remain owner-halted; early close unsupported in the static-hedge/DTE setup.
-- Prior hedge-overlay scope, stock funding policy, A0006 wording, hedge costs, parity-forward mark, hard-to-borrow, origin_two, E1b and config-manifest issues remain unresolved.
+- The official Q2 primary comparator/publication change still needs a concrete owner decision (skeptic-review.md:36).
+- Close candidates are unsupported beside the static hedge/DTE stack. Prior hedge-overlay, stock funding, A0006, hedge-cost, parity-forward, hard-to-borrow, origin_two, E1b and config-manifest issues remain unresolved.
 
 ## Read first
 
@@ -28,10 +29,9 @@ Updated 2026-11-19 by Claude Opus 5.5 (MIO takeover from Codex, wrapped).
 - [Codex handoff](../../../docs/memos/2026-11-19-mio-claude-handoff.md)
 - [Takeover status log](/home/russell/data/index_options/runs/mio-combined-evaluation/v20261117/claude-takeover-status.md)
 - [Locked Path](decisioning/path.csv)
-- [Storage policy](/home/russell/storage-investigation/storage-policy.json)
 
 ## Do not
 
-- Treat tiny fixtures as real panel results; accept failed strict captures; silently change frozen methods, gates or primary comparators; restart owner-halted Q1 risk/both; restart Luna.
-- Use 2024+ data, unseal protected holdouts, edit locked Path or A0010, or claim optimality/profit conclusions from two states.
-- Run unguarded compute, add Windows and WSL RAM, lower reserves, delete protected data, or merge this branch's unfinished code into main.
+- Treat the owner-accepted hedge-noise states as strict replays, relabel the failed strict a1 Q2 capture, or present tiny fixtures as real results.
+- Use 2024+ data, unseal holdouts, edit locked Path or A0010, or claim profit from solver-speed states.
+- Run unguarded compute, add Windows and WSL RAM, or lower reserves.
