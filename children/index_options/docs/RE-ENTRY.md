@@ -12,9 +12,9 @@ Updated 2026-11-19 by Claude Opus 5.5 (MIO takeover from Codex, wrapped).
 
 ## Next
 
-1. Owner decision: numerical-audit traversal for full Q2 (official comparator scope), and whether to capture the six remaining states (Q2 Apr 1/Apr 20/Jun 8, Q3 Jul 1/Jul 20/Aug 3) or decide relax vs plain on two states.
-2. Mac real Jan 11 when the Mac has >=16.5 GiB available: mount a read-only capture alias, revise the case's `mac_mounts`, run, then rescore on WSL.
-3. Warm start for Jan 11 (native overlap) needs genuine native-positive qualification first; generic warm execution is unimplemented.
+1. Decided 2026-11-19 (owner delegated): plain is the default solve mode; the speed panel stops at 2 states. Full-Q2 strict check already matched picks, P&L and headline accounting before its diagnostic stop, so a1 reproduces e2 economics for fixed actions. No numerical traversal needed.
+2. Next study: solve reproducibility. The same code gives different picks across hosts (Jan 4 plain: Mac 357.66 vs WSL 339.20), and a1 live Q2 diverged from e2 by solve, not accounting. Make the weekly solve deterministic or certified, require identical picks on both hosts for Jan 4 and Jan 11, then rerank formulations.
+3. Warm start for Jan 11 (native overlap) still needs native-positive qualification; Mac real runs need >=16.5 GiB available.
 
 ## Blocked / owner decisions
 

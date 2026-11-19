@@ -93,12 +93,39 @@ files and `EV/mac-wsl-jan4-pair-method-priorities.json`.
 - **Combined features.** Untested beyond the arms above. Early close is
   unsupported in the static-hedge/DTE setup, and Q1 risk/both stay owner-halted.
 
-## Decisions for the owner
+## Decisions (owner delegated: "make decisions that establish strong, consistent strategies")
 
-1. **Full Q2 comparison.** Should a numerical-audit traversal, like the Jan 11
-   observer, cover the full Q2 comparison? This touches the official comparator
-   scope, so it needs your approval under skeptic-review.md:36. The Q2 primary
-   comparator proposal is still open.
-2. **Remaining six states.** Should I build Q2/Q3 prefix captures for them, at
-   about 13 min of WSL each plus a reviewed binding? Or is the 2-state evidence
-   enough to decide relax versus plain?
+1. **Plain is the default solver mode, and the speed panel stops at 2
+   states.** Relax saved about 20% of solve time, a few minutes per quarter, at
+   a quality cost of up to 8.5%. A consistent strategy should not trade
+   solution quality for that. Six more captures would only refine a speed
+   question, so they are not worth the compute.
+2. **No full-Q2 numerical traversal is needed.** The strict comparator walks
+   the reference's keys in order: `method`, `pnl`, `stress_pnl`,
+   `final_equity`, `contributions`, `twr`, `max_drawdown`, `fees`, `wins`,
+   `losses`, `contracts`, `unfilled`, `deposits`, then `hedge`. Every key up to
+   `deposits` matched before it stopped inside `hedge` on a diagnostic counter.
+   All 14 integer pick matrices matched exactly, and quarter P&L reproduced
+   5448.86 within $0.01. **Given the same actions, a1 reproduces the archived
+   e2 economics.** The unchecked tail (trades, curve and decisions) would only
+   confirm this.
+
+## What this means for strategy consistency
+
+- **The P&L gap comes from the solve, not the accounting.** The a1 live Q2
+  control earned 4681.76 against e2's 5448.86. Because fixed-action accounting
+  matches, the gap must come from the solver choosing different picks; the
+  first divergence was on Apr 6.
+- **The same code on different hosts also picks differently.** On Jan 4 the
+  Mac's plain scored 357.66 and WSL's scored 339.20, both from frozen inputs.
+- **So the formulation as solved is not reproducible.** Its picks, and
+  therefore its P&L, depend on solver path, host and time limits. That is the
+  main obstacle to calling any formulation a consistent strategy, and it is
+  larger than any plain-versus-relax difference.
+- **Recommended next study:**
+  1. Make the weekly solve deterministic, or certify it optimal: fixed seeds,
+     a deterministic HiGHS mode, a certified gap or a bound on the local
+     search.
+  2. Rerun Jan 4 and Jan 11 on both hosts and require identical picks.
+  3. Only then rerank the formulations.
+- This study needs no holdout and no gate change.
