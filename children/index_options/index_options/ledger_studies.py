@@ -3356,7 +3356,14 @@ class WeeklyOptionPortfolioStudy:
     #: rejects an order that sells one in the money at the fill spot, with the same code. Absent, nothing changes.
     _NOT_IN_THE_MONEY = "short_not_in_the_money"
     _IN_THE_MONEY = "short_in_the_money"
-    _KELLY_OPTIONAL_KEYS = _KELLY_OPTIONAL_KEYS | {_ABOVE_EXERCISE, _NOT_IN_THE_MONEY}
+    #: ADR-0324: ``premium_cover`` (beta, a finite number >= 0) adds one linear row to every option group after every
+    #: candidate cut and the hedge rewrite: per book (one name and expiry), premium paid for bought options (with
+    #: their fees) is at most beta x the premium received for sold ones (net of their fees), at decision prices; the
+    #: stock hedge is outside it. Stage one and the local search read it as any group row; the fill rejects a book
+    #: whose fill prices break it (``premium_uncovered``). Absent, nothing changes, byte for byte.
+    _PREMIUM_COVER = "premium_cover"
+    _PREMIUM_UNCOVERED = "premium_uncovered"
+    _KELLY_OPTIONAL_KEYS = _KELLY_OPTIONAL_KEYS | {_ABOVE_EXERCISE, _NOT_IN_THE_MONEY, _PREMIUM_COVER}
     #: ADR-0302: ``search`` ({iterations, neighbourhood, node_limit, seed}) runs the relax_fix strategy's deterministic
     #: incumbent local search (the solver's ``utility_search``); ``warm_start`` ({node_limit}) certifies a week the
     #: action limit would decline from its complete incumbent under that node budget (``utility_warm_start``). Each
@@ -4041,6 +4048,8 @@ class WeeklyOptionPortfolioStudy:
                 and ("settleable_only" not in kelly or kelly["settleable_only"] is True)
                 and (cls._ABOVE_EXERCISE not in kelly or kelly[cls._ABOVE_EXERCISE] is True)
                 and (cls._NOT_IN_THE_MONEY not in kelly or kelly[cls._NOT_IN_THE_MONEY] is True)
+                and (cls._PREMIUM_COVER not in kelly
+                     or (number_ok(kelly[cls._PREMIUM_COVER]) and kelly[cls._PREMIUM_COVER] >= 0))
                 and CloseCandidates.well_formed(kelly)
                 and (not EdgeWeights.declared(kelly)
                      or (EdgeWeights.valid(kelly) and isinstance(kelly.get("local_search"), dict)
@@ -4514,6 +4523,45 @@ class WeeklyOptionPortfolioStudy:
         return cls._cut_items(groups, metadata, cls._sold_in_the_money, cls._IN_THE_MONEY)
 
     @staticmethod
+    def _option_credit(sign, price, mult, fee):
+        """Return one option contract's credit: the premium received (``sign`` -1) or paid (+1) at ``price``, less its fee."""
+        return -sign*price*mult-fee
+
+    @staticmethod
+    def _premium_cover_coefficient(sign, credit, beta):
+        """Return one contract's term in ADR-0324's cover row: its cost ``-credit`` when bought, ``-beta x credit`` when sold."""
+        return -credit if sign > 0 else -beta*credit
+
+    def _premium_cover_candidates(self, groups, metadata, beta):
+        """Return the groups, each with ADR-0324's cover row appended (``sum_i term_i q_i <= 0``; inputs never mutated).
+
+        Each item's term is :meth:`_premium_cover_coefficient` of its :meth:`_option_credit` at its decision price
+        (the program's own credit before any hedge cost); a hedged twin is the same option, so the same term.
+        """
+        out = []
+        for group, meta in zip(groups, metadata, strict=True):
+            solver = self._nodes[meta["symbol"]].params["solver"]
+            row = [self._premium_cover_coefficient(
+                       item["sign"], self._option_credit(item["sign"], item["price"], solver["multiplier"],
+                                                         solver["fee_per_contract_usd"]), beta)
+                   for item in meta["items"]]
+            out.append({**group, "linear_rows": [*group["linear_rows"], {"coefficients": row, "upper": 0.}]})
+        return out
+
+    def _fill_premium_uncovered(self, filled, beta):
+        """Return ``premium_uncovered`` when the filled book breaks ADR-0324's cover row at its fill prices, else ``None``.
+
+        The row's own terms at each leg's ``fill_price``, within the program's ``parity_tolerance`` (the tolerance its
+        rows are held to).
+        """
+        solver = self._nodes[filled["symbol"]].params["solver"]
+        activity = sum(leg["quantity"]*self._premium_cover_coefficient(
+                           leg["sign"], self._option_credit(leg["sign"], leg["fill_price"], solver["multiplier"],
+                                                            solver["fee_per_contract_usd"]), beta)
+                       for leg in filled["legs"] if leg["quantity"])
+        return self._PREMIUM_UNCOVERED if activity > self.params["solver"]["parity_tolerance"] else None
+
+    @staticmethod
     def _cut_items(groups, metadata, flagged, reason):
         """Return ``(groups, metadata, refusals, cut)`` without the items ``flagged(item, spot)`` marks.
 
@@ -4881,7 +4929,7 @@ class WeeklyOptionPortfolioStudy:
                         items.append(item)
                 mult = node.params["solver"]["multiplier"]
                 fee = node.params["solver"]["fee_per_contract_usd"]
-                credit = np.array([-i["sign"]*i["price"]*mult-fee for i in items])
+                credit = np.array([self._option_credit(i["sign"], i["price"], mult, fee) for i in items])
                 losses = [self._loss_row(items, s, mult) for s in prepared["grid"]]
                 # This is the linear epigraph of the shared maximum-loss owner;
                 # the selected book is checked independently against that owner.
@@ -6286,6 +6334,7 @@ class WeeklyOptionPortfolioStudy:
         closer = None if close_spec is None else CloseCandidates(self, close_spec)
         above_exercise = bool((self._kelly(method) or {}).get(self._ABOVE_EXERCISE))   # ADR-0320
         not_in_the_money = bool((self._kelly(method) or {}).get(self._NOT_IN_THE_MONEY))   # ADR-0323
+        premium_cover = (self._kelly(method) or {}).get(self._PREMIUM_COVER)                 # ADR-0324
         pending_closes = raw_menu = close_week = close_program = None
         for day in self.calendar:
             self._apply_adjustments(account, day, charge)
@@ -6304,6 +6353,9 @@ class WeeklyOptionPortfolioStudy:
                         filled = None if reason else filled
                     if filled is not None and not_in_the_money:
                         reason = self._fill_in_the_money(filled, day)      # ADR-0323: the same test at the fill
+                        filled = None if reason else filled
+                    if filled is not None and premium_cover is not None:
+                        reason = self._fill_premium_uncovered(filled, premium_cover)   # ADR-0324: the row at the fill
                         filled = None if reason else filled
                     if filled is None:
                         rejected.append({**book, "status": "unfilled", "fill_date": day, "reason": reason})
@@ -6386,6 +6438,9 @@ class WeeklyOptionPortfolioStudy:
                         # ADR-0313 I6: the candidates whose Greeks can be priced, after the hedge rewrite (its units enter k).
                         groups, metadata, excluded, week_limits, _ = limited.candidates(day, groups, metadata)
                         refusals = [*refusals, *excluded]
+                    if premium_cover is not None:
+                        # ADR-0324: after every cut and the hedge rewrite (which replaces the group's rows).
+                        groups = self._premium_cover_candidates(groups, metadata, premium_cover)
                     if week_cal is not None:
                         # B2 step 5: the adjust against the group AS CONFIGURED (hedged nominal), after every exclusion.
                         adjusts = calibrated.adjust(day, groups, metadata)

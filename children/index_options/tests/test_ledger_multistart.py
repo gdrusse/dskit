@@ -615,13 +615,15 @@ def _strip(result, *keys):
     return out
 
 
-def _keyed(*keys, edit=None):
-    """The Amendment 1 world's result with the named kelly keys on (validated), ``edit(data)`` applied first."""
+def _keyed(*keys, edit=None, values=None):
+    """The Amendment 1 world's result with the named kelly keys on and ``values`` set (validated), ``edit(data)``
+    applied first."""
     params, data, method = _world(MULTISTART2_SEARCH)
     if edit is not None:
         edit(data)
     for key in keys:
         method["kelly"][key] = True
+    method["kelly"].update(values or {})
     ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
     return ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)
 
@@ -694,6 +696,170 @@ def test_the_fill_test_reads_the_fill_close_on_the_books_basis():
     assert study._fill_in_the_money(book, "2019-01-16") == "short_in_the_money", "no fill spot: refused alike"
     assert study._fill_in_the_money({**book, "legs": [{**put, "sign": 1}]}, "2019-01-16") is None, \
         "nothing sold: nothing to test"
+
+
+# --- ADR-0324: premium cover (kelly.premium_cover = beta): paid for bought options <= beta x received for sold ------
+
+_COVER = "premium_cover"
+#: The world's book: buy the 90 put at its 0.12 ask, sell the 100 put at its 4.00 bid, x100, fee 0.65 per contract.
+_PAID, _RECEIVED = .12 * 100 + .65, 4. * 100 - .65
+
+
+def test_a_contracts_cover_term_is_its_cost_when_bought_and_minus_beta_times_its_net_premium_when_sold():
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    assert study._option_credit(1, .12, 100, .65) == pytest.approx(-_PAID)
+    assert study._option_credit(-1, 4., 100, .65) == pytest.approx(_RECEIVED)
+    assert study._premium_cover_coefficient(1, -_PAID, .5) == _PAID, "a bought contract costs its premium and fee"
+    assert study._premium_cover_coefficient(-1, _RECEIVED, .5) == -.5 * _RECEIVED
+    assert study._premium_cover_coefficient(-1, _RECEIVED, 0.) == 0., "beta 0: a sold contract covers nothing"
+
+
+def _cover_week(beta):
+    """The world's first prepared week with the cover row appended, and each group's row (a put 90/100 menu)."""
+    _params, _data, _method, study = _settleable_world(False)
+    groups, metadata, _refusals = study._prepare("2019-01-02")
+    before = copy.deepcopy(groups)
+    covered = study._premium_cover_candidates(groups, metadata, beta)
+    assert groups == before, "the prepared groups are never mutated"
+    return groups, metadata, covered
+
+
+def _activity(group, meta, legs):
+    """The cover row's activity for a book of ``{(sign, strike): quantity}``."""
+    row = group["linear_rows"][-1]
+    assert row["upper"] == 0.
+    return sum(c * legs.get((i["sign"], i["strike"]), 0) for c, i in zip(row["coefficients"], meta["items"],
+                                                                          strict=True))
+
+
+@pytest.mark.parametrize("beta,book,feasible", [
+    (1., {(-1, 100.): 1, (1, 90.): 1}, True),          # the credit put spread
+    (1., {(-1, 100.): 1}, True),                       # a single sold option
+    (1., {(1, 90.): 1}, False),                        # a single bought option: a net debit
+    (1., {(1, 100.): 1, (-1, 90.): 1}, False),         # the debit put spread
+    (0., {(-1, 100.): 1, (1, 90.): 1}, False),         # beta 0 forbids every bought leg
+    (0., {(-1, 100.): 2, (-1, 90.): 1}, True),
+    (_PAID / _RECEIVED, {(-1, 100.): 1, (1, 90.): 1}, True),     # at the boundary: paid == beta x received
+    (.99 * _PAID / _RECEIVED, {(-1, 100.): 1, (1, 90.): 1}, False),
+    (.5, {(-1, 100.): 1, (1, 90.): 2}, True),
+])
+def test_the_cover_row_admits_a_book_exactly_when_its_bought_premium_is_within_beta_of_its_sold(beta, book, feasible):
+    groups, metadata, covered = _cover_week(beta)
+    tolerance = 1e-9 * (_PAID + _RECEIVED)
+    for plain, group, meta in zip(groups, covered, metadata, strict=True):
+        assert group["linear_rows"][:-1] == plain["linear_rows"], "the covered-call row is kept, one row is added"
+        assert {k: v for k, v in group.items() if k != "linear_rows"} == \
+            {k: v for k, v in plain.items() if k != "linear_rows"}
+        assert (_activity(group, meta, book) <= tolerance) is feasible
+
+
+def test_the_search_cannot_take_a_net_debit_and_can_build_a_credit_spread_short_leg_first():
+    """The pack's local search reads the cover row as any group linear row (a move that breaks it is infeasible)."""
+    from test_kelly_local import PARAMS, _program, _scorer
+
+    from index_options.kelly_local import KellyLocalSearch
+
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    program = _program(n_groups=1, n_pairs=2, seed=3, capacity=3)
+    group = program["groups"][0]
+    signs = [-1, 1, -1, 1]                       # each pair: the short column, then its long mirror
+    group["linear_rows"] = [{"coefficients": [study._premium_cover_coefficient(s, c, 1.)
+                                              for s, c in zip(signs, group["credit"], strict=True)], "upper": 0.}]
+    short_low, long_low, short_high = 0, 1, 2
+    assert -group["credit"][long_low] <= group["credit"][short_high], "premise: the high short covers the low long"
+    search = KellyLocalSearch(_scorer(program), PARAMS)
+    search._load([0, 0, 0, 0])
+    assert search._trial({long_low: 1}) is None, "a lone bought contract is a net debit"
+    assert search._trial({short_high: 1}) is not None
+    search._load([0, 0, 1, 0])
+    assert search._trial({long_low: 1}) is not None, "the short leg first, then its wing: a credit spread"
+    search._load([0, 1, 1, 0])
+    assert search._trial({short_high: -1}) is None, "dropping the short leg would leave the wing unpaid"
+    (q,) = KellyLocalSearch(_scorer(program), PARAMS).run(None)["quantities"]
+    assert sum(c * v for c, v in zip(group["linear_rows"][0]["coefficients"], q, strict=True)) <= 1e-3
+
+
+@pytest.mark.parametrize("value", [-.1, True, None, "1", float("nan"), float("inf")])
+def test_a_premium_cover_that_is_not_a_finite_nonnegative_number_is_refused(value):
+    params, _data, method = _world(MULTISTART2_SEARCH)
+    method["kelly"][_COVER] = value
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+@pytest.mark.parametrize("value", [0, 0., .5, 1, 2.5])
+def test_a_finite_nonnegative_premium_cover_validates(value):
+    params, _data, method = _world(MULTISTART2_SEARCH)
+    method["kelly"][_COVER] = value
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def _unchanged(result):
+    """A result less what an added program row moves by construction: the program's identity hash and the search's
+    evaluation count (a move the row refuses is still an evaluation)."""
+    out = copy.deepcopy(_strip(result))
+    for week in out["decisions"]:
+        if "selection" in week:
+            week["selection"] = {k: v for k, v in week["selection"].items() if k != "program_identity"}
+        week.get("kelly", {}).get("local", {}).pop("evaluations", None)
+    return out
+
+
+def _bought(result):
+    return [leg for b in result["trades"] for leg in b["legs"] if leg["sign"] > 0 and leg["quantity"]]
+
+
+def test_the_solved_book_honours_the_cover_at_the_boundary_and_drops_its_wing_just_below_it():
+    plain = _keyed()
+    assert _bought(plain), "the world buys the 90 put wing"
+    assert _unchanged(_keyed(values={_COVER: 1.})) == _unchanged(plain), "every book is a net credit"
+    assert _unchanged(_keyed(values={_COVER: _PAID / _RECEIVED})) == _unchanged(plain), "equality is feasible"
+    below = _keyed(values={_COVER: .99 * _PAID / _RECEIVED})
+    assert not _bought(below) and not _bought(_keyed(values={_COVER: 0.}))
+    assert below["decisions"][0]["status"] == "selected" or not below["trades"]
+    for result in (below,):
+        for book in result["trades"]:
+            paid = sum(-ledger_studies.WeeklyOptionPortfolioStudy._option_credit(1, leg["fill_price"], 100, .65)
+                       * leg["quantity"] for leg in book["legs"] if leg["sign"] > 0)
+            assert paid == 0.
+
+
+def _quote(name, day, strike, **row):
+    def edit(data):
+        for quote in data[name]["chain"]:
+            if quote["date"] == day and quote["strike"] == strike and quote["type"] == "put":
+                quote.update(row)
+    return edit
+
+
+def test_a_book_whose_fill_prices_break_the_cover_is_rejected_through_the_method_loop():
+    name, edit = "C0N0", _quote("C0N0", "2019-01-03", 100., bid=.05, ask=.07)      # the sold put collapses at the fill
+    plain = _keyed(edit=edit)
+    assert any(b["symbol"] == name and b["decision_date"] == "2019-01-02" for b in plain["trades"]), "plain: filled"
+    result = _keyed(edit=edit, values={_COVER: 1.})
+    assert _unchanged(result)["decisions"][0]["selection"] == _unchanged(plain)["decisions"][0]["selection"]
+    (rejected,) = [b for b in result["rejected"] if b["symbol"] == name and b["decision_date"] == "2019-01-02"]
+    assert rejected["reason"] == "premium_uncovered" and rejected["fill_date"] == "2019-01-03"
+    first = lambda r: sorted(b["symbol"] for b in r["trades"] if b["decision_date"] == "2019-01-02")  # noqa: E731
+    assert first(result) == [s for s in first(plain) if s != name]
+
+
+def test_the_fill_cover_test_is_the_rows_arithmetic_at_the_fill_prices():
+    _params, _data, _method, study = _settleable_world(False)
+    legs = [{"right": "put", "sign": 1, "strike": 90., "quantity": 2, "fill_price": .12},
+            {"right": "put", "sign": -1, "strike": 100., "quantity": 1, "fill_price": 4.}]
+    book = {"symbol": "C0N0", "legs": legs}
+    beta = 2 * _PAID / _RECEIVED
+    assert study._fill_premium_uncovered(book, beta) is None, "equality passes"
+    assert study._fill_premium_uncovered(book, .99 * beta) == "premium_uncovered"
+    assert study._fill_premium_uncovered({**book, "legs": legs[1:]}, 0.) is None, "a sold option alone is covered"
+    assert study._fill_premium_uncovered({**book, "legs": [{**legs[0], "quantity": 0}, legs[1]]}, 0.) is None
+
+
+def test_both_new_keys_together_cut_and_constrain_and_record():
+    result = _keyed(_NOT_ITM, values={_COVER: 0.})
+    assert result["decisions"][0][_NOT_ITM] == 0 and not _bought(result)
+    assert result["trades"] and all(leg["sign"] < 0 for b in result["trades"] for leg in b["legs"])
 
 
 # --- ADR-0316: the hedge inside the search (static and daily re-struck), on new ids --------------------------------

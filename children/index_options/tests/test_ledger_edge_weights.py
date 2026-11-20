@@ -1012,3 +1012,27 @@ def test_a_stock_margin_of_one_half_validates_and_scales_the_hedged_margin_floor
         monkeypatch.undo()
     assert any(floors[.15])
     assert floors[.5] == pytest.approx([v*.5/.15 for v in floors[.15]])
+
+
+# --- ADR-0323 and ADR-0324 beside the other keys: no sold in-the-money option and premium cover -----------------------
+
+def test_both_new_keys_run_beside_the_exercise_robust_tilt_settleable_and_name_cap_keys_and_replay(monkeypatch):
+    """Every key on one hedged arm: the week records both exercise and moneyness cuts, each program group carries the
+    cover row after the hedge's slope row, no book sells in the money, and the week replays from its record."""
+    scored, _ = _spy(monkeypatch)
+    arm = {**_robust_arm(dte_tilt=.5, short_call_above_exercise=True, short_not_in_the_money=True, premium_cover=1.,
+                         settleable_only=True), "name_fraction": NAME_CAP}
+    _, _, study = _robust_study(JUMP, arm)
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(study.params)
+    result = study._method(arm, None)
+    week = result["decisions"][0]
+    assert {"short_call_above_exercise", "short_not_in_the_money"} <= set(week)
+    assert week["short_not_in_the_money"] > 0 and week["books"], "the world's in-the-money items are cut, a book trades"
+    groups =[g for p in scored if "utility" in p for g in p["groups"]]
+    assert groups and all(len(g["linear_rows"]) == 2 for g in groups), "the hedge's slope row, then the cover row"
+    for book in week.get("books", []):
+        spot = book["spot"]
+        assert not any(leg["sign"] < 0 and ((leg["right"] == "put" and leg["strike"] > spot)
+                                            or (leg["right"] == "call" and leg["strike"] < spot))
+                       for leg in book["legs"])
+    assert study._method(arm, None, recorded=result) == result
