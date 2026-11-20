@@ -66,7 +66,7 @@ def test_the_gap_rule_is_the_former_childs_a_bar_after_a_missing_minute_has_no_p
 
 
 def test_the_vocabulary_and_knobs_are_the_former_childs():
-    assert {kind: list(cls.keys) for kind, cls in ESTIMATORS.items()} == GOLDEN["vocabulary"]
+    assert {kind: list(ESTIMATORS[kind].keys) for kind in GOLDEN["vocabulary"]} == GOLDEN["vocabulary"]
 
 
 @pytest.mark.parametrize("bad", GOLDEN["refused_specs"], ids=lambda spec: json.dumps(spec, sort_keys=True))

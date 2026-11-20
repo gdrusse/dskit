@@ -16,6 +16,8 @@ square-root second, annualised) is the caller's, because it is the caller's bar 
 * ``ewma`` — squared returns weighted ``0.5 ** (age / half_life)`` over the last ``lookback``
   bars, the weights normalised. **Truncated** at ``lookback``, so the value does not depend on
   where the loaded history happens to begin: a recursive filter would, forever.
+* ``rms_trimmed`` — the ``rms`` window with its ``drop`` largest squared returns left out, the rest
+  averaged: a scale that one jump day cannot inflate. ``drop`` 0 is ``rms``.
 * ``high_low`` — Parkinson's range estimator, ``ln(H / L) ** 2 / (4 ln 2)`` per bar, averaged
   over ``window`` bars. It needs ``0 < L <= H``; any other bar is undefined.
 
@@ -64,6 +66,7 @@ __all__ = [
     "NODE_KINDS",
     "ROLES",
     "RollingRms",
+    "TrimmedRms",
     "VolEstimator",
     "VolEstimatorFeatures",
     "build_estimators",
@@ -436,6 +439,60 @@ class RollingRms(_WindowEstimator):
         return rolling_sum(bars.squared_returns(), window) / window
 
 
+class TrimmedRms(_WindowEstimator):
+    """Mean squared one-bar log return over the last ``window`` bars, its ``drop`` largest left out.
+
+    The value is the sum of the ``window - drop`` smallest squares divided by ``window - drop``.
+    A window in which one bar carries most of the variance reads close to the other bars' level,
+    where ``rms`` reads that bar's share; a window of equal magnitudes reads exactly ``rms``.
+
+    Parameters
+    ----------
+    spec : dict
+        ``{"kind": "rms_trimmed", "window": int >= 1, "drop": int, 0 <= drop < window}``.
+
+    Examples
+    --------
+    A 22-bar window without its largest square::
+
+        estimator = TrimmedRms({"kind": "rms_trimmed", "window": 22, "drop": 1})
+        estimator.label()   # -> "rms_trim1_22"
+    """
+
+    kind = "rms_trimmed"
+    stem = "rms_trim"
+    keys = ("window", "drop")
+    needs = ("close",)
+
+    @classmethod
+    def spec_problems(cls, spec):
+        """List problems with ``window`` and ``drop``, empty when none."""
+        problems = super().spec_problems(spec)
+        check_int_param(problems, "drop", spec.get("drop"), ge=0)
+        if not problems and int(spec["drop"]) >= int(spec["window"]):
+            problems.append(f"drop must be below window, got drop {spec['drop']!r} and window {spec['window']!r}")
+        return problems
+
+    def label(self):
+        """Name the column ``rms_trim<drop>_<window>``."""
+        return f"{self.stem}{int(self.spec['drop'])}_{int(self.spec['window'])}"
+
+    def variance(self, bars):
+        """Return each window's mean of its ``window - drop`` smallest squared returns."""
+        import numpy as np
+
+        window, drop = int(self.spec["window"]), int(self.spec["drop"])
+        squared = bars.squared_returns()
+        out = np.full(squared.shape, np.nan)
+        if squared.size < window:
+            return out
+        views = np.lib.stride_tricks.sliding_window_view(squared, window)
+        kept = np.sort(views, axis=1)[:, : window - drop].sum(axis=1) / (window - drop)
+        kept[np.isnan(views).any(axis=1)] = np.nan
+        out[window - 1:] = kept
+        return out
+
+
 class Ewma(VolEstimator):
     """Exponentially weighted mean squared return over a truncated window.
 
@@ -507,7 +564,7 @@ class HighLow(_WindowEstimator):
 
 
 #: kind -> estimator class: the whole vocabulary a document's ``estimators`` may name.
-ESTIMATORS = {cls.kind: cls for cls in (RollingRms, Ewma, HighLow)}
+ESTIMATORS = {cls.kind: cls for cls in (RollingRms, Ewma, HighLow, TrimmedRms)}
 
 
 def build_estimators(specs):
