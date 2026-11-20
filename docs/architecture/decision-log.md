@@ -37524,4 +37524,4 @@ the original experiment identity and provenance before reading its saved fit.
 
 **Known limits.** From cash the climb cannot open an unhedged call credit spread one leg at a time (the covered-call or slope row needs the long call first, this row the short call first); stage one builds it whole, and a held short put can pay for the wing. Dropping a spread's short leg alone is infeasible, so the climb unwinds the wing first.
 
-**Evidence (fixed picks, no solve).** At beta 1 the row agrees with `decision_credit > 0` on every recorded book. With ADR-0323 as well it keeps 13 of 199 r1dte, 13 of 231 r1n35, 14 of 70 r1fc and 15 of 526 control books. Development evidence only (A0010).
+**Evidence (fixed picks, no solve).** At beta 1 the row agrees with `decision_credit > 0` on every recorded book (none was exactly flat). With ADR-0323 as well it keeps 13 of 199 r1dte, 13 of 231 r1n35, 14 of 70 r1fc and 15 of 526 control books. Development evidence only (A0010).

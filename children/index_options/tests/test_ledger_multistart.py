@@ -816,12 +816,8 @@ def test_the_solved_book_honours_the_cover_at_the_boundary_and_drops_its_wing_ju
     assert _unchanged(_keyed(values={_COVER: _PAID / _RECEIVED})) == _unchanged(plain), "equality is feasible"
     below = _keyed(values={_COVER: .99 * _PAID / _RECEIVED})
     assert not _bought(below) and not _bought(_keyed(values={_COVER: 0.}))
-    assert below["decisions"][0]["status"] == "selected" or not below["trades"]
-    for result in (below,):
-        for book in result["trades"]:
-            paid = sum(-ledger_studies.WeeklyOptionPortfolioStudy._option_credit(1, leg["fill_price"], 100, .65)
-                       * leg["quantity"] for leg in book["legs"] if leg["sign"] > 0)
-            assert paid == 0.
+    assert below["trades"], "the optimizer redeploys into the sold put alone"
+    assert all(leg["sign"] < 0 for book in below["trades"] for leg in book["legs"])
 
 
 def _quote(name, day, strike, **row):
