@@ -37503,3 +37503,13 @@ the original experiment identity and provenance before reading its saved fit.
 - r1n35, four quarters: 32,274 to 25,613; 6 books cut, realised +629.
 - Control, 15 quarters: 229,109 to 200,575; 11 cut, realised +3,885. With `robust_scale` as well: 57,519.
 - Windfalls: the 2020Q1 APA puts and the March 2021 GME puts lose under 2%; the GME call of 2021-01-11 goes 765 to 681.
+
+## ADR-0323 — Never sell an option in the money on Kelly methods: a diagnostic formulation (accepted 2026-11-20)
+
+**Status.** Accepted on the owner's instruction of 2026-11-20 ("we should iterate again and produce a new result if possible"; "let's implement in opus"). Diagnostic: it measures the book without stock substitutes. A0008's recipe and pinned forecasts, A0009 and every Path row are untouched.
+
+**Problem.** In `kelly075_ls_fast_hedged_static_dte_r1_s_lp` the 34 of 199 recorded books that sell an option in the money at the decision (a put struck above spot, a call below) realised +10,034 on 30,916 claimed, with summed max loss up to 27k in a quarter on a 16k account (2023Q1 +14.6k, 2021Q4 -5.2k). The other 165 realised -1,494 on 22,109. That second number must be measured with the optimizer free to redeploy.
+
+**Decision.** Kelly key `short_not_in_the_money: true` (only `true`). Per method, right after ADR-0320's exercise cut and before the hedge rewrite, every item that sells a put struck above, or a call struck below, the group's decision spot is cut through the same cutter (`_cut_items`, now shared with ADR-0320). A strike at spot is kept. An emptied group is refused `short_in_the_money`; the week records the count under the key's name. The fill rejects a book that sells one in the money at the fill close on the book's basis (no close refuses alike), same code. With ADR-0320's key as well both apply in that order; an item the exercise cut took is not counted again. Absent, nothing changes, byte for byte.
+
+**Evidence (fixed picks, no solve).** The rule's own predicate at each trade's recorded decision spot flags 34 of 199 r1dte books, 48 of 231 r1n35 books and 77 of 526 control books (15 quarters). Development evidence only (A0010).

@@ -3349,7 +3349,14 @@ class WeeklyOptionPortfolioStudy:
     _AT_EXERCISE = "short_call_at_exercise"
     #: Float order, not a threshold: ``(bid + ask) / 2 - (ask - bid) / 2`` may land an ulp above the bid.
     _EXERCISE_FLOAT_ORDER = 1e-9
-    _KELLY_OPTIONAL_KEYS = _KELLY_OPTIONAL_KEYS | {_ABOVE_EXERCISE}
+    #: ADR-0323: ``short_not_in_the_money`` (only ``true``) never sells an option in the money (a stock substitute):
+    #: per method, right after the exercise cut and before the hedge reads the week, every item that sells a put struck
+    #: above, or a call struck below, the group's decision ``spot`` is cut (at the money is kept; a group left empty is
+    #: refused ``short_in_the_money``; the week records how many items were cut under the key's name), and the fill
+    #: rejects an order that sells one in the money at the fill spot, with the same code. Absent, nothing changes.
+    _NOT_IN_THE_MONEY = "short_not_in_the_money"
+    _IN_THE_MONEY = "short_in_the_money"
+    _KELLY_OPTIONAL_KEYS = _KELLY_OPTIONAL_KEYS | {_ABOVE_EXERCISE, _NOT_IN_THE_MONEY}
     #: ADR-0302: ``search`` ({iterations, neighbourhood, node_limit, seed}) runs the relax_fix strategy's deterministic
     #: incumbent local search (the solver's ``utility_search``); ``warm_start`` ({node_limit}) certifies a week the
     #: action limit would decline from its complete incumbent under that node budget (``utility_warm_start``). Each
@@ -4033,6 +4040,7 @@ class WeeklyOptionPortfolioStudy:
                 and ("accept_uncertified" not in kelly or type(kelly["accept_uncertified"]) is bool)
                 and ("settleable_only" not in kelly or kelly["settleable_only"] is True)
                 and (cls._ABOVE_EXERCISE not in kelly or kelly[cls._ABOVE_EXERCISE] is True)
+                and (cls._NOT_IN_THE_MONEY not in kelly or kelly[cls._NOT_IN_THE_MONEY] is True)
                 and CloseCandidates.well_formed(kelly)
                 and (not EdgeWeights.declared(kelly)
                      or (EdgeWeights.valid(kelly) and isinstance(kelly.get("local_search"), dict)
@@ -4479,20 +4487,46 @@ class WeeklyOptionPortfolioStudy:
                 and leg["price"] <= leg_intrinsic("call", float(leg["strike"]), float(spot))
                 + WeeklyOptionPortfolioStudy._EXERCISE_FLOAT_ORDER)
 
+    @staticmethod
+    def _sold_in_the_money(leg, spot):
+        """Return whether ``leg`` sells an option strictly in the money at ``spot`` (ADR-0323).
+
+        A sold put struck above spot or a sold call struck below it; a strike at spot is not in the money.
+        """
+        strike = float(leg["strike"])
+        return leg["sign"] < 0 and ((leg["right"] == "put" and strike > spot)
+                                    or (leg["right"] == "call" and strike < spot))
+
     @classmethod
     def _above_exercise_candidates(cls, groups, metadata):
         """Return ``(groups, metadata, refusals, cut)`` without the short-call items sold at or below exercise value.
 
-        Each item :meth:`_short_call_at_exercise` flags at the group's decision ``spot`` is cut from its group through
-        the one per-item cutter (:meth:`ReplayHedge.restrict`; the inputs are never mutated); ``cut`` counts them and
-        a group left empty is refused ``short_call_at_exercise``.
+        :meth:`_cut_items` with :meth:`_short_call_at_exercise`; a group left empty is refused ``short_call_at_exercise``.
+        """
+        return cls._cut_items(groups, metadata, cls._short_call_at_exercise, cls._AT_EXERCISE)
+
+    @classmethod
+    def _in_the_money_candidates(cls, groups, metadata):
+        """Return ``(groups, metadata, refusals, cut)`` without the items that sell an option in the money (ADR-0323).
+
+        :meth:`_cut_items` with :meth:`_sold_in_the_money`; a group left empty is refused ``short_in_the_money``.
+        """
+        return cls._cut_items(groups, metadata, cls._sold_in_the_money, cls._IN_THE_MONEY)
+
+    @staticmethod
+    def _cut_items(groups, metadata, flagged, reason):
+        """Return ``(groups, metadata, refusals, cut)`` without the items ``flagged(item, spot)`` marks.
+
+        ``spot`` is the group's decision ``spot``. Each flagged item is cut from its group through the one per-item
+        cutter (:meth:`ReplayHedge.restrict`; the inputs are never mutated); ``cut`` counts them and a group left
+        empty is refused ``reason``.
         """
         out_groups, out_meta, refusals, cut = [], [], [], 0
         for group, meta in zip(groups, metadata, strict=True):
-            keep = [i for i, item in enumerate(meta["items"]) if not cls._short_call_at_exercise(item, meta["spot"])]
+            keep = [i for i, item in enumerate(meta["items"]) if not flagged(item, meta["spot"])]
             cut += len(meta["items"]) - len(keep)
             if not keep:
-                refusals.append({"symbol": meta["symbol"], "expiry": meta["expiry"], "reason": cls._AT_EXERCISE})
+                refusals.append({"symbol": meta["symbol"], "expiry": meta["expiry"], "reason": reason})
                 continue
             group, meta, _ = ReplayHedge.restrict(group, meta, [None] * len(meta["items"]), keep)
             out_groups.append(group)
@@ -5797,16 +5831,33 @@ class WeeklyOptionPortfolioStudy:
         ``max(S_fill - strike, 0)``, ``S_fill`` the fill session's close on the book's basis (a session without one
         refuses alike: the order cannot be shown to sell above exercise value).
         """
+        return self._fill_sold_refusal(
+            filled, day, ("call",),
+            lambda leg, spot: self._short_call_at_exercise({**leg, "price": leg["fill_price"]}, spot),
+            self._AT_EXERCISE)
+
+    def _fill_in_the_money(self, filled, day):
+        """Return ``short_in_the_money`` when a filled book sells an option in the money at the fill spot, else ``None``.
+
+        ADR-0323's fill test: :meth:`_sold_in_the_money` on each sold put and call at :meth:`_fill_sold_refusal`'s
+        fill spot.
+        """
+        return self._fill_sold_refusal(filled, day, ("call", "put"), self._sold_in_the_money, self._IN_THE_MONEY)
+
+    def _fill_sold_refusal(self, filled, day, rights, flagged, reason):
+        """Return ``reason`` when ``flagged(leg, S_fill)`` marks a sold leg whose right is in ``rights``, else ``None``.
+
+        ``S_fill`` is the fill session's close on the book's basis (close over the book's ``factor``); a session
+        without one refuses alike (the order cannot be shown to pass). A book selling no such leg is never refused.
+        """
         close = self._bars[filled["symbol"]].get(day)
-        sold = [leg for leg in filled["legs"] if leg["quantity"] and leg["sign"] < 0 and leg["right"] == "call"]
+        sold = [leg for leg in filled["legs"] if leg["quantity"] and leg["sign"] < 0 and leg["right"] in rights]
         if not sold:
             return None
         if not (number_ok(close) and close > 0):
-            return self._AT_EXERCISE
+            return reason
         spot = close / filled["factor"]
-        if any(self._short_call_at_exercise({**leg, "price": leg["fill_price"]}, spot) for leg in sold):
-            return self._AT_EXERCISE
-        return None
+        return reason if any(flagged(leg, spot) for leg in sold) else None
 
     def _close_fills(self, closer, account, pending, day):
         """Execute the closes decided last session at today's quotes (P2); a close that cannot fill leaves its book held.
@@ -6234,6 +6285,7 @@ class WeeklyOptionPortfolioStudy:
         close_spec = CloseCandidates.spec(self._kelly(method))
         closer = None if close_spec is None else CloseCandidates(self, close_spec)
         above_exercise = bool((self._kelly(method) or {}).get(self._ABOVE_EXERCISE))   # ADR-0320
+        not_in_the_money = bool((self._kelly(method) or {}).get(self._NOT_IN_THE_MONEY))   # ADR-0323
         pending_closes = raw_menu = close_week = close_program = None
         for day in self.calendar:
             self._apply_adjustments(account, day, charge)
@@ -6249,6 +6301,9 @@ class WeeklyOptionPortfolioStudy:
                     filled, reason = self._fill(book, day, charge)
                     if filled is not None and above_exercise:
                         reason = self._fill_at_exercise(filled, day)       # ADR-0320: the same test at the fill
+                        filled = None if reason else filled
+                    if filled is not None and not_in_the_money:
+                        reason = self._fill_in_the_money(filled, day)      # ADR-0323: the same test at the fill
                         filled = None if reason else filled
                     if filled is None:
                         rejected.append({**book, "status": "unfilled", "fill_date": day, "reason": reason})
@@ -6315,6 +6370,11 @@ class WeeklyOptionPortfolioStudy:
                         # before the hedge rewrite reads the items.
                         groups, metadata, excluded, at_exercise = self._above_exercise_candidates(groups, metadata)
                         refusals = [*refusals, *excluded]
+                    in_the_money = None
+                    if not_in_the_money:
+                        # ADR-0323: in the same place, after the exercise cut (an item it took is not counted twice).
+                        groups, metadata, excluded, in_the_money = self._in_the_money_candidates(groups, metadata)
+                        refusals = [*refusals, *excluded]
                     week_hedge = None
                     if hedge is not None and hedge.is_program:
                         # ADR-0313 B2 steps 2-3: the hedged candidate set, then the hedge rewrite (per method, never in _prepare).
@@ -6338,6 +6398,8 @@ class WeeklyOptionPortfolioStudy:
                               "open_reserve": sum(b["reserve"] for b in account.open.values())}
                     if at_exercise is not None:
                         record[self._ABOVE_EXERCISE] = at_exercise
+                    if in_the_money is not None:
+                        record[self._NOT_IN_THE_MONEY] = in_the_money
                     if week_hedge is not None:
                         record["hedge"] = {"mode": "program", "excluded": dict(week_hedge)}
                     if calibrated is not None:
