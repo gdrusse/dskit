@@ -37452,8 +37452,19 @@ the original experiment identity and provenance before reading its saved fit.
 
 **Exit.** Focused tests cover missing/unused/malformed bindings, exact control-input parity, date bounds, portable identity, actual exported-worker and recorded-pricer agreement, and strictly prior decision use. Two independent final reviews bind an immutable candidate before real dispatch. The existing in-memory joint-history interface and other method behavior remain unchanged.
 
+## ADR-0320 — Hedge at the worse of forward and spot; never sell an American call at or below exercise value (amends ADR-0312; accepted 2026-11-19)
 
-## ADR-0321 — Two-scale worst-case edge and an opt-in per-name cap on Kelly methods (accepted 2026-11-19; renumber at merge if taken)
+**Status.** Accepted on the owner's instruction of 2026-11-19 ("holistically re-evaluate the formulation, make changes, and rekick off MIO queues"; "implement in opus"). The design was delegated to the agent after an adversarially verified diagnosis (`kelly075_ls_fast_hedged_static_dte_s_lp`, 13 quarters). Path A0008-A0010 untouched.
+
+**Problem.** ADR-0312 strikes the static hedge at the parity forward (borrow 0) while the forecast is centred on spot. Where the forward is below spot the program sells deep in-the-money calls at or below exercise value against a cheap long forward and books the gap: 38,879 of 125,810 recorded P&L. The defect sits in the objective, so a replay-only fix keeps the picks and turns them into losses.
+
+**Decision 1 (core).** New kind `worse_price_forward` (`WorsePriceForwardHedge`, a `FixedDeltaForwardHedge` subclass, same params). Its `reference` is `max(F, S)` for a long hedge and `min(F, S)` for a short one; units, costs, margin and mark levels are unchanged; no threshold. The child applies it in three places: each program item's loss row settles against its own side's reference (`_loss_row` takes one reference per item; the physical reserve check carries the basis `sum u_i q_i (F_ref,i - F_0)`), the fill strikes the book's leg at it (the fill forward is kept as `forward_reference` for the carry-ratio mark), and settlement and daily marks read that strike (mark levels stay the day's parity forward, so a spot-struck long leg marks its basis from day one). The program prices each item's side, the fill the book's net side: on a mixed-sign book the program is the more conservative. `fixed_delta_forward` is unchanged, byte for byte.
+
+**Decision 2 (child).** Kelly key `short_call_above_exercise: true` (only true). Per method, after the calibration's side pairing and before the hedge rewrite, a short-call item whose decision price (the bid, up to float order) is at or below `max(S - K, 0)` is cut (an emptied group is refused `short_call_at_exercise`; the week records the count). The fill rejects a book whose short call's fill bid is at or below the fill spot's intrinsic, same code. Floor zero. Absent, nothing changes.
+
+**Evidence (fixed picks, no solve).** Re-attaching the 115 recorded hedged books through the new kind: long-hedge positive basis 38,879 to 0; settled P&L 125,810 to 86,430 (2020Q2 -195, 2023Q1 15,198); negative `max_loss` 6 to 2 (the two left are PBR 2021Q4 short hedges with no parity pair, struck at spot either way). The four named books' decision expected profit falls to -944, -339, -913 and -589. 479 of 510 short-call contracts (50 of 67 legs) were at or below exercise value at the decision bid. Development evidence only (A0010); a re-solve of one quarter is the next step.
+
+## ADR-0321 — Two-scale worst-case edge and an opt-in per-name cap on Kelly methods (accepted 2026-11-19)
 
 **Status.** Accepted on the owner's instruction of 2026-11-19 ("holistically re-evaluate the formulation, make changes, and rekick off MIO queues"; "implement in opus"). Design delegated to the agent after an adversarially verified diagnosis (MIO robustness synthesis, RC2 and RC3). Locked A0008 recipe, its pinned forecasts, A0009 and every Path row are untouched.
 

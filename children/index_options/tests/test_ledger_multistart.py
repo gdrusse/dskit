@@ -399,6 +399,121 @@ def test_a_pinned_split_keeps_its_candidates_settleable():
     assert not study._settleable({**meta, "expiry": "2031-01-01"}), "no bar on the expiry"
 
 
+# --- ADR-0320: never sell an American call at or below exercise value (kelly.short_call_above_exercise) ---------------
+
+_ABOVE = "short_call_above_exercise"
+
+
+@pytest.mark.parametrize("leg,spot,refused", [
+    ({"right": "call", "sign": -1, "strike": 80., "price": 19.5}, 100., True),    # bid under exercise value
+    ({"right": "call", "sign": -1, "strike": 80., "price": 20.0}, 100., True),    # at it: still refused (floor 0)
+    ({"right": "call", "sign": -1, "strike": 80., "price": 20.0 + 5e-10}, 100., True),  # mid - half: an ulp over
+    ({"right": "call", "sign": -1, "strike": 80., "price": 20.01}, 100., False),  # a cent of time value
+    ({"right": "call", "sign": -1, "strike": 120., "price": 0.0}, 100., True),    # out of the money for nothing
+    ({"right": "call", "sign": -1, "strike": 120., "price": 0.05}, 100., False),
+    ({"right": "call", "sign": 1, "strike": 80., "price": 19.5}, 100., False),    # a BOUGHT call is never refused
+    ({"right": "put", "sign": -1, "strike": 120., "price": 19.5}, 100., False),   # nor a sold put
+])
+def test_a_short_call_is_at_exercise_when_its_bid_is_at_or_below_spot_intrinsic(leg, spot, refused):
+    assert ledger_studies.WeeklyOptionPortfolioStudy._short_call_at_exercise(leg, spot) is refused
+
+
+def _call_group(prices, spot=100.):
+    """One group of a short call 80, a long call 80 and a short call 120 at the given decision prices."""
+    items = [{"right": "call", "strike": 80., "sign": -1, "price": prices[0], "capacity": 5},
+             {"right": "call", "strike": 80., "sign": 1, "price": prices[1], "capacity": 5},
+             {"right": "call", "strike": 120., "sign": -1, "price": prices[2], "capacity": 5}]
+    credit = [-i["sign"] * i["price"] * 100 for i in items]
+    group = {"id": "g", "grid": [60., 100., 140.], "masses": [1 / 3] * 3, "credit": credit,
+             "losses": [[1., 2., 3.]] * 3, "capacity": [5] * 3, "exclusive": [[0, 1]],
+             "reserve_rows": [[1., 2., 3.]], "linear_rows": [{"coefficients": [1., -1., 1.], "upper": 0.}]}
+    meta = {"id": "g", "symbol": "X", "expiry": "2019-02-01", "spot": spot, "items": items}
+    return group, meta
+
+
+def test_the_filter_cuts_only_the_short_calls_at_exercise_and_refuses_a_group_left_empty():
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    group, meta = _call_group([19.5, 20.4, 0.3])
+    (kept,), (kept_meta,), refusals, dropped = study._above_exercise_candidates([group], [meta])
+    assert [(i["sign"], i["strike"]) for i in kept_meta["items"]] == [(1, 80.), (-1, 120.)]
+    assert kept["credit"] == group["credit"][1:] and kept["exclusive"] == [] and dropped == 1 and refusals == []
+    assert group["capacity"] == [5] * 3, "the prepared group is never mutated"
+    clean, clean_meta = _call_group([20.5, 20.9, 0.3])
+    groups, metadata, refusals, dropped = study._above_exercise_candidates([clean], [clean_meta])
+    assert groups == [clean] and metadata == [clean_meta] and dropped == 0 and refusals == []
+    lone = ({**group, "credit": group["credit"][:1], "capacity": [5], "losses": [[1.]] * 3, "exclusive": [],
+             "reserve_rows": [[1.]], "linear_rows": [{"coefficients": [1.], "upper": 0.}]},
+            {**meta, "items": meta["items"][:1]})
+    groups, metadata, refusals, dropped = study._above_exercise_candidates([lone[0]], [lone[1]])
+    assert groups == metadata == [] and dropped == 1
+    assert refusals == [{"symbol": "X", "expiry": "2019-02-01", "reason": "short_call_at_exercise"}]
+
+
+def test_the_cut_runs_after_the_calibration_fixes_its_side_pairing_and_before_the_hedge_rewrite():
+    """Structural pin (review M1): the calibration's `_best_sides` must see the full menu, so a cut short call cannot
+    move the pairing of its long twin; the hedge rewrite must see the cut menu."""
+    import inspect
+
+    source = inspect.getsource(ledger_studies.WeeklyOptionPortfolioStudy._method_steps)
+    exclude, cut = source.index("calibrated.exclude("), source.index("self._above_exercise_candidates(")
+    rewrite = source.index("hedge.candidates(")
+    assert exclude < cut < rewrite
+
+
+@pytest.mark.parametrize("value", [False, 1, None, "true"])
+def test_a_short_call_above_exercise_that_is_not_true_is_refused(value):
+    params, _data, method = _world(MULTISTART2_SEARCH)
+    method["kelly"][_ABOVE] = value
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_with_the_key_every_week_is_filtered_and_fills_with_the_check_and_without_it_nothing_changes(monkeypatch):
+    study_cls = ledger_studies.WeeklyOptionPortfolioStudy
+    _params, _data, method, study = _settleable_world(False)
+    plain = study._method(method, None)
+    assert all(_ABOVE not in week for week in plain["decisions"])
+    filtered, fills = [], []
+    real_filter, real_fill = study_cls._above_exercise_candidates, study_cls._fill_at_exercise
+    monkeypatch.setattr(study_cls, "_above_exercise_candidates",
+                        staticmethod(lambda g, m: filtered.append(len(g)) or real_filter(g, m)))
+    monkeypatch.setattr(study_cls, "_fill_at_exercise",
+                        lambda self, filled, day: fills.append(day) or real_fill(self, filled, day))
+    params, _data, method, study = _settleable_world(False)
+    method["kelly"][_ABOVE] = True
+    study_cls.validate_configuration(params)
+    result = study._method(method, None)
+    assert filtered and len(filtered) == sum(_ABOVE in week for week in result["decisions"])
+    assert all(week[_ABOVE] == 0 for week in result["decisions"] if _ABOVE in week), "the world sells no call"
+    assert fills and len(fills) >= len(plain["trades"]), "every book the fill took was tested"
+    strip = lambda r: {k: v for k, v in r.items() if k != "method"}                       # noqa: E731
+    assert [{k: v for k, v in w.items() if k != _ABOVE} for w in strip(result)["decisions"]] == plain["decisions"]
+    assert {k: v for k, v in strip(result).items() if k != "decisions"} == \
+        {k: v for k, v in strip(plain).items() if k != "decisions"}
+
+
+def test_the_fill_refuses_a_short_call_whose_fill_bid_is_at_or_below_the_fill_spots_intrinsic():
+    from test_ledger_studies import _hedge_study
+
+    def bump(day, right, k, row):
+        if day == "2019-01-16" and right == "call" and k == 90.:
+            row.update(bid=1.0, ask=1.2)                       # far under the 90 call's exercise value at spot ~100
+    study, _hedge, spots = _hedge_study(bump=bump)
+    book = {"id": "b1", "symbol": "X", "expiry": "2019-02-01", "factor": 1., "decision_date": "2019-01-15",
+            "legs": [{"right": "call", "sign": -1, "strike": 90., "quantity": 1}],
+            "contracts": 1, "credit": 0., "reserve": 0., "max_loss": 0.}
+    filled, reason = study._fill(book, "2019-01-16", None)
+    assert reason is None and filled["legs"][0]["fill_price"] == 1.0, "the fill itself is unchanged"
+    assert study._fill_at_exercise(filled, "2019-01-16") == "short_call_at_exercise"
+    for legs in ([{"right": "call", "sign": -1, "strike": 105., "quantity": 1}],     # sold above exercise value
+                 [{"right": "call", "sign": 1, "strike": 90., "quantity": 1}],      # bought: never refused
+                 [{"right": "put", "sign": -1, "strike": 105., "quantity": 1}]):    # a sold put: never refused
+        other, reason = study._fill({**book, "legs": legs}, "2019-01-16", None)
+        assert reason is None and study._fill_at_exercise(other, "2019-01-16") is None
+    del study._bars["X"]["2019-01-16"]
+    assert study._fill_at_exercise(filled, "2019-01-16") == "short_call_at_exercise", "no fill spot: refused alike"
+
+
 def test_a_calendar_day_without_a_bar_inside_the_window_is_unsettleable():
     _params, _data, _method, study = _settleable_world(True)
     name = study.params["symbols"][0]
