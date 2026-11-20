@@ -3363,7 +3363,14 @@ class WeeklyOptionPortfolioStudy:
     #: whose fill prices break it (``premium_uncovered``). Absent, nothing changes, byte for byte.
     _PREMIUM_COVER = "premium_cover"
     _PREMIUM_UNCOVERED = "premium_uncovered"
-    _KELLY_OPTIONAL_KEYS = _KELLY_OPTIONAL_KEYS | {_ABOVE_EXERCISE, _NOT_IN_THE_MONEY, _PREMIUM_COVER}
+    #: ADR-0325: ``credit_floor`` (rho, 0 < rho < 1) adds, beside the cover row, one linear row per kink (0 and every
+    #: strike) to every option group: per book, the net option credit (the record's ``decision_credit``) is at least
+    #: rho x the book's worst-case loss (``structure_max_loss`` on that credit, hedged by the program's units; hedge
+    #: costs outside), at decision prices. A net-debit book fails at any rho. The fill rejects a book whose filled
+    #: ``credit`` is under rho x its filled ``max_loss`` (``credit_below_floor``). Absent, nothing changes, byte for byte.
+    _CREDIT_FLOOR = "credit_floor"
+    _BELOW_FLOOR = "credit_below_floor"
+    _KELLY_OPTIONAL_KEYS = _KELLY_OPTIONAL_KEYS | {_ABOVE_EXERCISE, _NOT_IN_THE_MONEY, _PREMIUM_COVER, _CREDIT_FLOOR}
     #: ADR-0302: ``search`` ({iterations, neighbourhood, node_limit, seed}) runs the relax_fix strategy's deterministic
     #: incumbent local search (the solver's ``utility_search``); ``warm_start`` ({node_limit}) certifies a week the
     #: action limit would decline from its complete incumbent under that node budget (``utility_warm_start``). Each
@@ -4050,6 +4057,8 @@ class WeeklyOptionPortfolioStudy:
                 and (cls._NOT_IN_THE_MONEY not in kelly or kelly[cls._NOT_IN_THE_MONEY] is True)
                 and (cls._PREMIUM_COVER not in kelly
                      or (number_ok(kelly[cls._PREMIUM_COVER]) and kelly[cls._PREMIUM_COVER] >= 0))
+                and (cls._CREDIT_FLOOR not in kelly
+                     or (number_ok(kelly[cls._CREDIT_FLOOR]) and 0 < kelly[cls._CREDIT_FLOOR] < 1))
                 and CloseCandidates.well_formed(kelly)
                 and (not EdgeWeights.declared(kelly)
                      or (EdgeWeights.valid(kelly) and isinstance(kelly.get("local_search"), dict)
@@ -4532,21 +4541,73 @@ class WeeklyOptionPortfolioStudy:
         """Return one contract's term in ADR-0324's cover row: its cost ``-credit`` when bought, ``-beta x credit`` when sold."""
         return -credit if sign > 0 else -beta*credit
 
-    def _premium_cover_candidates(self, groups, metadata, beta):
-        """Return the groups, each with ADR-0324's cover row appended (``sum_i term_i q_i <= 0``; inputs never mutated).
+    def _with_book_rows(self, groups, metadata, rows):
+        """Return the groups, each with ``rows(meta, credits, mult)`` appended to its linear rows (inputs never mutated).
 
-        Each item's term is :meth:`_premium_cover_coefficient` of its :meth:`_option_credit` at its decision price
-        (the program's own credit before any hedge cost); a hedged twin is the same option, so the same term.
+        ``credits`` are the items' :meth:`_option_credit` at their decision prices (the program's own credit before
+        any hedge cost; a hedged twin is the same option, so the same credit) and ``mult`` the node's multiplier: the
+        one seam ADR-0324's cover row and ADR-0325's floor rows are built through.
         """
         out = []
         for group, meta in zip(groups, metadata, strict=True):
             solver = self._nodes[meta["symbol"]].params["solver"]
-            row = [self._premium_cover_coefficient(
-                       item["sign"], self._option_credit(item["sign"], item["price"], solver["multiplier"],
-                                                         solver["fee_per_contract_usd"]), beta)
-                   for item in meta["items"]]
-            out.append({**group, "linear_rows": [*group["linear_rows"], {"coefficients": row, "upper": 0.}]})
+            mult = solver["multiplier"]
+            credits = [self._option_credit(item["sign"], item["price"], mult, solver["fee_per_contract_usd"])
+                       for item in meta["items"]]
+            out.append({**group, "linear_rows": [*group["linear_rows"], *rows(meta, credits, mult)]})
         return out
+
+    def _premium_cover_candidates(self, groups, metadata, beta):
+        """Return the groups, each with ADR-0324's cover row appended (``sum_i term_i q_i <= 0``; inputs never mutated).
+
+        Each item's term is :meth:`_premium_cover_coefficient` of its decision credit (:meth:`_with_book_rows`).
+        """
+        return self._with_book_rows(groups, metadata, lambda meta, credits, _mult: [{
+            "coefficients": [self._premium_cover_coefficient(item["sign"], credit, beta)
+                             for item, credit in zip(meta["items"], credits, strict=True)], "upper": 0.}])
+
+    @staticmethod
+    def _credit_floor_coefficient(credit, loss, rho):
+        """Return one contract's term in an ADR-0325 floor row: ``rho x (loss - credit) - credit``.
+
+        ``loss`` is the contract's terminal loss at the row's kink, ``credit`` its decision credit.
+        """
+        return rho*loss-(1.+rho)*credit
+
+    @classmethod
+    def _credit_floor_rows(cls, items, credits, mult, hedge, rho):
+        """Return ADR-0325's floor rows for one group: one per kink ``s`` in 0 and every strike, each ``<= 0``.
+
+        Row ``s`` reads ``rho x (L_s . q - c . q) - c . q``, ``L_s`` the study's one :meth:`_loss_row` (with the
+        program's ``hedge``, ``(units, references)``, or ``None``) and ``c`` the decision ``credits``. The worst-case
+        loss ``max_s (L_s . q - c . q)`` is :func:`structure_max_loss` (its kinks; the group's slope row bounds it
+        above the top strike), so all rows together hold ``c . q >= rho x max loss`` exactly.
+        """
+        return [{"coefficients": [cls._credit_floor_coefficient(credit, loss, rho)
+                                  for credit, loss in zip(credits, cls._loss_row(items, s, mult, hedge), strict=True)],
+                 "upper": 0.}
+                for s in [0., *sorted({item["strike"] for item in items})]]
+
+    def _credit_floor_candidates(self, groups, metadata, rho):
+        """Return the groups, each with :meth:`_credit_floor_rows` appended (inputs never mutated; ADR-0325).
+
+        A program-hedged group's rows read its items' held-share units at each item's own reference (the rewrite's
+        loss rows); its hedge costs stay outside the credit, as in the recorded ``decision_credit`` and ``max_loss``.
+        """
+        def rows(meta, credits, mult):
+            program = meta.get("program_hedge")
+            hedge = None if program is None else (program["units"], program["references"])
+            return self._credit_floor_rows(meta["items"], credits, mult, hedge, rho)
+        return self._with_book_rows(groups, metadata, rows)
+
+    def _fill_credit_floor(self, filled, rho):
+        """Return ``credit_below_floor`` when a filled book's ``credit`` is under rho x its ``max_loss``, else ``None``.
+
+        The book's fill credit and its (hedged, once attached) maximum loss, within the program's ``parity_tolerance``;
+        an unbounded loss is under any floor.
+        """
+        short = rho*filled["max_loss"]-filled["credit"]
+        return self._BELOW_FLOOR if short > self.params["solver"]["parity_tolerance"] else None
 
     def _fill_premium_uncovered(self, filled, beta):
         """Return ``premium_uncovered`` when the filled book breaks ADR-0324's cover row at its fill prices, else ``None``.
@@ -6335,6 +6396,7 @@ class WeeklyOptionPortfolioStudy:
         above_exercise = bool((self._kelly(method) or {}).get(self._ABOVE_EXERCISE))   # ADR-0320
         not_in_the_money = bool((self._kelly(method) or {}).get(self._NOT_IN_THE_MONEY))   # ADR-0323
         premium_cover = (self._kelly(method) or {}).get(self._PREMIUM_COVER)                 # ADR-0324
+        credit_floor = (self._kelly(method) or {}).get(self._CREDIT_FLOOR)                   # ADR-0325
         pending_closes = raw_menu = close_week = close_program = None
         for day in self.calendar:
             self._apply_adjustments(account, day, charge)
@@ -6370,6 +6432,12 @@ class WeeklyOptionPortfolioStudy:
                                 rejected.append({**book, "status": "unfilled", "fill_date": day, "reason": reason})
                                 refusals.append({"id": book["id"], "reason": reason})
                                 continue
+                        if credit_floor is not None and self._fill_credit_floor(filled, credit_floor):
+                            # ADR-0325: after the hedge attaches, on the book's fill credit and its recorded max_loss.
+                            rejected.append({**book, "status": "unfilled", "fill_date": day,
+                                             "reason": self._BELOW_FLOOR})
+                            refusals.append({"id": book["id"], "reason": self._BELOW_FLOOR})
+                            continue
                         survivors.append(filled)
                 shock = self._shock(method)
                 if self._filled_scope(shock):
@@ -6441,6 +6509,9 @@ class WeeklyOptionPortfolioStudy:
                     if premium_cover is not None:
                         # ADR-0324: after every cut and the hedge rewrite (which replaces the group's rows).
                         groups = self._premium_cover_candidates(groups, metadata, premium_cover)
+                    if credit_floor is not None:
+                        # ADR-0325: in the same place, after the cover row.
+                        groups = self._credit_floor_candidates(groups, metadata, credit_floor)
                     if week_cal is not None:
                         # B2 step 5: the adjust against the group AS CONFIGURED (hedged nominal), after every exclusion.
                         adjusts = calibrated.adjust(day, groups, metadata)

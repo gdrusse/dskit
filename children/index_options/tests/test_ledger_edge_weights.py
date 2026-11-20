@@ -1036,3 +1036,65 @@ def test_both_new_keys_run_beside_the_exercise_robust_tilt_settleable_and_name_c
                                             or (leg["right"] == "call" and leg["strike"] < spot))
                        for leg in book["legs"])
     assert study._method(arm, None, recorded=result) == result
+
+
+# --- ADR-0325: the credit floor on the hedged program ---------------------------------------------------------------
+
+FLOOR = .05
+
+
+def _ratio(trade):
+    return trade["decision_credit"] / trade["max_loss"]
+
+
+def test_a_thin_naked_put_the_plain_search_picks_is_redeployed_to_a_book_over_the_floor():
+    """The fair world's best unconstrained book is a naked put collecting under 5% of its worst-case loss."""
+    _, _, plain_study = _study(_arm(BASE), cheap_call=False)
+    plain = plain_study._method(_arm(BASE), None)
+    assert plain["trades"] and all(_ratio(t) < FLOOR for t in plain["trades"]), "premise: the plain book is thin"
+    arm = _arm(BASE, {"credit_floor": FLOOR})
+    _, _, study = _study(arm, cheap_call=False)
+    result = study._method(arm, None)
+    assert result["trades"], "the floor redeploys, it does not empty the week"
+    assert all(_ratio(t) >= FLOOR for t in result["trades"])
+    assert [b["legs"] for b in result["decisions"][0]["books"]] != [b["legs"] for b in plain["decisions"][0]["books"]]
+    assert study._method(arm, None, recorded=result) == result
+
+
+def test_on_a_hedged_book_the_rows_max_loss_is_the_programs_hedged_loss_without_the_hedge_costs(monkeypatch):
+    """The cheap-call world trades hedged twins: the floor rows at the chosen quantities read the hedged max loss."""
+    scored, _ = _spy(monkeypatch)
+    rho = 1e-3
+    arm = _arm(BASE, {"credit_floor": rho})
+    _, _, study = _study(arm)
+    result = study._method(arm, None)
+    (book,) = result["decisions"][0]["books"]
+    assert any(leg.get("hedged") for leg in book["legs"]) and book["program_hedge"]["cost_usd"] > 0
+    (group,) = [g for g in scored[-1]["groups"] if g["id"] == book["id"]]
+    (quantities,) = [q for q, gid in zip(result["decisions"][0]["selection"]["quantities"],
+                                         [g["id"] for g in scored[-1]["groups"]]) if gid == book["id"]]
+    strikes = {leg["strike"] for leg in book["legs"]}
+    assert len(group["linear_rows"]) >= 2 + len(strikes), "the slope row, then one floor row per kink"
+    activity = max(sum(c * q for c, q in zip(row["coefficients"], quantities, strict=True))
+                   for row in group["linear_rows"][1:])
+    loss = book["max_loss"] - book["program_hedge"]["cost_usd"]      # the decision book's loss carries the costs
+    assert activity == pytest.approx(rho * loss - book["credit"], rel=1e-9)
+
+
+def test_the_floor_runs_beside_every_other_kelly_key_and_replays(monkeypatch):
+    """Cover, moneyness, exercise, robust scale, name cap, settleable, dte tilt, a 0.9 wealth floor, longer moves."""
+    scored, _ = _spy(monkeypatch)
+    moves = [-.3, -.25, -.2, *_arm(BASE)["kelly"]["moves"], .2, .25, .3]
+    arm = {**_robust_arm(dte_tilt=.5, short_call_above_exercise=True, short_not_in_the_money=True, premium_cover=1.,
+                         settleable_only=True, credit_floor=FLOOR, wealth_floor=.9, moves=moves),
+           "name_fraction": NAME_CAP}
+    _, _, study = _robust_study(JUMP, arm)
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(study.params)
+    result = study._method(arm, None)
+    week = result["decisions"][0]
+    groups = [g for p in scored if "utility" in p for g in p["groups"]]
+    assert groups and all(len(g["linear_rows"]) > 2 for g in groups), "slope, cover, then the floor rows"
+    assert week["books"] and result["trades"]
+    # The world's hedged synthetic cannot lose (a negative max loss), which any floor admits.
+    assert all(t["decision_credit"] >= FLOOR * t["max_loss"] and t["decision_credit"] > 0 for t in result["trades"])
+    assert study._method(arm, None, recorded=result) == result

@@ -858,6 +858,210 @@ def test_both_new_keys_together_cut_and_constrain_and_record():
     assert result["trades"] and all(leg["sign"] < 0 for b in result["trades"] for leg in b["legs"])
 
 
+# --- ADR-0325: credit floor (kelly.credit_floor = rho): per book, net credit >= rho x worst-case loss ----------------
+
+_FLOOR = "credit_floor"
+
+
+def test_a_contracts_floor_term_is_rho_times_its_loss_less_one_plus_rho_times_its_credit():
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    assert study._credit_floor_coefficient(_RECEIVED, 9600., .02) == pytest.approx(.02 * 9600. - 1.02 * _RECEIVED)
+    assert study._credit_floor_coefficient(-_PAID, 0., .5) == pytest.approx(1.5 * _PAID), "a bought contract's debit"
+
+
+def _floor_week(rho):
+    """The world's first prepared week with the floor rows appended (a put 90/100 menu)."""
+    _params, _data, _method, study = _settleable_world(False)
+    groups, metadata, _refusals = study._prepare("2019-01-02")
+    before = copy.deepcopy(groups)
+    floored = study._credit_floor_candidates(groups, metadata, rho)
+    assert groups == before, "the prepared groups are never mutated"
+    return groups, metadata, floored
+
+
+def _quantities(meta, legs):
+    return [legs.get((i["sign"], i["strike"]), 0) for i in meta["items"]]
+
+
+def _book_terms(meta, legs):
+    """``(credit, structure_max_loss)`` of a book of ``{(sign, strike): quantity}`` at the items' decision prices."""
+    from dskit.pipeline.option_structures import structure_max_loss
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    held = [(i, q) for i, q in zip(meta["items"], _quantities(meta, legs), strict=True) if q]
+    credit = sum(q * study._option_credit(i["sign"], i["price"], 100, .65) for i, q in held)
+    loss = structure_max_loss([(i["right"], i["sign"] * q) for i, q in held], [i["strike"] for i, _ in held], credit, 100)
+    return credit, loss
+
+
+def _floor_activities(plain, group, meta, legs):
+    rows = group["linear_rows"][len(plain["linear_rows"]):]
+    assert rows and all(row["upper"] == 0. for row in rows)
+    q = _quantities(meta, legs)
+    return [sum(c * v for c, v in zip(row["coefficients"], q, strict=True)) for row in rows]
+
+
+_SHORT, _SPREAD, _TWO_ONE = {(-1, 100.): 1}, {(-1, 100.): 1, (1, 90.): 1}, {(-1, 100.): 2, (1, 90.): 1}
+_LONG, _DEBIT = {(1, 90.): 1}, {(1, 100.): 1, (-1, 90.): 1}
+
+
+def test_the_floor_rows_are_one_per_kink_and_their_largest_activity_is_rho_max_loss_less_credit():
+    """The max-loss definition: the shared owner's ``structure_max_loss`` at the items' decision credit."""
+    rho = .1
+    groups, metadata, floored = _floor_week(rho)
+    for plain, group, meta in zip(groups, floored, metadata, strict=True):
+        assert group["linear_rows"][:len(plain["linear_rows"])] == plain["linear_rows"], "earlier rows are kept"
+        assert {k: v for k, v in group.items() if k != "linear_rows"} == \
+            {k: v for k, v in plain.items() if k != "linear_rows"}
+        assert len(group["linear_rows"]) - len(plain["linear_rows"]) == 1 + len({i["strike"] for i in meta["items"]})
+        for legs in (_SHORT, _SPREAD, _TWO_ONE, _LONG, _DEBIT):
+            credit, loss = _book_terms(meta, legs)
+            assert max(_floor_activities(plain, group, meta, legs)) == pytest.approx(rho * loss - credit)
+
+
+def _ratio(legs):
+    """A book's own credit over its max loss in the world's first group (every group prices the same menu)."""
+    credit, loss = _book_terms(_floor_week(.1)[1][0], legs)
+    return credit / loss
+
+
+@pytest.mark.parametrize("legs,scale,feasible", [
+    (_SHORT, .99, True), (_SHORT, 1., True), (_SHORT, 1.01, False),          # a lone sold put around its own ratio
+    (_SPREAD, .99, True), (_SPREAD, 1., True), (_SPREAD, 1.01, False),
+    (_TWO_ONE, 1., True), (_TWO_ONE, 1.01, False),
+])
+def test_the_floor_admits_a_credit_book_exactly_when_its_credit_is_at_least_rho_times_its_max_loss(legs, scale,
+                                                                                                    feasible):
+    rho = scale * _ratio(legs)
+    groups, metadata, floored = _floor_week(rho)
+    tolerance = 1e-9 * 1e4
+    for plain, group, meta in zip(groups, floored, metadata, strict=True):
+        assert (max(_floor_activities(plain, group, meta, legs)) <= tolerance) is feasible
+
+
+def test_a_wing_that_lowers_the_max_loss_makes_a_thin_sold_put_feasible():
+    lone, spread = _ratio(_SHORT), _ratio(_SPREAD)
+    assert 0 < lone < .05 < spread, "premise: the lone put is thin, the spread thick"
+    groups, metadata, floored = _floor_week(.05)
+    for plain, group, meta in zip(groups, floored, metadata, strict=True):
+        assert max(_floor_activities(plain, group, meta, _SHORT)) > 0
+        assert max(_floor_activities(plain, group, meta, _SPREAD)) <= 0
+
+
+@pytest.mark.parametrize("rho", [1e-9, .02, .5, .999])
+@pytest.mark.parametrize("legs", [_LONG, _DEBIT])
+def test_a_net_debit_book_is_infeasible_at_every_rho(rho, legs):
+    groups, metadata, floored = _floor_week(rho)
+    for plain, group, meta in zip(groups, floored, metadata, strict=True):
+        assert _book_terms(meta, legs)[0] < 0
+        assert max(_floor_activities(plain, group, meta, legs)) > 0
+
+
+def test_the_search_cannot_open_a_thin_put_nor_a_debit_and_cannot_drop_a_spreads_wing():
+    """The pack's local search reads the floor rows as any group linear rows (a move that breaks one is infeasible)."""
+    from test_kelly_local import PARAMS, _program, _scorer
+
+    from index_options.kelly_local import KellyLocalSearch
+
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    program = _program(n_groups=1, n_pairs=2, seed=3, capacity=3)
+    group = program["groups"][0]
+    items = [{"right": "put", "strike": 96. + 3. * (k // 2), "sign": -1 if k % 2 == 0 else 1} for k in range(4)]
+    long_low, short_high = 1, 2                  # each pair: the short column, then its long mirror
+    credit = group["credit"]
+    lone = credit[short_high] / (99. * 10 - credit[short_high])
+    spread = (credit[short_high] + credit[long_low]) / (30. - credit[short_high] - credit[long_low])
+    assert 0 < lone < spread, "premise: the 99/96 credit spread is thicker than the lone 99 put"
+
+    def search(rho, q):
+        group["linear_rows"] = study._credit_floor_rows(items, credit, 10, None, rho)
+        out = KellyLocalSearch(_scorer(program), PARAMS)
+        out._load(q)
+        return out
+
+    assert search(.99 * lone, [0, 0, 0, 0])._trial({short_high: 1}) is not None, "a thick enough put opens alone"
+    thin = search(1.01 * lone, [0, 0, 0, 0])
+    assert thin._trial({short_high: 1}) is None, "a put under the floor cannot open alone"
+    assert thin._trial({long_low: 1}) is None, "a bought put alone is a net debit"
+    held = search(1.01 * lone, [0, 1, 1, 0])
+    assert held._trial({long_low: -1}) is None, "dropping the wing leaves the thin put"
+    assert held._trial({short_high: -1}) is None, "dropping the sold leg leaves a debit"
+    rows = study._credit_floor_rows(items, credit, 10, None, 1.01 * lone)
+    group["linear_rows"] = rows
+    (q,) = KellyLocalSearch(_scorer(program), PARAMS).run(None)["quantities"]
+    assert all(sum(c * v for c, v in zip(row["coefficients"], q, strict=True)) <= 1e-3 for row in rows)
+
+
+@pytest.mark.parametrize("value", [0, 0., 1, 1., -.1, 1.5, True, None, ".02", float("nan"), float("inf")])
+def test_a_credit_floor_outside_the_open_unit_interval_is_refused(value):
+    params, _data, method = _world(MULTISTART2_SEARCH)
+    method["kelly"][_FLOOR] = value
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+@pytest.mark.parametrize("value", [1e-6, .02, .5, .999])
+def test_a_credit_floor_inside_the_open_unit_interval_validates(value):
+    params, _data, method = _world(MULTISTART2_SEARCH)
+    method["kelly"][_FLOOR] = value
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_without_the_key_no_floor_row_is_built_and_no_fill_is_tested(monkeypatch):
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    plain = _keyed()
+
+    def refuse(*_a, **_k):
+        raise AssertionError("the credit floor ran without its key")
+    monkeypatch.setattr(study, "_credit_floor_candidates", refuse)
+    monkeypatch.setattr(study, "_fill_credit_floor", refuse)
+    assert _keyed() == plain
+
+
+def _picks(result):
+    """What a result trades: its books, fills and P&L (a row that refuses more starts changes the search's record)."""
+    return (result["trades"], result["rejected"], result["pnl"],
+            [(w.get("books"), w.get("selection", {}).get("quantities")) for w in result["decisions"]])
+
+
+def test_a_slack_floor_leaves_the_solved_books_and_a_floor_above_the_spread_trades_nothing():
+    plain = _keyed()
+    assert plain["trades"] and _picks(_keyed(values={_FLOOR: .5 * _ratio(_SPREAD)})) == _picks(plain)
+    assert _picks(_keyed(values={_FLOOR: _ratio(_SPREAD)})) == _picks(plain), "equality is feasible"
+    above = _keyed(values={_FLOOR: 1.01 * _ratio(_SPREAD)})
+    assert not above["trades"], "the world's only credit books are the spread and thinner ones"
+
+
+def test_a_book_whose_fill_prices_break_the_floor_is_rejected_through_the_method_loop():
+    name, edit = "C0N0", _quote("C0N0", "2019-01-03", 100., bid=.3, ask=.32)      # the sold put collapses at the fill
+    plain = _keyed(edit=edit)
+    assert any(b["symbol"] == name and b["decision_date"] == "2019-01-02" for b in plain["trades"]), "plain: filled"
+    result = _keyed(edit=edit, values={_FLOOR: .5})
+    assert _picks(result)[3][0] == _picks(plain)[3][0], "the decision is the plain one"
+    (rejected,) = [b for b in result["rejected"] if b["symbol"] == name and b["decision_date"] == "2019-01-02"]
+    assert rejected["reason"] == "credit_below_floor" and rejected["fill_date"] == "2019-01-03"
+    first = lambda r: sorted(b["symbol"] for b in r["trades"] if b["decision_date"] == "2019-01-02")  # noqa: E731
+    assert first(result) == [s for s in first(plain) if s != name]
+    for book in result["trades"]:
+        assert book["credit"] >= .5 * book["max_loss"]
+
+
+def test_the_fill_floor_test_reads_the_filled_books_credit_and_max_loss():
+    _params, _data, _method, study = _settleable_world(False)
+    tolerance = study.params["solver"]["parity_tolerance"]
+    assert study._fill_credit_floor({"credit": 20., "max_loss": 1000.}, .02) is None, "equality passes"
+    assert study._fill_credit_floor({"credit": 20. - tolerance / 2, "max_loss": 1000.}, .02) is None
+    assert study._fill_credit_floor({"credit": 19.9, "max_loss": 1000.}, .02) == "credit_below_floor"
+    assert study._fill_credit_floor({"credit": -1., "max_loss": 1.}, 1e-9) == "credit_below_floor", "a debit"
+    assert study._fill_credit_floor({"credit": 50., "max_loss": math.inf}, .02) == "credit_below_floor"
+
+
+def test_the_floor_with_the_cover_and_the_moneyness_cut_constrains_and_records():
+    result = _keyed(_NOT_ITM, values={_COVER: 1., _FLOOR: .5 * _ratio(_SPREAD)})
+    assert result["decisions"][0][_NOT_ITM] == 0 and result["trades"]
+    for book in result["trades"]:
+        assert book["decision_credit"] >= .5 * _ratio(_SPREAD) * book["max_loss"]
+
+
 # --- ADR-0316: the hedge inside the search (static and daily re-struck), on new ids --------------------------------
 # Amendment 1 (owner rulings 2026-11-13): hedging is optional contract by contract and the search decides; the daily
 # hedge is scored on seeded path scenarios; a re-struck reserve over the cap blocks new admissions.
