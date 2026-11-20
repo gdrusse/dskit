@@ -1029,6 +1029,20 @@ def test_a_slack_floor_leaves_the_solved_books_and_a_floor_above_the_spread_trad
     assert _picks(_keyed(values={_FLOOR: _ratio(_SPREAD)})) == _picks(plain), "equality is feasible"
     above = _keyed(values={_FLOOR: 1.01 * _ratio(_SPREAD)})
     assert not above["trades"], "the world's only credit books are the spread and thinner ones"
+    assert not above["rejected"] and not any(w.get("books") for w in above["decisions"]), \
+        "the program selects nothing: the fill check never has to reject"
+
+
+def test_a_hedged_floor_row_reads_each_items_units_at_its_own_reference():
+    """Row ``s`` of a hedged item is ``rho x (l(s) - u (s - F_ref) - c) - c``; an item with no units keeps its row."""
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    items = [{"right": "put", "strike": 100., "sign": -1}, {"right": "put", "strike": 100., "sign": -1}]
+    credits, rho, units, refs = [300., 300.], .1, [50., 0.], [101., 99.]
+    rows = study._credit_floor_rows(items, credits, 100, (units, refs), rho)
+    assert [r["upper"] for r in rows] == [0., 0.]
+    at_zero, at_strike = (r["coefficients"] for r in rows)
+    assert at_zero == pytest.approx([rho * (10000. + 50. * 101.) - 1.1 * 300., rho * 10000. - 1.1 * 300.])
+    assert at_strike == pytest.approx([rho * (-50. * (100. - 101.)) - 1.1 * 300., -1.1 * 300.])
 
 
 def test_a_book_whose_fill_prices_break_the_floor_is_rejected_through_the_method_loop():
