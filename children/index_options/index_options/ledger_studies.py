@@ -2521,7 +2521,7 @@ class EdgeWeights:
     ``name_spread`` (``c >= 1``) is not an edge weight: it is the one-stage program's ``utility.charge_scale``, the
     multiplier on every name's own dispersion charge (see :meth:`WeeklyOptionPortfolioStudy._method`).
 
-    ADR-0320 ``robust_scale`` (``{"reference": spec, "robust": spec}``, two :mod:`~dskit.pipeline.libs.vol_estimators` specs
+    ADR-0321 ``robust_scale`` (``{"reference": spec, "robust": spec}``, two :mod:`~dskit.pipeline.libs.vol_estimators` specs
     over the same window) values each item at the LOWER of its expected profit under the forecast and under the
     forecast re-read on a narrower scale: ``reference_scale x r``, ``r = min(1, sqrt(robust / reference))`` of the
     two estimators' variances of the name's closes up to and including the decision day (the window the forecast's
@@ -4733,7 +4733,7 @@ class WeeklyOptionPortfolioStudy:
             limits = [{"members": symbols,
                        "upper": account.remaining(symbols, method["portfolio_fraction"]-held_back)}]
             if method["name_fraction"] < 1:
-                # ADR-0320: the opt-in hard per-name cap: each name's open plus new reserve within name_fraction of funding,
+                # ADR-0321: the opt-in hard per-name cap: each name's open plus new reserve within name_fraction of funding,
                 # at the decision and at the fill alike (the cash buffer is the cash row's alone).
                 limits.extend({"members": [s], "upper": account.remaining([s], method["name_fraction"])}
                               for s in symbols)

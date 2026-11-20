@@ -27,7 +27,7 @@ The model, one decision week ``D`` (every input is date-``D`` data; the fill is 
 
 Refused beside it (named codes, :meth:`CloseCandidates.problems`): a hedge block (a closed book would orphan its
 forward leg: the static hedge settles WITH its book, and a mid-life unwind of the forward is not modelled), a
-calibration block, exposure limits, a sizer, the ADR-0318 edge weights (the held book's edge would be unweighted
+calibration block, exposure limits, a sizer, the ADR-0318/0321 edge keys (the held book's edge would be unweighted
 while a candidate's is weighted), the multi-start search (its LP-rounded starts know no held book) and any split
 adjustment of the study. Coverage: only a week that reaches the solve considers closes (a week that is cash for a
 status such as ``no_eligible_candidates``, ``no_entry_fill_session`` or a shock/kelly risk status holds every book),
@@ -52,7 +52,7 @@ class CloseCandidates:
     PRICE = "bid_ask"
     #: Method blocks and kelly keys the feature cannot sit beside, by the code the refusal carries.
     BLOCKS = ("hedge", "calibration", "exposure_limits", "sizer")
-    EDGE = ("accuracy", "dte_tilt", "name_spread")
+    EDGE = ("accuracy", "dte_tilt", "name_spread", "robust_scale")
     #: A hold group's id prefix.
     PREFIX = "hold:"
 

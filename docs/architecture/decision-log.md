@@ -37453,7 +37453,7 @@ the original experiment identity and provenance before reading its saved fit.
 **Exit.** Focused tests cover missing/unused/malformed bindings, exact control-input parity, date bounds, portable identity, actual exported-worker and recorded-pricer agreement, and strictly prior decision use. Two independent final reviews bind an immutable candidate before real dispatch. The existing in-memory joint-history interface and other method behavior remain unchanged.
 
 
-## ADR-0320 — Two-scale worst-case edge and an opt-in per-name cap on Kelly methods (accepted 2026-11-19; renumber at merge if taken)
+## ADR-0321 — Two-scale worst-case edge and an opt-in per-name cap on Kelly methods (accepted 2026-11-19; renumber at merge if taken)
 
 **Status.** Accepted on the owner's instruction of 2026-11-19 ("holistically re-evaluate the formulation, make changes, and rekick off MIO queues"; "implement in opus"). Design delegated to the agent after an adversarially verified diagnosis (MIO robustness synthesis, RC2 and RC3). Locked A0008 recipe, its pinned forecasts, A0009 and every Path row are untouched.
 
@@ -37462,6 +37462,13 @@ the original experiment identity and provenance before reading its saved fit.
 **Decision 1, `kelly.robust_scale`.** `{"reference": {"kind": "rms", "window": 22}, "robust": {"kind": "rms_trimmed", "window": 22, "drop": 1}}`. The new generic estimator `rms_trimmed` (`vol_estimators.TrimmedRms`) leaves the `drop` largest squares out of the window. Per name and day, `r = min(1, sqrt(robust / reference))` over closes up to and including the decision-day close (the window the forecast's scale reads; nothing later). The forecast CDF in `z` is re-projected at `reference_scale x r` onto the group's grid by the node's own projection (`_project`, split out of `_prepare` unchanged). Each item's adjust gains `m x min(0, e_r - e)`. It is never positive and is zero at `r = 1`. Per item, not per book: `value_adjust` is linear, so a book's value is the sum of its legs' minima. Weeks record `edge_weights.robust_scale` and books record `robust_cut`. Same declaration rules as ADR-0318's keys.
 
 **Decision 2, `name_fraction` below 1 on a kelly method.** A hard per-name reserve cap: one `_limits` row per name (`remaining([s], name_fraction)`) at the decision and at the fill. The cash buffer stays on the cash row only. At 1 no row is added. This reverses ADR-0299's "no sizing cap" for methods that opt in. The shared rule that an existing breach makes the week cash applies to these rows too.
+
+**Known limits (review, open for the owner).**
+- Without a jump, r is still below 1. On i.i.d. normal windows of 22 returns with the largest dropped, r averages about 0.90. The rule is therefore also a standing narrowing of about 10%. A consistency constant would change the design's estimator, so it is not added here.
+- The per-item minimum is an item-wise lower bound. It cuts a long wing in full and credits nothing for the short body.
+- A name without a ratio trades at forecast value (fail-open). A name is without a ratio when its 23 closes are short, nonfinite or flat.
+- r is taken from the unfloored rms. Where `reference_floor` binds, r scales the floored scale.
+- `close_candidates` is refused beside this key, as beside the other edge keys.
 
 **Unchanged.** With neither key, programs and results are byte for byte (ADR-0318's pinned digests). `hedge.margin_fraction` 0.5 is configuration only.
 

@@ -644,6 +644,32 @@ def test_a_robust_week_runs_records_its_cut_and_replays_from_its_record():
     assert study._method(arm, None, recorded=result) == result
 
 
+def test_a_tilted_books_robust_cut_carries_the_multiplier():
+    arm, _, study = _robust_study(JUMP, _robust_arm(dte_tilt=.5))
+    configured, metadata, edge = _week_groups(study, arm)
+    out, _, multipliers = edge.apply(DECISION, configured, metadata)
+    raw = EdgeWeights(study, _robust_arm()["kelly"]).apply(DECISION, [dict(g) for g in configured], metadata)[0]
+    q = [[1]*len(g["credit"]) for g in out]
+    books = [{"id": g["id"]} for g in out]
+    edge.stamp(books, metadata, q)
+    for book, g, plain in zip(books, out, raw, strict=True):
+        m = multipliers[g["id"]]
+        assert m < 1. and book["robust_cut"] == pytest.approx(m*sum(plain["value_adjust"]), abs=1e-9)
+
+
+def test_a_refused_robust_projection_cuts_every_positive_edge_to_zero(monkeypatch):
+    arm, _, study = _robust_study(JUMP)
+    configured, metadata, edge = _week_groups(study, arm)
+
+    def refuse(*a, **k):
+        raise ValueError("payoff tolerance")
+    monkeypatch.setattr(type(study._nodes["X"]), "_project", refuse)
+    out, record, _ = edge.apply(DECISION, configured, metadata)
+    for group, plain in zip(out, configured, strict=True):
+        assert group["value_adjust"] == [-max(0., e) for e in _expected(plain)]
+    assert record["robust_scale"]["unprojected"] == len(out)
+
+
 def test_with_the_scales_agreeing_the_robust_method_selects_what_the_base_selects():
     arm, _, study = _robust_study(EQUAL)
     base_arm = _arm(BASE)

@@ -3511,7 +3511,8 @@ def test_the_two_kelly_formulations_validate_and_differ_only_in_the_fraction():
 @pytest.mark.parametrize("change", [
     lambda m: m.update(rho=.1),
     lambda m: m.update(portfolio_fraction=.5),
-    lambda m: m.update(name_fraction=.25),
+    # name_fraction below 1 is the one cap a kelly method may declare (ADR-0321); 0 still refuses.
+    lambda m: m.update(name_fraction=0.),
     lambda m: m.update(component_fraction=.25),
     lambda m: m.update(shock=SHOCK10),
     lambda m: m.update(risk_charge={"measure": "mad", "price": .5}),
