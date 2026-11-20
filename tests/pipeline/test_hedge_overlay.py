@@ -68,7 +68,8 @@ def us(entries):
 
 def test_the_public_surface_is_exactly_the_declared_names():
     assert sorted(ho.__all__) == sorted(
-        ["HedgeOverlay", "NullHedgeOverlay", "FixedDeltaForwardHedge", "DailyDeltaForwardHedge", "KINDS", "REFUSALS",
+        ["HedgeOverlay", "NullHedgeOverlay", "FixedDeltaForwardHedge", "DailyDeltaForwardHedge", "WorsePriceForwardHedge",
+         "KINDS", "REFUSALS",
          "forward_leg_rule", "forward_leg_net_settle", "forward_leg_spot_delta", "forward_leg_one_way_cost",
          "forward_leg_rehedged_value"])
 
@@ -94,7 +95,8 @@ def test_params_tuples_are_the_amendment_tuples_with_the_owners_tuples_imported(
         + HardToBorrowProxy._PARAMS + StaticDeltaHedge._PARAMS
     assert FixedDeltaForwardHedge._EXTRA_PARAMS == ("delta_source", "iv_source", "rate")
     assert ho.KINDS == {"fixed_delta_forward": FixedDeltaForwardHedge,
-                        "daily_delta_forward": ho.DailyDeltaForwardHedge}
+                        "daily_delta_forward": ho.DailyDeltaForwardHedge,
+                        "worse_price_forward": ho.WorsePriceForwardHedge}
     assert set(FixedDeltaForwardHedge.params_tuple()) == set(BLOCK)
 
 
@@ -703,3 +705,84 @@ def test_the_first_path_units_are_the_entry_units_the_ledger_fills():
     for legs, strikes in (((("call", 1),), (100.0,)), ((("put", -1),), (95.0,)), ((("call", 1), ("put", -1)), (105.0, 95.0))):
         entry_ = daily.units([item(legs, strikes)], CONTEXT)[0]
         assert daily.path_units(entry_, FORWARD, 30 / 365) == pytest.approx(entry_["units"], rel=1e-12)
+
+
+# ADR-0320: the worse-price forward hedge (a long hedge struck at max(F, S), a short one at min(F, S)).
+WORSE = {**BLOCK, "kind": "worse_price_forward"}
+HTB_FORWARD, HTB_SPOT = 95.0, 100.0          # a hard-to-borrow name: the parity forward sits below spot
+
+
+def test_the_worse_price_kind_is_a_fixed_delta_forward_hedge_built_by_its_kind():
+    overlay = HedgeOverlay.from_method({"hedge": WORSE})
+    assert type(overlay) is ho.WorsePriceForwardHedge and isinstance(overlay, FixedDeltaForwardHedge)
+    assert ho.KINDS["worse_price_forward"] is ho.WorsePriceForwardHedge
+    assert ho.WorsePriceForwardHedge.params_tuple() == FixedDeltaForwardHedge.params_tuple()
+    assert overlay.REBALANCES is False
+    with pytest.raises(ConfigError, match="hedge_unknown_kind"):
+        ho.WorsePriceForwardHedge(BLOCK)
+
+
+def test_the_worse_price_kind_sizes_exactly_as_the_fixed_kind():
+    fixed, worse = FixedDeltaForwardHedge(BLOCK), ho.WorsePriceForwardHedge(WORSE)
+    items = [item(), item((("put", 1),), (95.0,)), item((("call", -1), ("put", -1)), (105.0, 95.0))]
+    assert worse.units(items, CONTEXT) == fixed.units(items, CONTEXT)
+    assert worse.book_units(worse.units(items, CONTEXT), [1, 2, 1]) == fixed.book_units(fixed.units(items, CONTEXT),
+                                                                                       [1, 2, 1])
+
+
+@pytest.mark.parametrize("forward,spot,units,expected", [
+    (HTB_FORWARD, HTB_SPOT, 300, HTB_SPOT),          # long, forward below spot: struck at spot
+    (HTB_FORWARD, HTB_SPOT, -300, HTB_FORWARD),      # short, forward below spot: keeps the forward (borrow charged)
+    (101.5, 100.3, 300, 101.5),                      # long, forward above spot: keeps the forward
+    (101.5, 100.3, -300, 100.3),                     # short, forward above spot: struck at spot
+    (HTB_FORWARD, HTB_SPOT, 0, HTB_FORWARD),         # nothing held: the forward
+])
+def test_the_worse_price_reference_is_the_worse_of_forward_and_spot_for_the_side(forward, spot, units, expected):
+    worse = ho.WorsePriceForwardHedge(WORSE)
+    assert worse.reference({"forward": forward, "spot": spot, "units": units}) == expected
+    (leg,) = worse.legs({"units": units, "raw": float(units)}, {"forward": forward, "spot": spot})
+    assert leg["reference"] == expected
+
+
+def test_the_worse_price_reference_refuses_without_the_spot_or_the_units():
+    worse = ho.WorsePriceForwardHedge(WORSE)
+    for context in ({"forward": HTB_FORWARD, "units": 3}, {"forward": HTB_FORWARD, "spot": HTB_SPOT},
+                    {"forward": HTB_FORWARD, "spot": 0.0, "units": 3}):
+        with pytest.raises(ValueError, match="spot"):
+            worse.reference(context)
+
+
+def test_the_fixed_kind_reference_and_legs_ignore_a_spot_or_units_in_the_context():
+    fixed = FixedDeltaForwardHedge(BLOCK)
+    for units in (300, -300, 0):
+        assert fixed.reference({"forward": HTB_FORWARD, "spot": HTB_SPOT, "units": units}) == HTB_FORWARD
+    assert fixed.legs({"units": 300, "raw": 300.4}, {"forward": HTB_FORWARD}) == [
+        {"instrument": "forward", "units": 300, "reference": HTB_FORWARD, "residual": 300 - 300.4}]
+
+
+def _conversion(overlay, level, units=100):
+    """``(pnl at level, max_loss)``: a short call 80 sold at 19.50 (under its 20 of exercise value), a long put 80
+    at 0.10 and a long hedge of ``units`` shares, on a name whose forward (95) sits below spot (100)."""
+    credit = 100 * (19.50 - 0.10)
+    legs, strikes = [("call", -1), ("put", 1)], [80.0, 80.0]
+    ref = overlay.reference({"forward": HTB_FORWARD, "spot": HTB_SPOT, "units": units})
+    return (credit + 100 * structure_payoff(legs, level, strikes) + units * (level - ref),
+            overlay.max_loss(legs, strikes, credit, 100, units, ref))
+
+
+def test_a_covered_call_sold_under_exercise_value_is_a_locked_loss_not_a_free_lunch():
+    assert _conversion(FixedDeltaForwardHedge(BLOCK), HTB_SPOT)[1] == pytest.approx(-440.0), \
+        "struck at the forward, the book books the 5-point gap as a riskless 440"
+    worse = ho.WorsePriceForwardHedge(WORSE)
+    assert _conversion(worse, HTB_SPOT)[1] == pytest.approx(60.0)
+    # expected profit <= 0 under any distribution with mean at spot (three of them here)
+    for levels, weights in (([HTB_SPOT], [1.0]), ([60.0, 140.0], [0.5, 0.5]), ([50.0, 100.0, 120.0], [0.2, 0.3, 0.5])):
+        assert math.fsum(w * x for x, w in zip(levels, weights)) == pytest.approx(HTB_SPOT)
+        assert math.fsum(w * _conversion(worse, x)[0] for x, w in zip(levels, weights)) <= 0
+    # the covered call alone, sold under exercise value: expected <= 0 at mean spot (Jensen), loss never negative
+    credit = 100 * 19.50
+    ref = worse.reference({"forward": HTB_FORWARD, "spot": HTB_SPOT, "units": 100})
+    assert worse.max_loss([("call", -1)], [80.0], credit, 100, 100, ref) >= 0
+    for levels, weights in (([HTB_SPOT], [1.0]), ([70.0, 130.0], [0.5, 0.5])):
+        assert math.fsum(w * (credit + 100 * structure_payoff([("call", -1)], x, [80.0]) + 100 * (x - ref))
+                         for x, w in zip(levels, weights)) <= 0

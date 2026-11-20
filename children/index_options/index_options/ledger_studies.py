@@ -1680,9 +1680,12 @@ class ReplayHedge:
         """Return the hedged ``(group, meta)``: losses, reserve rows, slope row, netted floor rows and credit net of costs.
 
         ``entries`` carry each item's held-share ``units`` (0.0 for an excluded item); ``reference`` is the decision
-        forward ``F_0``. The loss rows go through the study's one ``_loss_row`` with the hedge, the slope row reads
+        forward ``F_0``. Each item settles against the overlay's reference for its own side (``references``: ``F_0``
+        for the fixed kind; the worse of ``F_0`` and the decision spot for the worse-price kind, ADR-0320). The loss
+        rows go through the study's one ``_loss_row`` with the hedge, the slope row reads
         ``-s_i [call_i] - u_i / mult <= 0`` (which excludes the unhedgeable classes), the margin floor is the overlay's
-        two NETTED rows, and the per-item cost is the shared rule on ``|u_i|`` at ``F_0`` for both legs.
+        two NETTED rows at ``F_0``, and the per-item cost is the shared rule on ``|u_i|`` at the item's reference for
+        both legs.
         """
         import numpy as np
 
@@ -1690,8 +1693,9 @@ class ReplayHedge:
         if not any(units):
             return group, meta
         ov, items, loss_row = self.overlay, meta["items"], self.study._loss_row
-        hedge = (units, reference)
-        costs = [ov.item_cost(e, reference, meta["dte"]) for e in entries]
+        references = [ov.reference({"forward": reference, "spot": meta["spot"], "units": u}) for u in units]
+        hedge = (units, references)
+        costs = [ov.item_cost(e, r, meta["dte"]) for e, r in zip(entries, references, strict=True)]
         credit = np.asarray(group["credit"]) - np.asarray(costs)
         reserves = [(np.asarray(loss_row(items, s, mult, hedge)) - credit).tolist()
                     for s in [0., *sorted({i["strike"] for i in items})]]
@@ -1706,8 +1710,8 @@ class ReplayHedge:
         # calibration values the hedged direction part with it (ADR-0313 B1), never with the block's ratio.
         ratios = [min(1.0, max(0.0, -u / e["delta_f_sh"])) if u and e.get("delta_f_sh") else 0.0
                   for u, e in zip(units, entries, strict=True)]
-        program = {"units": units, "reference": reference, "costs": costs, "ratios": ratios,
-                   "margin_fraction": ov.params["margin_fraction"]}
+        program = {"units": units, "reference": reference, "references": references, "costs": costs,
+                   "ratios": ratios, "margin_fraction": ov.params["margin_fraction"]}
         if ov.REBALANCES:
             program["entries"] = entries                     # ADR-0316 A1: what :meth:`path_scenarios` re-strikes
         return rewritten, {**meta, "program_hedge": program}
@@ -1783,12 +1787,15 @@ class ReplayHedge:
             ov.counts[BOOKS_PREFIX + self.UNHEDGED] += 1
             return
         hedged, code = self._decision_book(book, legs)
-        reference, source = self.forward(symbol, day, expiry, factor, {leg["strike"] for leg in legs})
-        if hedged is None or reference is None:
+        forward, source = self.forward(symbol, day, expiry, factor, {leg["strike"] for leg in legs})
+        if hedged is None or forward is None:
             record["status"] = code or source
             ov.counts[BOOKS_PREFIX + record["status"]] += 1
             return
         self.counts["forward_spot"] += source != ParityForward.SOURCE_PARITY
+        # The leg's strike: the fill forward, or (ADR-0320) the worse of it and the fill spot for the book's side.
+        fill_context = {"forward": forward, "spot": self._spot(symbol, day, factor)}
+        reference = ov.reference({**fill_context, "units": hedged["units"]})
         signed = [(leg["right"], leg["sign"] * leg["quantity"]) for leg in legs]
         strikes = [leg["strike"] for leg in legs]
         status = ov.classify_book(hedged, signed, strikes, book["credit"], mult, reference)
@@ -1796,7 +1803,7 @@ class ReplayHedge:
         if status != "ok" or hedged["units"] == 0:
             return
         units = hedged["units"]
-        leg = ov.legs(hedged, {"forward": reference})
+        leg = ov.legs(hedged, fill_context)
         days = (date.fromisoformat(expiry) - date.fromisoformat(day)).days
         allowance = ov.costs(leg, 2.0 * reference, days)["trade_costs"]
         loss = ov.max_loss(signed, strikes, book["credit"], mult, units, reference)
@@ -1806,6 +1813,9 @@ class ReplayHedge:
                       rates={k: ov.params[k] for k in ("hedge_fee_per_share", "hedge_half_spread_bps")},
                       closing_cost_allowance=allowance, option_reserve=book["reserve"],
                       unhedged_max_loss=book["max_loss"])
+        if reference != forward:
+            # ADR-0320: struck at spot, the worse price; the fill forward is kept for the carry-ratio mark fallback.
+            record["forward_reference"] = forward
         if math.isinf(book["max_loss"]):
             # A book the forward leg alone makes bounded (a sold call it covers): JSON has no infinity, so the
             # option legs' reserve and loss are recorded as null with the flag (ADR-0313 I7; the replay needs it).
@@ -1982,7 +1992,9 @@ class ReplayHedge:
         spot = self._spot(symbol, day, factor)
         if spot is None:
             return None
-        return spot * record["reference"] / self._spot(symbol, book["fill_date"], factor), True
+        # the carry ratio is the FILL FORWARD's over the fill spot (a leg struck at spot, ADR-0320, keeps its forward)
+        forward = record.get("forward_reference", record["reference"])
+        return spot * forward / self._spot(symbol, book["fill_date"], factor), True
 
     def marked(self, record, forward, carried):
         """Return the leg's mark at ``forward`` and count it (and its carried flag) on the overlay's tally."""
@@ -3107,6 +3119,14 @@ class WeeklyOptionPortfolioStudy:
     #: candidate whose book could not be carried to its expiry on the decision's basis (:meth:`_settleable`); each is
     #: refused ``unsettleable_expiry``. Absent means the candidate set is untouched, byte for byte.
     _UNSETTLEABLE = "unsettleable_expiry"
+    #: ADR-0320: ``short_call_above_exercise`` (only ``true``) never sells an American call at or below its exercise
+    #: value: per method, before the hedge reads the week, every short-call item whose decision bid is at or below
+    #: ``max(spot - strike, 0)`` is cut from its group (a group left empty is refused ``short_call_at_exercise``; the
+    #: week records how many items were cut under the key's name), and the fill rejects an order whose short call's
+    #: fill bid is at or below the fill spot's intrinsic, with the same code. Absent, nothing changes, byte for byte.
+    _ABOVE_EXERCISE = "short_call_above_exercise"
+    _AT_EXERCISE = "short_call_at_exercise"
+    _KELLY_OPTIONAL_KEYS = _KELLY_OPTIONAL_KEYS | {_ABOVE_EXERCISE}
     #: ADR-0302: ``search`` ({iterations, neighbourhood, node_limit, seed}) runs the relax_fix strategy's deterministic
     #: incumbent local search (the solver's ``utility_search``); ``warm_start`` ({node_limit}) certifies a week the
     #: action limit would decline from its complete incumbent under that node budget (``utility_warm_start``). Each
@@ -3786,6 +3806,7 @@ class WeeklyOptionPortfolioStudy:
                 and ("max_groups" not in kelly or (type(kelly["max_groups"]) is int and kelly["max_groups"] >= 1))
                 and ("accept_uncertified" not in kelly or type(kelly["accept_uncertified"]) is bool)
                 and ("settleable_only" not in kelly or kelly["settleable_only"] is True)
+                and (cls._ABOVE_EXERCISE not in kelly or kelly[cls._ABOVE_EXERCISE] is True)
                 and CloseCandidates.well_formed(kelly)
                 and (not EdgeWeights.declared(kelly)
                      or (EdgeWeights.valid(kelly) and isinstance(kelly.get("local_search"), dict)
@@ -3919,15 +3940,17 @@ class WeeklyOptionPortfolioStudy:
         """Return each item's per-contract terminal loss at an underlying price.
 
         ``hedge`` is ``None`` (today's row, bit for bit) or ``(units, reference)``: the held-share forward units per
-        item and the level they settle against (ADR-0312 program mode). The hedged loss is
-        ``l_i(S) - u_i (S - F_ref)``; an item with ``u_i == 0`` keeps its unhedged value exactly.
+        item and the level they settle against (ADR-0312 program mode), one number for every item or one per item
+        (ADR-0320: each item's own side). The hedged loss is ``l_i(S) - u_i (S - F_ref,i)``; an item with
+        ``u_i == 0`` keeps its unhedged value exactly.
         """
         row = [-i["sign"]*mult*max((i["strike"]-spot if i["right"] == "put"
                                     else spot-i["strike"]), 0.) for i in items]
         if hedge is None:
             return row
         units, reference = hedge
-        return [loss-u*(spot-reference) if u else loss for loss, u in zip(row, units, strict=True)]
+        references = reference if isinstance(reference, (list, tuple)) else [reference]*len(units)
+        return [loss-u*(spot-ref) if u else loss for loss, u, ref in zip(row, units, references, strict=True)]
 
     @classmethod
     def _filled_scope(cls, shock):
@@ -3949,9 +3972,9 @@ class WeeklyOptionPortfolioStudy:
 
     @staticmethod
     def _program_hedge(meta):
-        """Return a candidate's ``(units, reference)`` hedge when program mode rewrote it, else ``None``."""
+        """Return a candidate's ``(units, references)`` hedge (one reference per item) when program mode rewrote it, else ``None``."""
         hedge = meta.get("program_hedge")
-        return None if hedge is None else (hedge["units"], hedge["reference"])
+        return None if hedge is None else (hedge["units"], hedge["references"])
 
     @classmethod
     def _move_terms(cls, moves, betas, metadata, groups, mult):
@@ -4213,6 +4236,34 @@ class WeeklyOptionPortfolioStudy:
         refusals = [{"symbol": meta["symbol"], "expiry": meta["expiry"], "reason": self._UNSETTLEABLE}
                     for i, meta in enumerate(metadata) if i not in held]
         return [groups[i] for i in kept], [metadata[i] for i in kept], refusals
+
+    @staticmethod
+    def _short_call_at_exercise(leg, spot):
+        """Return whether ``leg`` sells a call at a ``price`` at or below its exercise value ``max(spot - strike, 0)`` (ADR-0320)."""
+        from dskit.pipeline.option_structures import leg_intrinsic
+
+        return (leg["sign"] < 0 and leg["right"] == "call"
+                and leg["price"] <= leg_intrinsic("call", float(leg["strike"]), float(spot)))
+
+    @classmethod
+    def _above_exercise_candidates(cls, groups, metadata):
+        """Return ``(groups, metadata, refusals, cut)`` without the short-call items sold at or below exercise value.
+
+        Each item :meth:`_short_call_at_exercise` flags at the group's decision ``spot`` is cut from its group through
+        the one per-item cutter (:meth:`ReplayHedge.restrict`; the inputs are never mutated); ``cut`` counts them and
+        a group left empty is refused ``short_call_at_exercise``.
+        """
+        out_groups, out_meta, refusals, cut = [], [], [], 0
+        for group, meta in zip(groups, metadata, strict=True):
+            keep = [i for i, item in enumerate(meta["items"]) if not cls._short_call_at_exercise(item, meta["spot"])]
+            cut += len(meta["items"]) - len(keep)
+            if not keep:
+                refusals.append({"symbol": meta["symbol"], "expiry": meta["expiry"], "reason": cls._AT_EXERCISE})
+                continue
+            group, meta, _ = ReplayHedge.restrict(group, meta, [None] * len(meta["items"]), keep)
+            out_groups.append(group)
+            out_meta.append(meta)
+        return out_groups, out_meta, refusals, cut
 
     def _apply_adjustments(self, account, day, charge):
         """Convert every affected open book before today's account activity."""
@@ -4771,12 +4822,17 @@ class WeeklyOptionPortfolioStudy:
                 held = selection["quantities"][i]
                 raw = math.fsum(u*q for u, q in zip(program["units"], held, strict=True))
                 cost = math.fsum(k*q for k, q in zip(program["costs"], held, strict=True))
-                loss = structure_max_loss(signed, strikes, credit-cost, mult, hedge=(raw, program["reference"]))
+                # ADR-0320: an item struck away from F_0 owes u_i (F_ref,i - F_0) per contract whatever the level, so
+                # the hedge is the net units at F_0 with that basis taken from the credit (0 for the fixed kind).
+                basis = math.fsum(u*q*(r-program["reference"])
+                                  for u, q, r in zip(program["units"], held, program["references"], strict=True))
+                loss = structure_max_loss(signed, strikes, credit-cost-basis, mult, hedge=(raw, program["reference"]))
                 if math.isinf(loss) and abs(raw-round(raw)) < self._RAW_UNITS_SNAP:
                     # ADR-0316: a synthetic forward's deltas net to a whole number of shares up to float order (parity),
                     # which the program's slope row admits within its tolerance; the physical check reads it exactly.
                     raw = float(round(raw))
-                    loss = structure_max_loss(signed, strikes, credit-cost, mult, hedge=(raw, program["reference"]))
+                    loss = structure_max_loss(signed, strikes, credit-cost-basis, mult,
+                                              hedge=(raw, program["reference"]))
                 reserve = max(self._floor(max(0., loss, -(credit-cost)), charge or self._charge({}), legs, mult),
                               program["margin_fraction"]*program["reference"]*abs(raw))
             if not math.isfinite(reserve) or abs(reserve-selection["reserves"][i]) > .001:
@@ -4785,6 +4841,9 @@ class WeeklyOptionPortfolioStudy:
                           if k not in ("items", "projection", "cdf_noise_raised", "program_hedge", "hedge_twins")})
             if program is not None:
                 books[-1]["program_hedge"] = {"units_raw": raw, "reference": program["reference"], "cost_usd": cost}
+                if basis:
+                    # Only a book struck away from F_0 carries it, so a fixed-kind book's record is unchanged.
+                    books[-1]["program_hedge"]["basis_usd"] = basis
             books[-1].update(legs=legs, credit=credit, reserve=reserve, max_loss=loss,
                             contracts=count, expected=selection["group_values"][i],
                             strategy=classify_option_strategy(signed, strikes),
@@ -5491,6 +5550,24 @@ class WeeklyOptionPortfolioStudy:
                       fees=fees, stress_extra=stress, status="filled")
         return filled, None
 
+    def _fill_at_exercise(self, filled, day):
+        """Return ``short_call_at_exercise`` when a filled book sells a call at or below the fill spot's intrinsic, else ``None``.
+
+        ADR-0320's fill test: each sold call's ``fill_price`` (the fill bid, :meth:`_fill`) against
+        ``max(S_fill - strike, 0)``, ``S_fill`` the fill session's close on the book's basis (a session without one
+        refuses alike: the order cannot be shown to sell above exercise value).
+        """
+        close = self._bars[filled["symbol"]].get(day)
+        sold = [leg for leg in filled["legs"] if leg["quantity"] and leg["sign"] < 0 and leg["right"] == "call"]
+        if not sold:
+            return None
+        if not (number_ok(close) and close > 0):
+            return self._AT_EXERCISE
+        spot = close / filled["factor"]
+        if any(self._short_call_at_exercise({**leg, "price": leg["fill_price"]}, spot) for leg in sold):
+            return self._AT_EXERCISE
+        return None
+
     def _close_fills(self, closer, account, pending, day):
         """Execute the closes decided last session at today's quotes (P2); a close that cannot fill leaves its book held.
 
@@ -5915,6 +5992,7 @@ class WeeklyOptionPortfolioStudy:
         decisions, rejected, snapshots, pending = [], [], [], None
         close_spec = CloseCandidates.spec(self._kelly(method))
         closer = None if close_spec is None else CloseCandidates(self, close_spec)
+        above_exercise = bool((self._kelly(method) or {}).get(self._ABOVE_EXERCISE))   # ADR-0320
         pending_closes = raw_menu = close_week = close_program = None
         for day in self.calendar:
             self._apply_adjustments(account, day, charge)
@@ -5928,6 +6006,9 @@ class WeeklyOptionPortfolioStudy:
                 survivors, refusals = [], []
                 for book in pending["books"]:
                     filled, reason = self._fill(book, day, charge)
+                    if filled is not None and above_exercise:
+                        reason = self._fill_at_exercise(filled, day)       # ADR-0320: the same test at the fill
+                        filled = None if reason else filled
                     if filled is None:
                         rejected.append({**book, "status": "unfilled", "fill_date": day, "reason": reason})
                         refusals.append({"id": book["id"], "reason": reason})
@@ -5979,6 +6060,11 @@ class WeeklyOptionPortfolioStudy:
                         # ADR-0315 Amendment 2: per method and outside _prepare, so the shared prepared week is untouched.
                         groups, metadata, excluded = self._settleable_candidates(groups, metadata)
                         refusals = [*refusals, *excluded]
+                    at_exercise = None
+                    if above_exercise:
+                        # ADR-0320: per method, before the hedge rewrite reads the items.
+                        groups, metadata, excluded, at_exercise = self._above_exercise_candidates(groups, metadata)
+                        refusals = [*refusals, *excluded]
                     week_cal = adjusts = None
                     if calibrated is not None:
                         warm = calibrated.week_warm(day)
@@ -6008,6 +6094,8 @@ class WeeklyOptionPortfolioStudy:
                               "eligible_by_symbol": dict(Counter(m["symbol"] for m in metadata)),
                               "refusals": refusals, "components": components, "funding": account.funding,
                               "open_reserve": sum(b["reserve"] for b in account.open.values())}
+                    if at_exercise is not None:
+                        record[self._ABOVE_EXERCISE] = at_exercise
                     if week_hedge is not None:
                         record["hedge"] = {"mode": "program", "excluded": dict(week_hedge)}
                     if calibrated is not None:
