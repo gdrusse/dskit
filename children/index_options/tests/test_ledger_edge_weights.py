@@ -683,7 +683,7 @@ def test_with_the_scales_agreeing_the_robust_method_selects_what_the_base_select
 
 
 #: sha256 (:func:`_digest`) of the scored programs and the stable result of the robust-only week, recorded on 12597d1c
-#: (before ``forward_centre`` existed) by ``tmp/impl-centre/robust_digest.py``: a robust-only method is unchanged.
+#: (before ``forward_centre`` existed) by this test's own body: a robust-only method is unchanged.
 ROBUST_ONLY = {
     "plain": ("bf7f6b2702fc8b2b7d2e7701af84d9836583322460961be349ca38978d43b668",
               "cea1a862188f69512158d669aac682d26dcbaf17f4e4546512c52522ed94794e"),
@@ -748,8 +748,10 @@ def test_a_forward_centre_method_validates_and_a_malformed_or_unhedged_one_refus
         with pytest.raises(ValueError):
             ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
     unhedged = {k: v for k, v in _centre_arm().items() if k != "hedge"}
+    replay = {**_centre_arm(), "hedge": {**_centre_arm()["hedge"], "mode": "replay"}}
     assert ledger_studies.WeeklyOptionPortfolioStudy._kelly_valid({**_centre_arm()})
     assert not ledger_studies.WeeklyOptionPortfolioStudy._kelly_valid(unhedged), "the forward is the hedge's"
+    assert not ledger_studies.WeeklyOptionPortfolioStudy._kelly_valid(replay), "only a program hedge prices the items"
 
 
 def test_with_the_forward_at_spot_the_adjustment_is_zero(monkeypatch):
@@ -843,9 +845,15 @@ def test_the_forward_reads_nothing_after_the_decision_day(monkeypatch):
         params.update(methods=[arm], hedge_parity=dict(_PARITY), locked_method_ids=list(FORMULATIONS))
         study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
         configured, metadata, edge = _week_groups(study, arm)
-        return edge.apply(DECISION, configured, metadata)
-    before, after = run(False), run(True)
+        return edge.apply(DECISION, configured, metadata), study, configured, metadata, edge
+    (before, study, configured, metadata, edge), (after, *_rest) = run(False), run(True)
     assert before[1]["forward_centre"]["shifted"] > 0, "the world's decision chain has a parity forward off spot"
+    # the real owner's forward: the decision chain's parity forward 100.1 on a close of 100 (strike basis 1)
+    assert edge.forward_ratio(metadata[0], DECISION) == (pytest.approx(1.001, abs=1e-9), None)
+    for group, meta, plain in zip(before[0], metadata, configured, strict=True):
+        shifted = _expected({**plain, "masses": _masses(study, meta, plain, meta["spot"]*1.001)})
+        assert group["value_adjust"] == pytest.approx([min(0., f-e) for e, f in zip(_expected(plain), shifted)],
+                                                      abs=1e-9)
     assert [g["value_adjust"] for g in before[0]] == [g["value_adjust"] for g in after[0]]
     assert before[1] == after[1]
 
@@ -882,6 +890,24 @@ def test_a_forward_centre_week_runs_records_its_cut_and_replays_from_its_record(
     for book in week["books"]:
         assert book["forward_cut"] <= 0. and "robust_cut" not in book
         assert book["expected_raw"] == pytest.approx(book["expected"]-book["forward_cut"], abs=1e-9)
+    assert week["books"] and any(book["forward_cut"] < 0 for book in week["books"])
+    assert study._method(arm, None, recorded=result) == result
+
+
+@pytest.mark.parametrize("tilt", [None, .5])
+def test_a_both_keys_week_stamps_both_cuts_and_replays_from_its_record(monkeypatch, tilt):
+    _forward(monkeypatch, .9)
+    extra = {"robust_scale": copy.deepcopy(ROBUST), **({} if tilt is None else {"dte_tilt": tilt})}
+    arm, _, study = _robust_study(JUMP, _centre_arm(**extra))
+    result = study._method(arm, None)
+    week = result["decisions"][0]
+    assert week["kelly"]["edge_weights"]["forward_centre"]["shifted"] > 0
+    assert week["kelly"]["edge_weights"]["robust_scale"]["scaled"] > 0 and week["books"]
+    for book in week["books"]:
+        assert book["robust_cut"] <= 0. and book["forward_cut"] <= 0.
+        if tilt is None:
+            assert book["expected_raw"] == pytest.approx(book["expected"]-book["robust_cut"]-book["forward_cut"],
+                                                         abs=1e-9)
     assert study._method(arm, None, recorded=result) == result
 
 

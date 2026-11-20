@@ -2506,7 +2506,7 @@ class CalibratedEdge:
 
 
 class EdgeWeights:
-    """ADR-0318: three optional kelly keys that reweight a local-search week's objective; absent, nothing changes.
+    """ADR-0318/0321/0322: optional kelly keys that reweight a local-search week's objective; absent, nothing changes.
 
     ``accuracy`` (``{"shrink_rows": k}``) weights each name's forecast edge by how well that name's forecasts did on
     every forecast row of the study that SETTLED strictly before the decision day (quote day, expiry and settlement
@@ -4037,7 +4037,8 @@ class WeeklyOptionPortfolioStudy:
                 and (not EdgeWeights.declared(kelly)
                      or (EdgeWeights.valid(kelly) and isinstance(kelly.get("local_search"), dict)
                          and "start" in kelly["local_search"] and "calibration" not in method
-                         and (EdgeWeights.FORWARD not in kelly or isinstance(method.get("hedge"), dict))))
+                         and (EdgeWeights.FORWARD not in kelly
+                              or (isinstance(method.get("hedge"), dict) and method["hedge"].get("mode") == "program"))))
                 and (cls._JOINT_SCENARIOS not in kelly or cls._joint_scenarios_valid(method))
                 and (not RegimeEdgeShrink.declared(kelly)
                      or (RegimeEdgeShrink.valid(kelly) and isinstance(kelly.get("local_search"), dict)
