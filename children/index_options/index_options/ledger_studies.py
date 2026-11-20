@@ -2540,11 +2540,19 @@ class EdgeWeights:
     own scale reads; nothing later). The forecast CDF in ``z`` is unchanged; only its scale is, re-projected onto the
     group's own outcome grid (:meth:`scale_ratio`, :meth:`_robust_cuts`). The item's adjust gains
     ``m x min(0, e_robust - e)``: never positive, zero where ``r = 1``, so it removes edge and never creates it.
+
+    ADR-0322 ``forward_centre`` (``true``, a hedged method) also values each item with the same forecast centred on
+    the hedge's decision parity forward: ``z = ln(S_T / (g x spot)) / reference_scale``, ``g = F / S``
+    (:meth:`forward_ratio`, :meth:`_forward_cuts`). The item's adjust is ``m x min(0, min(alternatives) - e)`` over
+    every declared alternative (spot/robust, forward/reference, forward/robust): one non-positive cut, zero at
+    ``g = 1``. Books record ``forward_cut``, the part removed beyond ``robust_cut``.
     """
 
-    KEYS = ("accuracy", "dte_tilt", "name_spread", "robust_scale")
+    #: ADR-0322: the forward-centred worst-case edge (``true`` only; a method with a ``hedge`` block).
+    FORWARD = "forward_centre"
+    KEYS = ("accuracy", "dte_tilt", "name_spread", "robust_scale", FORWARD)
     #: The keys that set a candidate's edge (``name_spread`` acts on the charge instead).
-    EDGE_KEYS = ("accuracy", "dte_tilt", "robust_scale")
+    EDGE_KEYS = ("accuracy", "dte_tilt", "robust_scale", FORWARD)
     ROBUST_KEYS = frozenset({"reference", "robust"})
     ACCURACY_KEYS = frozenset({"shrink_rows"})
     #: The menu's longest days to expiry: the tilt is zero there and beyond.
@@ -2558,7 +2566,7 @@ class EdgeWeights:
 
     @classmethod
     def declared(cls, kelly):
-        """Return whether a kelly block declares any of the three keys."""
+        """Return whether a kelly block declares any of the keys."""
         return isinstance(kelly, dict) and any(key in kelly for key in cls.KEYS)
 
     @classmethod
@@ -2569,7 +2577,8 @@ class EdgeWeights:
                                       and number_ok(accuracy["shrink_rows"]) and accuracy["shrink_rows"] > 0))
                 and ("dte_tilt" not in kelly or (number_ok(kelly["dte_tilt"]) and 0 < kelly["dte_tilt"] < 1))
                 and ("name_spread" not in kelly or (number_ok(kelly["name_spread"]) and kelly["name_spread"] >= 1))
-                and ("robust_scale" not in kelly or cls._estimators(kelly["robust_scale"]) is not None))
+                and ("robust_scale" not in kelly or cls._estimators(kelly["robust_scale"]) is not None)
+                and (cls.FORWARD not in kelly or kelly[cls.FORWARD] is True))
 
     @classmethod
     def _estimators(cls, block):
@@ -2590,11 +2599,16 @@ class EdgeWeights:
             return None
         return reference, robust
 
-    def __init__(self, study, kelly):
+    def __init__(self, study, kelly, forwards=None):
         self.study, self.kelly = study, kelly
         self._rows = self._unscored = None
-        self._ratios, self.cuts = {}, {}
+        self._ratios, self._shifts, self.cuts = {}, {}, {}
         self._robust = self._estimators(kelly["robust_scale"]) if "robust_scale" in (kelly or {}) else None
+        self._forwards = None
+        if self.FORWARD in (kelly or {}):
+            if not isinstance(forwards, ParityForwards):
+                raise ValueError(f"{self.FORWARD}_unhedged: the forward is the method's hedge's parity forward")
+            self._forwards = forwards
 
     @staticmethod
     def _normal_cdf(z):
@@ -2755,22 +2769,81 @@ class EdgeWeights:
         and ``"unprojected"`` when the projection refuses: then every item's positive edge is cut to zero, since its
         robust value cannot be stated.
         """
-        symbol, expiry = meta["symbol"], meta["expiry"]
         zero = [0.]*len(expected)
-        ratio, reason = self.scale_ratio(symbol, day)
+        ratio, reason = self.scale_ratio(meta["symbol"], day)
         if ratio is None:
             return zero, reason
         if ratio >= 1.:
             return zero, "agree"
-        node = self.study._nodes[symbol]
-        cdf, _raised = node._method_cdf(self.study._forecasts[symbol][day, expiry], node.CDF_NOISE)
-        scale = float(self.study._contexts[symbol][day, expiry]["reference_scale"])*ratio
+        cdf = self._cdf(day, meta)
         try:
-            masses = node._project(cdf, float(meta["spot"]), scale, group["grid"]).masses.tolist()
+            robust = self._valued(day, group, meta, cdf, float(meta["spot"]), ratio)
         except ValueError:
             return [-max(0., e) for e in expected], "unprojected"
-        robust = self._expected({**group, "masses": masses})
         return [min(0., r-e) for e, r in zip(expected, robust, strict=True)], None
+
+    def _cdf(self, day, meta):
+        """Return the forecast's CDF on its z grid for the group's name and expiry (the node's own reading)."""
+        node = self.study._nodes[meta["symbol"]]
+        return node._method_cdf(self.study._forecasts[meta["symbol"]][day, meta["expiry"]], node.CDF_NOISE)[0]
+
+    def _valued(self, day, group, meta, cdf, centre, ratio):
+        """Return each item's expected profit with the forecast read around ``centre`` at ``reference_scale x ratio``.
+
+        ``z = ln(S / centre) / scale``: the node's own projection (:meth:`_project`) onto the group's grid, the losses
+        (hedge included) the group's. A refused projection raises ``ValueError``.
+        """
+        node = self.study._nodes[meta["symbol"]]
+        scale = float(self.study._contexts[meta["symbol"]][day, meta["expiry"]]["reference_scale"])*ratio
+        masses = node._project(cdf, centre, scale, group["grid"]).masses.tolist()
+        return self._expected({**group, "masses": masses})
+
+    def forward_ratio(self, meta, day):
+        """Return ``(g, None)``, ``g = F / S`` rounded, or ``(None, reason)`` (ADR-0322).
+
+        ``F`` is the hedge's decision-session parity forward of the group's expiry (its one owner,
+        :meth:`ParityForwards.forward`, no strike excluded: the forward the hedge rewrite strikes against) and ``S``
+        that owner's spot; both read the decision day's chain and close only. Without a usable parity pair ``F`` is
+        ``S`` and ``g = 1``. Without a forward at all (``no_spot``, ``duplicate_quote``) there is no ratio.
+        """
+        key = (meta["symbol"], meta["expiry"], day)
+        if key not in self._shifts:
+            symbol, factor = meta["symbol"], meta["factor"]
+            forward, source = self._forwards.forward(symbol, day, meta["expiry"], factor)
+            spot = self._forwards.spot(symbol, day, factor)
+            if forward is None:
+                self._shifts[key] = (None, source)
+            elif not (number_ok(forward) and forward > 0 and number_ok(spot) and spot > 0):
+                self._shifts[key] = (None, "bad_forward")
+            else:
+                self._shifts[key] = (round(float(forward)/float(spot), self.DIGITS), None)
+        return self._shifts[key]
+
+    def _forward_cuts(self, day, group, meta, expected):
+        """Return ``(cuts, status)``: each item's ``min(0, min(e_F, e_F,r) - e)`` per contract, and why none was taken.
+
+        ``e_F`` is the item's value with the forecast centred on the parity forward (``z = ln(S_T / (g x spot)) /
+        reference_scale``), ``e_F,r`` the same at the robust scale when ``robust_scale`` is declared and its ratio
+        is below 1. ``status`` is None for a shifted group, ``"agree"`` at ``g = 1``, the ratio's reason when there
+        is none, and ``"unprojected"`` when a projection refuses (every item's positive edge is then cut to zero).
+        """
+        zero = [0.]*len(expected)
+        shift, reason = self.forward_ratio(meta, day)
+        if shift is None:
+            return zero, reason
+        if shift == 1.:
+            return zero, "agree"
+        ratios = [1.]
+        if self._robust is not None:
+            ratio, _reason = self.scale_ratio(meta["symbol"], day)
+            if ratio is not None and ratio < 1.:
+                ratios.append(ratio)
+        cdf = self._cdf(day, meta)
+        try:
+            values = [self._valued(day, group, meta, cdf, float(meta["spot"])*shift, r) for r in ratios]
+        except ValueError:
+            return [-max(0., e) for e in expected], "unprojected"
+        return [min(0., min(v[j] for v in values)-e) for j, e in enumerate(expected)], None
 
     @staticmethod
     def _expected(group):
@@ -2786,19 +2859,34 @@ class EdgeWeights:
             weights, record["accuracy"] = self.accuracy(day, [m["symbol"] for m in metadata])
         out, multipliers, self.cuts = [], {}, {}
         robust = None if self._robust is None else {"statuses": Counter(), "items_cut": 0, "cuts": []}
+        forward = None if self._forwards is None else {"statuses": Counter(), "items_cut": 0, "cuts": [], "shifts": []}
         for group, meta in zip(configured, metadata, strict=True):
             m = (1. if weights is None else weights[meta["symbol"]])*self.tilt(meta["dte"])
             m = round(m, self.DIGITS)
             multipliers[group["id"]] = m
             expected = self._expected(group)
-            if robust is None:
+            if robust is None and forward is None:
                 out.append({**group, "value_adjust": [(m-1.)*e for e in expected]})
                 continue
-            cuts, status = self._robust_cuts(day, group, meta, expected)
-            self.cuts[group["id"]] = [m*c for c in cuts]
-            robust["statuses"][status or "scaled"] += 1
-            robust["items_cut"] += sum(1 for c in cuts if c < 0)
-            robust["cuts"].extend(m*c for c in cuts)
+            stamps, cuts = {}, None
+            if robust is not None:
+                cuts, status = self._robust_cuts(day, group, meta, expected)
+                stamps["robust_cut"] = [m*c for c in cuts]
+                robust["statuses"][status or "scaled"] += 1
+                robust["items_cut"] += sum(1 for c in cuts if c < 0)
+                robust["cuts"].extend(m*c for c in cuts)
+            if forward is not None:
+                # ADR-0322: the least of every valuation; the forward's own part is what it removed beyond the robust.
+                shifted, status = self._forward_cuts(day, group, meta, expected)
+                extra = shifted if cuts is None else [min(0., f-c) for f, c in zip(shifted, cuts, strict=True)]
+                cuts = shifted if cuts is None else [min(c, f) for c, f in zip(cuts, shifted, strict=True)]
+                stamps["forward_cut"] = [m*c for c in extra]
+                forward["statuses"][status or "shifted"] += 1
+                forward["items_cut"] += sum(1 for c in extra if c < 0)
+                forward["cuts"].extend(m*c for c in extra)
+                if status is None:
+                    forward["shifts"].append(self.forward_ratio(meta, day)[0])
+            self.cuts[group["id"]] = stamps
             out.append({**group, "value_adjust": [(m-1.)*e+m*c for e, c in zip(expected, cuts, strict=True)]})
         values = sorted(multipliers.values())
         record["multiplier"] = {"groups": len(values), "min": values[0] if values else None,
@@ -2818,14 +2906,28 @@ class EdgeWeights:
                 "items": len(robust["cuts"]), "items_cut": robust["items_cut"],
                 "cut_total": math.fsum(robust["cuts"]), "cut_min": min(robust["cuts"], default=0.),
                 "ratio": {s: self.scale_ratio(s, day)[0] for s in names}}
+        if forward is not None:
+            statuses = forward["statuses"]
+            record[self.FORWARD] = {
+                "groups": len(out), "shifted": statuses["shifted"], "agree": statuses["agree"],
+                "unprojected": statuses["unprojected"],
+                "unestimated": {k: v for k, v in sorted(statuses.items())
+                                if k not in ("shifted", "agree", "unprojected")},
+                "items": len(forward["cuts"]), "items_cut": forward["items_cut"],
+                "cut_total": math.fsum(forward["cuts"]), "cut_min": min(forward["cuts"], default=0.),
+                "ratio_min": min(forward["shifts"], default=None), "ratio_max": max(forward["shifts"], default=None)}
         return out, record, multipliers
 
     def stamp(self, books, metadata, quantities):
-        """Stamp each selected book with ``robust_cut``: its items' robust cuts times the quantities chosen."""
+        """Stamp each selected book with ``robust_cut`` and/or ``forward_cut``: its items' cuts times its quantities.
+
+        With both keys the two add up to the book's whole cut: ``forward_cut`` is what the forward-centred valuations
+        removed beyond the robust scale's.
+        """
         index = {m["id"]: i for i, m in enumerate(metadata)}
         for book in books:
-            cuts = self.cuts[book["id"]]
-            book["robust_cut"] = math.fsum(c*q for c, q in zip(cuts, quantities[index[book["id"]]], strict=True))
+            for name, cuts in self.cuts[book["id"]].items():
+                book[name] = math.fsum(c*q for c, q in zip(cuts, quantities[index[book["id"]]], strict=True))
 
 
 class RegimeEdgeShrink:
@@ -3220,8 +3322,9 @@ class WeeklyOptionPortfolioStudy:
     #: tail loss and the reserve concentration inside the local search's objective
     #: (:meth:`~index_options.kelly_local.KellyLocalSearch.validate_risk`). It needs a ``local_search`` (the climb is
     #: what scores it) and is handed to the search as its ``risk`` option; absent, nothing changes, byte for byte.
-    #: ADR-0318: ``accuracy``, ``dte_tilt``, ``name_spread`` and ``robust_scale`` (:class:`EdgeWeights`) are declared only on a stage-one
-    #: local-search method (ADR-0307, not the multi-start) without a calibration block; absent, nothing changes.
+    #: ADR-0318: ``accuracy``, ``dte_tilt``, ``name_spread``, ``robust_scale`` and ``forward_centre``
+    #: (:class:`EdgeWeights`) are declared only on a stage-one local-search method (ADR-0307, not the multi-start)
+    #: without a calibration block; absent, nothing changes.
     #: The joint-scenario arm (owner-approved P2 item C1, ``index_options.joint_scenarios``): ``joint_scenarios``
     #: replaces the 17 basket-move scenarios of the scored one-stage program by ``scenarios`` sampled joint
     #: settlements (an empirical copula over the forecast marginals); only beside ``local_search`` (the program is
@@ -3933,7 +4036,8 @@ class WeeklyOptionPortfolioStudy:
                 and CloseCandidates.well_formed(kelly)
                 and (not EdgeWeights.declared(kelly)
                      or (EdgeWeights.valid(kelly) and isinstance(kelly.get("local_search"), dict)
-                         and "start" in kelly["local_search"] and "calibration" not in method))
+                         and "start" in kelly["local_search"] and "calibration" not in method
+                         and (EdgeWeights.FORWARD not in kelly or isinstance(method.get("hedge"), dict))))
                 and (cls._JOINT_SCENARIOS not in kelly or cls._joint_scenarios_valid(method))
                 and (not RegimeEdgeShrink.declared(kelly)
                      or (RegimeEdgeShrink.valid(kelly) and isinstance(kelly.get("local_search"), dict)
@@ -6057,9 +6161,6 @@ class WeeklyOptionPortfolioStudy:
         hedge = calibrated = limited = None
         warm_weeks = Counter()
         local = (self._kelly(method) or {}).get("local_search")
-        # ADR-0318: the optional edge weights (None, and nothing below reads them, when no key is declared).
-        edge_weights = (EdgeWeights(self, self._kelly(method))
-                        if any(key in (self._kelly(method) or {}) for key in EdgeWeights.EDGE_KEYS) else None)
         # The optional regime shrink of the forecast edge (None, and nothing below reads it, when undeclared).
         edge_shrink = (RegimeEdgeShrink(self._kelly(method))
                         if RegimeEdgeShrink.declared(self._kelly(method)) else None)
@@ -6082,6 +6183,10 @@ class WeeklyOptionPortfolioStudy:
                 calibrated = CalibratedEdge(self, method)
             if "exposure_limits" in present:
                 limited = GreeksExposure(self, method["exposure_limits"], p["exposure_greeks"], hedge)
+        # ADR-0318: the optional edge weights (None, and nothing below reads them, when no key is declared); ADR-0322's
+        # forward centre reads the hedge's own parity forwards.
+        edge_weights = (EdgeWeights(self, self._kelly(method), None if hedge is None else hedge.forwards)
+                        if any(key in (self._kelly(method) or {}) for key in EdgeWeights.EDGE_KEYS) else None)
         if recorded is not None and derived is not None:
             raise ValueError("recorded replay and derived actions are exclusive")
         if (derived is not None or policy) and self._sizer(method) is not None:
@@ -6497,7 +6602,7 @@ class WeeklyOptionPortfolioStudy:
                                 book.update(edge_multiplier=edge_multipliers[book["id"]],
                                             expected_raw=book["expected"]-adjust)
                             if edge_weights is not None and edge_weights.cuts:
-                                # The two-scale edge: the part of ``expected_raw - expected`` the robust scale removed.
+                                # The two-scale and forward-centred edges: their parts of ``expected_raw - expected``.
                                 edge_weights.stamp(books, metadata, candidate["quantities"])
                         if edge_shrink is not None and books:
                             edge_shrink.stamp(books, configured, metadata, candidate["quantities"], cal_regime, day)

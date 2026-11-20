@@ -37484,3 +37484,22 @@ the original experiment identity and provenance before reading its saved fit.
 **Unchanged.** With neither key, programs and results are byte for byte (ADR-0318's pinned digests). `hedge.margin_fraction` 0.5 is configuration only.
 
 **Evidence (fixed picks, no solve).** Outside the three names, over 13 quarters, the claim falls from 118,544 to 29,078 when each book is valued at its book-level minimum, and to 26,498 per item; 103 of 361 books lose their edge (105 per item). The name cap at 0.35 refuses 20 of 491 recorded books in date order. These results are development evidence (A0010).
+
+## ADR-0322 — Forward-centred worst-case edge on Kelly methods (accepted 2026-11-20)
+
+**Status.** Accepted on the owner's instruction of 2026-11-19 ("holistically re-evaluate the formulation, make changes, and rekick off MIO queues"; "implement in opus"). Design delegated to the agent. A0008's recipe and pinned forecasts, A0009 and every Path row are untouched.
+
+**Problem.** The forecast is centred on spot, so where the option-implied forward sits below spot (borrow, dividends) a synthetic long bought at the forward shows the gap as edge. After ADR-0320 the program stopped buying the cheap stock hedge and sold deep in-the-money puts instead (AMC 2023-03-20: 31 puts at 7, spot 4.27, forward 3.42).
+
+**Decision, `kelly.forward_centre: true`** (only `true`; the method needs a `hedge` block). The forecast reads `z = ln(S_T / spot) / reference_scale`. Centred on the forward it reads `z = ln(S_T / (g x spot)) / reference_scale`, `g = F / S`. The CDF in `z` and the scale are unchanged, so the whole distribution is scaled by `g`. `F` is the hedge's decision-day parity forward for the expiry (`ParityForwards.forward`, no strike excluded: the hedge rewrite's `F_0`). `S` is its spot. `g` is rounded to 9 places. Re-projection is the node's own `_project` onto the group's grid. Each item's adjust gains `m x min(0, min(alternatives) - e)`. The alternatives are the forward value, plus with `robust_scale` the spot/robust and forward/robust values: the least of the four valuations, never positive. Without a parity pair `F = S` and nothing changes. Without a forward (`no_spot`, `duplicate_quote`) the item keeps its value and the week counts it. A refused projection cuts positive edge to zero. Weeks record `edge_weights.forward_centre`; books record `forward_cut`, the part removed beyond `robust_cut`, so the two add up to the whole cut. Refused beside `close_candidates`. With the key absent, every program and result is byte for byte.
+
+**Gives up.** Carry the market charges and a holder would actually earn if spot does not fall: AMC's 2023Q1 short puts made money. It also understates put-side edge where `F < S` (the min ignores a gain), for example a dividend payer whose forward drop is real.
+
+**Could be wrong where.** American early-exercise premium in in-the-money pairs biases the parity forward; wide or stale pairs; the forward is partly read from the contracts being traded. The `z` grid ends at +-3, so with a large shift more mass collapses on the support's end and wing cuts are understated. On the recorded books no projection was refused.
+
+**Evidence (fixed picks, no solve).** Forwards reproduce every recorded decision forward (819 books). Claims, recorded then after:
+- r1dte, four quarters: 40,244 to 29,529; 2023Q1 18,973 to 10,099. No book goes to zero; the 2023-03-20 AMC put goes 4,625 to 2,283.
+- AMC 2021-11-22 and 2021-11-29: `g` is 0.9996 and 0.998, so this rule does not explain the 2021Q4 losses.
+- r1n35, four quarters: 32,274 to 25,613; 6 books cut, realised +629.
+- Control, 15 quarters: 229,109 to 200,575; 11 cut, realised +3,885. With `robust_scale` as well: 57,519.
+- Windfalls: the 2020Q1 APA puts and the March 2021 GME puts lose under 2%; the GME call of 2021-01-11 goes 765 to 681.

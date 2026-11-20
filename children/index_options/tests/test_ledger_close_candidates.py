@@ -79,8 +79,8 @@ def test_the_hedge_and_the_other_incompatible_blocks_are_refused_by_name():
         params["methods"] = [{**method, key: {}}]
         with pytest.raises(ValueError, match=f"close_candidates_with_{key}"):
             STUDY.validate_configuration(params)
-    for key in ("accuracy", "robust_scale"):
-        params["methods"] = [{**method, "kelly": {**method["kelly"], key: {}}}]
+    for key, value in (("accuracy", {}), ("robust_scale", {}), ("forward_centre", True)):
+        params["methods"] = [{**method, "kelly": {**method["kelly"], key: value}}]
         with pytest.raises(ValueError, match="close_candidates_with_edge_weights"):
             STUDY.validate_configuration(params)
     from index_options.ledger_studies import EdgeWeights
