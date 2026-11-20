@@ -2520,11 +2520,20 @@ class EdgeWeights:
 
     ``name_spread`` (``c >= 1``) is not an edge weight: it is the one-stage program's ``utility.charge_scale``, the
     multiplier on every name's own dispersion charge (see :meth:`WeeklyOptionPortfolioStudy._method`).
+
+    ADR-0321 ``robust_scale`` (``{"reference": spec, "robust": spec}``, two :mod:`~dskit.pipeline.libs.vol_estimators` specs
+    over the same window) values each item at the LOWER of its expected profit under the forecast and under the
+    forecast re-read on a narrower scale: ``reference_scale x r``, ``r = min(1, sqrt(robust / reference))`` of the
+    two estimators' variances of the name's closes up to and including the decision day (the window the forecast's
+    own scale reads; nothing later). The forecast CDF in ``z`` is unchanged; only its scale is, re-projected onto the
+    group's own outcome grid (:meth:`scale_ratio`, :meth:`_robust_cuts`). The item's adjust gains
+    ``m x min(0, e_robust - e)``: never positive, zero where ``r = 1``, so it removes edge and never creates it.
     """
 
-    KEYS = ("accuracy", "dte_tilt", "name_spread")
-    #: The two keys that set a candidate's edge multiplier (``name_spread`` acts on the charge instead).
-    EDGE_KEYS = ("accuracy", "dte_tilt")
+    KEYS = ("accuracy", "dte_tilt", "name_spread", "robust_scale")
+    #: The keys that set a candidate's edge (``name_spread`` acts on the charge instead).
+    EDGE_KEYS = ("accuracy", "dte_tilt", "robust_scale")
+    ROBUST_KEYS = frozenset({"reference", "robust"})
     ACCURACY_KEYS = frozenset({"shrink_rows"})
     #: The menu's longest days to expiry: the tilt is zero there and beyond.
     DTE_LONG_END = 60
@@ -2547,11 +2556,33 @@ class EdgeWeights:
         return ((accuracy is None or (isinstance(accuracy, dict) and set(accuracy) == cls.ACCURACY_KEYS
                                       and number_ok(accuracy["shrink_rows"]) and accuracy["shrink_rows"] > 0))
                 and ("dte_tilt" not in kelly or (number_ok(kelly["dte_tilt"]) and 0 < kelly["dte_tilt"] < 1))
-                and ("name_spread" not in kelly or (number_ok(kelly["name_spread"]) and kelly["name_spread"] >= 1)))
+                and ("name_spread" not in kelly or (number_ok(kelly["name_spread"]) and kelly["name_spread"] >= 1))
+                and ("robust_scale" not in kelly or cls._estimators(kelly["robust_scale"]) is not None))
+
+    @classmethod
+    def _estimators(cls, block):
+        """Return the ``(reference, robust)`` estimators of a ``robust_scale`` block, or None when it is malformed.
+
+        Both read closes only and need the same history, so the two variances are of one window.
+        """
+        from dskit.pipeline.libs.vol_estimators import build_estimators
+
+        if not isinstance(block, dict) or set(block) != cls.ROBUST_KEYS:
+            return None
+        try:
+            reference, robust = build_estimators([block["reference"], block["robust"]])
+        except ValueError:
+            return None
+        if (reference.needs != ("close",) or robust.needs != ("close",)
+                or reference.lookback_bars() != robust.lookback_bars()):
+            return None
+        return reference, robust
 
     def __init__(self, study, kelly):
         self.study, self.kelly = study, kelly
         self._rows = self._unscored = None
+        self._ratios, self.cuts = {}, {}
+        self._robust = self._estimators(kelly["robust_scale"]) if "robust_scale" in (kelly or {}) else None
 
     @staticmethod
     def _normal_cdf(z):
@@ -2673,27 +2704,116 @@ class EdgeWeights:
         span = self.DTE_LONG_END
         return 1.-float(self.kelly["dte_tilt"])*(1.-min(max(int(dte), 0), span)/span)
 
+    def scale_ratio(self, symbol, day):
+        """Return ``(r, None)``, ``r = min(1, sqrt(robust / reference))`` rounded, or ``(None, reason)``.
+
+        The two variances are of the name's closes over the study's sessions up to and including ``day`` (the last
+        return ends at the decision-day close the forecast's spot is), the estimators' own lookback of them; no bar
+        after ``day`` is read. A window that is short, nonfinite or flat has no ratio (``short_history``,
+        ``nonfinite_window``, ``flat_window``).
+        """
+        import numpy as np
+        from dskit.pipeline.libs.vol_estimators import Bars
+
+        key = (symbol, day)
+        if key not in self._ratios:
+            reference, robust = self._robust
+            need = reference.lookback_bars()
+            closes = self.study._bars[symbol]
+            sessions = [d for d in self.study.history_calendar if d <= day][-need:]
+            if len(sessions) < need or any(d not in closes for d in sessions):
+                self._ratios[key] = (None, "short_history")
+            else:
+                bars = Bars(np.arange(need), 1, close=[closes[d] for d in sessions])
+                full, rest = float(reference.variance(bars)[-1]), float(robust.variance(bars)[-1])
+                if not (math.isfinite(full) and math.isfinite(rest)):
+                    self._ratios[key] = (None, "nonfinite_window")
+                elif not full > 0:
+                    self._ratios[key] = (None, "flat_window")
+                else:
+                    self._ratios[key] = (round(min(1., math.sqrt(max(0., rest)/full)), self.DIGITS), None)
+        return self._ratios[key]
+
+    def _robust_cuts(self, day, group, meta, expected):
+        """Return ``(cuts, status)``: each item's ``min(0, e_robust - e)`` per contract, and why none was taken.
+
+        ``e_robust`` is ``credit - masses_r . losses`` with ``masses_r`` the forecast's CDF re-projected at
+        ``reference_scale x r`` onto the group's grid (the node's own projection; the losses, hedge included, are the
+        group's). ``status`` is None for a scaled group, ``"agree"`` at ``r = 1``, the ratio's reason when it has none,
+        and ``"unprojected"`` when the projection refuses: then every item's positive edge is cut to zero, since its
+        robust value cannot be stated.
+        """
+        symbol, expiry = meta["symbol"], meta["expiry"]
+        zero = [0.]*len(expected)
+        ratio, reason = self.scale_ratio(symbol, day)
+        if ratio is None:
+            return zero, reason
+        if ratio >= 1.:
+            return zero, "agree"
+        node = self.study._nodes[symbol]
+        cdf, _raised = node._method_cdf(self.study._forecasts[symbol][day, expiry], node.CDF_NOISE)
+        scale = float(self.study._contexts[symbol][day, expiry]["reference_scale"])*ratio
+        try:
+            masses = node._project(cdf, float(meta["spot"]), scale, group["grid"]).masses.tolist()
+        except ValueError:
+            return [-max(0., e) for e in expected], "unprojected"
+        robust = self._expected({**group, "masses": masses})
+        return [min(0., r-e) for e, r in zip(expected, robust, strict=True)], None
+
+    @staticmethod
+    def _expected(group):
+        """Return the group's expected profit per contract under its masses, exactly summed."""
+        losses, masses = group["losses"], group["masses"]
+        return [math.fsum([float(c), *(-float(p)*float(row[j]) for p, row in zip(masses, losses))])
+                for j, c in enumerate(group["credit"])]
+
     def apply(self, day, configured, metadata):
         """Return ``(configured with value_adjust, the week record)``; the groups' other keys are unchanged."""
         weights, record = None, {}
         if "accuracy" in self.kelly:
             weights, record["accuracy"] = self.accuracy(day, [m["symbol"] for m in metadata])
-        out, multipliers = [], {}
+        out, multipliers, self.cuts = [], {}, {}
+        robust = None if self._robust is None else {"statuses": Counter(), "items_cut": 0, "cuts": []}
         for group, meta in zip(configured, metadata, strict=True):
             m = (1. if weights is None else weights[meta["symbol"]])*self.tilt(meta["dte"])
             m = round(m, self.DIGITS)
             multipliers[group["id"]] = m
-            losses, masses = group["losses"], group["masses"]
-            expected = [math.fsum([float(c), *(-float(p)*float(row[j]) for p, row in zip(masses, losses))])
-                        for j, c in enumerate(group["credit"])]
-            out.append({**group, "value_adjust": [(m-1.)*e for e in expected]})
+            expected = self._expected(group)
+            if robust is None:
+                out.append({**group, "value_adjust": [(m-1.)*e for e in expected]})
+                continue
+            cuts, status = self._robust_cuts(day, group, meta, expected)
+            self.cuts[group["id"]] = [m*c for c in cuts]
+            robust["statuses"][status or "scaled"] += 1
+            robust["items_cut"] += sum(1 for c in cuts if c < 0)
+            robust["cuts"].extend(m*c for c in cuts)
+            out.append({**group, "value_adjust": [(m-1.)*e+m*c for e, c in zip(expected, cuts, strict=True)]})
         values = sorted(multipliers.values())
         record["multiplier"] = {"groups": len(values), "min": values[0] if values else None,
                                 "median": statistics.median(values) if values else None,
                                 "max": values[-1] if values else None}
         if "dte_tilt" in self.kelly:
             record["dte_tilt"] = {"lam": self.kelly["dte_tilt"], "long_end": self.DTE_LONG_END}
+        if robust is not None:
+            reference, estimator = self._robust
+            statuses = robust["statuses"]
+            names = sorted({m["symbol"] for m in metadata})
+            record["robust_scale"] = {
+                "reference": reference.label(), "robust": estimator.label(), "groups": len(out),
+                "scaled": statuses["scaled"], "agree": statuses["agree"], "unprojected": statuses["unprojected"],
+                "unestimated": {k: v for k, v in sorted(statuses.items())
+                                if k not in ("scaled", "agree", "unprojected")},
+                "items": len(robust["cuts"]), "items_cut": robust["items_cut"],
+                "cut_total": math.fsum(robust["cuts"]), "cut_min": min(robust["cuts"], default=0.),
+                "ratio": {s: self.scale_ratio(s, day)[0] for s in names}}
         return out, record, multipliers
+
+    def stamp(self, books, metadata, quantities):
+        """Stamp each selected book with ``robust_cut``: its items' robust cuts times the quantities chosen."""
+        index = {m["id"]: i for i, m in enumerate(metadata)}
+        for book in books:
+            cuts = self.cuts[book["id"]]
+            book["robust_cut"] = math.fsum(c*q for c, q in zip(cuts, quantities[index[book["id"]]], strict=True))
 
 
 class RegimeEdgeShrink:
@@ -2814,12 +2934,8 @@ class RegimeEdgeShrink:
             out[regime] = {"n": n, "slope": slope, "lambda": lam, "nu": nu, "cold": cold}
         return out
 
-    @staticmethod
-    def _expected(group):
-        """The group's forecast expected profit per contract, exactly summed (as :meth:`EdgeWeights.apply`)."""
-        losses, masses = group["losses"], group["masses"]
-        return [math.fsum([float(c), *(-float(p)*float(row[j]) for p, row in zip(masses, losses))])
-                for j, c in enumerate(group["credit"])]
+    #: The group's forecast expected profit per contract, exactly summed: the one owner is :class:`EdgeWeights`.
+    _expected = staticmethod(EdgeWeights._expected)
 
     def apply(self, day, configured, metadata, closed, sigma_daily, multipliers=None):
         """Return ``(configured with the shrink, the week record, per-group multipliers or None)``.
@@ -2969,11 +3085,13 @@ class WeeklyOptionPortfolioStudy:
         name across expiries, is not free. A document holds kelly methods
         or none: a kelly method runs alone, so the locked formulations keep
         their gap.
-        Such a method must declare rho 0, portfolio_fraction 1,
-        name_fraction 1 and component_fraction null and may not declare
-        shock, risk_charge or radius_scale: the sizing caps are gone, and what
-        remains is the cash rule (new reserves within funding less open
-        reserves), the reserve rows, the capital-charge floors
+        Such a method must declare rho 0, portfolio_fraction 1 and
+        component_fraction null and may not declare shock, risk_charge or
+        radius_scale: the sizing caps are gone, and what remains is the cash
+        rule (new reserves within funding less open reserves), an opt-in hard
+        per-name cap (name_fraction below 1: each name's open and new reserve
+        within that fraction of funding, at the decision and the fill; 1 adds
+        no row), the reserve rows, the capital-charge floors
         (short_notional_fraction, required at 0.2 or more, the value the
         other formulations use; reserve_per_contract, optional) and the
         defined-loss structures. The floor is applied by the one `_floor`,
@@ -3090,7 +3208,7 @@ class WeeklyOptionPortfolioStudy:
     #: tail loss and the reserve concentration inside the local search's objective
     #: (:meth:`~index_options.kelly_local.KellyLocalSearch.validate_risk`). It needs a ``local_search`` (the climb is
     #: what scores it) and is handed to the search as its ``risk`` option; absent, nothing changes, byte for byte.
-    #: ADR-0318: ``accuracy``, ``dte_tilt`` and ``name_spread`` (:class:`EdgeWeights`) are declared only on a stage-one
+    #: ADR-0318: ``accuracy``, ``dte_tilt``, ``name_spread`` and ``robust_scale`` (:class:`EdgeWeights`) are declared only on a stage-one
     #: local-search method (ADR-0307, not the multi-start) without a calibration block; absent, nothing changes.
     #: The joint-scenario arm (owner-approved P2 item C1, ``index_options.joint_scenarios``): ``joint_scenarios``
     #: replaces the 17 basket-move scenarios of the scored one-stage program by ``scenarios`` sampled joint
@@ -3780,7 +3898,10 @@ class WeeklyOptionPortfolioStudy:
 
     @classmethod
     def _kelly_valid(cls, method):
-        """Return whether a method's kelly block is well formed and the method declares no sizing cap beside it."""
+        """Return whether a method's kelly block is well formed and the method declares no sizing cap beside it.
+
+        The one cap a kelly method may declare is the hard per-name one, ``name_fraction`` below 1 (see :meth:`_limits`).
+        """
         kelly = method["kelly"]
         return (isinstance(kelly, dict) and set(kelly)-cls._KELLY_OPTIONAL_KEYS == cls._KELLY_KEYS
                 and ("max_groups" not in kelly or (type(kelly["max_groups"]) is int and kelly["max_groups"] >= 1))
@@ -3812,7 +3933,8 @@ class WeeklyOptionPortfolioStudy:
                 and number_ok(method.get("short_notional_fraction"))
                 and method["short_notional_fraction"] >= cls.KELLY_SHORT_NOTIONAL_FLOOR
                 and number_ok(method["rho"]) and method["rho"] == 0
-                and method["portfolio_fraction"] == 1 and method["name_fraction"] == 1
+                and method["portfolio_fraction"] == 1 and number_ok(method["name_fraction"])
+                and 0 < method["name_fraction"] <= 1
                 and method["component_fraction"] is None)
 
     @staticmethod
@@ -4606,10 +4728,16 @@ class WeeklyOptionPortfolioStudy:
         symbols = self.params["symbols"]
         kelly = self._kelly(method)
         if kelly is not None and not stage1:
-            # The cash rule alone: new reserves within funding less open reserves (the fractions are 1).
+            # The cash rule: new reserves within funding less open reserves (portfolio_fraction is 1).
             held_back = kelly["cash_buffer"] if solve else 0.
-            return [{"members": symbols,
-                     "upper": account.remaining(symbols, method["portfolio_fraction"]-held_back)}]
+            limits = [{"members": symbols,
+                       "upper": account.remaining(symbols, method["portfolio_fraction"]-held_back)}]
+            if method["name_fraction"] < 1:
+                # ADR-0321: the opt-in hard per-name cap: each name's open plus new reserve within name_fraction of funding,
+                # at the decision and at the fill alike (the cash buffer is the cash row's alone).
+                limits.extend({"members": [s], "upper": account.remaining([s], method["name_fraction"])}
+                              for s in symbols)
+            return limits
         if self._sizer(method) is not None and not solve:
             # The fill admits a sizer's books under the cash rule alone: the growth program sized them past the dollar
             # caps on purpose, and a weekly or per-name cap at admission would undo it. The decision's own program
@@ -6272,6 +6400,9 @@ class WeeklyOptionPortfolioStudy:
                                                                        candidate["quantities"][i], strict=True))
                                 book.update(edge_multiplier=edge_multipliers[book["id"]],
                                             expected_raw=book["expected"]-adjust)
+                            if edge_weights is not None and edge_weights.cuts:
+                                # The two-scale edge: the part of ``expected_raw - expected`` the robust scale removed.
+                                edge_weights.stamp(books, metadata, candidate["quantities"])
                         if edge_shrink is not None and books:
                             edge_shrink.stamp(books, configured, metadata, candidate["quantities"], cal_regime, day)
                         status = "timeout_skipped" if timed_out else "selected" if books else "cash"

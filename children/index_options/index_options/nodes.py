@@ -4790,9 +4790,6 @@ class CDFQuoteCondorSelect(Node):
         raised to its running maximum (a monotone one is returned bit for bit) and the amount is recorded in
         the projection evidence. The default, 0, refuses any fall.
         """
-        import numpy as np
-        from dskit.pipeline.libs.predictive_cdf import MeanPreservingCDFGrid
-
         p = self.params
         factor = factors.get(day)
         spot, scale = context.get("spot"), context.get("reference_scale")
@@ -4802,15 +4799,7 @@ class CDFQuoteCondorSelect(Node):
             raise ValueError("method_not_fitted")
         if type(forecast.get("fitted")) is not bool:
             raise ValueError("invalid fitted flag")
-        cdf = np.array([forecast.get(f"method_cdf_{label}") for label in p["grid_labels"]], dtype=float)
-        if not np.isfinite(cdf).all() or (cdf < 0).any() or (cdf > 1).any():
-            raise ValueError("incoherent method CDF")
-        # Rounding noise, and only noise: no consecutive fall may exceed cdf_noise (the builder's own rule).
-        if (-np.diff(cdf)).max() > cdf_noise:
-            raise ValueError("incoherent method CDF")
-        running = np.maximum.accumulate(cdf)
-        raised = float((running-cdf).max())
-        cdf = running
+        cdf, raised = self._method_cdf(forecast, cdf_noise)
         spot_raw = float(spot)/factor
         eligible, quote_rows = {}, {}
         rows = quotes.items() if hasattr(quotes, "items") else (
@@ -4829,13 +4818,7 @@ class CDFQuoteCondorSelect(Node):
         self._check_eligible(eligible)
         support = sorted({*strikes, spot_raw*math.exp(float(scale)*p["z_grid"][0]),
                           spot_raw*math.exp(float(scale)*p["z_grid"][-1])})
-        knots = [spot_raw*math.exp(float(scale)*z) for z in p["z_grid"]
-                 if support[0] < spot_raw*math.exp(float(scale)*z) < support[-1]]
-        def probability(price):
-            z = math.log(price/spot_raw)/float(scale)
-            return float(np.interp(z, p["z_grid"], cdf, left=0., right=1.))
-        projection = MeanPreservingCDFGrid(
-            support, probability, spot=spot_raw, breakpoints=knots, **p["projection"])
+        projection = self._project(cdf, spot_raw, float(scale), support)
         if raised:
             projection.evidence["cdf_noise_raised"] = raised
         index = {strike: i for i, strike in enumerate(support)}
@@ -4853,6 +4836,38 @@ class CDFQuoteCondorSelect(Node):
                           "grid": support, "masses": projection.masses.tolist(),
                           "spot": spot_raw, "rho": rho, "legs": legs}
         return solver_context, projection.evidence
+
+    def _method_cdf(self, forecast, cdf_noise):
+        """Return ``(cdf, raised)``: the forecast's CDF at the z grid, raised to its running maximum, and by how much.
+
+        Rounding noise, and only noise: no consecutive fall may exceed ``cdf_noise`` (the builder's own rule).
+        """
+        import numpy as np
+
+        cdf = np.array([forecast.get(f"method_cdf_{label}") for label in self.params["grid_labels"]], dtype=float)
+        if not np.isfinite(cdf).all() or (cdf < 0).any() or (cdf > 1).any():
+            raise ValueError("incoherent method CDF")
+        if (-np.diff(cdf)).max() > cdf_noise:
+            raise ValueError("incoherent method CDF")
+        running = np.maximum.accumulate(cdf)
+        return running, float((running-cdf).max())
+
+    def _project(self, cdf, spot_raw, scale, support):
+        """Place the z-grid ``cdf`` read at ``scale`` (``z = ln(S / spot_raw) / scale``) on the outcome ``support``.
+
+        The z grid's points strictly inside the support are the projection's breakpoints; mass below or above the
+        support collapses to its outer points (:class:`~dskit.pipeline.libs.predictive_cdf.MeanPreservingCDFGrid`).
+        """
+        import numpy as np
+        from dskit.pipeline.libs.predictive_cdf import MeanPreservingCDFGrid
+
+        p = self.params
+        knots = [spot_raw*math.exp(scale*z) for z in p["z_grid"]
+                 if support[0] < spot_raw*math.exp(scale*z) < support[-1]]
+        def probability(price):
+            z = math.log(price/spot_raw)/scale
+            return float(np.interp(z, p["z_grid"], cdf, left=0., right=1.))
+        return MeanPreservingCDFGrid(support, probability, spot=spot_raw, breakpoints=knots, **p["projection"])
 
     def _one(self, forecast, context, day, expiry, quotes, factors):
         """Project the CDF and solve exactly one selected expiry at date D."""

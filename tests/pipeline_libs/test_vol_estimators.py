@@ -49,6 +49,7 @@ SPEC_BY_KIND = {
     "rms": {"kind": "rms", "window": 3},
     "ewma": {"kind": "ewma", "half_life": 2, "lookback": 3},
     "high_low": {"kind": "high_low", "window": 3},
+    "rms_trimmed": {"kind": "rms_trimmed", "window": 3, "drop": 1},
 }
 SPECS = list(SPEC_BY_KIND.values())
 
@@ -293,6 +294,30 @@ def test_high_low_is_the_parkinson_variance_averaged_over_the_window():
     assert variance[4] == pytest.approx((bar_var(105, 102) + bar_var(104, 102)) / 2)
 
 
+def test_rms_trimmed_drops_the_largest_squares_of_each_window():
+    variance = est(kind="rms_trimmed", window=3, drop=1).variance(make_bars())
+    assert np.isnan(variance[:3]).all(), "a full window of valid returns first"
+    assert variance[3] == pytest.approx((0.01**2 + 0.01**2) / 2), "the 0.02 day is dropped"
+    assert variance[4] == pytest.approx((0.01**2 + 0.0) / 2, abs=1e-12)
+
+
+def test_rms_trimmed_without_a_drop_is_the_rolling_rms():
+    bars = make_bars(LONG_RETURNS)
+    np.testing.assert_allclose(est(kind="rms_trimmed", window=4, drop=0).variance(bars),
+                               est(kind="rms", window=4).variance(bars), rtol=1e-12, equal_nan=True)
+
+
+def test_rms_trimmed_of_a_window_of_equal_magnitudes_is_the_rolling_rms():
+    bars = make_bars([None] + [0.01 * (-1) ** i for i in range(30)])
+    np.testing.assert_allclose(est(kind="rms_trimmed", window=22, drop=1).variance(bars)[22:],
+                               est(kind="rms", window=22).variance(bars)[22:], rtol=1e-9)
+
+
+def test_rms_trimmed_label_and_lookback():
+    trimmed = est(kind="rms_trimmed", window=22, drop=1)
+    assert (trimmed.label(), trimmed.lookback_bars()) == ("rms_trim1_22", 23)
+
+
 def test_a_bar_whose_high_is_below_its_low_is_undefined_not_a_range():
     bars = make_bars(highs=[1.0] * 5, lows=[2.0] * 5)
     assert np.isnan(est(kind="high_low", window=2).variance(bars)).all()
@@ -323,7 +348,7 @@ def test_the_first_bar_has_no_predecessor_so_no_value(spec):
 
 @pytest.mark.parametrize("spec", [
     {"kind": "rms", "window": 7}, {"kind": "ewma", "half_life": 3, "lookback": 9},
-    {"kind": "high_low", "window": 7}], ids=list(SPEC_BY_KIND))
+    {"kind": "high_low", "window": 7}, {"kind": "rms_trimmed", "window": 7, "drop": 1}], ids=list(SPEC_BY_KIND))
 def test_no_estimator_reads_a_bar_after_the_one_it_reports(spec):
     # Causality by prefix: the value at bar i is unchanged when every later bar is cut away
     # or replaced with garbage.
@@ -341,7 +366,8 @@ def test_no_estimator_reads_a_bar_after_the_one_it_reports(spec):
 
 SPECS_FOR_HISTORY = [
     {"kind": "rms", "window": 7}, {"kind": "ewma", "half_life": 3.5, "lookback": 9},
-    {"kind": "high_low", "window": 7}, {"kind": "rms", "window": 1}, {"kind": "ewma", "half_life": 1, "lookback": 1}]
+    {"kind": "high_low", "window": 7}, {"kind": "rms", "window": 1}, {"kind": "ewma", "half_life": 1, "lookback": 1},
+    {"kind": "rms_trimmed", "window": 7, "drop": 2}]
 
 
 @pytest.mark.parametrize("spec", SPECS_FOR_HISTORY)
@@ -382,6 +408,8 @@ BAD_SPECS = [
     {"kind": "ewma", "half_life": 0, "lookback": 3}, {"kind": "ewma", "half_life": 3},
     {"kind": "ewma", "half_life": 3, "lookback": 0}, {"kind": "ewma", "half_life": 10**400, "lookback": 3},
     {"kind": "high_low", "window": -1}, {"kind": "high_low", "window": 2, "half_life": 3},
+    {"kind": "rms_trimmed", "window": 3}, {"kind": "rms_trimmed", "window": 3, "drop": 3},
+    {"kind": "rms_trimmed", "window": 3, "drop": -1}, {"kind": "rms_trimmed", "window": 3, "drop": True},
     {"kind": None}, {"kind": ["rms"]}, {"kind": {"rms": 1}}, {"window": 3}, "rms", {}, None, 3, ["rms"]]
 
 
@@ -421,7 +449,7 @@ def test_two_specs_that_would_write_the_same_label_are_refused():
 
 
 def test_the_registry_is_the_whole_vocabulary():
-    assert set(ESTIMATORS) == {"rms", "ewma", "high_low"}
+    assert set(ESTIMATORS) == {"rms", "ewma", "high_low", "rms_trimmed"}
     assert all(cls.kind == name for name, cls in ESTIMATORS.items())
     assert all(issubclass(cls, VolEstimator) for cls in ESTIMATORS.values())
 
