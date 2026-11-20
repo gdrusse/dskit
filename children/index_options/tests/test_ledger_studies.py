@@ -7168,10 +7168,10 @@ def test_the_worse_price_leg_settles_and_marks_against_its_strike_and_the_shared
     mid = next(m for m in ledger["marks"] if m["date"] == "2019-01-23")
     assert mid["hedge_pnl_usd"] == pytest.approx(units * (spots["2019-01-23"] * 1.001 - ref))
     assert hedge.mark(book["hedge"], spots["2019-01-23"] * 1.001) == pytest.approx(
-        units * (spots["2019-01-23"] * 1.001 - ref) - costs_entry(book["hedge"]))
+        units * (spots["2019-01-23"] * 1.001 - ref) - _costs_entry(book["hedge"]))
 
 
-def costs_entry(record):
+def _costs_entry(record):
     """The entry half of a recorded leg's round-trip cost at its reference."""
     from dskit.pipeline.option_exposure import StaticDeltaHedge
 

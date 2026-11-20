@@ -407,6 +407,7 @@ _ABOVE = "short_call_above_exercise"
 @pytest.mark.parametrize("leg,spot,refused", [
     ({"right": "call", "sign": -1, "strike": 80., "price": 19.5}, 100., True),    # bid under exercise value
     ({"right": "call", "sign": -1, "strike": 80., "price": 20.0}, 100., True),    # at it: still refused (floor 0)
+    ({"right": "call", "sign": -1, "strike": 80., "price": 20.0 + 5e-10}, 100., True),  # mid - half: an ulp over
     ({"right": "call", "sign": -1, "strike": 80., "price": 20.01}, 100., False),  # a cent of time value
     ({"right": "call", "sign": -1, "strike": 120., "price": 0.0}, 100., True),    # out of the money for nothing
     ({"right": "call", "sign": -1, "strike": 120., "price": 0.05}, 100., False),
@@ -446,6 +447,17 @@ def test_the_filter_cuts_only_the_short_calls_at_exercise_and_refuses_a_group_le
     groups, metadata, refusals, dropped = study._above_exercise_candidates([lone[0]], [lone[1]])
     assert groups == metadata == [] and dropped == 1
     assert refusals == [{"symbol": "X", "expiry": "2019-02-01", "reason": "short_call_at_exercise"}]
+
+
+def test_the_cut_runs_after_the_calibration_fixes_its_side_pairing_and_before_the_hedge_rewrite():
+    """Structural pin (review M1): the calibration's `_best_sides` must see the full menu, so a cut short call cannot
+    move the pairing of its long twin; the hedge rewrite must see the cut menu."""
+    import inspect
+
+    source = inspect.getsource(ledger_studies.WeeklyOptionPortfolioStudy._method_steps)
+    exclude, cut = source.index("calibrated.exclude("), source.index("self._above_exercise_candidates(")
+    rewrite = source.index("hedge.candidates(")
+    assert exclude < cut < rewrite
 
 
 @pytest.mark.parametrize("value", [False, 1, None, "true"])

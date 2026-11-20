@@ -3126,6 +3126,8 @@ class WeeklyOptionPortfolioStudy:
     #: fill bid is at or below the fill spot's intrinsic, with the same code. Absent, nothing changes, byte for byte.
     _ABOVE_EXERCISE = "short_call_above_exercise"
     _AT_EXERCISE = "short_call_at_exercise"
+    #: Float order, not a threshold: ``(bid + ask) / 2 - (ask - bid) / 2`` may land an ulp above the bid.
+    _EXERCISE_FLOAT_ORDER = 1e-9
     _KELLY_OPTIONAL_KEYS = _KELLY_OPTIONAL_KEYS | {_ABOVE_EXERCISE}
     #: ADR-0302: ``search`` ({iterations, neighbourhood, node_limit, seed}) runs the relax_fix strategy's deterministic
     #: incumbent local search (the solver's ``utility_search``); ``warm_start`` ({node_limit}) certifies a week the
@@ -4239,11 +4241,16 @@ class WeeklyOptionPortfolioStudy:
 
     @staticmethod
     def _short_call_at_exercise(leg, spot):
-        """Return whether ``leg`` sells a call at a ``price`` at or below its exercise value ``max(spot - strike, 0)`` (ADR-0320)."""
+        """Return whether ``leg`` sells a call at a ``price`` at or below its exercise value ``max(spot - strike, 0)`` (ADR-0320).
+
+        ``price`` is the decision item's (mid less half-spread, the bid up to float order) or the fill bid; a price
+        within :data:`_EXERCISE_FLOAT_ORDER` above the intrinsic counts as at it, so both tests agree on a bid AT it.
+        """
         from dskit.pipeline.option_structures import leg_intrinsic
 
         return (leg["sign"] < 0 and leg["right"] == "call"
-                and leg["price"] <= leg_intrinsic("call", float(leg["strike"]), float(spot)))
+                and leg["price"] <= leg_intrinsic("call", float(leg["strike"]), float(spot))
+                + WeeklyOptionPortfolioStudy._EXERCISE_FLOAT_ORDER)
 
     @classmethod
     def _above_exercise_candidates(cls, groups, metadata):
@@ -6060,11 +6067,6 @@ class WeeklyOptionPortfolioStudy:
                         # ADR-0315 Amendment 2: per method and outside _prepare, so the shared prepared week is untouched.
                         groups, metadata, excluded = self._settleable_candidates(groups, metadata)
                         refusals = [*refusals, *excluded]
-                    at_exercise = None
-                    if above_exercise:
-                        # ADR-0320: per method, before the hedge rewrite reads the items.
-                        groups, metadata, excluded, at_exercise = self._above_exercise_candidates(groups, metadata)
-                        refusals = [*refusals, *excluded]
                     week_cal = adjusts = None
                     if calibrated is not None:
                         warm = calibrated.week_warm(day)
@@ -6073,6 +6075,12 @@ class WeeklyOptionPortfolioStudy:
                             # ADR-0313 B2 steps 1-2: the item features and the walk-row exclusions (the adjust is step 5).
                             groups, metadata, excluded, week_cal = calibrated.exclude(day, groups, metadata)
                             refusals = [*refusals, *excluded]
+                    at_exercise = None
+                    if above_exercise:
+                        # ADR-0320: per method, after the calibration fixed its side pairing on the full menu and
+                        # before the hedge rewrite reads the items.
+                        groups, metadata, excluded, at_exercise = self._above_exercise_candidates(groups, metadata)
+                        refusals = [*refusals, *excluded]
                     week_hedge = None
                     if hedge is not None and hedge.is_program:
                         # ADR-0313 B2 steps 2-3: the hedged candidate set, then the hedge rewrite (per method, never in _prepare).
