@@ -37564,3 +37564,11 @@ the original experiment identity and provenance before reading its saved fit.
 - A0010: "Amended 2026-11-22 (owner, ADR-0327): except the frozen candidate family of A0003's single opening (r1pc10cf, the workflow 2 arm, any workflow 1 arm), run once on 2024Q1-2025Q4 (2025Q4 cut short), priced in WSL, results sealed until the reveal; every other MIO method stays through 2023."
 
 A0004 needs no note: its holdout rung is what decision 1 builds, inside A0003's 2025-11-28 end.
+
+## ADR-0327 addendum — Forecast-vs-market edge test under the owner's A0008 read override (2026-11-22)
+
+**Owner decision (2026-11-22, in conversation, answering an explicit question).** Workflow 1 may read the pinned quarterly forecasts and forecast scores for quarters before 2024 to test whether the forecast beats market pricing, with no solver. Scope as recorded in `/home/russell/data/index_options/derived/mio-forecast-edge/v20261122/override.json` (246 files read, each with sha256); no 2024+ row was read. A0010's "Forecasts: ... no one views them" clause was not named in the question; the owner's approval covered reading these pinned pre-2024 forecasts and scores for this test, and the owner may confirm.
+
+**Result (verdict: no edge).** Findings: `/home/russell/data/index_options/derived/mio-forecast-edge/v20261122/findings.md` (sha256 44afd17d…) and `synthesis/synthesis.json`. On 761,825 market-eligible 2020-2023 validation rows the forecast's twCRPS skill over the raw market is +0.62% (quarter-block CI -1.15% to +2.54%); 0 of 1,135 pre-registered cells survive Benjamini-Hochberg at 10%; no walk-forward recalibration beats the market out of sample; both traded-strike claims were refuted (a baseline with no market input reproduces 71-81% of the gain). On 85% of MIO's traded rows the forecast had no market input and equals a fixed horizon prior in units of trailing 22-day volatility. MIO's P&L is the put-writing premium (raw market mid put ITM 33.7% vs 25.3% realised on traded sold puts).
+
+**Defect found (not fixed here).** `children/index_options/index_options/nodes.py` line 4869 in the r1pc10cf export (`np.interp(z, z_grid, cdf, left=0., right=1.)`) reads P(S_T <= K) = 0 below z = -3; 138 of r1pc10cf's 631 sold-put legs sit there (realised ITM 0.72%, exact forecast 0.35%, market 1.41%). Any fix is a new method identity.
