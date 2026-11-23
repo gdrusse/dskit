@@ -11,7 +11,7 @@ import pytest
 from index_options import ledger_studies
 from index_options.ledger_studies import EdgeWeights
 from test_ledger_multistart import HEDGED_FORMULATIONS, _hedged_world, _result
-from test_ledger_studies import FORMULATIONS, _PARITY
+from test_ledger_studies import FORMULATIONS, KELLY_FORMULATIONS, _PARITY, _chain_world, _for_kelly, _local_world
 
 BASE = "kelly075_ls_fast_hedged_static_lp"
 #: The three declared values (ADR-0318) and the four new ids: the base document plus kelly keys, nothing else.
@@ -949,7 +949,8 @@ def test_the_kelly_limits_add_one_row_per_name_only_when_the_cap_is_declared():
     account = SimpleNamespace(funding=1000., open={"a": {"symbol": "X", "reserve": 100.}},
                               remaining=lambda members, f: 1000.*f-(100. if "X" in members else 0.))
     study = SimpleNamespace(params={"symbols": ["X", "Y"]}, _kelly=ledger_studies.WeeklyOptionPortfolioStudy._kelly,
-                            _sizer=ledger_studies.WeeklyOptionPortfolioStudy._sizer)
+                            _sizer=ledger_studies.WeeklyOptionPortfolioStudy._sizer,
+                            _CAP_BUFFER=ledger_studies.WeeklyOptionPortfolioStudy._CAP_BUFFER)
     limits = ledger_studies.WeeklyOptionPortfolioStudy._limits
     plain = _arm(BASE)
     assert limits(study, account, plain, None) == [{"members": ["X", "Y"], "upper": 900.}]
@@ -1097,4 +1098,341 @@ def test_the_floor_runs_beside_every_other_kelly_key_and_replays(monkeypatch):
     assert week["books"] and result["trades"]
     # The world's hedged synthetic cannot lose (a negative max loss), which any floor admits.
     assert all(t["decision_credit"] >= FLOOR * t["max_loss"] and t["decision_credit"] > 0 for t in result["trades"])
+    assert study._method(arm, None, recorded=result) == result
+
+
+# --- ADR-0326: declared-group caps and a decision-time cap buffer on a kelly method -----------------------------------
+
+#: r1dv's buffer: both decision programs keep (1 - 0.05) of every name and group cap; the fill reads the whole caps.
+CAP_BUFFER = .05
+#: A partition of the three-name local world (``_local_world``): chain 0's two names, then chain 1's one.
+GROUPS = {"A": ["C0N0", "C0N1"], "B": ["C1N0"]}
+GROUP_CAP = .2
+
+
+def _validate(params):
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def _grouped(method, groups=GROUPS, fraction=GROUP_CAP, **kelly):
+    """``method`` with the declared-group cap over ``groups``, plus the ``kelly`` keys given."""
+    return {**method, "component_fraction": fraction, "component_groups": copy.deepcopy(groups),
+            "kelly": {**method["kelly"], **kelly}}
+
+
+def test_a_kelly_method_may_cap_declared_groups_that_partition_its_names_but_never_correlation_components():
+    params, _data, method = _local_world()
+    params["methods"] = [_grouped(method)]
+    _validate(params)
+    params["methods"] = [{**method, "component_fraction": GROUP_CAP}]
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        _validate(params)
+
+
+@pytest.mark.parametrize("groups", [
+    {"A": ["C0N0", "C0N1"], "B": ["C0N1", "C1N0"]},            # two groups share a name
+    {"A": ["C0N0", "C0N1"]},                                    # a name in no group
+    {"A": ["C0N0", "C0N1"], "B": ["C1N0", "Z"]},                # a name outside the universe
+    {"A": ["C0N0", "C0N1", "C1N0"], "B": []},                   # an empty group
+    {"": ["C0N0", "C0N1", "C1N0"]},                             # an empty label
+    {1: ["C0N0", "C0N1"], "B": ["C1N0"]},                       # a label that is not a string
+    {"A": ["C0N0", "C0N0", "C0N1", "C1N0"]},                    # a name twice in one group
+    {"A": ["C0N0", "C0N1", ""], "B": ["C1N0"]},                 # an empty name
+    {"A": ("C0N0", "C0N1"), "B": ["C1N0"]},                     # members that are not a list
+    [["C0N0", "C0N1"], ["C1N0"]],                               # not a mapping
+    {}])
+def test_a_malformed_group_map_refuses(groups):
+    params, _data, method = _local_world()
+    params["methods"] = [_grouped(method, groups)]
+    with pytest.raises(ValueError, match="invalid component_groups"):
+        _validate(params)
+
+
+def test_groups_declared_without_a_group_cap_refuse_as_unused():
+    params, _data, method = _local_world()
+    params["methods"] = [_grouped(method, fraction=None)]
+    with pytest.raises(ValueError, match="component_groups_unused"):
+        _validate(params)
+
+
+@pytest.mark.parametrize("value", [-.01, 1., None, True, float("nan"), "0.05"])
+def test_a_malformed_cap_buffer_refuses(value):
+    params, _data, method = _local_world()
+    params["methods"] = [_grouped(method, cap_buffer=value)]
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        _validate(params)
+
+
+def test_a_cap_buffer_validates_beside_a_name_or_group_cap_and_refuses_without_one():
+    params, _data, method = _local_world()
+    for arm in ({**method, "name_fraction": .5}, _grouped(method)):
+        for value in (0, CAP_BUFFER):
+            params["methods"] = [{**arm, "kelly": {**arm["kelly"], "cap_buffer": value}}]
+            _validate(params)
+    params["methods"] = [{**method, "kelly": {**method["kelly"], "cap_buffer": CAP_BUFFER}}]
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        _validate(params)                   # name_fraction 1 and no group cap: nothing to hold back from
+
+
+def _limits_stub():
+    """A study and an account stand-in: three names, funding 1,000, 10 of it reserved by an open book in X."""
+    account = SimpleNamespace(funding=1000., open={"a": {"symbol": "X", "reserve": 10.}},
+                              remaining=lambda members, f: 1000.*f-(10. if "X" in members else 0.))
+    owner = ledger_studies.WeeklyOptionPortfolioStudy
+    study = SimpleNamespace(params={"symbols": ["X", "Y", "Z"], "weekly_fraction": .25}, _kelly=owner._kelly,
+                            _sizer=owner._sizer, _CAP_BUFFER=owner._CAP_BUFFER)
+    return account, study
+
+
+@pytest.mark.parametrize("name_fraction", [.1, 1.])
+def test_the_cap_buffer_keeps_95_percent_of_every_name_and_group_cap_in_both_decision_programs_only(name_fraction):
+    """The fill (``solve`` False, also the existing-breach rule) reads the whole caps. The scored program: the cash
+    row less cash_buffer, the name and group rows at 0.95 of their caps. Stage one (the dollar rows): the cash and
+    weekly rows as ever, the name rows at 0.95 of a cap below 1 (whole at 1), the group rows at 0.95. Group rows come
+    with or without a name cap; without the key every row is the unbuffered one."""
+    account, study = _limits_stub()
+    limits = ledger_studies.WeeklyOptionPortfolioStudy._limits
+    arm = _grouped({**_arm(BASE), "name_fraction": name_fraction}, {"A": ["X", "Y"], "B": ["Z"]})
+    buffered = {**arm, "kelly": {**arm["kelly"], "cap_buffer": CAP_BUFFER}}
+
+    def names(cap):
+        return [(["X"], 1000.*cap-10.), (["Y"], 1000.*cap), (["Z"], 1000.*cap)]
+
+    def groups(cap):
+        return [(["X", "Y"], 1000.*cap-10.), (["Z"], 1000.*cap)]
+    capped, keep = name_fraction < 1, 1.-CAP_BUFFER
+    total, cash, weekly = [(["X", "Y", "Z"], 990.)], [(["X", "Y", "Z"], 940.)], [(["X", "Y", "Z"], 250.)]
+    kelly_names = names(name_fraction) if capped else []
+    kelly_held = names(name_fraction*keep) if capped else []
+    cases = [
+        ({}, total+kelly_names+groups(GROUP_CAP), total+kelly_names+groups(GROUP_CAP)),
+        ({"solve": True}, cash+kelly_names+groups(GROUP_CAP), cash+kelly_held+groups(GROUP_CAP*keep)),
+        ({"solve": True, "stage1": True}, total+weekly+names(name_fraction)+groups(GROUP_CAP),
+         total+weekly+names(name_fraction*keep if capped else name_fraction)+groups(GROUP_CAP*keep))]
+    for kwargs, plain_rows, held_rows in cases:
+        for method, rows in ((arm, plain_rows), (buffered, held_rows)):
+            got = limits(study, account, method, {"groups": [["X", "Y"], ["Z"]]}, **kwargs)
+            assert [lim["members"] for lim in got] == [members for members, _ in rows], kwargs
+            assert [lim["upper"] for lim in got] == pytest.approx([upper for _, upper in rows]), kwargs
+
+
+def test_a_name_open_at_97_percent_of_its_cap_is_no_existing_breach_and_its_buffered_row_clamps_to_zero():
+    from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+    params, data, method = _local_world()
+    arm = {**method, "name_fraction": .5, "kelly": {**method["kelly"], "cap_buffer": CAP_BUFFER}}
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    account = FundedOptionAccount(10000., 0., 14, "2019-01-02")
+    name = params["symbols"][0]
+    held = {"id": "held", "symbol": name, "expiry": "2019-02-01", "reserve": .97*.5*10000., "credit": 1.}
+    assert account.admit("2019-01-02", [held], [{"members": list(params["symbols"]), "upper": 10000.}])
+    assert not any(lim["upper"] < -1e-5 for lim in study._limits(account, arm, {"groups": []})), \
+        "the decision's existing-breach rule reads the whole caps: 97% of a cap is no breach"
+    decision = study._limits(account, arm, {"groups": []}, solve=True)
+    (row,) = [lim for lim in decision if lim["members"] == [name]]
+    assert row["upper"] == pytest.approx(-.02*.5*10000.)
+    caps = study._caps(decision, [{"id": "g", "symbol": name}])
+    assert [c["upper"] for c in caps] == pytest.approx([.95*10000.-held["reserve"], 0.]), "the program's row is 0"
+
+
+def test_a_group_open_over_its_whole_cap_is_an_existing_breach_of_the_kelly_limits():
+    """The shared rule (a limit below -1e-5 at the decision makes the week ``existing_cap_breach_cash``) reads the
+    group rows too: group A holds 2,100 of a 2,000 cap while every name and the cash rule are within theirs."""
+    from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+    params, data, method = _local_world()
+    arm = _grouped({**method, "name_fraction": .5}, cap_buffer=CAP_BUFFER)
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    account = FundedOptionAccount(10000., 0., 14, "2019-01-02")
+    books = [{"id": s, "symbol": s, "expiry": "2019-02-01", "reserve": 1050., "credit": 1.} for s in GROUPS["A"]]
+    assert account.admit("2019-01-02", books, [{"members": list(params["symbols"]), "upper": 10000.}])
+    limits = study._limits(account, arm, study._declared_components(arm))
+    assert [lim["upper"] for lim in limits if lim["upper"] < -1e-5] == [pytest.approx(-100.)]
+
+
+def test_the_fill_refuses_a_book_that_breaks_its_group_cap_and_admits_it_without_the_groups():
+    from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+    params, data, method = _local_world()
+    arm = _grouped(method)
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    components = study._declared_components(arm)
+    account = FundedOptionAccount(10000., 0., 14, "2019-01-02")
+    day, expiry = "2019-01-02", "2019-02-01"
+    assert account.admit(day, [{"id": "open", "symbol": "C0N0", "expiry": expiry, "reserve": 1500., "credit": 1.}],
+                         study._limits(account, arm, components))
+    book = {"id": "new", "symbol": "C0N1", "expiry": expiry, "reserve": 501., "credit": 1.}
+    assert not account.admit(day, [book], study._limits(account, arm, components)), "group A: 2,001 over 2,000"
+    assert account.admit(day, [{**book, "id": "other", "symbol": "C1N0"}], study._limits(account, arm, components)), \
+        "group B has its own cap"
+    assert account.admit(day, [book], study._limits(account, method, {"groups": []})), "the same fill, no groups"
+
+
+def test_a_dollar_method_caps_its_declared_groups_in_place_of_the_correlation_components(monkeypatch):
+    params, data, _series, _days = _chain_world([2, 1])
+    declared = {"A": ["C0N0"], "B": ["C0N1", "C1N0"]}            # not the correlation components: chain 0, chain 1
+    method = {**params["methods"][0], "component_fraction": .5, "component_groups": declared}
+    params["methods"] = [method]
+    _validate(params)
+    _, dollar = _spy(monkeypatch)
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    assert study._components(study.weeks[0])["groups"] == [["C0N0", "C0N1"], ["C1N0"]]
+    week = study._method(method, None)["decisions"][0]
+    assert week["components"] == {"groups": [["C0N0"], ["C0N1", "C1N0"]], "labels": declared, "source": "declared"}
+    ids = {s: f"{week['date']}:{s}:2019-02-01" for s in params["symbols"]}
+    caps = [sorted(c["groups"]) for c in dollar[0]["caps"]]
+    assert caps.count([ids["C0N0"]]) == 2, "C0N0's name row and group A's row"
+    assert sorted([ids["C0N1"], ids["C1N0"]]) in caps and sorted([ids["C0N0"], ids["C0N1"]]) not in caps
+
+
+#: The one-name world's cap: two 70/100 put spreads (2 x 2,613.30 = 5,226.60) fit under 5,240 at the decision, and
+#: one does under the buffered 4,978.
+NAME_BOUND = .524
+
+
+def _name_bound_world(cap_buffer=None, bid_drop=.3):
+    """One name whose bought put is struck at 70: the 70/100 spread's reserve is its worst-case loss (2,613.30, above
+    the 0.2 short-notional floor), so a worse fill price raises it; the fill session's 100 put bid is ``bid_drop``
+    lower. The kelly method keeps its 5% cash buffer, so the name row binds, not the cash row."""
+    params, data, _series, _days = _chain_world([1])
+    params["clocks"]["entry_end_before"] = "2019-01-09"
+    params["solver"]["parity_tolerance"] = 1e-3
+    _for_kelly(params)
+    method = {"id": "k", **KELLY_FORMULATIONS["kelly050_lp"], "name_fraction": NAME_BOUND}
+    method["kelly"] = {**method["kelly"], "beta_lookback": 240,
+                       **({} if cap_buffer is None else {"cap_buffer": cap_buffer})}
+    params["methods"] = [method]
+    (name,) = params["symbols"]
+    for row in data[name]["chain"]:
+        if row["strike"] == 90.:
+            row["strike"] = row["strike_raw"] = 70.
+        if row["date"] == "2019-01-03" and row["expiration"] == "2019-02-01" and row["strike"] == 100.:
+            row["bid"] -= bid_drop
+    return params, data, method
+
+
+def test_one_adverse_reprice_does_not_void_a_kelly_week_whose_name_row_binds_when_the_cap_is_buffered():
+    """test_one_adverse_reprice_does_not_void_the_kelly_week with the NAME row binding: packed to the cap, the worse
+    fill reprice lifts the name past it and the week is void (``repriced_shared_cap``) though the cash rule has room;
+    with the 5% buffer the decision stays under 95% of the cap and the same reprice is admitted."""
+    params, data, method = _name_bound_world()
+    plain = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)
+    first = plain["decisions"][0]
+    cap = NAME_BOUND*first["funding"]
+    assert first["status"] == "selected" and cap-15. < sum(b["reserve"] for b in first["books"]) <= cap, "packed"
+    (void,) = [r for r in plain["rejected"] if r["decision_date"] == first["date"]]
+    assert void["reason"] == "repriced_shared_cap"
+    assert cap < void["reserve"] < first["funding"], "the name row refused the fill, not the cash rule"
+    params, data, method = _name_bound_world(CAP_BUFFER)
+    held = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)
+    week = held["decisions"][0]
+    assert week["status"] == "selected" and held["rejected"] == [], "the books are all admitted"
+    decided = sum(b["reserve"] for b in week["books"])
+    assert 0 < decided <= (1-CAP_BUFFER)*cap+1e-6
+    filled = sum(t["reserve"] for t in held["trades"] if t["decision_date"] == week["date"])
+    assert decided < filled <= cap, "the reprice raised the reserve, inside the whole cap"
+
+
+#: The local world's funding for the grouped week: every name can hold a naked put (about 9,600) under the plain cash
+#: rule, so the two-name group A takes more than 20% of funding without its cap.
+GROUPED_FUNDING = 60000.
+
+
+def _grouped_local(cap_buffer=CAP_BUFFER, groups=GROUPS, name_fraction=1.):
+    """The local world at :data:`GROUPED_FUNDING`, its method grouped (and buffered); the plain method beside it."""
+    params, data, method = _local_world()
+    params["initial"] = GROUPED_FUNDING
+    method = {**method, "name_fraction": name_fraction}
+    arm = _grouped(method, groups, **({} if cap_buffer is None else {"cap_buffer": cap_buffer}))
+    params["methods"] = [arm]
+    return params, data, arm, method
+
+
+def _by_group(books, groups=GROUPS):
+    return {label: math.fsum(b["reserve"] for b in books if b["symbol"] in members)
+            for label, members in groups.items()}
+
+
+@pytest.mark.parametrize("name_fraction", [1., .5])
+def test_a_grouped_buffered_kelly_week_holds_each_group_within_its_cap_at_the_decision_and_the_fill(monkeypatch,
+                                                                                                    name_fraction):
+    """Stage one and the scored program both read each group's cap at 0.19 of funding; the books keep to it, the fill
+    to 0.2; the week records the declared groups and the buffer. Without the groups the same week puts more than 0.2
+    of funding in group A, so the cap binds. With and without a (looser) name cap beside it."""
+    params, data, arm, plain_arm = _grouped_local(name_fraction=name_fraction)
+    _validate(params)
+    plain = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(plain_arm, None)
+    funding = plain["decisions"][0]["funding"]
+    assert max(_by_group(plain["decisions"][0]["books"]).values()) > GROUP_CAP*funding, "uncapped, a group is over"
+    scored, dollar = _spy(monkeypatch)
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    result = study._method(arm, None)
+    week = result["decisions"][0]
+    assert week["status"] == "selected" and week["books"] and week["funding"] == funding
+    assert week["components"] == {"groups": [["C0N0", "C0N1"], ["C1N0"]], "labels": GROUPS, "source": "declared"}
+    assert week["kelly"]["cap_buffer"] == CAP_BUFFER
+    held = (1-CAP_BUFFER)*GROUP_CAP*funding
+    first_scored = next(p for p in scored if "utility" in p)
+    for program in (dollar[0], first_scored):
+        uppers = [c["upper"] for c in program["caps"]]
+        assert sum(u == pytest.approx(held) for u in uppers) == 2, "one row per group at 0.19 of funding"
+        assert not any(u == pytest.approx(GROUP_CAP*funding) for u in uppers), "never the whole cap"
+    assert all(v <= held+1e-6 for v in _by_group(week["books"]).values())
+    filled = [t for t in result["trades"] if t["decision_date"] == week["date"]]
+    assert filled and all(v <= GROUP_CAP*funding+1e-6 for v in _by_group(filled).values())
+
+
+def test_without_the_buffer_the_grouped_week_records_no_buffer_and_the_program_reads_the_whole_group_caps(monkeypatch):
+    params, data, arm, _plain = _grouped_local(cap_buffer=None)
+    _validate(params)
+    scored, _ = _spy(monkeypatch)
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(arm, None)
+    week = result["decisions"][0]
+    assert "cap_buffer" not in week["kelly"] and week["components"]["source"] == "declared"
+    uppers = [c["upper"] for c in next(p for p in scored if "utility" in p)["caps"]]
+    assert sum(u == pytest.approx(GROUP_CAP*week["funding"]) for u in uppers) == 2
+
+
+def test_a_grouped_buffered_kelly_week_replays_from_its_record_and_from_a_workers_actions():
+    from index_options.mio_worker import MIOMethodWorker
+    params, data, arm, _plain = _grouped_local()
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, data)
+    result = study._method(arm, None)
+    assert result["trades"]
+    assert study._method(arm, None, recorded=result) == result
+    claim = MIOMethodWorker.actions(result, study.weeks)
+    replay = ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(arm, None, derived=claim)
+    assert replay["trades"] == result["trades"]
+    assert [w.get("books") for w in replay["decisions"]] == [w.get("books") for w in result["decisions"]]
+
+
+def _r1dv_stack(**kelly):
+    """r1dv's keys on the hedged one-name world: robust scale, exercise and moneyness cuts, premium cover, a 0.9 wealth
+    floor over moves to 35%, settleable only, a name cap and the one-group cap; ``kelly`` adds the buffer."""
+    moves = [-.35, -.25, -.15, -.125, -.1, -.075, -.05, -.035, -.02, -.01,
+             .01, .02, .035, .05, .075, .1, .125, .15, .25, .35]
+    arm = _grouped({**_robust_arm(dte_tilt=.5, short_call_above_exercise=True, short_not_in_the_money=True,
+                                  premium_cover=1., settleable_only=True, wealth_floor=.9, moves=moves),
+                    "name_fraction": NAME_CAP}, {"G": ["X"]}, **kelly)
+    _, _, study = _robust_study(JUMP, arm)
+    return arm, study
+
+
+def test_the_r1dv_keys_run_beside_every_other_kelly_key_on_the_hedged_program_and_replay(monkeypatch):
+    """With the buffer the hedged week trades under 0.19 of funding and its fill (the hedge attached) is admitted; the
+    unbuffered twin packs the group cap to the cent and its fill is void (``repriced_shared_cap``)."""
+    arm, study = _r1dv_stack()
+    _validate(study.params)
+    plain = study._method(arm, None)
+    funding = plain["decisions"][0]["funding"]
+    assert math.fsum(b["reserve"] for b in plain["decisions"][0]["books"]) == pytest.approx(GROUP_CAP*funding)
+    assert not plain["trades"] and [r["reason"] for r in plain["rejected"]] == ["repriced_shared_cap"]
+    scored, _ = _spy(monkeypatch)
+    arm, study = _r1dv_stack(cap_buffer=CAP_BUFFER)
+    _validate(study.params)
+    result = study._method(arm, None)
+    week = result["decisions"][0]
+    assert week["books"] and result["trades"] and result["rejected"] == []
+    assert week["components"]["source"] == "declared" and week["kelly"]["cap_buffer"] == CAP_BUFFER
+    caps = [c["upper"] for p in scored if "utility" in p for c in p["caps"]]
+    assert any(u == pytest.approx((1-CAP_BUFFER)*GROUP_CAP*funding) for u in caps)
+    assert math.fsum(b["reserve"] for b in week["books"]) <= (1-CAP_BUFFER)*GROUP_CAP*funding+1e-6
+    assert math.fsum(t["reserve"] for t in result["trades"]) <= GROUP_CAP*funding+1e-6
     assert study._method(arm, None, recorded=result) == result

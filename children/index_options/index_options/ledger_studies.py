@@ -3141,7 +3141,10 @@ class WeeklyOptionPortfolioStudy:
         deposit_every_days, weekly_fraction, correlation_lookback,
         correlation_min_pairs, correlation_threshold, solver, and methods.
         Each method declares id, rho, portfolio_fraction, name_fraction and
-        component_fraction (null disables correlation grouping), and may add
+        component_fraction (null disables correlation grouping), may declare
+        component_groups ({label: [symbol, ...]}, a partition of symbols,
+        ADR-0326: the component_fraction cap then reads those groups in place
+        of the estimated correlation components), and may add
         two capital-charge floors the book's reserve can never fall below:
         reserve_per_contract, a nonnegative USD charge per gross contract,
         and short_notional_fraction, a nonnegative fraction of the sold
@@ -3200,12 +3203,19 @@ class WeeklyOptionPortfolioStudy:
         or none: a kelly method runs alone, so the locked formulations keep
         their gap.
         Such a method must declare rho 0, portfolio_fraction 1 and
-        component_fraction null and may not declare shock, risk_charge or
-        radius_scale: the sizing caps are gone, and what remains is the cash
+        component_fraction null (or a group cap over its declared
+        component_groups, never over the correlation components) and may not
+        declare shock, risk_charge or radius_scale: the sizing caps are gone,
+        and what remains is the cash
         rule (new reserves within funding less open reserves), an opt-in hard
         per-name cap (name_fraction below 1: each name's open and new reserve
         within that fraction of funding, at the decision and the fill; 1 adds
-        no row), the reserve rows, the capital-charge floors
+        no row), an opt-in declared-group cap (ADR-0326: each group's open
+        and new reserve within component_fraction of funding, at the decision
+        and the fill), an optional kelly cap_buffer (0 to < 1: the share of
+        each name and group cap both decision programs leave unused, as
+        cash_buffer does for the cash row; the fill reads the whole caps),
+        the reserve rows, the capital-charge floors
         (short_notional_fraction, required at 0.2 or more, the value the
         other formulations use; reserve_per_contract, optional) and the
         defined-loss structures. The floor is applied by the one `_floor`,
@@ -3306,8 +3316,12 @@ class WeeklyOptionPortfolioStudy:
     #: ADR-0313 D: the one owner of the per-method optional blocks (``calibration``, ``hedge``, ``exposure_limits``);
     #: it validates them and names their keys, so no other code here handles a block key.
     _BLOCKS = _WeeklyMethodBlocks.standard(hedge=HedgeOverlay)
+    #: ADR-0326: ``component_groups`` ({label: [symbol, ...]}, a partition of ``symbols``) declares the groups the
+    #: ``component_fraction`` cap reads in place of the correlation components (:meth:`_declared_components`); it needs
+    #: that cap (``component_groups_unused``). Absent, the components are estimated as before, byte for byte.
+    _COMPONENT_GROUPS = "component_groups"
     _PLAIN_OPTIONAL_METHOD_KEYS = frozenset({"reserve_per_contract", "short_notional_fraction", "shock", "risk_charge",
-                                             "radius_scale", "kelly", "sizer"})
+                                             "radius_scale", "kelly", "sizer", _COMPONENT_GROUPS})
     _OPTIONAL_METHOD_KEYS = _PLAIN_OPTIONAL_METHOD_KEYS | frozenset(_BLOCKS.keys())
     _RADIUS_SCALE = "reference_scale"
     _CHARGE_KEYS = ("reserve_per_contract", "short_notional_fraction")
@@ -3370,7 +3384,13 @@ class WeeklyOptionPortfolioStudy:
     #: ``credit`` is under rho x its filled ``max_loss`` (``credit_below_floor``). Absent, nothing changes, byte for byte.
     _CREDIT_FLOOR = "credit_floor"
     _BELOW_FLOOR = "credit_below_floor"
-    _KELLY_OPTIONAL_KEYS = _KELLY_OPTIONAL_KEYS | {_ABOVE_EXERCISE, _NOT_IN_THE_MONEY, _PREMIUM_COVER, _CREDIT_FLOOR}
+    #: ADR-0326: ``cap_buffer`` (b, 0 <= b < 1, beside a name cap below 1 or a group cap) keeps (1 - b) of every name
+    #: and group cap in both decision programs (stage one and the scored program), as ``cash_buffer`` does for the cash
+    #: row, so the next session's reprice has room under the fill's whole caps (:meth:`_limits`); the fill and the
+    #: existing-breach rule read the whole caps; the week records it under ``kelly``. Absent, nothing changes.
+    _CAP_BUFFER = "cap_buffer"
+    _KELLY_OPTIONAL_KEYS = _KELLY_OPTIONAL_KEYS | {_ABOVE_EXERCISE, _NOT_IN_THE_MONEY, _PREMIUM_COVER, _CREDIT_FLOOR,
+                                                   _CAP_BUFFER}
     #: ADR-0302: ``search`` ({iterations, neighbourhood, node_limit, seed}) runs the relax_fix strategy's deterministic
     #: incumbent local search (the solver's ``utility_search``); ``warm_start`` ({node_limit}) certifies a week the
     #: action limit would decline from its complete incumbent under that node budget (``utility_warm_start``). Each
@@ -3683,6 +3703,12 @@ class WeeklyOptionPortfolioStudy:
                         and (not number_ok(method["component_fraction"])
                              or not 0 < method["component_fraction"] <= 1))):
                 raise ValueError("invalid fixed method")
+            if cls._COMPONENT_GROUPS in method:
+                # ADR-0326: the declared groups partition the universe exactly, and only a group cap reads them.
+                if not cls._component_groups_valid(method[cls._COMPONENT_GROUPS], symbols):
+                    raise ValueError("invalid component_groups")
+                if method["component_fraction"] is None:
+                    raise ValueError("component_groups_unused")
             ids.add(method["id"])
         if any("kelly" in m for m in p["methods"]) and not all("kelly" in m for m in p["methods"]):
             # A kelly method needs a 1-dollar gap; the locked formulations were certified at theirs, and the
@@ -4046,7 +4072,9 @@ class WeeklyOptionPortfolioStudy:
     def _kelly_valid(cls, method):
         """Return whether a method's kelly block is well formed and the method declares no sizing cap beside it.
 
-        The one cap a kelly method may declare is the hard per-name one, ``name_fraction`` below 1 (see :meth:`_limits`).
+        A kelly method's caps are the hard per-name one, ``name_fraction`` below 1, and the declared-group one,
+        ``component_fraction`` with ``component_groups`` (ADR-0326; see :meth:`_limits`); a ``component_fraction`` over
+        the correlation components stays refused. ``cap_buffer`` needs one of the two caps to hold back from.
         """
         kelly = method["kelly"]
         return (isinstance(kelly, dict) and set(kelly)-cls._KELLY_OPTIONAL_KEYS == cls._KELLY_KEYS
@@ -4089,7 +4117,10 @@ class WeeklyOptionPortfolioStudy:
                 and number_ok(method["rho"]) and method["rho"] == 0
                 and method["portfolio_fraction"] == 1 and number_ok(method["name_fraction"])
                 and 0 < method["name_fraction"] <= 1
-                and method["component_fraction"] is None)
+                and (method["component_fraction"] is None or cls._COMPONENT_GROUPS in method)
+                and (cls._CAP_BUFFER not in kelly
+                     or (number_ok(kelly[cls._CAP_BUFFER]) and 0 <= kelly[cls._CAP_BUFFER] < 1
+                         and (method["name_fraction"] < 1 or method["component_fraction"] is not None))))
 
     @staticmethod
     def _shock(method):
@@ -4795,6 +4826,35 @@ class WeeklyOptionPortfolioStudy:
         self._component_cache[day] = result
         return result
 
+    @classmethod
+    def _declared_components(cls, method):
+        """ADR-0326: the method's declared groups as the components object the caps, the fill and the record read.
+
+        ``groups`` has :meth:`_components`' shape (each group's sorted members, the groups sorted); ``labels`` maps each
+        label to its sorted members and ``source`` says the groups were declared, not estimated. No history is read.
+        """
+        declared = method[cls._COMPONENT_GROUPS]
+        return {"groups": sorted(sorted(members) for members in declared.values()),
+                "labels": {label: sorted(members) for label, members in sorted(declared.items())},
+                "source": "declared"}
+
+    @staticmethod
+    def _component_groups_valid(groups, symbols):
+        """Return whether ``groups`` partitions ``symbols`` exactly under nonempty string labels.
+
+        Each label maps to a nonempty list of nonempty string symbols; no symbol is listed twice (within or across
+        groups), none is missing and none is outside ``symbols``.
+        """
+        if not isinstance(groups, dict):
+            return False
+        members = []
+        for label, names in groups.items():
+            if (not isinstance(label, str) or not label or not isinstance(names, list) or not names
+                    or any(not isinstance(s, str) or not s for s in names)):
+                return False
+            members.extend(names)
+        return len(members) == len(set(members)) and set(members) == set(symbols)
+
     def _returns(self, day, lookback):
         """Return each name's trailing log returns from sessions strictly before the day."""
         import numpy as np
@@ -5029,10 +5089,20 @@ class WeeklyOptionPortfolioStudy:
         ``solve`` is the decision's program only: a kelly method then keeps ``cash_buffer`` of funding out of
         the cash row, so the next session's reprice of the books has room before the fill's own (whole) limit.
         ``stage1`` (ADR-0307) asks a local-search kelly method for its start program's caps: the dollar formulation's
-        (weekly, per-name and component caps), as a sized arm's stage 1 has them.
+        (weekly, per-name and component caps), as a sized arm's stage 1 has them. ADR-0326: a kelly method's group cap
+        (``component_fraction`` over its declared ``components``) adds one row per group at the decision and the fill;
+        a declared ``cap_buffer`` keeps (1 - cap_buffer) of each name cap below 1 and of each group cap in both decision
+        programs (``solve``, stage one included), for the cash buffer's reason. The cash and weekly rows, the fill and
+        the existing-breach rule (``solve`` False) are untouched by it.
         """
         symbols = self.params["symbols"]
         kelly = self._kelly(method)
+        name_cap, group_cap = method["name_fraction"], method["component_fraction"]
+        cap_buffer = (kelly or {}).get(self._CAP_BUFFER) if solve else None
+        if cap_buffer is not None:
+            # ADR-0326: the decision's room under each whole cap; a name fraction of 1 (no name cap) stays whole.
+            name_cap = name_cap*(1.-cap_buffer) if name_cap < 1 else name_cap
+            group_cap = None if group_cap is None else group_cap*(1.-cap_buffer)
         if kelly is not None and not stage1:
             # The cash rule: new reserves within funding less open reserves (portfolio_fraction is 1).
             held_back = kelly["cash_buffer"] if solve else 0.
@@ -5040,9 +5110,14 @@ class WeeklyOptionPortfolioStudy:
                        "upper": account.remaining(symbols, method["portfolio_fraction"]-held_back)}]
             if method["name_fraction"] < 1:
                 # ADR-0321: the opt-in hard per-name cap: each name's open plus new reserve within name_fraction of funding,
-                # at the decision and at the fill alike (the cash buffer is the cash row's alone).
-                limits.extend({"members": [s], "upper": account.remaining([s], method["name_fraction"])}
-                              for s in symbols)
+                # at the decision and at the fill alike (the cash buffer is the cash row's alone; a declared cap_buffer
+                # holds back its own share of this row at the decision, ADR-0326).
+                limits.extend({"members": [s], "upper": account.remaining([s], name_cap)} for s in symbols)
+            if group_cap is not None:
+                # ADR-0326: the declared-group cap: each group's open plus new reserve within component_fraction
+                # of funding, at the decision and at the fill alike.
+                limits.extend({"members": members, "upper": account.remaining(members, group_cap)}
+                              for members in components["groups"])
             return limits
         if self._sizer(method) is not None and not solve:
             # The fill admits a sizer's books under the cash rule alone: the growth program sized them past the dollar
@@ -5051,11 +5126,11 @@ class WeeklyOptionPortfolioStudy:
             return [{"members": symbols, "upper": account.remaining(symbols, method["portfolio_fraction"])}]
         limits = [{"members": symbols, "upper": account.remaining(symbols, method["portfolio_fraction"])},
                   {"members": symbols, "upper": max(0., account.funding)*self.params["weekly_fraction"]}]
-        limits.extend({"members": [s], "upper": account.remaining([s], method["name_fraction"])}
+        limits.extend({"members": [s], "upper": account.remaining([s], name_cap)}
                       for s in symbols)
-        if method["component_fraction"] is not None:
+        if group_cap is not None:
             limits.extend({"members": members,
-                           "upper": account.remaining(members, method["component_fraction"])}
+                           "upper": account.remaining(members, group_cap)}
                           for members in components["groups"])
         return limits
 
@@ -6515,7 +6590,10 @@ class WeeklyOptionPortfolioStudy:
                     if week_cal is not None:
                         # B2 step 5: the adjust against the group AS CONFIGURED (hedged nominal), after every exclusion.
                         adjusts = calibrated.adjust(day, groups, metadata)
-                    components = self._components(day) if method["component_fraction"] is not None else {"groups": []}
+                    # ADR-0326: a method's declared groups are its component cap's groups (nothing is estimated).
+                    components = (self._declared_components(method) if self._COMPONENT_GROUPS in method
+                                  else self._components(day) if method["component_fraction"] is not None
+                                  else {"groups": []})
                     limits = self._limits(account, method, components)
                     record = {"date": day, "candidate_books": len(groups),
                               "candidate_contracts": self._candidate_contracts(groups, metadata),
@@ -6590,8 +6668,10 @@ class WeeklyOptionPortfolioStudy:
                         record["kelly"] = {
                             "fraction": kelly["fraction"], "gamma": 1./kelly["fraction"], "w0": w0,
                             "funding": account.funding, "open_reserve": record["open_reserve"],
-                            "cash_buffer": kelly["cash_buffer"], "gap": dict(kelly["gap"]),
-                            "wealth_lo": kelly["wealth_floor"]*w0,
+                            "cash_buffer": kelly["cash_buffer"],
+                            # ADR-0326: only a method that declares the buffer records it.
+                            **({self._CAP_BUFFER: kelly[self._CAP_BUFFER]} if self._CAP_BUFFER in kelly else {}),
+                            "gap": dict(kelly["gap"]), "wealth_lo": kelly["wealth_floor"]*w0,
                             "betas": dict(estimate["betas"]), "dropped": list(estimate["dropped"]),
                             "candidates": len(metadata), **weights,
                             "status": (weights["status"] if w0 > 0 else "nonpositive_capital")
