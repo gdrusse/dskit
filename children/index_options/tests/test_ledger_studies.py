@@ -7120,3 +7120,77 @@ def test_the_joint_arm_refuses_a_daily_re_struck_hedge_by_its_kind():
     assert not study._joint_scenarios_valid({**method, "hedge": {"kind": "daily_delta_forward"}})
     assert not study._joint_scenarios_valid({**method, "kelly": {k: v for k, v in method["kelly"].items()
                                                                   if k != "local_search"}})
+
+
+def test_explicit_decision_dates_enable_next_session_entry_and_preserve_default():
+    """An off-cycle signal trades only with explicit scheduling, at the next session."""
+    import copy
+    params, inputs = _weekly_portfolio_fixture()
+    for row in inputs["X"]["forecasts"] + inputs["X"]["contexts"]:
+        row["quote_date"] = {"2019-01-02": "2019-01-03", "2019-01-07": "2019-01-09"}[row["quote_date"]]
+    params["decision_dates"] = ["2019-01-03", "2019-01-09"]
+    study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    got = study.run()
+    assert got["decision_dates"] == params["decision_dates"]
+    method = got["methods"][0]
+    assert [d["date"] for d in method["decisions"]] == params["decision_dates"]
+    assert [b["fill_date"] for b in method["trades"]] == ["2019-01-04", "2019-01-10"]
+    assert method["final_equity"] == pytest.approx(method["contributions"] + method["pnl"])
+    default = copy.deepcopy(params)
+    del default["decision_dates"]
+    historic = ledger_studies.WeeklyOptionPortfolioStudy(default, inputs)
+    assert historic.weeks == ["2019-01-02", "2019-01-07", "2019-01-14", "2019-01-21", "2019-01-28", "2019-02-04"]
+    assert historic.run()["methods"][0]["trades"] == []
+
+
+@pytest.mark.parametrize("dates", [
+    [], "2019-01-03", ["2019-1-3"], ["2019-01-03", "2019-01-03"],
+    ["2019-01-09", "2019-01-03"], [None], [1],
+    ["2019-01-05"], ["2018-12-31"], ["2019-02-11"],
+])
+def test_explicit_decision_dates_refuse_invalid_or_non_entry_sessions(dates):
+    params, inputs = _weekly_portfolio_fixture()
+    params["decision_dates"] = dates
+    with pytest.raises(ValueError, match="decision_dates"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+
+
+def test_explicit_decision_dates_refuse_timing_only_filter():
+    params, inputs = _weekly_portfolio_fixture()
+    params.update(decision_dates=["2019-01-02"], decision_weeks=["2019-01-02"])
+    with pytest.raises(ValueError, match="decision_dates"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_explicit_decision_dates_refuse_a_tail_session():
+    params, inputs = _weekly_portfolio_fixture()
+    days = [r["date"] for r in inputs["X"]["bars"]]
+    for source in ("forecasts", "contexts"):
+        inputs["X"][source] = [r for r in inputs["X"][source] if r["quote_date"] >= "2019-01-07"]
+    inputs["X"]["chain"] = [r for r in inputs["X"]["chain"] if r["date"] >= "2019-01-07"]
+    params.update(correlation_lookback=2, correlation_min_pairs=2,
+                  clocks={"sessions": days, "history_start": "2019-01-02", "entry_start": "2019-01-07",
+                          "entry_end_before": "2019-01-10", "tail_end_before": "2019-02-09"},
+                  selected_pairs=[{"id": "X_1_60", "symbol": "X", "dte_min": 1, "dte_max": 60}],
+                  decision_dates=["2019-01-11"])
+    with pytest.raises(ValueError, match="decision_dates"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+
+
+def test_explicit_decision_dates_preserve_cash_flows_and_refuse_replay_schedule_change(monkeypatch):
+    import copy
+    from dskit.pipeline.libs.pyomo import TransportPortfolioSolve
+    params, inputs = _weekly_portfolio_fixture()
+    original = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+    result = original.run()["methods"][0]
+    params["decision_dates"] = list(original.weeks)
+    same = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    for key in ("trades", "pnl", "contributions", "final_equity", "curve"):
+        assert same[key] == result[key]
+    altered = copy.deepcopy(params)
+    altered["decision_dates"] = [original.weeks[0], "2019-01-08"]
+    different = ledger_studies.WeeklyOptionPortfolioStudy(altered, inputs)
+    monkeypatch.setattr(TransportPortfolioSolve, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must refuse before solve")))
+    with pytest.raises(ValueError, match="recorded"):
+        different._method(params["methods"][0], None, recorded=result)

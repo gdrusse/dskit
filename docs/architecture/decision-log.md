@@ -37451,3 +37451,31 @@ the original experiment identity and provenance before reading its saved fit.
 **Real-source contract.** The J300L development arm requires one already-bounded onboarded derivative, with both approved parent manifest identities, the frozen 166-symbol-to-source mapping, extraction bounds and output hashes. No raw future rows may materialize. Exported pins must equal original pins apart from roots; a transformed export is ineligible for the fast pricer. Genuine short history retains the existing cash result.
 
 **Exit.** Focused tests cover missing/unused/malformed bindings, exact control-input parity, date bounds, portable identity, actual exported-worker and recorded-pricer agreement, and strictly prior decision use. Two independent final reviews bind an immutable candidate before real dispatch. The existing in-memory joint-history interface and other method behavior remain unchanged.
+
+
+## ADR-0311 Amendment — Explicit entry dates for the cadence experiment (2026-11-24)
+
+Owner request: “please run this test and make a recommendation, based empirically on how frequently we should trade.”
+This authorizes the named daily/weekly entry experiment and its minimal scheduling support; no live trading,
+holdout opening, change to Path or frozen A0010 results. Source base: 696931b0.
+Protocol: /home/russell/data/index_options/runs/cadence-study/v20261124/protocol.json.
+
+The weekly study already fills and marks daily, but hardcodes one decision per ISO week. Add optional
+decision_dates: a nonempty sorted unique list of canonical dates, each an actual entry session.
+Absence preserves the historical schedule and outputs. Refuse coexistence with timing-only decision_weeks.
+The packet facade must validate the same shape; construction verifies session membership. Recorded actions
+already bind to self.weeks; a different schedule refuses replay. The new field stays in parameter identity.
+No new accounting, optimizer, pricing or risk mechanism is introduced.
+
+The new research policy uses saved A0008 forecasts, A0009 names and 1–60 DTE; $10,000 initial, no deposits,
+25% outstanding reserve cap, 10% per-name reserve cap, a 10% filled-account shock cap and rho=.1.
+weekly_fraction=1 prevents a fresh weekly budget being multiplied by more decisions.
+Next-session bid/ask fills and $0.65 per contract are shared. Decisions are entry-only, positions held to expiry.
+Three episode starts: 2020Q1, 2021Q1, 2021Q2; Q2 entries end April30 to leave a full60day tail before July1.
+No2024+ data. Independent Phase0 reviewer /root/cadence_design_review identified and resolved the resetting
+capital/shock-budget confounds; reporting must preserve entry-only scope and overlapping/short-window uncertainty.
+
+Acceptance: default weekly identity; explicit daily sessions trade only on those sessions with next-session fills;
+invalid/duplicate/unsorted/non-session/tail dates and mixed timing declaration refuse; action replay cannot change
+the schedule. Focused tests and two independent candidate reviews before the real run.
+Benchmark one full166-name decision before dispatch; storage/RAM admission governs all writers.
