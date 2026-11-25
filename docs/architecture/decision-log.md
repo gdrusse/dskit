@@ -37667,3 +37667,50 @@ Edited: `docs/standards/layout.md` (a `julia/` row), `dskit/pipeline/README.md` 
 - `worker_info` (the `hello` versions) is reset with `solve_record` at each run; writing it into the run's record (decision 5) is deferred to the Julia half.
 - `JumpBudgetedSelect` wire: `data {ids, cost, value}`, `params {budget}`, solution `{selected: [ids]}`; `termination` is the MOI name, and only `OPTIMAL` is read. The knapsack and solver-param rules are `BudgetedSelect`'s and `PyomoSolve`'s, made public static methods there, so pyomo's behaviour and messages are unchanged.
 - `tests/pipeline/test_foreach.py` gained one example hash pin (`jump-budgeted-select.json`), a file the phase-1 list did not name.
+
+## ADR-0328 amendment 1 — Live models: build once, change in place; data contract, warm starts, search seam (owner direction 2026-11-24)
+
+**Status.** Owner direction of 2026-11-24, in conversation with the orchestrating agent. The owner's points: the benefit sought from Julia is fast constraint construction, the solve being the same solver either way; so models already built must be re-used, never rebuilt per iteration where avoidable; strong warm starts, including a heuristic start computed outside Julia and passed in; freezing variables; many models of varying complexity alive at once; clean data handoffs; and, later, custom local-search and neighbourhood-search algorithms for hard MIO. The owner also answered "Yes" to moving the persistent re-solve (phase 2a of the entry above) into phase 1, and said "continue building". The decisions below are the agent's design under that direction; the owner may correct any of them. Nothing here has run against Julia.
+
+**Rule.** A model is built once and changed in place. A rebuild is the exception and is always recorded; no path rebuilds silently.
+
+**Decision A1, sessions.** The worker holds live models. New operations beside `hello`, `solve`, `shutdown`:
+| op | Does | Returns |
+|---|---|---|
+| `describe` | the program's declared data schema and addressable variable groups | `schema`, `variables` |
+| `open` | build a model (or take the pooled one of the same shape) | `handle`, `signature`, `path`, timings |
+| `update` | apply new data to the live model in place | `path`, timings |
+| `fix` / `free` | fix variables at values / release them | counts |
+| `start` | set start values: `"last"` (the model's own last solution) or values sent over the wire | counts |
+| `solve` | optimize the live model under per-call limits | `solution`, `record`, timings |
+| `search` | run a registered search algorithm on the live model (A6) | `solution`, `record`, `trajectory` |
+| `close` | release the handle (the pooled model may stay) | — |
+A `solve` with no `handle` stays the one-shot case and is defined as open, solve, close.
+
+**Decision A2, how a change is applied.**
+| What changed | Applied as | `path` |
+|---|---|---|
+| numbers only (coefficients, right-hand sides, bounds, objective) | the program's `update!` hook on the live model | `updated` |
+| which variables are free | `fix` / `free` | `reused` |
+| an optional constraint group the program declared | attached or detached by name | `updated` |
+| the shape (sets, sizes) | a new model, pooled by shape so each shape is built once | `built`, or `reused` on a pool hit |
+| a program with no `update!` hook | rebuild | `rebuilt` |
+Julia hooks added to `Program`, all optional except those of the base entry: `signature(program, data, params)` (the shape key; the default is derived from the declared schema's dimensions), `update!(model, program, state, data, params)`, `variables(program, model)` (named groups of variable references with their index keys, the only things `fix`, `free` and `start` can address), and `components(program)` (named optional constraint groups). Arbitrary constraints are never sent over the wire: structure belongs to the program.
+
+**Decision A3, the pool.** Live models are pooled by `(program, signature, solver, solver_options)`. The pool has a cap on model count and on estimated memory, both worker settings with named defaults; past a cap the least recently used model is evicted and the eviction is recorded. A handle to an evicted model refuses by name on its next use; it never rebuilds behind the caller.
+
+**Decision A4, the data contract.** A program declares its inputs once, in Julia: field name, element type, and shape in named dimensions. Julia is the single owner of that schema; Python reads it through `describe` and validates a payload against it before sending, and the worker validates again before any model is touched. Transport: scalars and small values as JSON; an array above a size threshold (a worker setting) as an Arrow IPC file in a per-run scratch directory, referenced by path and sha256 and removed on `close`. Every `open` and `update` returns the digest of the data it applied, and the run record carries it.
+
+**Decision A5, warm starts.** A start comes from the model's last solution (`"last"`) or from values sent by the caller, addressed through the `variables` groups; a partial start is allowed. The timings block reports `start_source` and `start_accepted`. `start_accepted` is what the solver reported, and `null` when the solver does not say; it is never inferred. Caution on record: the index_options speed panel (2026-11-19) found a previous-book MIP start slower in all five states and dropped it, so a start is measured per program, never assumed to help.
+
+**Decision A6, the search seam.** A second pluggable Julia type, `abstract type Search`, registered by name like `Program`. A search implements `neighbourhood(search, state)` (the variables to free this round; the rest are fixed at the incumbent), `accept(search, state, candidate)` and `done(search, state)`. The base loop owns everything else: fix, solve under the round's limits, free, the incumbent, the overall limits and the trajectory (one row per round: objective, bound, seconds, accepted, neighbourhood size). The loop runs inside Julia against the live model, so a round costs a bound change and a solve, not a round trip or a rebuild. Randomness takes a seed from the request. This entry ships the seam and one small reference search used by the tests; each real algorithm is its own later approval.
+
+**Decision A7, records.** `SolveRecord` is unchanged (its key set stays pinned to the evaluation `solve` event). Beside it every reply carries a timings block the node keeps as diagnostics: `path`, `build_seconds`, `update_seconds`, `transfer_seconds`, `solve_seconds`, `start_source`, `start_accepted`, and the pool's size and evictions. Build time and solve time are therefore separable in every run.
+
+**Decision A8, Python side.** `JumpSolve` gains a handle object for a live model (a context manager) with `update`, `fix`, `free`, `start`, `solve`, `search` and `close`. Re-use inside `run()` is opt-in through the same knob pattern `ScenarioUtilitySolve` uses for its persistent model, so a document that does not ask for it behaves as in the base entry.
+
+**Measured before relied on (once Julia is installed).** (a) Whether in-place changes reach HiGHS incrementally or reload the model inside the solver, in direct mode and in the default mode. (b) Whether JuMP parameters work with HiGHS for coefficients that multiply variables; if not, `update!` uses explicit coefficient setters and that is the documented pattern. (c) The acceptance benchmark: build, update and solve time against the pyomo pack on the same program, cold and across repeated updates.
+
+**Files added to the phase-1 list.** `julia/DskitJuMP/src/session.jl` (handles and the op dispatch for live models), `pool.jl`, `schema.jl` (the data contract and Arrow handoff), `search.jl` (the seam and the reference search). The Julia environment gains Arrow. Tests extend `julia/DskitJuMP/test/runtests.jl`, `tests/pipeline_libs/test_jump.py` and the fake worker; no other new file.
+
+**Unchanged.** Everything the base entry lists as unchanged; the one-shot `solve`; `SolveRecord`.
