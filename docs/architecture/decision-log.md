@@ -37611,3 +37611,48 @@ A0004 needs no note: its holdout rung is what decision 1 builds, inside A0003's 
 **Known limits.** The caps cut single-name and single-sector tails, not a crash: in 2020Q1 the held names' mean pairwise correlation went from 0.11 to 0.48. AMC and GME sit in different sectors, so the 2021 meme factor spans sectors. Nothing caps a quarter's cumulative re-entry loss in one name. A fill-day settlement that cuts funding by more than about 5%, or a row already breached at the fill, can still void a week. The sector map is static. The buffer costs 5% of each cap at the decision, and at a 5% name cap the arm may be cash-starved (G2 tests it).
 
 **Evidence (A0010 development evidence, under the design dir).** `measurements/concentration.json`, `universe.json`, `extra.json`, `gics_change_names.json`, `baseline_eval_r1pc10cf.json`, `baseline_eval_r1pc10_vs_r1pc10cf.json`, `negative_check_r1pc10cf_under_r1dv_caps.json` (r1pc10cf's recorded books against r1dv's caps: 1,889 check failures, so the checks catch what they test) and `r1dv_eval_before_any_result.json` (0 priced quarters; gate and entry PENDING). Tests: the ADR-0326 section of `children/index_options/tests/test_ledger_edge_weights.py`.
+
+## ADR-0328 — JuMP doorway: a Julia subprocess worker behind a tier-2 pack (PROPOSED 2026-11-24, awaiting owner approval; no code yet)
+
+**Status.** Proposed. The owner chose two points on 2026-11-24 in conversation: a subprocess worker as the bridge (over in-process juliacall) and a tier-2 pack plus one Julia package directory as the placement (over a new top-level package). Everything else below is the agent's proposal and waits for approval, including the file list. No code, no Julia install and no config exists under this entry.
+
+**Problem.** MIO programs are written in pyomo through `PyomoSolve` (`dskit/pipeline/libs/pyomo.py`). The owner wants the same systematic doorway for Julia JuMP models: a model is a subclass plus JSON, the base owns the lifecycle, and a document that names a JuMP node plans on a machine with no Julia. Sweep 2026-11-24 (`julia jump juliacall mio optimization solver gurobi highs pyomo`, 38 refs and 92 worktrees, plus `git grep -i -E "julia|JuMP"`): no Julia or JuMP code on any branch; the only optimization doorway is the pyomo pack.
+
+**Decision 1, one contract on both sides.** The pyomo contract is kept, split at the language boundary.
+- Python, `JumpSolve(Node)`: abstract; `role = "capital"` and `outputs = None` on the base exactly as `PyomoSolve` (same role and output doctrines, same run-time backstop). `_PARAMS = ("solver", "solver_options")`, default-deny by name, extended by tuple. A subclass names its Julia program in a class attribute and implements two hooks: `payload(inputs, params)` (the JSON-able data the program needs) and `extract(solution)` (the solved values back into the node's declared outputs).
+- Julia, `abstract type Program`: a concrete program implements `build!(model, program, data, params)` (add variables, constraints and the objective to the one flat model it is handed) and `solution(program, model)` (the named values to return). A registry maps the program name to its type; an unknown name is refused by name. Data is parsed into a typed, validated struct before any model is built (the JuMP "design patterns for larger models" guidance: validate data first, build through functions, never a script).
+- The base lifecycle on the Julia side owns optimizer resolution, option pass-through, `optimize!`, the feasibility check (`is_solved_and_feasible`) and the solve record. A program never calls `optimize!`.
+
+**Decision 2, the bridge is a long-lived subprocess speaking JSON lines.** `JuliaWorker` (Python, stdlib `subprocess` and `json` only) starts `julia --project=<package dir>` once per run and reuses it for every solve, because the first solve of a Julia session pays seconds of compilation and later solves do not. One JSON object per line each way. Request: `id`, `op` (`hello`, `solve`, `shutdown`), `program`, `data`, `params`, `solver`, `solver_options`. Response: `id`, `ok`, then `solution` and `record`, or `error` with `kind` and `message`. `hello` returns the protocol version, the Julia version and the resolved package versions; a protocol mismatch refuses before any solve. A worker that dies or exceeds the node's time limit is a refused solve naming the program, never a silent retry; the next solve starts a fresh worker. Reasons over juliacall: a Julia crash or out-of-memory kill cannot take the Python run down (the host has crashed under load), the worker can sit under a memory cap, the same worker runs on any host of the ADR-0297 bundle lane, and dskit core keeps zero required dependencies.
+
+**Decision 3, solver.** Default HiGHS. `solver` is a name; its shape is checked at plan (no Julia needed), and whether the Julia environment provides it is checked at run, refused by name, before a model is built. `solver_options` is a flat mapping handed to the optimizer verbatim.
+
+**Decision 4, the solve record is the existing one.** The worker returns the fields of `SolveRecord` (`solver`, `status`, `termination`, `objective`, `bound`, `gap`, `seconds`, `variables`, `constraints`, `binding`), and `JumpSolve` builds that same class, imported from the pyomo pack, so the evaluation `solve` event has one shape whichever language solved. The key set stays pinned by the existing test. `binding` is one row per named constraint container.
+
+**Decision 5, reproducibility.** `Project.toml` and `Manifest.toml` are committed; the worker refuses to start on an unresolved environment. The Julia version comes from the manifest and is checked in `hello`. The record of a run carries the `hello` versions.
+
+**Phase 1 files (the whole list; nothing else is created).**
+| File | Job |
+|---|---|
+| `dskit/pipeline/libs/jump.py` | `JumpSolve`, `JuliaWorker`, the protocol constants, `register` |
+| `julia/DskitJuMP/Project.toml`, `Manifest.toml` | pinned Julia environment (JuMP, HiGHS, JSON) |
+| `julia/DskitJuMP/src/DskitJuMP.jl` | module, exports |
+| `julia/DskitJuMP/src/program.jl` | `Program`, the two hooks, the registry |
+| `julia/DskitJuMP/src/solve.jl` | the base lifecycle and optimizer resolution |
+| `julia/DskitJuMP/src/record.jl` | the solve record |
+| `julia/DskitJuMP/src/worker.jl` | the JSON-lines loop |
+| `julia/DskitJuMP/src/programs/budgeted_select.jl` | reference program: the same knapsack as `BudgetedSelect` |
+| `julia/DskitJuMP/test/runtests.jl` | Julia unit tests on tiny instances |
+| `tests/pipeline_libs/test_jump.py` | plan-without-Julia, protocol and refusal tests against a fake worker; parity with `BudgetedSelect` when Julia is present, skipped by name when it is not |
+| `tests/pipeline_libs/jump_fake_worker.py` | a Python process speaking the protocol, so the suite needs no Julia |
+| `examples/pipeline/jump-budgeted-select.json` | one runnable document |
+
+Edited: `docs/standards/layout.md` (a `julia/` row), `dskit/pipeline/README.md` ("What ships"), `pyproject.toml` (lint entry only; no Python dependency is added).
+
+**Phase 2, each its own approval.** (a) Re-solve without rebuilding: the worker keeps one model per program and shape signature and refreshes `Parameter` values (`set_parameter_value`), the JuMP analogue of the persistent-model doctrine; whether HiGHS in `direct_model` accepts parameters is undocumented and is measured first. (b) A PackageCompiler system image to cut start-up. (c) A file handoff (Arrow) for arrays too large for JSON. (d) Porting `ScenarioUtilitySolve`; any ported program is a new formulation with its own hash and never replaces a locked pyomo result.
+
+**Unchanged.** `PyomoSolve`, every pyomo program, every locked formulation hash, record and digest. No child changes. A machine without Julia imports the pack, plans its documents and passes the suite.
+
+**Known limits.** JSON carries float64 as decimal text: round-trip exact for finite values, slow for very large arrays (phase 2c). JuMP has no nested blocks, so a large program composes through functions and naming, not sub-models. Julia start-up is paid once per run until phase 2b.
+
+**Blocked.** Julia is not installed, and installing it is refused by the storage guard: C: has 2.9 GiB free against a 10 GiB reserve and the WSL disk image is C:-backed (see the 2026-11-24 note in the session reply; nothing was deleted). On approval the Python half and the fake-worker tests can be built first; the Julia package waits for C: headroom.
