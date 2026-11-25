@@ -3467,10 +3467,14 @@ class WeeklyOptionPortfolioStudy:
     #: forwards (the overlay block carries none); required exactly when a method carries a ``hedge`` block.
     #: ``exposure_greeks`` (ADR-0313 I6): ``{"leg": LegGreeks params but the multiplier, "parity": ParityForward params}``, required
     #: exactly when a method carries ``exposure_limits``; a hedged method must price the same (``block_params_disagree``).
-    _OPTIONAL_PARAMS = ("fill_sizing", "locked_method_ids", "decision_weeks", "hedge_parity", "exposure_greeks")
+    _OPTIONAL_PARAMS = ("fill_sizing", "locked_method_ids", "decision_weeks", "decision_dates",
+                        "require_fill_before_expiry", "hedge_parity", "exposure_greeks")
     _WEEK_NOT_SELECTED = "week_not_selected"
     _FILL_SIZINGS = ("all_or_none", "available_size")
     _AVAILABLE_SIZE = "available_size"
+    #: Optional decision_dates replaces the weekly entry calendar; fills, marks and settlements stay daily.
+    #: Optional require_fill_before_expiry excludes contracts expiring by the next known session before preparation.
+    #: It requires explicit clocks when constructing a study; absent/false preserves the historical menu.
     #: Shared prepared-week cache (ADR-0307 Amendment 2): the namespaces under ``cache_root`` and their byte bounds.
     PREPARED_CACHE = "mio-prepared-week"
     SCREEN_CACHE = "transport-lp-screen"
@@ -3507,6 +3511,8 @@ class WeeklyOptionPortfolioStudy:
             raise ValueError("matching symbol inputs required")
         self.clocks = p.get("clocks")
         self.pairs = p.get("selected_pairs")
+        if p.get("require_fill_before_expiry", False) and self.clocks is None:
+            raise ValueError("require_fill_before_expiry requires explicit clocks")
         if self.clocks is not None:
             self.validate_pairs(self.pairs, symbols)
             c = self.clocks
@@ -3602,6 +3608,10 @@ class WeeklyOptionPortfolioStudy:
             if week not in seen:
                 self.weeks.append(day)
                 seen.add(week)
+        if "decision_dates" in p:
+            if not set(p["decision_dates"]).issubset(entries):
+                raise ValueError("decision_dates_invalid: every date must be an actual entry session")
+            self.weeks = list(p["decision_dates"])
         # Prepared features are only a function of the current decision prefix.
         if "decision_weeks" in p and self._decision_week(p["decision_weeks"]) not in self.weeks:
             raise ValueError("decision_weeks_invalid: the listed date is not one of the study's decision weeks")
@@ -3658,10 +3668,24 @@ class WeeklyOptionPortfolioStudy:
         p = params
         if "fill_sizing" in p and p["fill_sizing"] not in cls._FILL_SIZINGS:
             raise ValueError("unsupported fill sizing")
+        if "require_fill_before_expiry" in p and type(p["require_fill_before_expiry"]) is not bool:
+            raise ValueError("require_fill_before_expiry must be a bool")
         if "locked_method_ids" in p:
             defects = MethodBlocks.lock_problems(LOCKED_FORMULATION_HASHES, p["locked_method_ids"], ())
             if defects:
                 raise ValueError("; ".join(defects))
+        if "decision_dates" in p:
+            from datetime import date
+
+            dates = p["decision_dates"]
+            try:
+                valid = (isinstance(dates, list) and bool(dates)
+                         and all(isinstance(d, str) and date.fromisoformat(d).isoformat() == d for d in dates)
+                         and dates == sorted(set(dates)))
+            except ValueError:
+                valid = False
+            if not valid or "decision_weeks" in p:
+                raise ValueError("decision_dates_invalid: ordered unique ISO dates, without decision_weeks, required")
         if "decision_weeks" in p:
             cls._decision_week(p["decision_weeks"])
         defects = TransportPortfolioSolve.validate_params(p["solver"])
@@ -5010,6 +5034,8 @@ class WeeklyOptionPortfolioStudy:
         import numpy as np
 
         groups, metadata, refusals = [], [], []
+        require_live = self.params.get("require_fill_before_expiry", False)
+        fill_day = next((session for session in self.calendar if session > day), None) if require_live else None
         for symbol in self.params["symbols"]:
             node = self._nodes[symbol]
             available = [(e, c) for (d, e), c in self._contexts[symbol].items()
@@ -5020,6 +5046,13 @@ class WeeklyOptionPortfolioStudy:
             if not available:
                 refusals.append({"symbol": symbol, "reason": "no_eligible_forecast_expiry"})
             for expiry, context in sorted(available):
+                if require_live and fill_day is None:
+                    refusals.append({"symbol": symbol, "expiry": expiry, "reason": "no_fill_session"})
+                    continue
+                if require_live and expiry <= fill_day:
+                    refusals.append({"symbol": symbol, "expiry": expiry, "reason": "expiry_not_after_fill",
+                                     "fill_date": fill_day})
+                    continue
                 forecast = self._forecasts[symbol][day, expiry]
                 try:
                     quote_view = self._quotes[symbol]

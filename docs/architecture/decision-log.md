@@ -37611,3 +37611,57 @@ A0004 needs no note: its holdout rung is what decision 1 builds, inside A0003's 
 **Known limits.** The caps cut single-name and single-sector tails, not a crash: in 2020Q1 the held names' mean pairwise correlation went from 0.11 to 0.48. AMC and GME sit in different sectors, so the 2021 meme factor spans sectors. Nothing caps a quarter's cumulative re-entry loss in one name. A fill-day settlement that cuts funding by more than about 5%, or a row already breached at the fill, can still void a week. The sector map is static. The buffer costs 5% of each cap at the decision, and at a 5% name cap the arm may be cash-starved (G2 tests it).
 
 **Evidence (A0010 development evidence, under the design dir).** `measurements/concentration.json`, `universe.json`, `extra.json`, `gics_change_names.json`, `baseline_eval_r1pc10cf.json`, `baseline_eval_r1pc10_vs_r1pc10cf.json`, `negative_check_r1pc10cf_under_r1dv_caps.json` (r1pc10cf's recorded books against r1dv's caps: 1,889 check failures, so the checks catch what they test) and `r1dv_eval_before_any_result.json` (0 priced quarters; gate and entry PENDING). Tests: the ADR-0326 section of `children/index_options/tests/test_ledger_edge_weights.py`.
+
+
+
+## ADR-0311 Amendment — Explicit entry dates for the cadence experiment (2026-11-24)
+
+Owner request: “please run this test and make a recommendation, based empirically on how frequently we should trade.”
+This authorizes the named daily/weekly entry experiment and its minimal scheduling support; no live trading,
+holdout opening, change to Path or frozen A0010 results. Source base: 696931b0.
+Protocol: /home/russell/data/index_options/runs/cadence-study/v20261124/protocol.json.
+
+The weekly study already fills and marks daily, but hardcodes one decision per ISO week. Add optional
+decision_dates: a nonempty sorted unique list of canonical dates, each an actual entry session.
+Absence preserves the historical schedule and outputs. Refuse coexistence with timing-only decision_weeks.
+The packet facade must validate the same shape; construction verifies session membership. Recorded actions
+already bind to self.weeks; a different schedule refuses replay. The new field stays in parameter identity.
+No new accounting, optimizer, pricing or risk mechanism is introduced.
+
+The new research policy uses saved A0008 forecasts, A0009 names and 1–60 DTE; $10,000 initial, no deposits,
+25% outstanding reserve cap, 10% per-name reserve cap, a 10% filled-account shock cap and rho=.1.
+weekly_fraction=1 prevents a fresh weekly budget being multiplied by more decisions.
+Next-session bid/ask fills and $0.65 per contract are shared. Decisions are entry-only, positions held to expiry.
+Three episode starts: 2020Q1, 2021Q1, 2021Q2; Q2 entries end April30 to leave a full60day tail before July1.
+No2024+ data. Independent Phase0 reviewer /root/cadence_design_review identified and resolved the resetting
+capital/shock-budget confounds; reporting must preserve entry-only scope and overlapping/short-window uncertainty.
+
+Acceptance: default weekly identity; explicit daily sessions trade only on those sessions with next-session fills;
+invalid/duplicate/unsorted/non-session/tail dates and mixed timing declaration refuse; action replay cannot change
+the schedule. Focused tests and two independent candidate reviews before the real run.
+Benchmark one full166-name decision before dispatch; storage/RAM admission governs all writers.
+
+
+### ADR-0311 Amendment — Fill-eligible cadence comparison (2026-11-24)
+
+The authorized daily/weekly experiment exposed a pre-existing timing defect: a
+contract can enter the optimizer although its expiry is on the next fill session.
+This can displace executable choices. The original run is diagnostic only;
+remaining old arms are cancelled. No economic outcome informed this correction.
+
+Add optional `require_fill_before_expiry` (strict bool, default absent/false).
+When true, construction requires explicit clocks. Before quote preparation and
+optimization, retain only contracts whose expiry is strictly after the next
+actual session; record temporal refusals. Keep the entry-window fill guard.
+Prepared-cache identity already includes the flag and full clocks.
+
+Both cadences rerun in `v20261124-fill-v2`, reusing immutable old intake blobs
+and quote indexes. Reuse must bind the old config/receipt hashes and prove equal
+source, episode bounds, seal and policy; only the named eligibility flag and
+entry schedule may alter prepared parameters. Record old producer and new solver
+identities. A0008/A0009/A0010, model, risk limits, costs and sealed data stay fixed.
+
+Acceptance: equality/before/after next fill, holidays/weekends, no next session,
+legacy compatibility, strict validation, facade acceptance, cache separation,
+and reuse cross-episode refusal. Phase-0 reviewer: cadence_design_review. User
+authority: run the empirical test; this correction is necessary for its validity.
