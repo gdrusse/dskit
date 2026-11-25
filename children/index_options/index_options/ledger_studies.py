@@ -1680,9 +1680,12 @@ class ReplayHedge:
         """Return the hedged ``(group, meta)``: losses, reserve rows, slope row, netted floor rows and credit net of costs.
 
         ``entries`` carry each item's held-share ``units`` (0.0 for an excluded item); ``reference`` is the decision
-        forward ``F_0``. The loss rows go through the study's one ``_loss_row`` with the hedge, the slope row reads
+        forward ``F_0``. Each item settles against the overlay's reference for its own side (``references``: ``F_0``
+        for the fixed kind; the worse of ``F_0`` and the decision spot for the worse-price kind, ADR-0320). The loss
+        rows go through the study's one ``_loss_row`` with the hedge, the slope row reads
         ``-s_i [call_i] - u_i / mult <= 0`` (which excludes the unhedgeable classes), the margin floor is the overlay's
-        two NETTED rows, and the per-item cost is the shared rule on ``|u_i|`` at ``F_0`` for both legs.
+        two NETTED rows at ``F_0``, and the per-item cost is the shared rule on ``|u_i|`` at the item's reference for
+        both legs.
         """
         import numpy as np
 
@@ -1690,8 +1693,9 @@ class ReplayHedge:
         if not any(units):
             return group, meta
         ov, items, loss_row = self.overlay, meta["items"], self.study._loss_row
-        hedge = (units, reference)
-        costs = [ov.item_cost(e, reference, meta["dte"]) for e in entries]
+        references = [ov.reference({"forward": reference, "spot": meta["spot"], "units": u}) for u in units]
+        hedge = (units, references)
+        costs = [ov.item_cost(e, r, meta["dte"]) for e, r in zip(entries, references, strict=True)]
         credit = np.asarray(group["credit"]) - np.asarray(costs)
         reserves = [(np.asarray(loss_row(items, s, mult, hedge)) - credit).tolist()
                     for s in [0., *sorted({i["strike"] for i in items})]]
@@ -1706,8 +1710,8 @@ class ReplayHedge:
         # calibration values the hedged direction part with it (ADR-0313 B1), never with the block's ratio.
         ratios = [min(1.0, max(0.0, -u / e["delta_f_sh"])) if u and e.get("delta_f_sh") else 0.0
                   for u, e in zip(units, entries, strict=True)]
-        program = {"units": units, "reference": reference, "costs": costs, "ratios": ratios,
-                   "margin_fraction": ov.params["margin_fraction"]}
+        program = {"units": units, "reference": reference, "references": references, "costs": costs,
+                   "ratios": ratios, "margin_fraction": ov.params["margin_fraction"]}
         if ov.REBALANCES:
             program["entries"] = entries                     # ADR-0316 A1: what :meth:`path_scenarios` re-strikes
         return rewritten, {**meta, "program_hedge": program}
@@ -1783,12 +1787,15 @@ class ReplayHedge:
             ov.counts[BOOKS_PREFIX + self.UNHEDGED] += 1
             return
         hedged, code = self._decision_book(book, legs)
-        reference, source = self.forward(symbol, day, expiry, factor, {leg["strike"] for leg in legs})
-        if hedged is None or reference is None:
+        forward, source = self.forward(symbol, day, expiry, factor, {leg["strike"] for leg in legs})
+        if hedged is None or forward is None:
             record["status"] = code or source
             ov.counts[BOOKS_PREFIX + record["status"]] += 1
             return
         self.counts["forward_spot"] += source != ParityForward.SOURCE_PARITY
+        # The leg's strike: the fill forward, or (ADR-0320) the worse of it and the fill spot for the book's side.
+        fill_context = {"forward": forward, "spot": self._spot(symbol, day, factor)}
+        reference = ov.reference({**fill_context, "units": hedged["units"]})
         signed = [(leg["right"], leg["sign"] * leg["quantity"]) for leg in legs]
         strikes = [leg["strike"] for leg in legs]
         status = ov.classify_book(hedged, signed, strikes, book["credit"], mult, reference)
@@ -1796,7 +1803,7 @@ class ReplayHedge:
         if status != "ok" or hedged["units"] == 0:
             return
         units = hedged["units"]
-        leg = ov.legs(hedged, {"forward": reference})
+        leg = ov.legs(hedged, fill_context)
         days = (date.fromisoformat(expiry) - date.fromisoformat(day)).days
         allowance = ov.costs(leg, 2.0 * reference, days)["trade_costs"]
         loss = ov.max_loss(signed, strikes, book["credit"], mult, units, reference)
@@ -1806,6 +1813,9 @@ class ReplayHedge:
                       rates={k: ov.params[k] for k in ("hedge_fee_per_share", "hedge_half_spread_bps")},
                       closing_cost_allowance=allowance, option_reserve=book["reserve"],
                       unhedged_max_loss=book["max_loss"])
+        if reference != forward:
+            # ADR-0320: struck at spot, the worse price; the fill forward is kept for the carry-ratio mark fallback.
+            record["forward_reference"] = forward
         if math.isinf(book["max_loss"]):
             # A book the forward leg alone makes bounded (a sold call it covers): JSON has no infinity, so the
             # option legs' reserve and loss are recorded as null with the flag (ADR-0313 I7; the replay needs it).
@@ -1982,7 +1992,9 @@ class ReplayHedge:
         spot = self._spot(symbol, day, factor)
         if spot is None:
             return None
-        return spot * record["reference"] / self._spot(symbol, book["fill_date"], factor), True
+        # the carry ratio is the FILL FORWARD's over the fill spot (a leg struck at spot, ADR-0320, keeps its forward)
+        forward = record.get("forward_reference", record["reference"])
+        return spot * forward / self._spot(symbol, book["fill_date"], factor), True
 
     def marked(self, record, forward, carried):
         """Return the leg's mark at ``forward`` and count it (and its carried flag) on the overlay's tally."""
@@ -2494,7 +2506,7 @@ class CalibratedEdge:
 
 
 class EdgeWeights:
-    """ADR-0318: three optional kelly keys that reweight a local-search week's objective; absent, nothing changes.
+    """ADR-0318/0321/0322: optional kelly keys that reweight a local-search week's objective; absent, nothing changes.
 
     ``accuracy`` (``{"shrink_rows": k}``) weights each name's forecast edge by how well that name's forecasts did on
     every forecast row of the study that SETTLED strictly before the decision day (quote day, expiry and settlement
@@ -2520,11 +2532,28 @@ class EdgeWeights:
 
     ``name_spread`` (``c >= 1``) is not an edge weight: it is the one-stage program's ``utility.charge_scale``, the
     multiplier on every name's own dispersion charge (see :meth:`WeeklyOptionPortfolioStudy._method`).
+
+    ADR-0321 ``robust_scale`` (``{"reference": spec, "robust": spec}``, two :mod:`~dskit.pipeline.libs.vol_estimators` specs
+    over the same window) values each item at the LOWER of its expected profit under the forecast and under the
+    forecast re-read on a narrower scale: ``reference_scale x r``, ``r = min(1, sqrt(robust / reference))`` of the
+    two estimators' variances of the name's closes up to and including the decision day (the window the forecast's
+    own scale reads; nothing later). The forecast CDF in ``z`` is unchanged; only its scale is, re-projected onto the
+    group's own outcome grid (:meth:`scale_ratio`, :meth:`_robust_cuts`). The item's adjust gains
+    ``m x min(0, e_robust - e)``: never positive, zero where ``r = 1``, so it removes edge and never creates it.
+
+    ADR-0322 ``forward_centre`` (``true``, a hedged method) also values each item with the same forecast centred on
+    the hedge's decision parity forward: ``z = ln(S_T / (g x spot)) / reference_scale``, ``g = F / S``
+    (:meth:`forward_ratio`, :meth:`_forward_cuts`). The item's adjust is ``m x min(0, min(alternatives) - e)`` over
+    every declared alternative (spot/robust, forward/reference, forward/robust): one non-positive cut, zero at
+    ``g = 1``. Books record ``forward_cut``, the part removed beyond ``robust_cut``.
     """
 
-    KEYS = ("accuracy", "dte_tilt", "name_spread")
-    #: The two keys that set a candidate's edge multiplier (``name_spread`` acts on the charge instead).
-    EDGE_KEYS = ("accuracy", "dte_tilt")
+    #: ADR-0322: the forward-centred worst-case edge (``true`` only; a method with a ``hedge`` block).
+    FORWARD = "forward_centre"
+    KEYS = ("accuracy", "dte_tilt", "name_spread", "robust_scale", FORWARD)
+    #: The keys that set a candidate's edge (``name_spread`` acts on the charge instead).
+    EDGE_KEYS = ("accuracy", "dte_tilt", "robust_scale", FORWARD)
+    ROBUST_KEYS = frozenset({"reference", "robust"})
     ACCURACY_KEYS = frozenset({"shrink_rows"})
     #: The menu's longest days to expiry: the tilt is zero there and beyond.
     DTE_LONG_END = 60
@@ -2537,7 +2566,7 @@ class EdgeWeights:
 
     @classmethod
     def declared(cls, kelly):
-        """Return whether a kelly block declares any of the three keys."""
+        """Return whether a kelly block declares any of the keys."""
         return isinstance(kelly, dict) and any(key in kelly for key in cls.KEYS)
 
     @classmethod
@@ -2547,11 +2576,39 @@ class EdgeWeights:
         return ((accuracy is None or (isinstance(accuracy, dict) and set(accuracy) == cls.ACCURACY_KEYS
                                       and number_ok(accuracy["shrink_rows"]) and accuracy["shrink_rows"] > 0))
                 and ("dte_tilt" not in kelly or (number_ok(kelly["dte_tilt"]) and 0 < kelly["dte_tilt"] < 1))
-                and ("name_spread" not in kelly or (number_ok(kelly["name_spread"]) and kelly["name_spread"] >= 1)))
+                and ("name_spread" not in kelly or (number_ok(kelly["name_spread"]) and kelly["name_spread"] >= 1))
+                and ("robust_scale" not in kelly or cls._estimators(kelly["robust_scale"]) is not None)
+                and (cls.FORWARD not in kelly or kelly[cls.FORWARD] is True))
 
-    def __init__(self, study, kelly):
+    @classmethod
+    def _estimators(cls, block):
+        """Return the ``(reference, robust)`` estimators of a ``robust_scale`` block, or None when it is malformed.
+
+        Both read closes only and need the same history, so the two variances are of one window.
+        """
+        from dskit.pipeline.libs.vol_estimators import build_estimators
+
+        if not isinstance(block, dict) or set(block) != cls.ROBUST_KEYS:
+            return None
+        try:
+            reference, robust = build_estimators([block["reference"], block["robust"]])
+        except ValueError:
+            return None
+        if (reference.needs != ("close",) or robust.needs != ("close",)
+                or reference.lookback_bars() != robust.lookback_bars()):
+            return None
+        return reference, robust
+
+    def __init__(self, study, kelly, forwards=None):
         self.study, self.kelly = study, kelly
         self._rows = self._unscored = None
+        self._ratios, self._shifts, self.cuts = {}, {}, {}
+        self._robust = self._estimators(kelly["robust_scale"]) if "robust_scale" in (kelly or {}) else None
+        self._forwards = None
+        if self.FORWARD in (kelly or {}):
+            if not isinstance(forwards, ParityForwards):
+                raise ValueError(f"{self.FORWARD}_unhedged: the forward is the method's hedge's parity forward")
+            self._forwards = forwards
 
     @staticmethod
     def _normal_cdf(z):
@@ -2673,27 +2730,204 @@ class EdgeWeights:
         span = self.DTE_LONG_END
         return 1.-float(self.kelly["dte_tilt"])*(1.-min(max(int(dte), 0), span)/span)
 
+    def scale_ratio(self, symbol, day):
+        """Return ``(r, None)``, ``r = min(1, sqrt(robust / reference))`` rounded, or ``(None, reason)``.
+
+        The two variances are of the name's closes over the study's sessions up to and including ``day`` (the last
+        return ends at the decision-day close the forecast's spot is), the estimators' own lookback of them; no bar
+        after ``day`` is read. A window that is short, nonfinite or flat has no ratio (``short_history``,
+        ``nonfinite_window``, ``flat_window``).
+        """
+        import numpy as np
+        from dskit.pipeline.libs.vol_estimators import Bars
+
+        key = (symbol, day)
+        if key not in self._ratios:
+            reference, robust = self._robust
+            need = reference.lookback_bars()
+            closes = self.study._bars[symbol]
+            sessions = [d for d in self.study.history_calendar if d <= day][-need:]
+            if len(sessions) < need or any(d not in closes for d in sessions):
+                self._ratios[key] = (None, "short_history")
+            else:
+                bars = Bars(np.arange(need), 1, close=[closes[d] for d in sessions])
+                full, rest = float(reference.variance(bars)[-1]), float(robust.variance(bars)[-1])
+                if not (math.isfinite(full) and math.isfinite(rest)):
+                    self._ratios[key] = (None, "nonfinite_window")
+                elif not full > 0:
+                    self._ratios[key] = (None, "flat_window")
+                else:
+                    self._ratios[key] = (round(min(1., math.sqrt(max(0., rest)/full)), self.DIGITS), None)
+        return self._ratios[key]
+
+    def _robust_cuts(self, day, group, meta, expected):
+        """Return ``(cuts, status)``: each item's ``min(0, e_robust - e)`` per contract, and why none was taken.
+
+        ``e_robust`` is ``credit - masses_r . losses`` with ``masses_r`` the forecast's CDF re-projected at
+        ``reference_scale x r`` onto the group's grid (the node's own projection; the losses, hedge included, are the
+        group's). ``status`` is None for a scaled group, ``"agree"`` at ``r = 1``, the ratio's reason when it has none,
+        and ``"unprojected"`` when the projection refuses: then every item's positive edge is cut to zero, since its
+        robust value cannot be stated.
+        """
+        zero = [0.]*len(expected)
+        ratio, reason = self.scale_ratio(meta["symbol"], day)
+        if ratio is None:
+            return zero, reason
+        if ratio >= 1.:
+            return zero, "agree"
+        cdf = self._cdf(day, meta)
+        try:
+            robust = self._valued(day, group, meta, cdf, float(meta["spot"]), ratio)
+        except ValueError:
+            return [-max(0., e) for e in expected], "unprojected"
+        return [min(0., r-e) for e, r in zip(expected, robust, strict=True)], None
+
+    def _cdf(self, day, meta):
+        """Return the forecast's CDF on its z grid for the group's name and expiry (the node's own reading)."""
+        node = self.study._nodes[meta["symbol"]]
+        return node._method_cdf(self.study._forecasts[meta["symbol"]][day, meta["expiry"]], node.CDF_NOISE)[0]
+
+    def _valued(self, day, group, meta, cdf, centre, ratio):
+        """Return each item's expected profit with the forecast read around ``centre`` at ``reference_scale x ratio``.
+
+        ``z = ln(S / centre) / scale``: the node's own projection (:meth:`_project`) onto the group's grid, the losses
+        (hedge included) the group's. A refused projection raises ``ValueError``.
+        """
+        node = self.study._nodes[meta["symbol"]]
+        scale = float(self.study._contexts[meta["symbol"]][day, meta["expiry"]]["reference_scale"])*ratio
+        masses = node._project(cdf, centre, scale, group["grid"]).masses.tolist()
+        return self._expected({**group, "masses": masses})
+
+    def forward_ratio(self, meta, day):
+        """Return ``(g, None)``, ``g = F / S`` rounded, or ``(None, reason)`` (ADR-0322).
+
+        ``F`` is the hedge's decision-session parity forward of the group's expiry (its one owner,
+        :meth:`ParityForwards.forward`, no strike excluded: the forward the hedge rewrite strikes against) and ``S``
+        that owner's spot; both read the decision day's chain and close only. Without a usable parity pair ``F`` is
+        ``S`` and ``g = 1``. Without a forward at all (``no_spot``, ``duplicate_quote``) there is no ratio.
+        """
+        key = (meta["symbol"], meta["expiry"], day)
+        if key not in self._shifts:
+            symbol, factor = meta["symbol"], meta["factor"]
+            forward, source = self._forwards.forward(symbol, day, meta["expiry"], factor)
+            spot = self._forwards.spot(symbol, day, factor)
+            if forward is None:
+                self._shifts[key] = (None, source)
+            elif not (number_ok(forward) and forward > 0 and number_ok(spot) and spot > 0):
+                self._shifts[key] = (None, "bad_forward")
+            else:
+                self._shifts[key] = (round(float(forward)/float(spot), self.DIGITS), None)
+        return self._shifts[key]
+
+    def _forward_cuts(self, day, group, meta, expected):
+        """Return ``(cuts, status)``: each item's ``min(0, min(e_F, e_F,r) - e)`` per contract, and why none was taken.
+
+        ``e_F`` is the item's value with the forecast centred on the parity forward (``z = ln(S_T / (g x spot)) /
+        reference_scale``), ``e_F,r`` the same at the robust scale when ``robust_scale`` is declared and its ratio
+        is below 1. ``status`` is None for a shifted group, ``"agree"`` at ``g = 1``, the ratio's reason when there
+        is none, and ``"unprojected"`` when a projection refuses (every item's positive edge is then cut to zero).
+        """
+        zero = [0.]*len(expected)
+        shift, reason = self.forward_ratio(meta, day)
+        if shift is None:
+            return zero, reason
+        if shift == 1.:
+            return zero, "agree"
+        ratios = [1.]
+        if self._robust is not None:
+            ratio, _reason = self.scale_ratio(meta["symbol"], day)
+            if ratio is not None and ratio < 1.:
+                ratios.append(ratio)
+        cdf = self._cdf(day, meta)
+        try:
+            values = [self._valued(day, group, meta, cdf, float(meta["spot"])*shift, r) for r in ratios]
+        except ValueError:
+            return [-max(0., e) for e in expected], "unprojected"
+        return [min(0., min(v[j] for v in values)-e) for j, e in enumerate(expected)], None
+
+    @staticmethod
+    def _expected(group):
+        """Return the group's expected profit per contract under its masses, exactly summed."""
+        losses, masses = group["losses"], group["masses"]
+        return [math.fsum([float(c), *(-float(p)*float(row[j]) for p, row in zip(masses, losses))])
+                for j, c in enumerate(group["credit"])]
+
     def apply(self, day, configured, metadata):
         """Return ``(configured with value_adjust, the week record)``; the groups' other keys are unchanged."""
         weights, record = None, {}
         if "accuracy" in self.kelly:
             weights, record["accuracy"] = self.accuracy(day, [m["symbol"] for m in metadata])
-        out, multipliers = [], {}
+        out, multipliers, self.cuts = [], {}, {}
+        robust = None if self._robust is None else {"statuses": Counter(), "items_cut": 0, "cuts": []}
+        forward = None if self._forwards is None else {"statuses": Counter(), "items_cut": 0, "cuts": [], "shifts": []}
         for group, meta in zip(configured, metadata, strict=True):
             m = (1. if weights is None else weights[meta["symbol"]])*self.tilt(meta["dte"])
             m = round(m, self.DIGITS)
             multipliers[group["id"]] = m
-            losses, masses = group["losses"], group["masses"]
-            expected = [math.fsum([float(c), *(-float(p)*float(row[j]) for p, row in zip(masses, losses))])
-                        for j, c in enumerate(group["credit"])]
-            out.append({**group, "value_adjust": [(m-1.)*e for e in expected]})
+            expected = self._expected(group)
+            if robust is None and forward is None:
+                out.append({**group, "value_adjust": [(m-1.)*e for e in expected]})
+                continue
+            stamps, cuts = {}, None
+            if robust is not None:
+                cuts, status = self._robust_cuts(day, group, meta, expected)
+                stamps["robust_cut"] = [m*c for c in cuts]
+                robust["statuses"][status or "scaled"] += 1
+                robust["items_cut"] += sum(1 for c in cuts if c < 0)
+                robust["cuts"].extend(m*c for c in cuts)
+            if forward is not None:
+                # ADR-0322: the least of every valuation; the forward's own part is what it removed beyond the robust.
+                shifted, status = self._forward_cuts(day, group, meta, expected)
+                extra = shifted if cuts is None else [min(0., f-c) for f, c in zip(shifted, cuts, strict=True)]
+                cuts = shifted if cuts is None else [min(c, f) for c, f in zip(cuts, shifted, strict=True)]
+                stamps["forward_cut"] = [m*c for c in extra]
+                forward["statuses"][status or "shifted"] += 1
+                forward["items_cut"] += sum(1 for c in extra if c < 0)
+                forward["cuts"].extend(m*c for c in extra)
+                if status is None:
+                    forward["shifts"].append(self.forward_ratio(meta, day)[0])
+            self.cuts[group["id"]] = stamps
+            out.append({**group, "value_adjust": [(m-1.)*e+m*c for e, c in zip(expected, cuts, strict=True)]})
         values = sorted(multipliers.values())
         record["multiplier"] = {"groups": len(values), "min": values[0] if values else None,
                                 "median": statistics.median(values) if values else None,
                                 "max": values[-1] if values else None}
         if "dte_tilt" in self.kelly:
             record["dte_tilt"] = {"lam": self.kelly["dte_tilt"], "long_end": self.DTE_LONG_END}
+        if robust is not None:
+            reference, estimator = self._robust
+            statuses = robust["statuses"]
+            names = sorted({m["symbol"] for m in metadata})
+            record["robust_scale"] = {
+                "reference": reference.label(), "robust": estimator.label(), "groups": len(out),
+                "scaled": statuses["scaled"], "agree": statuses["agree"], "unprojected": statuses["unprojected"],
+                "unestimated": {k: v for k, v in sorted(statuses.items())
+                                if k not in ("scaled", "agree", "unprojected")},
+                "items": len(robust["cuts"]), "items_cut": robust["items_cut"],
+                "cut_total": math.fsum(robust["cuts"]), "cut_min": min(robust["cuts"], default=0.),
+                "ratio": {s: self.scale_ratio(s, day)[0] for s in names}}
+        if forward is not None:
+            statuses = forward["statuses"]
+            record[self.FORWARD] = {
+                "groups": len(out), "shifted": statuses["shifted"], "agree": statuses["agree"],
+                "unprojected": statuses["unprojected"],
+                "unestimated": {k: v for k, v in sorted(statuses.items())
+                                if k not in ("shifted", "agree", "unprojected")},
+                "items": len(forward["cuts"]), "items_cut": forward["items_cut"],
+                "cut_total": math.fsum(forward["cuts"]), "cut_min": min(forward["cuts"], default=0.),
+                "ratio_min": min(forward["shifts"], default=None), "ratio_max": max(forward["shifts"], default=None)}
         return out, record, multipliers
+
+    def stamp(self, books, metadata, quantities):
+        """Stamp each selected book with ``robust_cut`` and/or ``forward_cut``: its items' cuts times its quantities.
+
+        With both keys the two add up to the book's whole cut: ``forward_cut`` is what the forward-centred valuations
+        removed beyond the robust scale's.
+        """
+        index = {m["id"]: i for i, m in enumerate(metadata)}
+        for book in books:
+            for name, cuts in self.cuts[book["id"]].items():
+                book[name] = math.fsum(c*q for c, q in zip(cuts, quantities[index[book["id"]]], strict=True))
 
 
 class RegimeEdgeShrink:
@@ -2814,12 +3048,8 @@ class RegimeEdgeShrink:
             out[regime] = {"n": n, "slope": slope, "lambda": lam, "nu": nu, "cold": cold}
         return out
 
-    @staticmethod
-    def _expected(group):
-        """The group's forecast expected profit per contract, exactly summed (as :meth:`EdgeWeights.apply`)."""
-        losses, masses = group["losses"], group["masses"]
-        return [math.fsum([float(c), *(-float(p)*float(row[j]) for p, row in zip(masses, losses))])
-                for j, c in enumerate(group["credit"])]
+    #: The group's forecast expected profit per contract, exactly summed: the one owner is :class:`EdgeWeights`.
+    _expected = staticmethod(EdgeWeights._expected)
 
     def apply(self, day, configured, metadata, closed, sigma_daily, multipliers=None):
         """Return ``(configured with the shrink, the week record, per-group multipliers or None)``.
@@ -2911,7 +3141,10 @@ class WeeklyOptionPortfolioStudy:
         deposit_every_days, weekly_fraction, correlation_lookback,
         correlation_min_pairs, correlation_threshold, solver, and methods.
         Each method declares id, rho, portfolio_fraction, name_fraction and
-        component_fraction (null disables correlation grouping), and may add
+        component_fraction (null disables correlation grouping), may declare
+        component_groups ({label: [symbol, ...]}, a partition of symbols,
+        ADR-0326: the component_fraction cap then reads those groups in place
+        of the estimated correlation components), and may add
         two capital-charge floors the book's reserve can never fall below:
         reserve_per_contract, a nonnegative USD charge per gross contract,
         and short_notional_fraction, a nonnegative fraction of the sold
@@ -2969,11 +3202,20 @@ class WeeklyOptionPortfolioStudy:
         name across expiries, is not free. A document holds kelly methods
         or none: a kelly method runs alone, so the locked formulations keep
         their gap.
-        Such a method must declare rho 0, portfolio_fraction 1,
-        name_fraction 1 and component_fraction null and may not declare
-        shock, risk_charge or radius_scale: the sizing caps are gone, and what
-        remains is the cash rule (new reserves within funding less open
-        reserves), the reserve rows, the capital-charge floors
+        Such a method must declare rho 0, portfolio_fraction 1 and
+        component_fraction null (or a group cap over its declared
+        component_groups, never over the correlation components) and may not
+        declare shock, risk_charge or radius_scale: the sizing caps are gone,
+        and what remains is the cash
+        rule (new reserves within funding less open reserves), an opt-in hard
+        per-name cap (name_fraction below 1: each name's open and new reserve
+        within that fraction of funding, at the decision and the fill; 1 adds
+        no row), an opt-in declared-group cap (ADR-0326: each group's open
+        and new reserve within component_fraction of funding, at the decision
+        and the fill), an optional kelly cap_buffer (0 to < 1: the share of
+        each name and group cap both decision programs leave unused, as
+        cash_buffer does for the cash row; the fill reads the whole caps),
+        the reserve rows, the capital-charge floors
         (short_notional_fraction, required at 0.2 or more, the value the
         other formulations use; reserve_per_contract, optional) and the
         defined-loss structures. The floor is applied by the one `_floor`,
@@ -3074,8 +3316,12 @@ class WeeklyOptionPortfolioStudy:
     #: ADR-0313 D: the one owner of the per-method optional blocks (``calibration``, ``hedge``, ``exposure_limits``);
     #: it validates them and names their keys, so no other code here handles a block key.
     _BLOCKS = _WeeklyMethodBlocks.standard(hedge=HedgeOverlay)
+    #: ADR-0326: ``component_groups`` ({label: [symbol, ...]}, a partition of ``symbols``) declares the groups the
+    #: ``component_fraction`` cap reads in place of the correlation components (:meth:`_declared_components`); it needs
+    #: that cap (``component_groups_unused``). Absent, the components are estimated as before, byte for byte.
+    _COMPONENT_GROUPS = "component_groups"
     _PLAIN_OPTIONAL_METHOD_KEYS = frozenset({"reserve_per_contract", "short_notional_fraction", "shock", "risk_charge",
-                                             "radius_scale", "kelly", "sizer"})
+                                             "radius_scale", "kelly", "sizer", _COMPONENT_GROUPS})
     _OPTIONAL_METHOD_KEYS = _PLAIN_OPTIONAL_METHOD_KEYS | frozenset(_BLOCKS.keys())
     _RADIUS_SCALE = "reference_scale"
     _CHARGE_KEYS = ("reserve_per_contract", "short_notional_fraction")
@@ -3090,8 +3336,9 @@ class WeeklyOptionPortfolioStudy:
     #: tail loss and the reserve concentration inside the local search's objective
     #: (:meth:`~index_options.kelly_local.KellyLocalSearch.validate_risk`). It needs a ``local_search`` (the climb is
     #: what scores it) and is handed to the search as its ``risk`` option; absent, nothing changes, byte for byte.
-    #: ADR-0318: ``accuracy``, ``dte_tilt`` and ``name_spread`` (:class:`EdgeWeights`) are declared only on a stage-one
-    #: local-search method (ADR-0307, not the multi-start) without a calibration block; absent, nothing changes.
+    #: ADR-0318: ``accuracy``, ``dte_tilt``, ``name_spread``, ``robust_scale`` and ``forward_centre``
+    #: (:class:`EdgeWeights`) are declared only on a stage-one local-search method (ADR-0307, not the multi-start)
+    #: without a calibration block; absent, nothing changes.
     #: The joint-scenario arm (owner-approved P2 item C1, ``index_options.joint_scenarios``): ``joint_scenarios``
     #: replaces the 17 basket-move scenarios of the scored one-stage program by ``scenarios`` sampled joint
     #: settlements (an empirical copula over the forecast marginals); only beside ``local_search`` (the program is
@@ -3107,6 +3354,43 @@ class WeeklyOptionPortfolioStudy:
     #: candidate whose book could not be carried to its expiry on the decision's basis (:meth:`_settleable`); each is
     #: refused ``unsettleable_expiry``. Absent means the candidate set is untouched, byte for byte.
     _UNSETTLEABLE = "unsettleable_expiry"
+    #: ADR-0320: ``short_call_above_exercise`` (only ``true``) never sells an American call at or below its exercise
+    #: value: per method, before the hedge reads the week, every short-call item whose decision bid is at or below
+    #: ``max(spot - strike, 0)`` is cut from its group (a group left empty is refused ``short_call_at_exercise``; the
+    #: week records how many items were cut under the key's name), and the fill rejects an order whose short call's
+    #: fill bid is at or below the fill spot's intrinsic, with the same code. Absent, nothing changes, byte for byte.
+    _ABOVE_EXERCISE = "short_call_above_exercise"
+    _AT_EXERCISE = "short_call_at_exercise"
+    #: Float order, not a threshold: ``(bid + ask) / 2 - (ask - bid) / 2`` may land an ulp above the bid.
+    _EXERCISE_FLOAT_ORDER = 1e-9
+    #: ADR-0323: ``short_not_in_the_money`` (only ``true``) never sells an option in the money (a stock substitute):
+    #: per method, right after the exercise cut and before the hedge reads the week, every item that sells a put struck
+    #: above, or a call struck below, the group's decision ``spot`` is cut (at the money is kept; a group left empty is
+    #: refused ``short_in_the_money``; the week records how many items were cut under the key's name), and the fill
+    #: rejects an order that sells one in the money at the fill spot, with the same code. Absent, nothing changes.
+    _NOT_IN_THE_MONEY = "short_not_in_the_money"
+    _IN_THE_MONEY = "short_in_the_money"
+    #: ADR-0324: ``premium_cover`` (beta, a finite number >= 0) adds one linear row to every option group after every
+    #: candidate cut and the hedge rewrite: per book (one name and expiry), premium paid for bought options (with
+    #: their fees) is at most beta x the premium received for sold ones (net of their fees), at decision prices; the
+    #: stock hedge is outside it. Stage one and the local search read it as any group row; the fill rejects a book
+    #: whose fill prices break it (``premium_uncovered``). Absent, nothing changes, byte for byte.
+    _PREMIUM_COVER = "premium_cover"
+    _PREMIUM_UNCOVERED = "premium_uncovered"
+    #: ADR-0325: ``credit_floor`` (rho, 0 < rho < 1) adds, beside the cover row, one linear row per kink (0 and every
+    #: strike) to every option group: per book, the net option credit (the record's ``decision_credit``) is at least
+    #: rho x the book's worst-case loss (``structure_max_loss`` on that credit, hedged by the program's units; hedge
+    #: costs outside), at decision prices. A net-debit book fails at any rho. The fill rejects a book whose filled
+    #: ``credit`` is under rho x its filled ``max_loss`` (``credit_below_floor``). Absent, nothing changes, byte for byte.
+    _CREDIT_FLOOR = "credit_floor"
+    _BELOW_FLOOR = "credit_below_floor"
+    #: ADR-0326: ``cap_buffer`` (b, 0 <= b < 1, beside a name cap below 1 or a group cap) keeps (1 - b) of every name
+    #: and group cap in both decision programs (stage one and the scored program), as ``cash_buffer`` does for the cash
+    #: row, so the next session's reprice has room under the fill's whole caps (:meth:`_limits`); the fill and the
+    #: existing-breach rule read the whole caps; the week records it under ``kelly``. Absent, nothing changes.
+    _CAP_BUFFER = "cap_buffer"
+    _KELLY_OPTIONAL_KEYS = _KELLY_OPTIONAL_KEYS | {_ABOVE_EXERCISE, _NOT_IN_THE_MONEY, _PREMIUM_COVER, _CREDIT_FLOOR,
+                                                   _CAP_BUFFER}
     #: ADR-0302: ``search`` ({iterations, neighbourhood, node_limit, seed}) runs the relax_fix strategy's deterministic
     #: incumbent local search (the solver's ``utility_search``); ``warm_start`` ({node_limit}) certifies a week the
     #: action limit would decline from its complete incumbent under that node budget (``utility_warm_start``). Each
@@ -3443,6 +3727,12 @@ class WeeklyOptionPortfolioStudy:
                         and (not number_ok(method["component_fraction"])
                              or not 0 < method["component_fraction"] <= 1))):
                 raise ValueError("invalid fixed method")
+            if cls._COMPONENT_GROUPS in method:
+                # ADR-0326: the declared groups partition the universe exactly, and only a group cap reads them.
+                if not cls._component_groups_valid(method[cls._COMPONENT_GROUPS], symbols):
+                    raise ValueError("invalid component_groups")
+                if method["component_fraction"] is None:
+                    raise ValueError("component_groups_unused")
             ids.add(method["id"])
         if any("kelly" in m for m in p["methods"]) and not all("kelly" in m for m in p["methods"]):
             # A kelly method needs a 1-dollar gap; the locked formulations were certified at theirs, and the
@@ -3804,16 +4094,29 @@ class WeeklyOptionPortfolioStudy:
 
     @classmethod
     def _kelly_valid(cls, method):
-        """Return whether a method's kelly block is well formed and the method declares no sizing cap beside it."""
+        """Return whether a method's kelly block is well formed and the method declares no sizing cap beside it.
+
+        A kelly method's caps are the hard per-name one, ``name_fraction`` below 1, and the declared-group one,
+        ``component_fraction`` with ``component_groups`` (ADR-0326; see :meth:`_limits`); a ``component_fraction`` over
+        the correlation components stays refused. ``cap_buffer`` needs one of the two caps to hold back from.
+        """
         kelly = method["kelly"]
         return (isinstance(kelly, dict) and set(kelly)-cls._KELLY_OPTIONAL_KEYS == cls._KELLY_KEYS
                 and ("max_groups" not in kelly or (type(kelly["max_groups"]) is int and kelly["max_groups"] >= 1))
                 and ("accept_uncertified" not in kelly or type(kelly["accept_uncertified"]) is bool)
                 and ("settleable_only" not in kelly or kelly["settleable_only"] is True)
+                and (cls._ABOVE_EXERCISE not in kelly or kelly[cls._ABOVE_EXERCISE] is True)
+                and (cls._NOT_IN_THE_MONEY not in kelly or kelly[cls._NOT_IN_THE_MONEY] is True)
+                and (cls._PREMIUM_COVER not in kelly
+                     or (number_ok(kelly[cls._PREMIUM_COVER]) and kelly[cls._PREMIUM_COVER] >= 0))
+                and (cls._CREDIT_FLOOR not in kelly
+                     or (number_ok(kelly[cls._CREDIT_FLOOR]) and 0 < kelly[cls._CREDIT_FLOOR] < 1))
                 and CloseCandidates.well_formed(kelly)
                 and (not EdgeWeights.declared(kelly)
                      or (EdgeWeights.valid(kelly) and isinstance(kelly.get("local_search"), dict)
-                         and "start" in kelly["local_search"] and "calibration" not in method))
+                         and "start" in kelly["local_search"] and "calibration" not in method
+                         and (EdgeWeights.FORWARD not in kelly
+                              or (isinstance(method.get("hedge"), dict) and method["hedge"].get("mode") == "program"))))
                 and (cls._JOINT_SCENARIOS not in kelly or cls._joint_scenarios_valid(method))
                 and (not RegimeEdgeShrink.declared(kelly)
                      or (RegimeEdgeShrink.valid(kelly) and isinstance(kelly.get("local_search"), dict)
@@ -3836,8 +4139,12 @@ class WeeklyOptionPortfolioStudy:
                 and number_ok(method.get("short_notional_fraction"))
                 and method["short_notional_fraction"] >= cls.KELLY_SHORT_NOTIONAL_FLOOR
                 and number_ok(method["rho"]) and method["rho"] == 0
-                and method["portfolio_fraction"] == 1 and method["name_fraction"] == 1
-                and method["component_fraction"] is None)
+                and method["portfolio_fraction"] == 1 and number_ok(method["name_fraction"])
+                and 0 < method["name_fraction"] <= 1
+                and (method["component_fraction"] is None or cls._COMPONENT_GROUPS in method)
+                and (cls._CAP_BUFFER not in kelly
+                     or (number_ok(kelly[cls._CAP_BUFFER]) and 0 <= kelly[cls._CAP_BUFFER] < 1
+                         and (method["name_fraction"] < 1 or method["component_fraction"] is not None))))
 
     @staticmethod
     def _shock(method):
@@ -3943,15 +4250,17 @@ class WeeklyOptionPortfolioStudy:
         """Return each item's per-contract terminal loss at an underlying price.
 
         ``hedge`` is ``None`` (today's row, bit for bit) or ``(units, reference)``: the held-share forward units per
-        item and the level they settle against (ADR-0312 program mode). The hedged loss is
-        ``l_i(S) - u_i (S - F_ref)``; an item with ``u_i == 0`` keeps its unhedged value exactly.
+        item and the level they settle against (ADR-0312 program mode), one number for every item or one per item
+        (ADR-0320: each item's own side). The hedged loss is ``l_i(S) - u_i (S - F_ref,i)``; an item with
+        ``u_i == 0`` keeps its unhedged value exactly.
         """
         row = [-i["sign"]*mult*max((i["strike"]-spot if i["right"] == "put"
                                     else spot-i["strike"]), 0.) for i in items]
         if hedge is None:
             return row
         units, reference = hedge
-        return [loss-u*(spot-reference) if u else loss for loss, u in zip(row, units, strict=True)]
+        references = reference if isinstance(reference, (list, tuple)) else [reference]*len(units)
+        return [loss-u*(spot-ref) if u else loss for loss, u, ref in zip(row, units, references, strict=True)]
 
     @classmethod
     def _filled_scope(cls, shock):
@@ -3973,9 +4282,9 @@ class WeeklyOptionPortfolioStudy:
 
     @staticmethod
     def _program_hedge(meta):
-        """Return a candidate's ``(units, reference)`` hedge when program mode rewrote it, else ``None``."""
+        """Return a candidate's ``(units, references)`` hedge (one reference per item) when program mode rewrote it, else ``None``."""
         hedge = meta.get("program_hedge")
-        return None if hedge is None else (hedge["units"], hedge["reference"])
+        return None if hedge is None else (hedge["units"], hedge["references"])
 
     @classmethod
     def _move_terms(cls, moves, betas, metadata, groups, mult):
@@ -4238,6 +4547,156 @@ class WeeklyOptionPortfolioStudy:
                     for i, meta in enumerate(metadata) if i not in held]
         return [groups[i] for i in kept], [metadata[i] for i in kept], refusals
 
+    @staticmethod
+    def _short_call_at_exercise(leg, spot):
+        """Return whether ``leg`` sells a call at a ``price`` at or below its exercise value ``max(spot - strike, 0)`` (ADR-0320).
+
+        ``price`` is the decision item's (mid less half-spread, the bid up to float order) or the fill bid; a price
+        within :data:`_EXERCISE_FLOAT_ORDER` above the intrinsic counts as at it, so both tests agree on a bid AT it.
+        """
+        from dskit.pipeline.option_structures import leg_intrinsic
+
+        return (leg["sign"] < 0 and leg["right"] == "call"
+                and leg["price"] <= leg_intrinsic("call", float(leg["strike"]), float(spot))
+                + WeeklyOptionPortfolioStudy._EXERCISE_FLOAT_ORDER)
+
+    @staticmethod
+    def _sold_in_the_money(leg, spot):
+        """Return whether ``leg`` sells an option strictly in the money at ``spot`` (ADR-0323).
+
+        A sold put struck above spot or a sold call struck below it; a strike at spot is not in the money.
+        """
+        strike = float(leg["strike"])
+        return leg["sign"] < 0 and ((leg["right"] == "put" and strike > spot)
+                                    or (leg["right"] == "call" and strike < spot))
+
+    @classmethod
+    def _above_exercise_candidates(cls, groups, metadata):
+        """Return ``(groups, metadata, refusals, cut)`` without the short-call items sold at or below exercise value.
+
+        :meth:`_cut_items` with :meth:`_short_call_at_exercise`; a group left empty is refused ``short_call_at_exercise``.
+        """
+        return cls._cut_items(groups, metadata, cls._short_call_at_exercise, cls._AT_EXERCISE)
+
+    @classmethod
+    def _in_the_money_candidates(cls, groups, metadata):
+        """Return ``(groups, metadata, refusals, cut)`` without the items that sell an option in the money (ADR-0323).
+
+        :meth:`_cut_items` with :meth:`_sold_in_the_money`; a group left empty is refused ``short_in_the_money``.
+        """
+        return cls._cut_items(groups, metadata, cls._sold_in_the_money, cls._IN_THE_MONEY)
+
+    @staticmethod
+    def _option_credit(sign, price, mult, fee):
+        """Return one option contract's credit: the premium received (``sign`` -1) or paid (+1) at ``price``, less its fee."""
+        return -sign*price*mult-fee
+
+    @staticmethod
+    def _premium_cover_coefficient(sign, credit, beta):
+        """Return one contract's term in ADR-0324's cover row: its cost ``-credit`` when bought, ``-beta x credit`` when sold."""
+        return -credit if sign > 0 else -beta*credit
+
+    def _with_book_rows(self, groups, metadata, rows):
+        """Return the groups, each with ``rows(meta, credits, mult)`` appended to its linear rows (inputs never mutated).
+
+        ``credits`` are the items' :meth:`_option_credit` at their decision prices (the program's own credit before
+        any hedge cost; a hedged twin is the same option, so the same credit) and ``mult`` the node's multiplier: the
+        one seam ADR-0324's cover row and ADR-0325's floor rows are built through.
+        """
+        out = []
+        for group, meta in zip(groups, metadata, strict=True):
+            solver = self._nodes[meta["symbol"]].params["solver"]
+            mult = solver["multiplier"]
+            credits = [self._option_credit(item["sign"], item["price"], mult, solver["fee_per_contract_usd"])
+                       for item in meta["items"]]
+            out.append({**group, "linear_rows": [*group["linear_rows"], *rows(meta, credits, mult)]})
+        return out
+
+    def _premium_cover_candidates(self, groups, metadata, beta):
+        """Return the groups, each with ADR-0324's cover row appended (``sum_i term_i q_i <= 0``; inputs never mutated).
+
+        Each item's term is :meth:`_premium_cover_coefficient` of its decision credit (:meth:`_with_book_rows`).
+        """
+        return self._with_book_rows(groups, metadata, lambda meta, credits, _mult: [{
+            "coefficients": [self._premium_cover_coefficient(item["sign"], credit, beta)
+                             for item, credit in zip(meta["items"], credits, strict=True)], "upper": 0.}])
+
+    @staticmethod
+    def _credit_floor_coefficient(credit, loss, rho):
+        """Return one contract's term in an ADR-0325 floor row: ``rho x (loss - credit) - credit``.
+
+        ``loss`` is the contract's terminal loss at the row's kink, ``credit`` its decision credit.
+        """
+        return rho*loss-(1.+rho)*credit
+
+    @classmethod
+    def _credit_floor_rows(cls, items, credits, mult, hedge, rho):
+        """Return ADR-0325's floor rows for one group: one per kink ``s`` in 0 and every strike, each ``<= 0``.
+
+        Row ``s`` reads ``rho x (L_s . q - c . q) - c . q``, ``L_s`` the study's one :meth:`_loss_row` (with the
+        program's ``hedge``, ``(units, references)``, or ``None``) and ``c`` the decision ``credits``. The worst-case
+        loss ``max_s (L_s . q - c . q)`` is :func:`structure_max_loss` (its kinks; the group's slope row bounds it
+        above the top strike), so all rows together hold ``c . q >= rho x max loss`` exactly.
+        """
+        return [{"coefficients": [cls._credit_floor_coefficient(credit, loss, rho)
+                                  for credit, loss in zip(credits, cls._loss_row(items, s, mult, hedge), strict=True)],
+                 "upper": 0.}
+                for s in [0., *sorted({item["strike"] for item in items})]]
+
+    def _credit_floor_candidates(self, groups, metadata, rho):
+        """Return the groups, each with :meth:`_credit_floor_rows` appended (inputs never mutated; ADR-0325).
+
+        A program-hedged group's rows read its items' held-share units at each item's own reference (the rewrite's
+        loss rows); its hedge costs stay outside the credit, as in the recorded ``decision_credit`` and ``max_loss``.
+        """
+        def rows(meta, credits, mult):
+            program = meta.get("program_hedge")
+            hedge = None if program is None else (program["units"], program["references"])
+            return self._credit_floor_rows(meta["items"], credits, mult, hedge, rho)
+        return self._with_book_rows(groups, metadata, rows)
+
+    def _fill_credit_floor(self, filled, rho):
+        """Return ``credit_below_floor`` when a filled book's ``credit`` is under rho x its ``max_loss``, else ``None``.
+
+        The book's fill credit and its (hedged, once attached) maximum loss, within the program's ``parity_tolerance``;
+        an unbounded loss is under any floor.
+        """
+        short = rho*filled["max_loss"]-filled["credit"]
+        return self._BELOW_FLOOR if short > self.params["solver"]["parity_tolerance"] else None
+
+    def _fill_premium_uncovered(self, filled, beta):
+        """Return ``premium_uncovered`` when the filled book breaks ADR-0324's cover row at its fill prices, else ``None``.
+
+        The row's own terms at each leg's ``fill_price``, within the program's ``parity_tolerance`` (the tolerance its
+        rows are held to).
+        """
+        solver = self._nodes[filled["symbol"]].params["solver"]
+        activity = sum(leg["quantity"]*self._premium_cover_coefficient(
+                           leg["sign"], self._option_credit(leg["sign"], leg["fill_price"], solver["multiplier"],
+                                                            solver["fee_per_contract_usd"]), beta)
+                       for leg in filled["legs"] if leg["quantity"])
+        return self._PREMIUM_UNCOVERED if activity > self.params["solver"]["parity_tolerance"] else None
+
+    @staticmethod
+    def _cut_items(groups, metadata, flagged, reason):
+        """Return ``(groups, metadata, refusals, cut)`` without the items ``flagged(item, spot)`` marks.
+
+        ``spot`` is the group's decision ``spot``. Each flagged item is cut from its group through the one per-item
+        cutter (:meth:`ReplayHedge.restrict`; the inputs are never mutated); ``cut`` counts them and a group left
+        empty is refused ``reason``.
+        """
+        out_groups, out_meta, refusals, cut = [], [], [], 0
+        for group, meta in zip(groups, metadata, strict=True):
+            keep = [i for i, item in enumerate(meta["items"]) if not flagged(item, meta["spot"])]
+            cut += len(meta["items"]) - len(keep)
+            if not keep:
+                refusals.append({"symbol": meta["symbol"], "expiry": meta["expiry"], "reason": reason})
+                continue
+            group, meta, _ = ReplayHedge.restrict(group, meta, [None] * len(meta["items"]), keep)
+            out_groups.append(group)
+            out_meta.append(meta)
+        return out_groups, out_meta, refusals, cut
+
     def _apply_adjustments(self, account, day, charge):
         """Convert every affected open book before today's account activity."""
         mult = self.params["bridge"]["solver"]["multiplier"]
@@ -4390,6 +4849,35 @@ class WeeklyOptionPortfolioStudy:
         result = {"groups": sorted(groups.values()), "pairs": edges, "observations": observations}
         self._component_cache[day] = result
         return result
+
+    @classmethod
+    def _declared_components(cls, method):
+        """ADR-0326: the method's declared groups as the components object the caps, the fill and the record read.
+
+        ``groups`` has :meth:`_components`' shape (each group's sorted members, the groups sorted); ``labels`` maps each
+        label to its sorted members and ``source`` says the groups were declared, not estimated. No history is read.
+        """
+        declared = method[cls._COMPONENT_GROUPS]
+        return {"groups": sorted(sorted(members) for members in declared.values()),
+                "labels": {label: sorted(members) for label, members in sorted(declared.items())},
+                "source": "declared"}
+
+    @staticmethod
+    def _component_groups_valid(groups, symbols):
+        """Return whether ``groups`` partitions ``symbols`` exactly under nonempty string labels.
+
+        Each label maps to a nonempty list of nonempty string symbols; no symbol is listed twice (within or across
+        groups), none is missing and none is outside ``symbols``.
+        """
+        if not isinstance(groups, dict):
+            return False
+        members = []
+        for label, names in groups.items():
+            if (not isinstance(label, str) or not label or not isinstance(names, list) or not names
+                    or any(not isinstance(s, str) or not s for s in names)):
+                return False
+            members.extend(names)
+        return len(members) == len(set(members)) and set(members) == set(symbols)
 
     def _returns(self, day, lookback):
         """Return each name's trailing log returns from sessions strictly before the day."""
@@ -4595,7 +5083,7 @@ class WeeklyOptionPortfolioStudy:
                         items.append(item)
                 mult = node.params["solver"]["multiplier"]
                 fee = node.params["solver"]["fee_per_contract_usd"]
-                credit = np.array([-i["sign"]*i["price"]*mult-fee for i in items])
+                credit = np.array([self._option_credit(i["sign"], i["price"], mult, fee) for i in items])
                 losses = [self._loss_row(items, s, mult) for s in prepared["grid"]]
                 # This is the linear epigraph of the shared maximum-loss owner;
                 # the selected book is checked independently against that owner.
@@ -4634,15 +5122,36 @@ class WeeklyOptionPortfolioStudy:
         ``solve`` is the decision's program only: a kelly method then keeps ``cash_buffer`` of funding out of
         the cash row, so the next session's reprice of the books has room before the fill's own (whole) limit.
         ``stage1`` (ADR-0307) asks a local-search kelly method for its start program's caps: the dollar formulation's
-        (weekly, per-name and component caps), as a sized arm's stage 1 has them.
+        (weekly, per-name and component caps), as a sized arm's stage 1 has them. ADR-0326: a kelly method's group cap
+        (``component_fraction`` over its declared ``components``) adds one row per group at the decision and the fill;
+        a declared ``cap_buffer`` keeps (1 - cap_buffer) of each name cap below 1 and of each group cap in both decision
+        programs (``solve``, stage one included), for the cash buffer's reason. The cash and weekly rows, the fill and
+        the existing-breach rule (``solve`` False) are untouched by it.
         """
         symbols = self.params["symbols"]
         kelly = self._kelly(method)
+        name_cap, group_cap = method["name_fraction"], method["component_fraction"]
+        cap_buffer = (kelly or {}).get(self._CAP_BUFFER) if solve else None
+        if cap_buffer is not None:
+            # ADR-0326: the decision's room under each whole cap; a name fraction of 1 (no name cap) stays whole.
+            name_cap = name_cap*(1.-cap_buffer) if name_cap < 1 else name_cap
+            group_cap = None if group_cap is None else group_cap*(1.-cap_buffer)
         if kelly is not None and not stage1:
-            # The cash rule alone: new reserves within funding less open reserves (the fractions are 1).
+            # The cash rule: new reserves within funding less open reserves (portfolio_fraction is 1).
             held_back = kelly["cash_buffer"] if solve else 0.
-            return [{"members": symbols,
-                     "upper": account.remaining(symbols, method["portfolio_fraction"]-held_back)}]
+            limits = [{"members": symbols,
+                       "upper": account.remaining(symbols, method["portfolio_fraction"]-held_back)}]
+            if method["name_fraction"] < 1:
+                # ADR-0321: the opt-in hard per-name cap: each name's open plus new reserve within name_fraction of funding,
+                # at the decision and at the fill alike (the cash buffer is the cash row's alone; a declared cap_buffer
+                # holds back its own share of this row at the decision, ADR-0326).
+                limits.extend({"members": [s], "upper": account.remaining([s], name_cap)} for s in symbols)
+            if group_cap is not None:
+                # ADR-0326: the declared-group cap: each group's open plus new reserve within component_fraction
+                # of funding, at the decision and at the fill alike.
+                limits.extend({"members": members, "upper": account.remaining(members, group_cap)}
+                              for members in components["groups"])
+            return limits
         if self._sizer(method) is not None and not solve:
             # The fill admits a sizer's books under the cash rule alone: the growth program sized them past the dollar
             # caps on purpose, and a weekly or per-name cap at admission would undo it. The decision's own program
@@ -4650,11 +5159,11 @@ class WeeklyOptionPortfolioStudy:
             return [{"members": symbols, "upper": account.remaining(symbols, method["portfolio_fraction"])}]
         limits = [{"members": symbols, "upper": account.remaining(symbols, method["portfolio_fraction"])},
                   {"members": symbols, "upper": max(0., account.funding)*self.params["weekly_fraction"]}]
-        limits.extend({"members": [s], "upper": account.remaining([s], method["name_fraction"])}
+        limits.extend({"members": [s], "upper": account.remaining([s], name_cap)}
                       for s in symbols)
-        if method["component_fraction"] is not None:
+        if group_cap is not None:
             limits.extend({"members": members,
-                           "upper": account.remaining(members, method["component_fraction"])}
+                           "upper": account.remaining(members, group_cap)}
                           for members in components["groups"])
         return limits
 
@@ -4804,12 +5313,17 @@ class WeeklyOptionPortfolioStudy:
                 held = selection["quantities"][i]
                 raw = math.fsum(u*q for u, q in zip(program["units"], held, strict=True))
                 cost = math.fsum(k*q for k, q in zip(program["costs"], held, strict=True))
-                loss = structure_max_loss(signed, strikes, credit-cost, mult, hedge=(raw, program["reference"]))
+                # ADR-0320: an item struck away from F_0 owes u_i (F_ref,i - F_0) per contract whatever the level, so
+                # the hedge is the net units at F_0 with that basis taken from the credit (0 for the fixed kind).
+                basis = math.fsum(u*q*(r-program["reference"])
+                                  for u, q, r in zip(program["units"], held, program["references"], strict=True))
+                loss = structure_max_loss(signed, strikes, credit-cost-basis, mult, hedge=(raw, program["reference"]))
                 if math.isinf(loss) and abs(raw-round(raw)) < self._RAW_UNITS_SNAP:
                     # ADR-0316: a synthetic forward's deltas net to a whole number of shares up to float order (parity),
                     # which the program's slope row admits within its tolerance; the physical check reads it exactly.
                     raw = float(round(raw))
-                    loss = structure_max_loss(signed, strikes, credit-cost, mult, hedge=(raw, program["reference"]))
+                    loss = structure_max_loss(signed, strikes, credit-cost-basis, mult,
+                                              hedge=(raw, program["reference"]))
                 reserve = max(self._floor(max(0., loss, -(credit-cost)), charge or self._charge({}), legs, mult),
                               program["margin_fraction"]*program["reference"]*abs(raw))
             if not math.isfinite(reserve) or abs(reserve-selection["reserves"][i]) > .001:
@@ -4818,6 +5332,9 @@ class WeeklyOptionPortfolioStudy:
                           if k not in ("items", "projection", "cdf_noise_raised", "program_hedge", "hedge_twins")})
             if program is not None:
                 books[-1]["program_hedge"] = {"units_raw": raw, "reference": program["reference"], "cost_usd": cost}
+                if basis:
+                    # Only a book struck away from F_0 carries it, so a fixed-kind book's record is unchanged.
+                    books[-1]["program_hedge"]["basis_usd"] = basis
             books[-1].update(legs=legs, credit=credit, reserve=reserve, max_loss=loss,
                             contracts=count, expected=selection["group_values"][i],
                             strategy=classify_option_strategy(signed, strikes),
@@ -5524,6 +6041,41 @@ class WeeklyOptionPortfolioStudy:
                       fees=fees, stress_extra=stress, status="filled")
         return filled, None
 
+    def _fill_at_exercise(self, filled, day):
+        """Return ``short_call_at_exercise`` when a filled book sells a call at or below the fill spot's intrinsic, else ``None``.
+
+        ADR-0320's fill test: each sold call's ``fill_price`` (the fill bid, :meth:`_fill`) against
+        ``max(S_fill - strike, 0)``, ``S_fill`` the fill session's close on the book's basis (a session without one
+        refuses alike: the order cannot be shown to sell above exercise value).
+        """
+        return self._fill_sold_refusal(
+            filled, day, ("call",),
+            lambda leg, spot: self._short_call_at_exercise({**leg, "price": leg["fill_price"]}, spot),
+            self._AT_EXERCISE)
+
+    def _fill_in_the_money(self, filled, day):
+        """Return ``short_in_the_money`` when a filled book sells an option in the money at the fill spot, else ``None``.
+
+        ADR-0323's fill test: :meth:`_sold_in_the_money` on each sold put and call at :meth:`_fill_sold_refusal`'s
+        fill spot.
+        """
+        return self._fill_sold_refusal(filled, day, ("call", "put"), self._sold_in_the_money, self._IN_THE_MONEY)
+
+    def _fill_sold_refusal(self, filled, day, rights, flagged, reason):
+        """Return ``reason`` when ``flagged(leg, S_fill)`` marks a sold leg whose right is in ``rights``, else ``None``.
+
+        ``S_fill`` is the fill session's close on the book's basis (close over the book's ``factor``); a session
+        without one refuses alike (the order cannot be shown to pass). A book selling no such leg is never refused.
+        """
+        close = self._bars[filled["symbol"]].get(day)
+        sold = [leg for leg in filled["legs"] if leg["quantity"] and leg["sign"] < 0 and leg["right"] in rights]
+        if not sold:
+            return None
+        if not (number_ok(close) and close > 0):
+            return reason
+        spot = close / filled["factor"]
+        return reason if any(flagged(leg, spot) for leg in sold) else None
+
     def _close_fills(self, closer, account, pending, day):
         """Execute the closes decided last session at today's quotes (P2); a close that cannot fill leaves its book held.
 
@@ -5878,9 +6430,6 @@ class WeeklyOptionPortfolioStudy:
         hedge = calibrated = limited = None
         warm_weeks = Counter()
         local = (self._kelly(method) or {}).get("local_search")
-        # ADR-0318: the optional edge weights (None, and nothing below reads them, when no key is declared).
-        edge_weights = (EdgeWeights(self, self._kelly(method))
-                        if any(key in (self._kelly(method) or {}) for key in EdgeWeights.EDGE_KEYS) else None)
         # The optional regime shrink of the forecast edge (None, and nothing below reads it, when undeclared).
         edge_shrink = (RegimeEdgeShrink(self._kelly(method))
                         if RegimeEdgeShrink.declared(self._kelly(method)) else None)
@@ -5903,6 +6452,10 @@ class WeeklyOptionPortfolioStudy:
                 calibrated = CalibratedEdge(self, method)
             if "exposure_limits" in present:
                 limited = GreeksExposure(self, method["exposure_limits"], p["exposure_greeks"], hedge)
+        # ADR-0318: the optional edge weights (None, and nothing below reads them, when no key is declared); ADR-0322's
+        # forward centre reads the hedge's own parity forwards.
+        edge_weights = (EdgeWeights(self, self._kelly(method), None if hedge is None else hedge.forwards)
+                        if any(key in (self._kelly(method) or {}) for key in EdgeWeights.EDGE_KEYS) else None)
         if recorded is not None and derived is not None:
             raise ValueError("recorded replay and derived actions are exclusive")
         if (derived is not None or policy) and self._sizer(method) is not None:
@@ -5948,6 +6501,10 @@ class WeeklyOptionPortfolioStudy:
         decisions, rejected, snapshots, pending = [], [], [], None
         close_spec = CloseCandidates.spec(self._kelly(method))
         closer = None if close_spec is None else CloseCandidates(self, close_spec)
+        above_exercise = bool((self._kelly(method) or {}).get(self._ABOVE_EXERCISE))   # ADR-0320
+        not_in_the_money = bool((self._kelly(method) or {}).get(self._NOT_IN_THE_MONEY))   # ADR-0323
+        premium_cover = (self._kelly(method) or {}).get(self._PREMIUM_COVER)                 # ADR-0324
+        credit_floor = (self._kelly(method) or {}).get(self._CREDIT_FLOOR)                   # ADR-0325
         pending_closes = raw_menu = close_week = close_program = None
         for day in self.calendar:
             self._apply_adjustments(account, day, charge)
@@ -5961,6 +6518,15 @@ class WeeklyOptionPortfolioStudy:
                 survivors, refusals = [], []
                 for book in pending["books"]:
                     filled, reason = self._fill(book, day, charge)
+                    if filled is not None and above_exercise:
+                        reason = self._fill_at_exercise(filled, day)       # ADR-0320: the same test at the fill
+                        filled = None if reason else filled
+                    if filled is not None and not_in_the_money:
+                        reason = self._fill_in_the_money(filled, day)      # ADR-0323: the same test at the fill
+                        filled = None if reason else filled
+                    if filled is not None and premium_cover is not None:
+                        reason = self._fill_premium_uncovered(filled, premium_cover)   # ADR-0324: the row at the fill
+                        filled = None if reason else filled
                     if filled is None:
                         rejected.append({**book, "status": "unfilled", "fill_date": day, "reason": reason})
                         refusals.append({"id": book["id"], "reason": reason})
@@ -5974,6 +6540,12 @@ class WeeklyOptionPortfolioStudy:
                                 rejected.append({**book, "status": "unfilled", "fill_date": day, "reason": reason})
                                 refusals.append({"id": book["id"], "reason": reason})
                                 continue
+                        if credit_floor is not None and self._fill_credit_floor(filled, credit_floor):
+                            # ADR-0325: after the hedge attaches, on the book's fill credit and its recorded max_loss.
+                            rejected.append({**book, "status": "unfilled", "fill_date": day,
+                                             "reason": self._BELOW_FLOOR})
+                            refusals.append({"id": book["id"], "reason": self._BELOW_FLOOR})
+                            continue
                         survivors.append(filled)
                 shock = self._shock(method)
                 if self._filled_scope(shock):
@@ -6020,6 +6592,17 @@ class WeeklyOptionPortfolioStudy:
                             # ADR-0313 B2 steps 1-2: the item features and the walk-row exclusions (the adjust is step 5).
                             groups, metadata, excluded, week_cal = calibrated.exclude(day, groups, metadata)
                             refusals = [*refusals, *excluded]
+                    at_exercise = None
+                    if above_exercise:
+                        # ADR-0320: per method, after the calibration fixed its side pairing on the full menu and
+                        # before the hedge rewrite reads the items.
+                        groups, metadata, excluded, at_exercise = self._above_exercise_candidates(groups, metadata)
+                        refusals = [*refusals, *excluded]
+                    in_the_money = None
+                    if not_in_the_money:
+                        # ADR-0323: in the same place, after the exercise cut (an item it took is not counted twice).
+                        groups, metadata, excluded, in_the_money = self._in_the_money_candidates(groups, metadata)
+                        refusals = [*refusals, *excluded]
                     week_hedge = None
                     if hedge is not None and hedge.is_program:
                         # ADR-0313 B2 steps 2-3: the hedged candidate set, then the hedge rewrite (per method, never in _prepare).
@@ -6031,16 +6614,29 @@ class WeeklyOptionPortfolioStudy:
                         # ADR-0313 I6: the candidates whose Greeks can be priced, after the hedge rewrite (its units enter k).
                         groups, metadata, excluded, week_limits, _ = limited.candidates(day, groups, metadata)
                         refusals = [*refusals, *excluded]
+                    if premium_cover is not None:
+                        # ADR-0324: after every cut and the hedge rewrite (which replaces the group's rows).
+                        groups = self._premium_cover_candidates(groups, metadata, premium_cover)
+                    if credit_floor is not None:
+                        # ADR-0325: in the same place, after the cover row.
+                        groups = self._credit_floor_candidates(groups, metadata, credit_floor)
                     if week_cal is not None:
                         # B2 step 5: the adjust against the group AS CONFIGURED (hedged nominal), after every exclusion.
                         adjusts = calibrated.adjust(day, groups, metadata)
-                    components = self._components(day) if method["component_fraction"] is not None else {"groups": []}
+                    # ADR-0326: a method's declared groups are its component cap's groups (nothing is estimated).
+                    components = (self._declared_components(method) if self._COMPONENT_GROUPS in method
+                                  else self._components(day) if method["component_fraction"] is not None
+                                  else {"groups": []})
                     limits = self._limits(account, method, components)
                     record = {"date": day, "candidate_books": len(groups),
                               "candidate_contracts": self._candidate_contracts(groups, metadata),
                               "eligible_by_symbol": dict(Counter(m["symbol"] for m in metadata)),
                               "refusals": refusals, "components": components, "funding": account.funding,
                               "open_reserve": sum(b["reserve"] for b in account.open.values())}
+                    if at_exercise is not None:
+                        record[self._ABOVE_EXERCISE] = at_exercise
+                    if in_the_money is not None:
+                        record[self._NOT_IN_THE_MONEY] = in_the_money
                     if week_hedge is not None:
                         record["hedge"] = {"mode": "program", "excluded": dict(week_hedge)}
                     if calibrated is not None:
@@ -6105,8 +6701,10 @@ class WeeklyOptionPortfolioStudy:
                         record["kelly"] = {
                             "fraction": kelly["fraction"], "gamma": 1./kelly["fraction"], "w0": w0,
                             "funding": account.funding, "open_reserve": record["open_reserve"],
-                            "cash_buffer": kelly["cash_buffer"], "gap": dict(kelly["gap"]),
-                            "wealth_lo": kelly["wealth_floor"]*w0,
+                            "cash_buffer": kelly["cash_buffer"],
+                            # ADR-0326: only a method that declares the buffer records it.
+                            **({self._CAP_BUFFER: kelly[self._CAP_BUFFER]} if self._CAP_BUFFER in kelly else {}),
+                            "gap": dict(kelly["gap"]), "wealth_lo": kelly["wealth_floor"]*w0,
                             "betas": dict(estimate["betas"]), "dropped": list(estimate["dropped"]),
                             "candidates": len(metadata), **weights,
                             "status": (weights["status"] if w0 > 0 else "nonpositive_capital")
@@ -6305,6 +6903,9 @@ class WeeklyOptionPortfolioStudy:
                                                                        candidate["quantities"][i], strict=True))
                                 book.update(edge_multiplier=edge_multipliers[book["id"]],
                                             expected_raw=book["expected"]-adjust)
+                            if edge_weights is not None and edge_weights.cuts:
+                                # The two-scale and forward-centred edges: their parts of ``expected_raw - expected``.
+                                edge_weights.stamp(books, metadata, candidate["quantities"])
                         if edge_shrink is not None and books:
                             edge_shrink.stamp(books, configured, metadata, candidate["quantities"], cal_regime, day)
                         status = "timeout_skipped" if timed_out else "selected" if books else "cash"

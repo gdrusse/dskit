@@ -399,6 +399,121 @@ def test_a_pinned_split_keeps_its_candidates_settleable():
     assert not study._settleable({**meta, "expiry": "2031-01-01"}), "no bar on the expiry"
 
 
+# --- ADR-0320: never sell an American call at or below exercise value (kelly.short_call_above_exercise) ---------------
+
+_ABOVE = "short_call_above_exercise"
+
+
+@pytest.mark.parametrize("leg,spot,refused", [
+    ({"right": "call", "sign": -1, "strike": 80., "price": 19.5}, 100., True),    # bid under exercise value
+    ({"right": "call", "sign": -1, "strike": 80., "price": 20.0}, 100., True),    # at it: still refused (floor 0)
+    ({"right": "call", "sign": -1, "strike": 80., "price": 20.0 + 5e-10}, 100., True),  # mid - half: an ulp over
+    ({"right": "call", "sign": -1, "strike": 80., "price": 20.01}, 100., False),  # a cent of time value
+    ({"right": "call", "sign": -1, "strike": 120., "price": 0.0}, 100., True),    # out of the money for nothing
+    ({"right": "call", "sign": -1, "strike": 120., "price": 0.05}, 100., False),
+    ({"right": "call", "sign": 1, "strike": 80., "price": 19.5}, 100., False),    # a BOUGHT call is never refused
+    ({"right": "put", "sign": -1, "strike": 120., "price": 19.5}, 100., False),   # nor a sold put
+])
+def test_a_short_call_is_at_exercise_when_its_bid_is_at_or_below_spot_intrinsic(leg, spot, refused):
+    assert ledger_studies.WeeklyOptionPortfolioStudy._short_call_at_exercise(leg, spot) is refused
+
+
+def _call_group(prices, spot=100.):
+    """One group of a short call 80, a long call 80 and a short call 120 at the given decision prices."""
+    items = [{"right": "call", "strike": 80., "sign": -1, "price": prices[0], "capacity": 5},
+             {"right": "call", "strike": 80., "sign": 1, "price": prices[1], "capacity": 5},
+             {"right": "call", "strike": 120., "sign": -1, "price": prices[2], "capacity": 5}]
+    credit = [-i["sign"] * i["price"] * 100 for i in items]
+    group = {"id": "g", "grid": [60., 100., 140.], "masses": [1 / 3] * 3, "credit": credit,
+             "losses": [[1., 2., 3.]] * 3, "capacity": [5] * 3, "exclusive": [[0, 1]],
+             "reserve_rows": [[1., 2., 3.]], "linear_rows": [{"coefficients": [1., -1., 1.], "upper": 0.}]}
+    meta = {"id": "g", "symbol": "X", "expiry": "2019-02-01", "spot": spot, "items": items}
+    return group, meta
+
+
+def test_the_filter_cuts_only_the_short_calls_at_exercise_and_refuses_a_group_left_empty():
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    group, meta = _call_group([19.5, 20.4, 0.3])
+    (kept,), (kept_meta,), refusals, dropped = study._above_exercise_candidates([group], [meta])
+    assert [(i["sign"], i["strike"]) for i in kept_meta["items"]] == [(1, 80.), (-1, 120.)]
+    assert kept["credit"] == group["credit"][1:] and kept["exclusive"] == [] and dropped == 1 and refusals == []
+    assert group["capacity"] == [5] * 3, "the prepared group is never mutated"
+    clean, clean_meta = _call_group([20.5, 20.9, 0.3])
+    groups, metadata, refusals, dropped = study._above_exercise_candidates([clean], [clean_meta])
+    assert groups == [clean] and metadata == [clean_meta] and dropped == 0 and refusals == []
+    lone = ({**group, "credit": group["credit"][:1], "capacity": [5], "losses": [[1.]] * 3, "exclusive": [],
+             "reserve_rows": [[1.]], "linear_rows": [{"coefficients": [1.], "upper": 0.}]},
+            {**meta, "items": meta["items"][:1]})
+    groups, metadata, refusals, dropped = study._above_exercise_candidates([lone[0]], [lone[1]])
+    assert groups == metadata == [] and dropped == 1
+    assert refusals == [{"symbol": "X", "expiry": "2019-02-01", "reason": "short_call_at_exercise"}]
+
+
+def test_the_cut_runs_after_the_calibration_fixes_its_side_pairing_and_before_the_hedge_rewrite():
+    """Structural pin (review M1): the calibration's `_best_sides` must see the full menu, so a cut short call cannot
+    move the pairing of its long twin; the hedge rewrite must see the cut menu."""
+    import inspect
+
+    source = inspect.getsource(ledger_studies.WeeklyOptionPortfolioStudy._method_steps)
+    exclude, cut = source.index("calibrated.exclude("), source.index("self._above_exercise_candidates(")
+    rewrite = source.index("hedge.candidates(")
+    assert exclude < cut < rewrite
+
+
+@pytest.mark.parametrize("value", [False, 1, None, "true"])
+def test_a_short_call_above_exercise_that_is_not_true_is_refused(value):
+    params, _data, method = _world(MULTISTART2_SEARCH)
+    method["kelly"][_ABOVE] = value
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_with_the_key_every_week_is_filtered_and_fills_with_the_check_and_without_it_nothing_changes(monkeypatch):
+    study_cls = ledger_studies.WeeklyOptionPortfolioStudy
+    _params, _data, method, study = _settleable_world(False)
+    plain = study._method(method, None)
+    assert all(_ABOVE not in week for week in plain["decisions"])
+    filtered, fills = [], []
+    real_filter, real_fill = study_cls._above_exercise_candidates, study_cls._fill_at_exercise
+    monkeypatch.setattr(study_cls, "_above_exercise_candidates",
+                        staticmethod(lambda g, m: filtered.append(len(g)) or real_filter(g, m)))
+    monkeypatch.setattr(study_cls, "_fill_at_exercise",
+                        lambda self, filled, day: fills.append(day) or real_fill(self, filled, day))
+    params, _data, method, study = _settleable_world(False)
+    method["kelly"][_ABOVE] = True
+    study_cls.validate_configuration(params)
+    result = study._method(method, None)
+    assert filtered and len(filtered) == sum(_ABOVE in week for week in result["decisions"])
+    assert all(week[_ABOVE] == 0 for week in result["decisions"] if _ABOVE in week), "the world sells no call"
+    assert fills and len(fills) >= len(plain["trades"]), "every book the fill took was tested"
+    strip = lambda r: {k: v for k, v in r.items() if k != "method"}                       # noqa: E731
+    assert [{k: v for k, v in w.items() if k != _ABOVE} for w in strip(result)["decisions"]] == plain["decisions"]
+    assert {k: v for k, v in strip(result).items() if k != "decisions"} == \
+        {k: v for k, v in strip(plain).items() if k != "decisions"}
+
+
+def test_the_fill_refuses_a_short_call_whose_fill_bid_is_at_or_below_the_fill_spots_intrinsic():
+    from test_ledger_studies import _hedge_study
+
+    def bump(day, right, k, row):
+        if day == "2019-01-16" and right == "call" and k == 90.:
+            row.update(bid=1.0, ask=1.2)                       # far under the 90 call's exercise value at spot ~100
+    study, _hedge, spots = _hedge_study(bump=bump)
+    book = {"id": "b1", "symbol": "X", "expiry": "2019-02-01", "factor": 1., "decision_date": "2019-01-15",
+            "legs": [{"right": "call", "sign": -1, "strike": 90., "quantity": 1}],
+            "contracts": 1, "credit": 0., "reserve": 0., "max_loss": 0.}
+    filled, reason = study._fill(book, "2019-01-16", None)
+    assert reason is None and filled["legs"][0]["fill_price"] == 1.0, "the fill itself is unchanged"
+    assert study._fill_at_exercise(filled, "2019-01-16") == "short_call_at_exercise"
+    for legs in ([{"right": "call", "sign": -1, "strike": 105., "quantity": 1}],     # sold above exercise value
+                 [{"right": "call", "sign": 1, "strike": 90., "quantity": 1}],      # bought: never refused
+                 [{"right": "put", "sign": -1, "strike": 105., "quantity": 1}]):    # a sold put: never refused
+        other, reason = study._fill({**book, "legs": legs}, "2019-01-16", None)
+        assert reason is None and study._fill_at_exercise(other, "2019-01-16") is None
+    del study._bars["X"]["2019-01-16"]
+    assert study._fill_at_exercise(filled, "2019-01-16") == "short_call_at_exercise", "no fill spot: refused alike"
+
+
 def test_a_calendar_day_without_a_bar_inside_the_window_is_unsettleable():
     _params, _data, _method, study = _settleable_world(True)
     name = study.params["symbols"][0]
@@ -407,6 +522,558 @@ def test_a_calendar_day_without_a_bar_inside_the_window_is_unsettleable():
     day = next(d for d in study.calendar if "2019-01-02" < d < "2019-02-01")
     del study._bars[name][day]
     assert not study._settleable(meta), "the ledger pass indexes every calendar bar in the window"
+
+
+# --- ADR-0323: never sell an option in the money (kelly.short_not_in_the_money) --------------------------------------
+
+_NOT_ITM = "short_not_in_the_money"
+
+
+@pytest.mark.parametrize("leg,spot,refused", [
+    ({"right": "put", "sign": -1, "strike": 110.}, 100., True),     # a sold put struck above spot: a stock substitute
+    ({"right": "put", "sign": -1, "strike": 100.}, 100., False),    # at the money: allowed
+    ({"right": "put", "sign": -1, "strike": 90.}, 100., False),
+    ({"right": "call", "sign": -1, "strike": 90.}, 100., True),     # a sold call struck below spot
+    ({"right": "call", "sign": -1, "strike": 100.}, 100., False),
+    ({"right": "call", "sign": -1, "strike": 110.}, 100., False),
+    ({"right": "put", "sign": 1, "strike": 110.}, 100., False),     # a BOUGHT leg is never refused
+    ({"right": "call", "sign": 1, "strike": 90.}, 100., False),
+])
+def test_a_sold_leg_is_in_the_money_only_when_struck_strictly_through_spot(leg, spot, refused):
+    assert ledger_studies.WeeklyOptionPortfolioStudy._sold_in_the_money(leg, spot) is refused
+
+
+def _mixed_group(spot=100.):
+    """One group: sold put 110 (in), sold put 100, sold put 90, bought put 110, sold call 90 (in), sold call 110,
+    bought call 90, each with a fake decision price."""
+    legs = [("put", -1, 110.), ("put", -1, 100.), ("put", -1, 90.), ("put", 1, 110.),
+            ("call", -1, 90.), ("call", -1, 110.), ("call", 1, 90.)]
+    items = [{"right": r, "strike": k, "sign": s, "price": 1. + i, "capacity": 5} for i, (r, s, k) in enumerate(legs)]
+    n = len(items)
+    group = {"id": "g", "grid": [60., 100., 140.], "masses": [1 / 3] * 3,
+             "credit": [-i["sign"] * i["price"] * 100 for i in items], "losses": [[float(j) for j in range(n)]] * 3,
+             "capacity": [5] * n, "exclusive": [[0, 3], [4, 6]], "reserve_rows": [[1.] * n],
+             "linear_rows": [{"coefficients": [float(j) for j in range(n)], "upper": 0.}]}
+    meta = {"id": "g", "symbol": "X", "expiry": "2019-02-01", "spot": spot, "items": items}
+    return group, meta
+
+
+def test_the_filter_cuts_only_the_sold_in_the_money_items_and_refuses_a_group_left_empty():
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    group, meta = _mixed_group()
+    (kept,), (kept_meta,), refusals, cut = study._in_the_money_candidates([group], [meta])
+    assert [(i["right"], i["sign"], i["strike"]) for i in kept_meta["items"]] == [
+        ("put", -1, 100.), ("put", -1, 90.), ("put", 1, 110.), ("call", -1, 110.), ("call", 1, 90.)]
+    keep = [1, 2, 3, 5, 6]
+    assert kept["credit"] == [group["credit"][i] for i in keep] and kept["capacity"] == [5] * 5
+    assert kept["exclusive"] == [], "both pairs lost a member"
+    assert cut == 2 and refusals == []
+    assert len(meta["items"]) == 7 and group["capacity"] == [5] * 7, "the prepared group is never mutated"
+    groups, metadata, refusals, cut = study._in_the_money_candidates([group], [{**meta, "spot": 115.}])
+    assert cut == 2, "spot 115: both sold calls are in the money, the sold put 110 no longer is"
+    lone_meta = {**meta, "items": [meta["items"][0]]}
+    lone = {**group, "credit": group["credit"][:1], "capacity": [5], "losses": [[0.]] * 3, "exclusive": [],
+            "reserve_rows": [[1.]], "linear_rows": [{"coefficients": [0.], "upper": 0.}]}
+    groups, metadata, refusals, cut = study._in_the_money_candidates([lone, group], [lone_meta, meta])
+    assert len(groups) == len(metadata) == 1 and metadata[0]["id"] == "g" and cut == 3
+    assert refusals == [{"symbol": "X", "expiry": "2019-02-01", "reason": "short_in_the_money"}]
+
+
+def test_with_both_keys_each_cut_counts_its_own_items_and_nothing_is_cut_twice():
+    """A sold call at its exercise value is also in the money: the exercise cut, which runs first, takes it."""
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    group, meta = _mixed_group()
+    meta["items"][4]["price"] = 9.5                                 # the call 90 bid under its exercise value 10
+    groups, metadata, _refusals, at_exercise = study._above_exercise_candidates([group], [meta])
+    groups, metadata, _refusals, in_money = study._in_the_money_candidates(groups, metadata)
+    assert (at_exercise, in_money) == (1, 1), "the call 90 by the first, the put 110 by the second"
+    assert [(i["right"], i["sign"], i["strike"]) for i in metadata[0]["items"]] == [
+        ("put", -1, 100.), ("put", -1, 90.), ("put", 1, 110.), ("call", -1, 110.), ("call", 1, 90.)]
+
+
+def test_the_in_the_money_cut_runs_after_the_exercise_cut_and_before_the_hedge_rewrite():
+    import inspect
+
+    source = inspect.getsource(ledger_studies.WeeklyOptionPortfolioStudy._method_steps)
+    exercise, cut = source.index("self._above_exercise_candidates("), source.index("self._in_the_money_candidates(")
+    assert source.index("calibrated.exclude(") < exercise < cut < source.index("hedge.candidates(")
+    assert source.index("self._fill_at_exercise(") < source.index("self._fill_in_the_money(")
+
+
+@pytest.mark.parametrize("value", [False, 1, None, "true"])
+def test_a_short_not_in_the_money_that_is_not_true_is_refused(value):
+    params, _data, method = _world(MULTISTART2_SEARCH)
+    method["kelly"][_NOT_ITM] = value
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def _strip(result, *keys):
+    """A method result without its id and without the named week keys."""
+    out = {k: v for k, v in result.items() if k != "method"}
+    out["decisions"] = [{k: v for k, v in week.items() if k not in keys} for week in out["decisions"]]
+    return out
+
+
+def _keyed(*keys, edit=None, values=None):
+    """The Amendment 1 world's result with the named kelly keys on and ``values`` set (validated), ``edit(data)``
+    applied first."""
+    params, data, method = _world(MULTISTART2_SEARCH)
+    if edit is not None:
+        edit(data)
+    for key in keys:
+        method["kelly"][key] = True
+    method["kelly"].update(values or {})
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    return ledger_studies.WeeklyOptionPortfolioStudy(params, data)._method(method, None)
+
+
+def test_with_the_key_a_world_that_sells_at_the_money_is_unchanged_and_without_it_nothing_is_recorded():
+    plain = _keyed()
+    assert all(_NOT_ITM not in week for week in plain["decisions"])
+    assert plain["trades"] and all(leg["strike"] == 100. for b in plain["trades"] for leg in b["legs"]
+                                   if leg["sign"] < 0), "the world sells the put struck AT the decision spot"
+    result = _keyed(_NOT_ITM)
+    solved = [week for week in result["decisions"] if _NOT_ITM in week]
+    assert solved and all(week[_NOT_ITM] == 0 for week in solved)
+    assert _strip(result, _NOT_ITM) == _strip(plain)
+
+
+def _closes(name, day, close):
+    def edit(data):
+        for row in data[name]["bars"]:
+            if row["date"] == day:
+                row["close"] = close
+    return edit
+
+
+def test_a_book_whose_sold_put_is_in_the_money_at_the_fill_spot_is_rejected_through_the_method_loop():
+    name = "C0N0"
+    plain = _keyed(edit=_closes(name, "2019-01-03", 99.5))
+    assert any(b["symbol"] == name and b["fill_date"] == "2019-01-03" for b in plain["trades"]), "plain: filled"
+    result = _keyed(_NOT_ITM, edit=_closes(name, "2019-01-03", 99.5))
+    assert result["decisions"][0]["selection"] == plain["decisions"][0]["selection"], "the decision is unchanged"
+    assert result["decisions"][0][_NOT_ITM] == 0, "at the decision spot 100 the put 100 is at the money"
+    assert not any(b["symbol"] == name for b in result["trades"])
+    (rejected,) = [b for b in result["rejected"] if b["symbol"] == name]
+    assert rejected["reason"] == "short_in_the_money" and rejected["fill_date"] == "2019-01-03"
+    first = lambda r: sorted(b["symbol"] for b in r["trades"] if b["decision_date"] == "2019-01-02")  # noqa: E731
+    assert first(result) == [s for s in first(plain) if s != name], "the week's other books fill as before"
+
+
+def test_a_week_whose_decision_spot_puts_the_sold_put_in_the_money_cuts_it_and_counts_the_cut():
+    def lower(data):
+        for symbol in data:
+            for row in data[symbol]["contexts"]:
+                if row["quote_date"] == "2019-01-02":
+                    row["spot"] = 99.5
+    result = _keyed(_NOT_ITM, edit=lower)
+    first = result["decisions"][0]
+    assert first[_NOT_ITM] == first["candidate_books"] == 3, "one sold put 100 cut from each group"
+    assert not any(leg["sign"] < 0 and leg["right"] == "put" and leg["strike"] > 99.5
+                   for b in first.get("books", []) for leg in b["legs"])
+
+
+def test_the_fill_test_reads_the_fill_close_on_the_books_basis():
+    from test_ledger_studies import _hedge_study
+
+    study, _hedge, _spots = _hedge_study()
+    close = study._bars["X"]["2019-01-16"]
+    put = {"right": "put", "sign": -1, "strike": .75 * close, "quantity": 1}
+    book = {"symbol": "X", "factor": 1., "legs": [put]}
+    assert study._fill_in_the_money(book, "2019-01-16") is None, "out of the money at the close itself"
+    assert study._fill_in_the_money({**book, "factor": 2.}, "2019-01-16") == "short_in_the_money", \
+        "at the basis spot close/2 the put is in the money"
+    call = {"right": "call", "sign": -1, "strike": .75 * close, "quantity": 1}
+    assert study._fill_in_the_money({**book, "legs": [call]}, "2019-01-16") == "short_in_the_money"
+    assert study._fill_in_the_money({**book, "factor": .5, "legs": [{**call, "strike": 1.5 * close}]},
+                                    "2019-01-16") == "short_in_the_money", "close/0.5 is above the call's strike"
+    assert study._fill_in_the_money({**book, "legs": [{**put, "quantity": 0, "strike": 2 * close}]},
+                                    "2019-01-16") is None, "a leg with no quantity sells nothing"
+    assert study._fill_in_the_money({**book, "legs": [{**put, "sign": 1, "strike": 2 * close}]},
+                                    "2019-01-16") is None, "a bought leg is never refused"
+    del study._bars["X"]["2019-01-16"]
+    assert study._fill_in_the_money(book, "2019-01-16") == "short_in_the_money", "no fill spot: refused alike"
+    assert study._fill_in_the_money({**book, "legs": [{**put, "sign": 1}]}, "2019-01-16") is None, \
+        "nothing sold: nothing to test"
+
+
+# --- ADR-0324: premium cover (kelly.premium_cover = beta): paid for bought options <= beta x received for sold ------
+
+_COVER = "premium_cover"
+#: The world's book: buy the 90 put at its 0.12 ask, sell the 100 put at its 4.00 bid, x100, fee 0.65 per contract.
+_PAID, _RECEIVED = .12 * 100 + .65, 4. * 100 - .65
+
+
+def test_a_contracts_cover_term_is_its_cost_when_bought_and_minus_beta_times_its_net_premium_when_sold():
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    assert study._option_credit(1, .12, 100, .65) == pytest.approx(-_PAID)
+    assert study._option_credit(-1, 4., 100, .65) == pytest.approx(_RECEIVED)
+    assert study._premium_cover_coefficient(1, -_PAID, .5) == _PAID, "a bought contract costs its premium and fee"
+    assert study._premium_cover_coefficient(-1, _RECEIVED, .5) == -.5 * _RECEIVED
+    assert study._premium_cover_coefficient(-1, _RECEIVED, 0.) == 0., "beta 0: a sold contract covers nothing"
+
+
+def _cover_week(beta):
+    """The world's first prepared week with the cover row appended, and each group's row (a put 90/100 menu)."""
+    _params, _data, _method, study = _settleable_world(False)
+    groups, metadata, _refusals = study._prepare("2019-01-02")
+    before = copy.deepcopy(groups)
+    covered = study._premium_cover_candidates(groups, metadata, beta)
+    assert groups == before, "the prepared groups are never mutated"
+    return groups, metadata, covered
+
+
+def _activity(group, meta, legs):
+    """The cover row's activity for a book of ``{(sign, strike): quantity}``."""
+    row = group["linear_rows"][-1]
+    assert row["upper"] == 0.
+    return sum(c * legs.get((i["sign"], i["strike"]), 0) for c, i in zip(row["coefficients"], meta["items"],
+                                                                          strict=True))
+
+
+@pytest.mark.parametrize("beta,book,feasible", [
+    (1., {(-1, 100.): 1, (1, 90.): 1}, True),          # the credit put spread
+    (1., {(-1, 100.): 1}, True),                       # a single sold option
+    (1., {(1, 90.): 1}, False),                        # a single bought option: a net debit
+    (1., {(1, 100.): 1, (-1, 90.): 1}, False),         # the debit put spread
+    (0., {(-1, 100.): 1, (1, 90.): 1}, False),         # beta 0 forbids every bought leg
+    (0., {(-1, 100.): 2, (-1, 90.): 1}, True),
+    (_PAID / _RECEIVED, {(-1, 100.): 1, (1, 90.): 1}, True),     # at the boundary: paid == beta x received
+    (.99 * _PAID / _RECEIVED, {(-1, 100.): 1, (1, 90.): 1}, False),
+    (.5, {(-1, 100.): 1, (1, 90.): 2}, True),
+])
+def test_the_cover_row_admits_a_book_exactly_when_its_bought_premium_is_within_beta_of_its_sold(beta, book, feasible):
+    groups, metadata, covered = _cover_week(beta)
+    tolerance = 1e-9 * (_PAID + _RECEIVED)
+    for plain, group, meta in zip(groups, covered, metadata, strict=True):
+        assert group["linear_rows"][:-1] == plain["linear_rows"], "the covered-call row is kept, one row is added"
+        assert {k: v for k, v in group.items() if k != "linear_rows"} == \
+            {k: v for k, v in plain.items() if k != "linear_rows"}
+        assert (_activity(group, meta, book) <= tolerance) is feasible
+
+
+def test_the_search_cannot_take_a_net_debit_and_can_build_a_credit_spread_short_leg_first():
+    """The pack's local search reads the cover row as any group linear row (a move that breaks it is infeasible)."""
+    from test_kelly_local import PARAMS, _program, _scorer
+
+    from index_options.kelly_local import KellyLocalSearch
+
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    program = _program(n_groups=1, n_pairs=2, seed=3, capacity=3)
+    group = program["groups"][0]
+    signs = [-1, 1, -1, 1]                       # each pair: the short column, then its long mirror
+    group["linear_rows"] = [{"coefficients": [study._premium_cover_coefficient(s, c, 1.)
+                                              for s, c in zip(signs, group["credit"], strict=True)], "upper": 0.}]
+    short_low, long_low, short_high = 0, 1, 2
+    assert -group["credit"][long_low] <= group["credit"][short_high], "premise: the high short covers the low long"
+    search = KellyLocalSearch(_scorer(program), PARAMS)
+    search._load([0, 0, 0, 0])
+    assert search._trial({long_low: 1}) is None, "a lone bought contract is a net debit"
+    assert search._trial({short_high: 1}) is not None
+    search._load([0, 0, 1, 0])
+    assert search._trial({long_low: 1}) is not None, "the short leg first, then its wing: a credit spread"
+    search._load([0, 1, 1, 0])
+    assert search._trial({short_high: -1}) is None, "dropping the short leg would leave the wing unpaid"
+    (q,) = KellyLocalSearch(_scorer(program), PARAMS).run(None)["quantities"]
+    assert sum(c * v for c, v in zip(group["linear_rows"][0]["coefficients"], q, strict=True)) <= 1e-3
+
+
+@pytest.mark.parametrize("value", [-.1, True, None, "1", float("nan"), float("inf")])
+def test_a_premium_cover_that_is_not_a_finite_nonnegative_number_is_refused(value):
+    params, _data, method = _world(MULTISTART2_SEARCH)
+    method["kelly"][_COVER] = value
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+@pytest.mark.parametrize("value", [0, 0., .5, 1, 2.5])
+def test_a_finite_nonnegative_premium_cover_validates(value):
+    params, _data, method = _world(MULTISTART2_SEARCH)
+    method["kelly"][_COVER] = value
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def _unchanged(result):
+    """A result less what an added program row moves by construction: the program's identity hash and the search's
+    evaluation count (a move the row refuses is still an evaluation)."""
+    out = copy.deepcopy(_strip(result))
+    for week in out["decisions"]:
+        if "selection" in week:
+            week["selection"] = {k: v for k, v in week["selection"].items() if k != "program_identity"}
+        week.get("kelly", {}).get("local", {}).pop("evaluations", None)
+    return out
+
+
+def _bought(result):
+    return [leg for b in result["trades"] for leg in b["legs"] if leg["sign"] > 0 and leg["quantity"]]
+
+
+def test_the_solved_book_honours_the_cover_at_the_boundary_and_drops_its_wing_just_below_it():
+    plain = _keyed()
+    assert _bought(plain), "the world buys the 90 put wing"
+    assert _unchanged(_keyed(values={_COVER: 1.})) == _unchanged(plain), "every book is a net credit"
+    assert _unchanged(_keyed(values={_COVER: _PAID / _RECEIVED})) == _unchanged(plain), "equality is feasible"
+    below = _keyed(values={_COVER: .99 * _PAID / _RECEIVED})
+    assert not _bought(below) and not _bought(_keyed(values={_COVER: 0.}))
+    assert below["trades"], "the optimizer redeploys into the sold put alone"
+    assert all(leg["sign"] < 0 for book in below["trades"] for leg in book["legs"])
+
+
+def _quote(name, day, strike, **row):
+    def edit(data):
+        for quote in data[name]["chain"]:
+            if quote["date"] == day and quote["strike"] == strike and quote["type"] == "put":
+                quote.update(row)
+    return edit
+
+
+def test_a_book_whose_fill_prices_break_the_cover_is_rejected_through_the_method_loop():
+    name, edit = "C0N0", _quote("C0N0", "2019-01-03", 100., bid=.05, ask=.07)      # the sold put collapses at the fill
+    plain = _keyed(edit=edit)
+    assert any(b["symbol"] == name and b["decision_date"] == "2019-01-02" for b in plain["trades"]), "plain: filled"
+    result = _keyed(edit=edit, values={_COVER: 1.})
+    assert _unchanged(result)["decisions"][0]["selection"] == _unchanged(plain)["decisions"][0]["selection"]
+    (rejected,) = [b for b in result["rejected"] if b["symbol"] == name and b["decision_date"] == "2019-01-02"]
+    assert rejected["reason"] == "premium_uncovered" and rejected["fill_date"] == "2019-01-03"
+    first = lambda r: sorted(b["symbol"] for b in r["trades"] if b["decision_date"] == "2019-01-02")  # noqa: E731
+    assert first(result) == [s for s in first(plain) if s != name]
+
+
+def test_the_fill_cover_test_is_the_rows_arithmetic_at_the_fill_prices():
+    _params, _data, _method, study = _settleable_world(False)
+    legs = [{"right": "put", "sign": 1, "strike": 90., "quantity": 2, "fill_price": .12},
+            {"right": "put", "sign": -1, "strike": 100., "quantity": 1, "fill_price": 4.}]
+    book = {"symbol": "C0N0", "legs": legs}
+    beta = 2 * _PAID / _RECEIVED
+    assert study._fill_premium_uncovered(book, beta) is None, "equality passes"
+    assert study._fill_premium_uncovered(book, .99 * beta) == "premium_uncovered"
+    assert study._fill_premium_uncovered({**book, "legs": legs[1:]}, 0.) is None, "a sold option alone is covered"
+    assert study._fill_premium_uncovered({**book, "legs": [{**legs[0], "quantity": 0}, legs[1]]}, 0.) is None
+
+
+def test_both_new_keys_together_cut_and_constrain_and_record():
+    result = _keyed(_NOT_ITM, values={_COVER: 0.})
+    assert result["decisions"][0][_NOT_ITM] == 0 and not _bought(result)
+    assert result["trades"] and all(leg["sign"] < 0 for b in result["trades"] for leg in b["legs"])
+
+
+# --- ADR-0325: credit floor (kelly.credit_floor = rho): per book, net credit >= rho x worst-case loss ----------------
+
+_FLOOR = "credit_floor"
+
+
+def test_a_contracts_floor_term_is_rho_times_its_loss_less_one_plus_rho_times_its_credit():
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    assert study._credit_floor_coefficient(_RECEIVED, 9600., .02) == pytest.approx(.02 * 9600. - 1.02 * _RECEIVED)
+    assert study._credit_floor_coefficient(-_PAID, 0., .5) == pytest.approx(1.5 * _PAID), "a bought contract's debit"
+
+
+def _floor_week(rho):
+    """The world's first prepared week with the floor rows appended (a put 90/100 menu)."""
+    _params, _data, _method, study = _settleable_world(False)
+    groups, metadata, _refusals = study._prepare("2019-01-02")
+    before = copy.deepcopy(groups)
+    floored = study._credit_floor_candidates(groups, metadata, rho)
+    assert groups == before, "the prepared groups are never mutated"
+    return groups, metadata, floored
+
+
+def _quantities(meta, legs):
+    return [legs.get((i["sign"], i["strike"]), 0) for i in meta["items"]]
+
+
+def _book_terms(meta, legs):
+    """``(credit, structure_max_loss)`` of a book of ``{(sign, strike): quantity}`` at the items' decision prices."""
+    from dskit.pipeline.option_structures import structure_max_loss
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    held = [(i, q) for i, q in zip(meta["items"], _quantities(meta, legs), strict=True) if q]
+    credit = sum(q * study._option_credit(i["sign"], i["price"], 100, .65) for i, q in held)
+    loss = structure_max_loss([(i["right"], i["sign"] * q) for i, q in held], [i["strike"] for i, _ in held], credit, 100)
+    return credit, loss
+
+
+def _floor_activities(plain, group, meta, legs):
+    rows = group["linear_rows"][len(plain["linear_rows"]):]
+    assert rows and all(row["upper"] == 0. for row in rows)
+    q = _quantities(meta, legs)
+    return [sum(c * v for c, v in zip(row["coefficients"], q, strict=True)) for row in rows]
+
+
+_SHORT, _SPREAD, _TWO_ONE = {(-1, 100.): 1}, {(-1, 100.): 1, (1, 90.): 1}, {(-1, 100.): 2, (1, 90.): 1}
+_LONG, _DEBIT = {(1, 90.): 1}, {(1, 100.): 1, (-1, 90.): 1}
+
+
+def test_the_floor_rows_are_one_per_kink_and_their_largest_activity_is_rho_max_loss_less_credit():
+    """The max-loss definition: the shared owner's ``structure_max_loss`` at the items' decision credit."""
+    rho = .1
+    groups, metadata, floored = _floor_week(rho)
+    for plain, group, meta in zip(groups, floored, metadata, strict=True):
+        assert group["linear_rows"][:len(plain["linear_rows"])] == plain["linear_rows"], "earlier rows are kept"
+        assert {k: v for k, v in group.items() if k != "linear_rows"} == \
+            {k: v for k, v in plain.items() if k != "linear_rows"}
+        assert len(group["linear_rows"]) - len(plain["linear_rows"]) == 1 + len({i["strike"] for i in meta["items"]})
+        for legs in (_SHORT, _SPREAD, _TWO_ONE, _LONG, _DEBIT):
+            credit, loss = _book_terms(meta, legs)
+            assert max(_floor_activities(plain, group, meta, legs)) == pytest.approx(rho * loss - credit)
+
+
+def _ratio(legs):
+    """A book's own credit over its max loss in the world's first group (every group prices the same menu)."""
+    credit, loss = _book_terms(_floor_week(.1)[1][0], legs)
+    return credit / loss
+
+
+@pytest.mark.parametrize("legs,scale,feasible", [
+    (_SHORT, .99, True), (_SHORT, 1., True), (_SHORT, 1.01, False),          # a lone sold put around its own ratio
+    (_SPREAD, .99, True), (_SPREAD, 1., True), (_SPREAD, 1.01, False),
+    (_TWO_ONE, 1., True), (_TWO_ONE, 1.01, False),
+])
+def test_the_floor_admits_a_credit_book_exactly_when_its_credit_is_at_least_rho_times_its_max_loss(legs, scale,
+                                                                                                    feasible):
+    rho = scale * _ratio(legs)
+    groups, metadata, floored = _floor_week(rho)
+    tolerance = 1e-9 * 1e4
+    for plain, group, meta in zip(groups, floored, metadata, strict=True):
+        assert (max(_floor_activities(plain, group, meta, legs)) <= tolerance) is feasible
+
+
+def test_a_wing_that_lowers_the_max_loss_makes_a_thin_sold_put_feasible():
+    lone, spread = _ratio(_SHORT), _ratio(_SPREAD)
+    assert 0 < lone < .05 < spread, "premise: the lone put is thin, the spread thick"
+    groups, metadata, floored = _floor_week(.05)
+    for plain, group, meta in zip(groups, floored, metadata, strict=True):
+        assert max(_floor_activities(plain, group, meta, _SHORT)) > 0
+        assert max(_floor_activities(plain, group, meta, _SPREAD)) <= 0
+
+
+@pytest.mark.parametrize("rho", [1e-9, .02, .5, .999])
+@pytest.mark.parametrize("legs", [_LONG, _DEBIT])
+def test_a_net_debit_book_is_infeasible_at_every_rho(rho, legs):
+    groups, metadata, floored = _floor_week(rho)
+    for plain, group, meta in zip(groups, floored, metadata, strict=True):
+        assert _book_terms(meta, legs)[0] < 0
+        assert max(_floor_activities(plain, group, meta, legs)) > 0
+
+
+def test_the_search_cannot_open_a_thin_put_nor_a_debit_and_cannot_drop_a_spreads_wing():
+    """The pack's local search reads the floor rows as any group linear rows (a move that breaks one is infeasible)."""
+    from test_kelly_local import PARAMS, _program, _scorer
+
+    from index_options.kelly_local import KellyLocalSearch
+
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    program = _program(n_groups=1, n_pairs=2, seed=3, capacity=3)
+    group = program["groups"][0]
+    items = [{"right": "put", "strike": 96. + 3. * (k // 2), "sign": -1 if k % 2 == 0 else 1} for k in range(4)]
+    long_low, short_high = 1, 2                  # each pair: the short column, then its long mirror
+    credit = group["credit"]
+    lone = credit[short_high] / (99. * 10 - credit[short_high])
+    spread = (credit[short_high] + credit[long_low]) / (30. - credit[short_high] - credit[long_low])
+    assert 0 < lone < spread, "premise: the 99/96 credit spread is thicker than the lone 99 put"
+
+    def search(rho, q):
+        group["linear_rows"] = study._credit_floor_rows(items, credit, 10, None, rho)
+        out = KellyLocalSearch(_scorer(program), PARAMS)
+        out._load(q)
+        return out
+
+    assert search(.99 * lone, [0, 0, 0, 0])._trial({short_high: 1}) is not None, "a thick enough put opens alone"
+    thin = search(1.01 * lone, [0, 0, 0, 0])
+    assert thin._trial({short_high: 1}) is None, "a put under the floor cannot open alone"
+    assert thin._trial({long_low: 1}) is None, "a bought put alone is a net debit"
+    held = search(1.01 * lone, [0, 1, 1, 0])
+    assert held._trial({long_low: -1}) is None, "dropping the wing leaves the thin put"
+    assert held._trial({short_high: -1}) is None, "dropping the sold leg leaves a debit"
+    rows = study._credit_floor_rows(items, credit, 10, None, 1.01 * lone)
+    group["linear_rows"] = rows
+    (q,) = KellyLocalSearch(_scorer(program), PARAMS).run(None)["quantities"]
+    assert all(sum(c * v for c, v in zip(row["coefficients"], q, strict=True)) <= 1e-3 for row in rows)
+
+
+@pytest.mark.parametrize("value", [0, 0., 1, 1., -.1, 1.5, True, None, ".02", float("nan"), float("inf")])
+def test_a_credit_floor_outside_the_open_unit_interval_is_refused(value):
+    params, _data, method = _world(MULTISTART2_SEARCH)
+    method["kelly"][_FLOOR] = value
+    with pytest.raises(ValueError, match="invalid fixed method"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+@pytest.mark.parametrize("value", [1e-6, .02, .5, .999])
+def test_a_credit_floor_inside_the_open_unit_interval_validates(value):
+    params, _data, method = _world(MULTISTART2_SEARCH)
+    method["kelly"][_FLOOR] = value
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_without_the_key_no_floor_row_is_built_and_no_fill_is_tested(monkeypatch):
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    plain = _keyed()
+
+    def refuse(*_a, **_k):
+        raise AssertionError("the credit floor ran without its key")
+    monkeypatch.setattr(study, "_credit_floor_candidates", refuse)
+    monkeypatch.setattr(study, "_fill_credit_floor", refuse)
+    assert _keyed() == plain
+
+
+def _picks(result):
+    """What a result trades: its books, fills and P&L (a row that refuses more starts changes the search's record)."""
+    return (result["trades"], result["rejected"], result["pnl"],
+            [(w.get("books"), w.get("selection", {}).get("quantities")) for w in result["decisions"]])
+
+
+def test_a_slack_floor_leaves_the_solved_books_and_a_floor_above_the_spread_trades_nothing():
+    plain = _keyed()
+    assert plain["trades"] and _picks(_keyed(values={_FLOOR: .5 * _ratio(_SPREAD)})) == _picks(plain)
+    assert _picks(_keyed(values={_FLOOR: _ratio(_SPREAD)})) == _picks(plain), "equality is feasible"
+    above = _keyed(values={_FLOOR: 1.01 * _ratio(_SPREAD)})
+    assert not above["trades"], "the world's only credit books are the spread and thinner ones"
+    assert not above["rejected"] and not any(w.get("books") for w in above["decisions"]), \
+        "the program selects nothing: the fill check never has to reject"
+
+
+def test_a_hedged_floor_row_reads_each_items_units_at_its_own_reference():
+    """Row ``s`` of a hedged item is ``rho x (l(s) - u (s - F_ref) - c) - c``; an item with no units keeps its row."""
+    study = ledger_studies.WeeklyOptionPortfolioStudy
+    items = [{"right": "put", "strike": 100., "sign": -1}, {"right": "put", "strike": 100., "sign": -1}]
+    credits, rho, units, refs = [300., 300.], .1, [50., 0.], [101., 99.]
+    rows = study._credit_floor_rows(items, credits, 100, (units, refs), rho)
+    assert [r["upper"] for r in rows] == [0., 0.]
+    at_zero, at_strike = (r["coefficients"] for r in rows)
+    assert at_zero == pytest.approx([rho * (10000. + 50. * 101.) - 1.1 * 300., rho * 10000. - 1.1 * 300.])
+    assert at_strike == pytest.approx([rho * (-50. * (100. - 101.)) - 1.1 * 300., -1.1 * 300.])
+
+
+def test_a_book_whose_fill_prices_break_the_floor_is_rejected_through_the_method_loop():
+    name, edit = "C0N0", _quote("C0N0", "2019-01-03", 100., bid=.3, ask=.32)      # the sold put collapses at the fill
+    plain = _keyed(edit=edit)
+    assert any(b["symbol"] == name and b["decision_date"] == "2019-01-02" for b in plain["trades"]), "plain: filled"
+    result = _keyed(edit=edit, values={_FLOOR: .5})
+    assert _picks(result)[3][0] == _picks(plain)[3][0], "the decision is the plain one"
+    (rejected,) = [b for b in result["rejected"] if b["symbol"] == name and b["decision_date"] == "2019-01-02"]
+    assert rejected["reason"] == "credit_below_floor" and rejected["fill_date"] == "2019-01-03"
+    first = lambda r: sorted(b["symbol"] for b in r["trades"] if b["decision_date"] == "2019-01-02")  # noqa: E731
+    assert first(result) == [s for s in first(plain) if s != name]
+    for book in result["trades"]:
+        assert book["credit"] >= .5 * book["max_loss"]
+
+
+def test_the_fill_floor_test_reads_the_filled_books_credit_and_max_loss():
+    _params, _data, _method, study = _settleable_world(False)
+    tolerance = study.params["solver"]["parity_tolerance"]
+    assert study._fill_credit_floor({"credit": 20., "max_loss": 1000.}, .02) is None, "equality passes"
+    assert study._fill_credit_floor({"credit": 20. - tolerance / 2, "max_loss": 1000.}, .02) is None
+    assert study._fill_credit_floor({"credit": 19.9, "max_loss": 1000.}, .02) == "credit_below_floor"
+    assert study._fill_credit_floor({"credit": -1., "max_loss": 1.}, 1e-9) == "credit_below_floor", "a debit"
+    assert study._fill_credit_floor({"credit": 50., "max_loss": math.inf}, .02) == "credit_below_floor"
+
+
+def test_the_floor_with_the_cover_and_the_moneyness_cut_constrains_and_records():
+    result = _keyed(_NOT_ITM, values={_COVER: 1., _FLOOR: .5 * _ratio(_SPREAD)})
+    assert result["decisions"][0][_NOT_ITM] == 0 and result["trades"]
+    for book in result["trades"]:
+        assert book["decision_credit"] >= .5 * _ratio(_SPREAD) * book["max_loss"]
 
 
 # --- ADR-0316: the hedge inside the search (static and daily re-struck), on new ids --------------------------------
