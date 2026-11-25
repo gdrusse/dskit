@@ -807,8 +807,9 @@ by multiple downstream heads; never a hub name at run time); **optuna** `optuna-
 **pyomo** `pyomo-budgeted-select` + `PyomoSolve` base (`build_model`/`extract`
 hooks); **jump** (ADR-0328) `jump-budgeted-select` + `JumpSolve` base
 (`payload`/`extract` hooks; JuMP builds and solves in a long-lived Julia subprocess,
-`JuliaWorker`, speaking JSON lines, so the pack imports and plans with no Julia; the
-solve record is the pyomo `SolveRecord`); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures`
+`JuliaWorker`, speaking JSON lines, one per launch command per process so walk-forward
+folds share it; the pack imports and plans with no Julia; the solve record is the pyomo
+`SolveRecord`); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures`
 (or the concrete `ReturnWindows`) and wire by import path. Heavy imports live
 inside `run()` — the tier rule.
 

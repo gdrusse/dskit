@@ -37612,9 +37612,9 @@ A0004 needs no note: its holdout rung is what decision 1 builds, inside A0003's 
 
 **Evidence (A0010 development evidence, under the design dir).** `measurements/concentration.json`, `universe.json`, `extra.json`, `gics_change_names.json`, `baseline_eval_r1pc10cf.json`, `baseline_eval_r1pc10_vs_r1pc10cf.json`, `negative_check_r1pc10cf_under_r1dv_caps.json` (r1pc10cf's recorded books against r1dv's caps: 1,889 check failures, so the checks catch what they test) and `r1dv_eval_before_any_result.json` (0 priced quarters; gate and entry PENDING). Tests: the ADR-0326 section of `children/index_options/tests/test_ledger_edge_weights.py`.
 
-## ADR-0328 — JuMP doorway: a Julia subprocess worker behind a tier-2 pack (PROPOSED 2026-11-24, awaiting owner approval; no code yet)
+## ADR-0328 — JuMP doorway: a Julia subprocess worker behind a tier-2 pack (ACCEPTED 2026-11-24; phase 1 Python half built, Julia half not yet)
 
-**Status.** Proposed. The owner chose two points on 2026-11-24 in conversation: a subprocess worker as the bridge (over in-process juliacall) and a tier-2 pack plus one Julia package directory as the placement (over a new top-level package). Everything else below is the agent's proposal and waits for approval, including the file list. No code, no Julia install and no config exists under this entry.
+**Status.** Accepted. The owner chose two points on 2026-11-24 in conversation: a subprocess worker as the bridge (over in-process juliacall) and a tier-2 pack plus one Julia package directory as the placement (over a new top-level package). The owner then authorized building on 2026-11-24 in conversation ("I give you permission to download/build anything"), which the agent took as approval of the entry as written, file list included; the owner may correct this. The Python half is built; no Julia install and no Julia code exists yet.
 
 **Problem.** MIO programs are written in pyomo through `PyomoSolve` (`dskit/pipeline/libs/pyomo.py`). The owner wants the same systematic doorway for Julia JuMP models: a model is a subclass plus JSON, the base owns the lifecycle, and a document that names a JuMP node plans on a machine with no Julia. Sweep 2026-11-24 (`julia jump juliacall mio optimization solver gurobi highs pyomo`, 38 refs and 92 worktrees, plus `git grep -i -E "julia|JuMP"`): no Julia or JuMP code on any branch; the only optimization doorway is the pyomo pack.
 
@@ -37656,3 +37656,12 @@ Edited: `docs/standards/layout.md` (a `julia/` row), `dskit/pipeline/README.md` 
 **Known limits.** JSON carries float64 as decimal text: round-trip exact for finite values, slow for very large arrays (phase 2c). JuMP has no nested blocks, so a large program composes through functions and naming, not sub-models. Julia start-up is paid once per run until phase 2b.
 
 **Blocked.** Julia is not installed, and installing it is refused by the storage guard: C: has 2.9 GiB free against a 10 GiB reserve and the WSL disk image is C:-backed (see the 2026-11-24 note in the session reply; nothing was deleted). On approval the Python half and the fake-worker tests can be built first; the Julia package waits for C: headroom.
+
+**Implementation notes (phase 1, Python half).** Choices the entry left open, as built in `dskit/pipeline/libs/jump.py`:
+- Entry point: the worker command is `julia --project=<repo>/julia/DskitJuMP -e "using DskitJuMP; DskitJuMP.serve()"`; `serve()` reads requests on stdin until `shutdown` or EOF and must exit on EOF.
+- Timeouts live on the node class (`request_timeout`, default 3600 s; `start_timeout`, default 600 s) and travel with each solve; one deadline covers writing the request and reading the reply. `shutdown` waits 10 s, then the process is killed.
+- Worker ownership: one worker per distinct launch command per Python process, held by a private registry, so the fresh node instance the driver builds per run (per walk-forward fold) reuses it; `JumpSolve.close()` stops its command's worker, and an `atexit` hook stops every worker.
+- `hello` returns exactly `protocol` (int), `julia` (str) and `packages` (str to str). Replies carry exactly their named keys; `NaN`/`Infinity` tokens and duplicate keys are refused.
+- Only a well-formed `ok: false` reply to a `solve` keeps the worker. Every other failure kills it, and the next solve starts a fresh one: start, a failed or mismatched `hello`, death, timeout, a malformed line, or a mistyped record (each field type-checked and finite, `solver` equal to the one requested).
+- `JumpBudgetedSelect` wire: `data {ids, cost, value}`, `params {budget}`, solution `{selected: [ids]}`; `termination` is the MOI name, and only `OPTIMAL` is read. The knapsack and solver-param rules are `BudgetedSelect`'s and `PyomoSolve`'s, made public static methods there, so pyomo's behaviour and messages are unchanged.
+- `tests/pipeline/test_foreach.py` gained one example hash pin (`jump-budgeted-select.json`), a file the phase-1 list did not name.

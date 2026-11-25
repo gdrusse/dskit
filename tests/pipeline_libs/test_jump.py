@@ -2,19 +2,22 @@
 
 Nothing here needs Julia. ``jump_fake_worker.py`` speaks the pack's JSON-lines protocol
 from Python (a real brute-force knapsack, so answers are real) and misbehaves on request
-(wrong protocol, crash, hang, malformed line, wrong id, error reply, bad record), chosen
-by argv. The one test that needs the real worker, parity with the pyomo ``BudgetedSelect``,
-is skipped with a reason naming Julia when ``julia`` is not on ``PATH``.
+(wrong protocol, noise, crash, hang, malformed or duplicated keys, wrong id, error reply,
+bad record, deaf, ...), chosen by argv. The one test that needs the real worker, parity with
+the pyomo ``BudgetedSelect``, is skipped with a reason naming Julia when ``julia`` is not on
+``PATH``.
 
-Layout: **Units** (params, inputs, plan, no Julia), **Protocol** (hello, solve, reuse),
-**Failures** (each refuses by program name; the next solve starts a fresh worker),
-**Conformance**, **Example**, **Parity** (real Julia only).
+Layout: **Units** (params, one owner, inputs, plan, no Julia), **Protocol** (hello, solve,
+one worker per launch command for the process), **Failures** (each refuses by program
+name; the next solve starts a fresh worker), **Record** (worker JSON type-checked),
+**Pipes** (no deadlock), **Conformance**, **Example**, **Parity** (real Julia only).
 """
 
 from __future__ import annotations
 
 import gc
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -48,7 +51,8 @@ from dskit.pipeline.planner import plan
 
 HERE = pathlib.Path(__file__).parent
 FAKE_WORKER = HERE / "jump_fake_worker.py"
-EXAMPLE = pathlib.Path(__file__).parents[2] / "examples" / "pipeline" / "jump-budgeted-select.json"
+ROOT = pathlib.Path(__file__).parents[2]
+EXAMPLE = ROOT / "examples" / "pipeline" / "jump-budgeted-select.json"
 
 #: Sub-second on purpose: the hang test waits this long for a reply that never comes.
 SHORT_TIMEOUT = 0.5
@@ -72,6 +76,19 @@ def fake_command(*args):
     return [sys.executable, str(FAKE_WORKER), *map(str, args)]
 
 
+def _alive(pid):
+    """Whether ``pid`` still runs (a zombie awaiting its reaper does not count)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as stat:
+            return stat.read().rsplit(")", 1)[-1].split()[0] != "Z"
+    except OSError:
+        return True
+
+
 def _ctx(tmp_path):
     return NodeContext(name="t", asof="2026-01-01", run_dir=str(tmp_path / "run"))
 
@@ -83,28 +100,49 @@ def _inputs(survivors=None):
     }
 
 
+@pytest.fixture(autouse=True)
+def _no_worker_outlives_a_test():
+    """Every pooled worker is shut down after each test, so no test sees another's."""
+    yield
+    jump._POOL.close_all()
+
+
 @pytest.fixture()
 def nodes():
-    """Build nodes whose worker is the fake; every node is closed (no orphan) at teardown."""
-    made = []
+    """Build nodes whose worker is the fake (the autouse fixture closes the pool)."""
 
-    def build(*args, cls=JumpBudgetedSelect, **params):
+    def build(*args, cls=JumpBudgetedSelect, timeout=SHORT_TIMEOUT, **params):
         class Backed(cls):
             worker_command = fake_command(*args)
-            request_timeout = SHORT_TIMEOUT
+            request_timeout = timeout
             start_timeout = FAKE_START_TIMEOUT
 
-        node = Backed("select", {**PARAMS, **params})
-        made.append(node)
-        return node
+        return Backed("select", {**PARAMS, **params})
 
-    yield build
-    for node in made:
-        node.close()
+    return build
+
+
+@pytest.fixture()
+def spawned(monkeypatch):
+    """Record every process the pack starts."""
+    made = []
+    original = subprocess.Popen
+
+    def recording(*args, **kwargs):
+        process = original(*args, **kwargs)
+        made.append(process)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", recording)
+    return made
+
+
+def _worker(node):
+    return node._the_worker()
 
 
 def _process(node):
-    return node._worker._process
+    return _worker(node)._process
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +275,42 @@ class TestParams:
         assert any("budget is required" in p for p in JumpBudgetedSelect.validate_params(params))
 
 
+class TestOneOwner:
+    """The solver-param and budget rules are the pyomo pack's, imported, never restated."""
+
+    BAD = {"solver": "9lives", "solver_options": {"": 1, "k": [1], "n": float("nan")},
+           "budget": -1, "surprise": 1}
+
+    def test_the_pack_imports_no_private_name_from_another_module(self):
+        import ast
+
+        tree = ast.parse(pathlib.Path(jump.__file__).read_text(encoding="utf-8"))
+        private = [alias.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+                   for alias in node.names if alias.name.startswith("_")]
+        assert private == []
+
+    def test_the_solver_param_problems_are_pyomos_with_this_packs_default(self):
+        from dskit.pipeline.libs import pyomo
+
+        class Twin(pyomo.PyomoSolve):
+            _PARAMS = JumpSolve._PARAMS
+
+        params = {k: v for k, v in self.BAD.items() if k != "budget"}
+        expected = [p.replace(repr(pyomo.DEFAULT_SOLVER), repr(DEFAULT_SOLVER))
+                    for p in Twin.validate_params(params)]
+        assert JumpSolve.validate_params(params) == expected
+        assert len(expected) == 5
+
+    def test_the_budget_problems_are_budgetedselects(self):
+        from dskit.pipeline.libs import pyomo
+
+        for budget in (0, -1, True, "10", float("inf"), None):
+            params = {"budget": budget}
+            assert (JumpBudgetedSelect.validate_params(params)
+                    == pyomo.BudgetedSelect.validate_params(params))
+        assert JumpBudgetedSelect.validate_params({}) == pyomo.BudgetedSelect.validate_params({})
+
+
 class TestInputs:
     def test_a_good_deck_validates(self):
         assert JumpBudgetedSelect("s", PARAMS).validate_inputs(_inputs()) == []
@@ -275,7 +349,7 @@ class TestOutputDoctrine:
         node = NoContract("bare", {})
         with pytest.raises(TypeError, match="outputs"):
             node.run(_ctx(tmp_path), {})
-        assert node._worker is None
+        assert jump._POOL.live() == []
 
     def test_a_subclass_naming_no_program_is_refused_before_any_worker_starts(self, tmp_path):
         class NoProgram(JumpSolve):
@@ -332,7 +406,8 @@ class TestProtocol:
         assert isinstance(record, SolveRecord)
         assert tuple(record.to_obj()) == SolveRecord.field_names()
         assert record.solver == DEFAULT_SOLVER
-        assert record.termination == "optimal" and record.objective == pytest.approx(12.0)
+        assert record.termination == jump.OPTIMAL_TERMINATION == "OPTIMAL"
+        assert record.objective == pytest.approx(12.0)
         assert record.variables == 3 and record.constraints == 1
         assert record.binding[0]["name"] == "budget" and record.binding[0]["binding"] == 1
         assert json.loads(json.dumps(record.to_obj())) == record.to_obj()
@@ -349,14 +424,16 @@ class TestProtocol:
                  "instrument": None, "model": "select", **obj}
         assert Event.from_obj(event).get("binding") == obj["binding"]
 
-    def test_an_empty_gate_deploys_zero_and_never_starts_a_worker(self, tmp_path):
+    def test_an_empty_gate_deploys_zero_and_never_starts_a_worker(self, tmp_path, spawned):
         class Unlaunchable(JumpBudgetedSelect):
             worker_command = ["/nonexistent/never-launched"]
 
         node = Unlaunchable("select", PARAMS)
         out = node.run(_ctx(tmp_path), _inputs(survivors=[]))
-        assert out["positions"] == [] and out["outlay"] == 0.0
-        assert node._worker is None and node.solve_record is None
+        assert out == {"positions": [], "outlay": 0.0,
+                       "metrics": {"objective": 0.0, "n_selected": 0, "n_eligible": 0,
+                                   "n_candidates": 4}}
+        assert spawned == [] and node.solve_record is None
 
     def test_the_default_solver_is_pinned_deterministic_and_the_document_wins(self, nodes):
         assert nodes()._solver_options() == {"mip_rel_gap": 0, "threads": 1, "random_seed": 0}
@@ -381,27 +458,70 @@ class TestProtocol:
         node.run(_ctx(tmp_path), _inputs())
         assert _process(node) is not first
 
-    def test_a_garbage_collected_node_leaves_no_orphan(self, tmp_path):
+    def test_a_fresh_node_per_fold_reuses_the_one_worker(self, tmp_path, spawned):
+        # The driver builds a new node instance for every run, so for every walk-forward
+        # fold; Julia start-up is paid once, not per fold (ADR-0328 decision 2).
+        command = fake_command()
+
         class Backed(JumpBudgetedSelect):
-            worker_command = fake_command()
+            worker_command = command
             start_timeout = FAKE_START_TIMEOUT
 
-        node = Backed("select", PARAMS)
-        node.run(_ctx(tmp_path), _inputs())
-        process = _process(node)
-        del node
-        gc.collect()
-        process.wait(timeout=10)
-        assert process.poll() is not None
+        for _ in range(3):
+            node = Backed("select", PARAMS)
+            assert node.run(_ctx(tmp_path), _inputs())["positions"] == ["BRAVO", "GAMMA"]
+            del node
+            gc.collect()
+        assert len(spawned) == 1 and spawned[0].poll() is None
+        assert jump._POOL.live() == [tuple(command)]
 
-    def test_a_non_optimal_record_is_refused_on_extract(self, tmp_path, nodes):
+    def test_nodes_with_different_commands_get_different_workers(self, tmp_path, nodes, spawned):
+        nodes().run(_ctx(tmp_path), _inputs())
+        nodes("--mode", "ok").run(_ctx(tmp_path), _inputs())
+        assert len(spawned) == 2
+
+    def test_interpreter_exit_leaves_no_orphan(self, tmp_path):
+        # "linger" ignores stdin EOF, so only the pack's exit hook stops it.
+        script = "\n".join([
+            "import sys",
+            f"sys.path.insert(0, {str(HERE)!r})",
+            "from test_jump import FAKE_START_TIMEOUT, PARAMS, _inputs, fake_command",
+            "from dskit.pipeline.libs.jump import JumpBudgetedSelect",
+            "from dskit.pipeline.node import NodeContext",
+            "class Backed(JumpBudgetedSelect):",
+            "    worker_command = fake_command('--mode', 'linger')",
+            "    start_timeout = FAKE_START_TIMEOUT",
+            "node = Backed('select', PARAMS)",
+            f"ctx = NodeContext(name='t', asof='2026-01-01', run_dir={str(tmp_path)!r})",
+            "node.run(ctx, _inputs())",
+            "print(node._the_worker().pid)",
+        ])
+        done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                              timeout=60, env={**os.environ, "PYTHONPATH": str(ROOT)})
+        assert done.returncode == 0, done.stderr
+        pid = int(done.stdout.strip().splitlines()[-1])
+        assert not _alive(pid)
+
+    @pytest.mark.parametrize("termination", ["TIME_LIMIT", "optimal", "LOCALLY_SOLVED"])
+    def test_a_non_optimal_record_is_refused_on_extract(self, tmp_path, nodes, termination):
         node = nodes()
         node.run(_ctx(tmp_path), _inputs())
         node.solve_record = SolveRecord(
-            solver="HiGHS", status="warning", termination="TIME_LIMIT", objective=None,
+            solver="HiGHS", status="FEASIBLE_POINT", termination=termination, objective=None,
             bound=None, gap=None, seconds=0.0, variables=3, constraints=1, binding=())
-        with pytest.raises(RuntimeError, match="not 'optimal'"):
+        with pytest.raises(RuntimeError, match="not 'OPTIMAL'"):
             node.extract({"selected": ["BRAVO"]})
+
+    @pytest.mark.parametrize("solution", [
+        None, [], {}, {"selected": "BRAVO"}, {"selected": [1]},
+        {"selected": ["BRAVO", "BRAVO"]}, {"selected": ["NOISE"]},
+        {"selected": ["BRAVO"], "extra": 1},
+    ])
+    def test_a_bad_solution_is_refused_by_program(self, tmp_path, nodes, solution):
+        node = nodes()
+        node.run(_ctx(tmp_path), _inputs())
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(solution\)"):
+            node.extract(solution)
 
 
 # ---------------------------------------------------------------------------
@@ -410,21 +530,39 @@ class TestProtocol:
 
 
 class TestFailures:
-    def test_the_worker_class_has_no_third_party_dependency_and_names_its_program(self):
-        assert issubclass(WorkerRefusal, RuntimeError)
+    def test_a_refusal_is_a_runtime_error_carrying_program_and_kind(self):
+        refusal = WorkerRefusal("budgeted_select", "timeout", "late")
+        assert isinstance(refusal, RuntimeError)
+        assert (refusal.program, refusal.kind) == ("budgeted_select", "timeout")
 
     def test_a_protocol_mismatch_refuses_before_any_solve(self, tmp_path, nodes):
         node = nodes("--mode", "bad-protocol")
-        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*protocol"):
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(protocol\)") as excinfo:
             node.run(_ctx(tmp_path), _inputs())
-        assert node.solve_record is None
-        assert node._worker is None or node._worker._process is None
+        assert "999" in str(excinfo.value)
+        assert node.solve_record is None and _worker(node).pid is None
+
+    @pytest.mark.parametrize(("mode", "kind"), [
+        ("stdout-noise", "malformed"),
+        ("bool-id", "malformed"),
+        ("hello-error", "environment"),
+    ])
+    def test_a_bad_hello_refuses_and_kills_the_worker(self, tmp_path, nodes, mode, kind):
+        node = nodes("--mode", mode)
+        with pytest.raises(WorkerRefusal, match=rf"budgeted_select.*\({kind}\)"):
+            node.run(_ctx(tmp_path), _inputs())
+        worker = _worker(node)
+        assert worker.pid is None and worker.info is None
+        # The next solve is a fresh start that must pass hello again, never skip it.
+        with pytest.raises(WorkerRefusal, match=rf"\({kind}\)"):
+            node.run(_ctx(tmp_path), _inputs())
+        assert worker.starts == 2
 
     def test_a_worker_that_will_not_start_is_a_named_refusal(self, tmp_path):
         class Missing(JumpBudgetedSelect):
             worker_command = ["/nonexistent/julia-not-here"]
 
-        with pytest.raises(WorkerRefusal, match="budgeted_select"):
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(start\)"):
             Missing("select", PARAMS).run(_ctx(tmp_path), _inputs())
 
     def test_the_default_command_without_julia_refuses_by_name(self, tmp_path, monkeypatch):
@@ -434,38 +572,40 @@ class TestFailures:
             node.run(_ctx(tmp_path), _inputs())
 
     @pytest.mark.parametrize(
-        ("mode", "needle"),
+        ("mode", "kind"),
         [
             ("crash", "died"),
-            ("hang", "timed out"),
+            ("hang", "timeout"),
             ("malformed", "malformed"),
-            ("wrong-id", "id"),
+            ("wrong-id", "malformed"),
+            ("dup-key", "malformed"),
+            ("extra-key", "malformed"),
             ("bad-record", "record"),
         ],
     )
     def test_a_broken_worker_refuses_by_program_and_the_next_solve_is_fresh(
-        self, tmp_path, nodes, mode, needle
+        self, tmp_path, nodes, mode, kind
     ):
         flag = tmp_path / "misbehaved"
         node = nodes("--mode", mode, "--once", flag)
         with pytest.raises(WorkerRefusal, match="budgeted_select") as excinfo:
             node.run(_ctx(tmp_path), _inputs())
-        assert needle in str(excinfo.value)
+        assert excinfo.value.kind == kind
         assert node.solve_record is None
         # Never a silent retry: one start for the one attempt, and the broken worker is gone.
-        assert node._worker.starts == 1 and node._worker.pid is None
+        assert _worker(node).starts == 1 and _worker(node).pid is None
         out = node.run(_ctx(tmp_path), _inputs())  # the flag is spent: a fresh worker is clean
         assert out["positions"] == ["BRAVO", "GAMMA"]
-        assert node._worker.starts == 2 and _process(node).poll() is None
+        assert _worker(node).starts == 2 and _process(node).poll() is None
 
     def test_a_failed_solve_is_never_retried_inside_one_run(self, tmp_path, nodes):
         node = nodes("--mode", "crash")  # no --once: every worker crashes
         with pytest.raises(WorkerRefusal, match="budgeted_select"):
             node.run(_ctx(tmp_path), _inputs())
-        assert node._worker.starts == 1  # the refusal came from the one attempt
+        assert _worker(node).starts == 1  # the refusal came from the one attempt
         with pytest.raises(WorkerRefusal, match="budgeted_select"):
             node.run(_ctx(tmp_path), _inputs())
-        assert node._worker.starts == 2  # the NEXT solve, not a retry, started the second
+        assert _worker(node).starts == 2  # the NEXT solve, not a retry, started the second
 
     def test_an_error_reply_refuses_with_its_kind_and_keeps_the_healthy_worker(
         self, tmp_path, nodes
@@ -488,7 +628,14 @@ class TestFailures:
         with pytest.raises(WorkerRefusal, match=r"no_such_program.*unknown_program"):
             node.run(_ctx(tmp_path), _inputs())
 
-    def test_a_non_json_payload_refuses_before_it_reaches_the_worker(self, tmp_path, nodes):
+    def test_a_solver_the_environment_lacks_is_refused_by_name_at_run(self, tmp_path, nodes):
+        node = nodes(solver="Gurobi")
+        assert node.validate_params(node.params) == []  # the shape passes at plan
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*unknown_solver.*Gurobi"):
+            node.run(_ctx(tmp_path), _inputs())
+        assert _process(node).poll() is None
+
+    def test_a_non_json_payload_refuses_before_any_worker_starts(self, tmp_path, nodes, spawned):
         class Nan(JumpBudgetedSelect):
             def payload(self, inputs, params):
                 data = super().payload(inputs, params)
@@ -496,20 +643,14 @@ class TestFailures:
                 return data
 
         node = nodes(cls=Nan)
-        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*JSON"):
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(payload\).*JSON"):
             node.run(_ctx(tmp_path), _inputs())
+        assert spawned == []
 
-    def test_every_misbehaviour_leaves_no_orphan_after_close(self, tmp_path, nodes, monkeypatch):
-        spawned = []
-        original = subprocess.Popen
-
-        def recording(*args, **kwargs):
-            process = original(*args, **kwargs)
-            spawned.append(process)
-            return process
-
-        monkeypatch.setattr(subprocess, "Popen", recording)
-        for mode in ("crash", "hang", "malformed", "wrong-id", "bad-record", "bad-protocol"):
+    def test_every_misbehaviour_leaves_no_orphan_after_close(self, tmp_path, nodes, spawned):
+        modes = ("crash", "hang", "malformed", "wrong-id", "bad-record", "bad-protocol",
+                 "stdout-noise", "hello-error", "deaf")
+        for mode in modes:
             node = nodes("--mode", mode)
             with pytest.raises(WorkerRefusal):
                 node.run(_ctx(tmp_path), _inputs())
@@ -517,8 +658,9 @@ class TestFailures:
         healthy = nodes()
         healthy.run(_ctx(tmp_path), _inputs())
         healthy.close()
-        assert len(spawned) == 7
+        assert len(spawned) == len(modes) + 1
         assert all(p.poll() is not None for p in spawned)
+        assert jump._POOL.live() == []
 
     def test_the_hang_timeout_is_configurable_and_fast(self, tmp_path, nodes):
         import time
@@ -528,6 +670,131 @@ class TestFailures:
         with pytest.raises(WorkerRefusal, match="timed out"):
             node.run(_ctx(tmp_path), _inputs())
         assert time.perf_counter() - started < 10 * SHORT_TIMEOUT + FAKE_START_TIMEOUT
+
+
+# ---------------------------------------------------------------------------
+# The solve record from worker JSON: every field type-checked and finite
+# ---------------------------------------------------------------------------
+
+
+GOOD_ROW = {"name": "budget", "rows": 1, "binding": 1, "min_slack": 0.0}
+
+
+class TestRecordFromTheWire:
+    @pytest.mark.parametrize("patch", [
+        {"solver": "Gurobi"},                 # not the solver that was asked for
+        {"solver": 7},
+        {"status": None},
+        {"termination": ""},
+        {"objective": "12"},
+        {"objective": True},
+        {"bound": [1]},
+        {"gap": -0.5},
+        {"seconds": None},
+        {"seconds": -1.0},
+        {"variables": 3.0},
+        {"variables": True},
+        {"variables": -1},
+        {"constraints": "1"},
+        {"binding": {}},
+        {"binding": [[1]]},
+        {"binding": [{**GOOD_ROW, "rows": 1.5}]},
+        {"binding": [{**GOOD_ROW, "binding": 2}]},
+        {"binding": [{**GOOD_ROW, "min_slack": "0"}]},
+        {"binding": [{**GOOD_ROW, "name": ""}]},
+        {"binding": [{**GOOD_ROW, "dual": None}]},
+        {"binding": [{**GOOD_ROW, "extra": 1}]},
+        {"binding": [{k: v for k, v in GOOD_ROW.items() if k != "min_slack"}]},
+        {"extra_field": 1},
+    ], ids=repr)
+    def test_a_wrongly_typed_record_is_refused_and_the_worker_killed(self, tmp_path, nodes,
+                                                                      patch):
+        node = nodes("--mode", "patch-record", "--patch", json.dumps(patch))
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(record\)"):
+            node.run(_ctx(tmp_path), _inputs())
+        assert node.solve_record is None and _worker(node).pid is None
+
+    @pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
+    def test_a_non_finite_number_on_the_wire_is_refused_never_parsed(self, tmp_path, nodes,
+                                                                     token):
+        # Python's json.loads accepts these tokens by default; the pack must not.
+        node = nodes("--mode", "patch-record", "--patch", f'{{"objective": {token}}}')
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(malformed\)"):
+            node.run(_ctx(tmp_path), _inputs())
+
+    def test_a_record_with_nulls_and_a_dual_is_accepted(self, tmp_path, nodes):
+        patch = {"objective": None, "bound": None, "gap": None,
+                 "binding": [{**GOOD_ROW, "min_slack": None, "dual": -2.5}]}
+        node = nodes("--mode", "patch-record", "--patch", json.dumps(patch))
+        node.run(_ctx(tmp_path), _inputs())
+        record = node.solve_record
+        assert record.objective is None and record.binding[0]["dual"] == -2.5
+        assert record.to_obj()["binding"] == patch["binding"]
+
+
+# ---------------------------------------------------------------------------
+# Pipes: no deadlock on big payloads, big replies or a chatty stderr
+# ---------------------------------------------------------------------------
+
+#: Far beyond any pipe buffer (64 KiB on Linux).
+BIG_BYTES = 4 << 20
+
+
+class _Padded(JumpBudgetedSelect):
+    """Pads the payload with a field the program ignores."""
+
+    def payload(self, inputs, params):
+        return {**super().payload(inputs, params), "pad": "x" * BIG_BYTES}
+
+
+class TestPipes:
+    def test_a_payload_bigger_than_the_pipe_round_trips(self, tmp_path, nodes):
+        node = nodes(cls=_Padded, timeout=60.0)
+        assert node.run(_ctx(tmp_path), _inputs())["positions"] == ["BRAVO", "GAMMA"]
+
+    def test_a_worker_that_stops_reading_cannot_hang_a_big_write(self, tmp_path, nodes):
+        import time
+
+        node = nodes("--mode", "deaf", cls=_Padded)
+        started = time.perf_counter()
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(timeout\)"):
+            node.run(_ctx(tmp_path), _inputs())
+        assert time.perf_counter() - started < 10 * SHORT_TIMEOUT + FAKE_START_TIMEOUT
+        assert _worker(node).pid is None
+
+    def test_a_reply_of_megabytes_is_read_whole(self, tmp_path, nodes):
+        node = nodes("--mode", "big-reply", timeout=60.0)
+        node.run(_ctx(tmp_path), _inputs())
+        assert len(node.solve_record.binding) == jump_fake_worker().BIG_REPLY_ROWS
+
+    def test_a_worker_flooding_stderr_never_blocks(self, tmp_path, nodes):
+        node = nodes("--mode", "noisy-stderr", timeout=60.0)
+        for _ in range(3):
+            assert node.run(_ctx(tmp_path), _inputs())["positions"] == ["BRAVO", "GAMMA"]
+
+    def test_a_refusal_carries_the_stderr_tail_but_bounded(self, tmp_path):
+        class Crashing(JumpBudgetedSelect):
+            worker_command = [sys.executable, "-c",
+                              "import sys; sys.stdin.readline(); "
+                              "sys.stderr.write('boom ' * 100000 + '\\nlast words\\n'); "
+                              "sys.exit(9)"]
+            start_timeout = FAKE_START_TIMEOUT
+
+        with pytest.raises(WorkerRefusal, match=r"\(died\)") as excinfo:
+            Crashing("select", PARAMS).run(_ctx(tmp_path), _inputs())
+        message = str(excinfo.value)
+        assert "last words" in message and "exit 9" in message
+        assert len(message) < 4 * jump._STDERR_TAIL_CHARS
+
+
+def jump_fake_worker():
+    """The fake worker module, imported from this directory."""
+    sys.path.insert(0, str(HERE))
+    try:
+        import jump_fake_worker as module
+    finally:
+        sys.path.remove(str(HERE))
+    return module
 
 
 # ---------------------------------------------------------------------------
@@ -607,6 +874,16 @@ class TestShippedExample:
         select = result.outputs["select"]
         assert select["positions"] == ["BRAVO", "GAMMA"]
         assert select["outlay"] == pytest.approx(10.0)
+
+    def test_two_runs_in_one_process_start_one_worker(self, tmp_path, monkeypatch, spawned):
+        # A walk-forward is one run_document per fold, each with fresh node instances.
+        monkeypatch.setattr(JumpBudgetedSelect, "worker_command", fake_command())
+        obj = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+        for fold in ("2026-01-01", "2026-02-01"):
+            obj["outputs"]["run_root"] = str(tmp_path / fold)
+            result = run_document(PipelineDocument.from_obj(obj), asof=fold)
+            assert result.error == "" and result.state == "ran"
+        assert len(spawned) == 1
 
 
 # ---------------------------------------------------------------------------

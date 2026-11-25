@@ -1,26 +1,39 @@
 """A stand-in for the Julia worker: the JuMP pack's JSON-lines protocol in Python.
 
-Run as ``python jump_fake_worker.py [--mode MODE] [--once FLAG_FILE]``. It reads one JSON
-request per line on stdin and answers one JSON object per line on stdout, exactly as
-``dskit.pipeline.libs.jump.JuliaWorker`` expects of the real worker, so the pack's suite
-needs no Julia. It solves ONE program, ``budgeted_select`` (a 0/1 knapsack), by brute
-force so the answers are real; any other program name gets an ``unknown_program`` error
-reply.
+Run as ``python jump_fake_worker.py [--mode MODE] [--once FLAG_FILE] [--patch JSON]``. It
+reads one JSON request per line on stdin and answers one JSON object per line on stdout,
+exactly as ``dskit.pipeline.libs.jump.JuliaWorker`` expects of the real worker, so the
+pack's suite needs no Julia. It solves ONE program, ``budgeted_select`` (a 0/1 knapsack),
+by brute force so the answers are real, under ONE solver, ``HiGHS``; any other program or
+solver gets the error reply the real worker sends. Extra ``data`` keys are ignored, so a
+test can pad a payload.
 
-``--mode`` picks a behaviour, never an edit to this file:
+``--mode`` picks a behaviour, never an edit to this file. At ``hello``:
 
-``ok``             answer everything correctly (the default)
-``bad-protocol``   ``hello`` reports a protocol version the pack does not speak
-``crash``          exit without a reply when the first ``solve`` arrives
-``hang``           read the first ``solve`` and never answer it
-``malformed``      answer the first ``solve`` with a line that is not JSON
-``wrong-id``       answer the first ``solve`` under another request id
-``error-reply``    answer the first ``solve`` with ``ok: false`` and an error body
-``bad-record``     answer the first ``solve`` with a record missing a field
+``bad-protocol``   report a protocol version the pack does not speak
+``stdout-noise``   print a banner line that is not JSON before the ``hello`` reply
+``bool-id``        answer ``hello`` under the id ``true`` instead of the integer
+``hello-error``    answer ``hello`` with a well-formed ``ok: false``
+``deaf``           answer ``hello``, then never read stdin again
 
-``--once FLAG_FILE`` makes the misbehaviour fire only if FLAG_FILE does not exist yet,
-and creates it as it fires: the first worker misbehaves, the fresh one the pack starts
-afterwards answers correctly (the way a one-off crash looks to the pack).
+At the first ``solve`` (with ``--once``, only until the flag file exists):
+
+``crash``          exit without a reply
+``hang``           never answer
+``malformed``      answer with a line that is not JSON
+``wrong-id``       answer under another request id
+``error-reply``    answer with a well-formed ``ok: false``
+``bad-record``     answer with a record missing ``gap``
+``patch-record``   answer with the record updated by ``--patch`` (a JSON object)
+``dup-key``        answer with the key ``id`` twice (a wrong one first)
+``extra-key``      answer with a key the protocol does not name
+
+Answering correctly throughout:
+
+``ok``             the default
+``noisy-stderr``   write a megabyte to stderr before every reply
+``big-reply``      a record with many binding rows (a reply line of megabytes)
+``linger``         on stdin EOF without ``shutdown``, sleep instead of exiting
 """
 
 from __future__ import annotations
@@ -40,12 +53,23 @@ PROTOCOL_VERSION = 1
 WRONG_PROTOCOL_VERSION = 999
 
 PROGRAM = "budgeted_select"
+SOLVERS = ("HiGHS",)
 
-MODES = ("ok", "bad-protocol", "crash", "hang", "malformed", "wrong-id", "error-reply", "bad-record")
+HELLO_MODES = ("bad-protocol", "stdout-noise", "bool-id", "hello-error", "deaf")
+SOLVE_MODES = ("crash", "hang", "malformed", "wrong-id", "error-reply", "bad-record",
+               "patch-record", "dup-key", "extra-key")
+CLEAN_MODES = ("ok", "noisy-stderr", "big-reply", "linger")
+MODES = CLEAN_MODES + HELLO_MODES + SOLVE_MODES
+
+#: Bytes ``noisy-stderr`` writes before each reply (far beyond any pipe buffer).
+STDERR_NOISE_BYTES = 1 << 20
+
+#: Binding rows ``big-reply`` sends.
+BIG_REPLY_ROWS = 40_000
 
 
-def _reply(obj):
-    sys.stdout.write(json.dumps(obj) + "\n")
+def _write(text):
+    sys.stdout.write(text + "\n")
     sys.stdout.flush()
 
 
@@ -74,8 +98,8 @@ def _solve(request):
     slack = float(params["budget"]) - spend
     record = {
         "solver": request["solver"],
-        "status": "ok",
-        "termination": "optimal",
+        "status": "FEASIBLE_POINT",
+        "termination": "OPTIMAL",
         "objective": objective,
         "bound": objective,
         "gap": 0.0,
@@ -89,15 +113,23 @@ def _solve(request):
 
 
 class FakeWorker:
-    """The request loop, with one switchable misbehaviour."""
+    """The request loop, with one switchable behaviour."""
 
-    def __init__(self, mode, once):
+    def __init__(self, mode, once, patch):
         self.mode = mode
         self.once = once
+        self.patch = patch
+        self.deaf = False
+
+    def _reply(self, obj):
+        if self.mode == "noisy-stderr":
+            sys.stderr.write("n" * STDERR_NOISE_BYTES + "\n")
+            sys.stderr.flush()
+        _write(json.dumps(obj))
 
     def _misbehaves(self):
         """Whether this solve is the one that misbehaves (``--once`` consumes the flag file)."""
-        if self.mode in ("ok", "bad-protocol"):
+        if self.mode not in SOLVE_MODES:
             return False
         if self.once is None:
             return True
@@ -108,42 +140,65 @@ class FakeWorker:
         return True
 
     def _hello(self, request):
+        if self.mode == "hello-error":
+            self._reply({"id": request["id"], "ok": False,
+                         "error": {"kind": "environment", "message": "unresolved manifest"}})
+            return
+        if self.mode == "stdout-noise":
+            _write("Precompiling DskitJuMP...")
         version = WRONG_PROTOCOL_VERSION if self.mode == "bad-protocol" else PROTOCOL_VERSION
-        _reply({"id": request["id"], "ok": True, "protocol": version, "julia": "fake-1.0",
-                "packages": {"JuMP": "fake", "HiGHS": "fake"}})
+        rid = True if self.mode == "bool-id" else request["id"]
+        self._reply({"id": rid, "ok": True, "protocol": version, "julia": "fake-1.0",
+                     "packages": {"JuMP": "fake", "HiGHS": "fake"}})
+        self.deaf = self.mode == "deaf"
 
     def _misbehave(self, request):
-        """Act out the chosen failure for this solve; return True when it consumed the request."""
+        """Act out the chosen failure for this solve."""
         if self.mode == "crash":
             os._exit(3)
         if self.mode == "hang":
             time.sleep(3600)
         if self.mode == "malformed":
-            sys.stdout.write("this is not json\n")
-            sys.stdout.flush()
-        elif self.mode == "wrong-id":
-            solution, record = _solve(request)
-            _reply({"id": request["id"] + 1000, "ok": True, "solution": solution, "record": record})
+            _write("this is not json")
+            return
+        solution, record = _solve(request)
+        reply = {"id": request["id"], "ok": True, "solution": solution, "record": record}
+        if self.mode == "wrong-id":
+            reply["id"] = request["id"] + 1000
         elif self.mode == "error-reply":
-            _reply({"id": request["id"], "ok": False,
-                    "error": {"kind": "solve_failed", "message": "the fake worker refuses on request"}})
+            reply = {"id": request["id"], "ok": False,
+                     "error": {"kind": "solve_failed",
+                               "message": "the fake worker refuses on request"}}
         elif self.mode == "bad-record":
-            solution, record = _solve(request)
             del record["gap"]
-            _reply({"id": request["id"], "ok": True, "solution": solution, "record": record})
-        return True
+        elif self.mode == "patch-record":
+            record.update(self.patch)
+        elif self.mode == "extra-key":
+            reply["debug"] = "not a protocol field"
+        elif self.mode == "dup-key":
+            # A lenient parser keeps the LAST "id" (the right one) and accepts the reply.
+            _write('{"id": 999999, ' + json.dumps(reply)[1:])
+            return
+        self._reply(reply)
+
+    def _error(self, request, kind, message):
+        self._reply({"id": request["id"], "ok": False, "error": {"kind": kind, "message": message}})
 
     def _answer(self, request):
         if request["program"] != PROGRAM:
-            _reply({"id": request["id"], "ok": False,
-                    "error": {"kind": "unknown_program",
-                              "message": f"no program named {request['program']!r}"}})
+            self._error(request, "unknown_program", f"no program named {request['program']!r}")
+            return
+        if request["solver"] not in SOLVERS:
+            self._error(request, "unknown_solver",
+                        f"the environment provides no solver {request['solver']!r}")
             return
         if self._misbehaves():
             self._misbehave(request)
             return
         solution, record = _solve(request)
-        _reply({"id": request["id"], "ok": True, "solution": solution, "record": record})
+        if self.mode == "big-reply":
+            record["binding"] = record["binding"] * BIG_REPLY_ROWS
+        self._reply({"id": request["id"], "ok": True, "solution": solution, "record": record})
 
     def serve(self):
         for line in sys.stdin:
@@ -151,22 +206,26 @@ class FakeWorker:
             op = request["op"]
             if op == "hello":
                 self._hello(request)
+                if self.deaf:
+                    time.sleep(3600)
             elif op == "solve":
                 self._answer(request)
             elif op == "shutdown":
-                _reply({"id": request["id"], "ok": True})
+                self._reply({"id": request["id"], "ok": True})
                 return
             else:
-                _reply({"id": request["id"], "ok": False,
-                        "error": {"kind": "unknown_op", "message": f"no op {op!r}"}})
+                self._error(request, "unknown_op", f"no op {op!r}")
+        if self.mode == "linger":
+            time.sleep(60)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--mode", choices=MODES, default="ok")
     parser.add_argument("--once", default=None, help="flag file: misbehave only until it exists")
+    parser.add_argument("--patch", default="{}", help="patch-record: JSON object for the record")
     args = parser.parse_args(argv)
-    FakeWorker(args.mode, args.once).serve()
+    FakeWorker(args.mode, args.once, json.loads(args.patch)).serve()
 
 
 if __name__ == "__main__":
