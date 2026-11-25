@@ -1014,3 +1014,590 @@ class TestParityWithPyomo:
         assert theirs["metrics"] == ours["metrics"] | {
             "objective": pytest.approx(ours["metrics"]["objective"])}
         assert tuple(jump_node.solve_record.to_obj()) == SolveRecord.field_names()
+
+
+# ---------------------------------------------------------------------------
+# Protocol v2 (ADR-0328 amendment 1): live models, through the fake worker
+# ---------------------------------------------------------------------------
+
+
+def _requests(log):
+    """Every request that crossed the wire, parsed."""
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+
+def _spec_digest(fields):
+    """The ADR's canonical data digest, restated from the spec (1-D fields of str/float)."""
+    import hashlib
+    import struct
+
+    def name(text):
+        raw = text.encode("utf-8")
+        return struct.pack("<I", len(raw)) + raw
+
+    out = [b"dskit-data-v1\n"]
+    for key in sorted(fields, key=lambda k: k.encode("utf-8")):
+        values = fields[key]
+        strings = all(isinstance(v, str) for v in values)
+        out += [name(key), b"s" if strings else b"f", struct.pack("<I", 1),
+                struct.pack("<Q", len(values))]
+        out += [name(v) if strings else struct.pack("<d", float(v) + 0.0) for v in values]
+    return hashlib.sha256(b"".join(out)).hexdigest()
+
+
+ELIGIBLE = {"ids": ["ALPHA", "BRAVO", "GAMMA"], "cost": [6.0, 5.0, 5.0],
+            "value": [9.0, 6.0, 6.0]}
+
+
+@pytest.fixture()
+def live(tmp_path):
+    """Open live models on a fake worker; every model and the pool close after the test."""
+    opened = []
+
+    def build(*args, log=None, models=None, nbytes=None, **params):
+        class Backed(JumpBudgetedSelect):
+            worker_command = fake_command(*args, *(("--request-log", log) if log else ()))
+            request_timeout = 30.0
+            start_timeout = FAKE_START_TIMEOUT
+            if models is not None:
+                _PERSISTENT_CACHE_SIZE = models
+            if nbytes is not None:
+                _PERSISTENT_CACHE_BYTES = nbytes
+
+        node = Backed("select", {**PARAMS, **params})
+        model = node.open(_inputs())
+        opened.append(model)
+        return node, model
+
+    yield build
+    for model in opened:
+        try:
+            model.close()
+        except WorkerRefusal:
+            pass
+
+
+class TestProtocolV2:
+    def test_the_pack_speaks_protocol_two(self):
+        assert PROTOCOL_VERSION == 2
+
+    def test_hello_carries_the_pool_settings_from_the_class_knobs(self, tmp_path, nodes):
+        log = tmp_path / "requests.jsonl"
+        node = nodes("--request-log", log)
+        node.run(_ctx(tmp_path), _inputs())
+        hello = _requests(log)[0]
+        assert hello == {"id": 1, "op": "hello",
+                         "settings": {"pool_models": JumpSolve._PERSISTENT_CACHE_SIZE,
+                                      "pool_bytes": JumpSolve._PERSISTENT_CACHE_BYTES}}
+        assert (JumpSolve._PERSISTENT_CACHE_SIZE, JumpSolve._PERSISTENT_CACHE_BYTES) == (
+            jump.DEFAULT_POOL_MODELS, jump.DEFAULT_POOL_BYTES)
+
+    def test_a_v1_only_worker_is_refused_before_any_other_request(self, tmp_path, nodes):
+        log = tmp_path / "requests.jsonl"
+        node = nodes("--mode", "v1-only", "--request-log", log)
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(protocol\).*1") as excinfo:
+            node.run(_ctx(tmp_path), _inputs())
+        assert excinfo.value.kind == "protocol"
+        assert [r["op"] for r in _requests(log)] == ["hello"]
+        assert _worker(node).pid is None
+
+    def test_a_document_that_does_not_opt_in_sends_only_the_v1_solve(self, tmp_path, nodes):
+        log = tmp_path / "requests.jsonl"
+        node = nodes("--request-log", log)
+        assert JumpSolve._PERSISTENT_MODEL_REUSE is False
+        node.run(_ctx(tmp_path), _inputs())
+        assert [r["op"] for r in _requests(log)] == ["hello", "solve"]
+        assert node.timings == ()
+
+
+class TestDescribe:
+    def test_describe_returns_the_programs_contract(self, nodes):
+        described = nodes(timeout=30.0).describe()
+        assert described["program"] == "budgeted_select"
+        assert described["schema"]["dims"] == {"item": "ids"}
+        assert described["schema"]["fields"]["cost"] == {"type": "float64", "dims": ["item"]}
+        assert described["variables"] == {"select": {"index": ["item"], "domain": "binary"}}
+        assert described["components"] == ["max_items"]
+        assert described["update"] is True
+
+    def test_describe_of_an_unknown_program_refuses_and_keeps_the_worker(self, nodes):
+        class Other(JumpBudgetedSelect):
+            program = "no_such_program"
+
+        node = nodes(cls=Other, timeout=30.0)
+        with pytest.raises(WorkerRefusal, match=r"no_such_program.*unknown_program"):
+            node.describe()
+        assert _process(node).poll() is None
+
+
+class TestLiveModel:
+    def test_open_builds_and_reports_its_digest_signature_and_timings(self, live):
+        _, model = live()
+        assert model.handle == "h1"
+        assert model.signature.startswith("shape:")
+        assert model.digest == _spec_digest(ELIGIBLE)
+        timings = model.timings
+        assert isinstance(timings, jump.Timings)
+        assert tuple(timings.to_obj()) == jump.Timings.field_names()
+        assert timings.path == "built" and timings.solve_seconds == 0
+        assert timings.pool == {"models": 1, "bytes": 3000, "evicted": 0, "evictions": 0}
+        assert timings.start_source is None and timings.start_accepted is None
+
+    def test_a_handle_solve_returns_the_solution_record_and_timings(self, live):
+        _, model = live()
+        solution, record = model.solve()
+        assert solution == {"selected": ["BRAVO", "GAMMA"]}
+        assert isinstance(record, SolveRecord) and record.termination == "OPTIMAL"
+        assert model.solve_record is record
+        assert model.timings.path == "reused" and model.timings.solve_seconds >= 0
+
+    def test_an_update_of_numbers_is_applied_in_place(self, live):
+        _, model = live()
+        model.update(params={"budget": 6.0})
+        assert model.timings.path == "updated"
+        assert model.digest == _spec_digest(ELIGIBLE)  # params are not data
+        assert model.solve()[0] == {"selected": ["ALPHA"]}
+        model.update(data={"value": [1.0, 6.0, 6.0]})
+        assert model.timings.path == "updated"
+        assert model.digest == _spec_digest({**ELIGIBLE, "value": [1.0, 6.0, 6.0]})
+        assert model.solve()[0] == {"selected": ["BRAVO"]}
+
+    def test_an_update_that_changes_nothing_is_reused(self, live):
+        _, model = live()
+        model.update(data=dict(ELIGIBLE), params={"budget": BUDGET})
+        assert model.timings.path == "reused"
+
+    def test_an_update_that_changes_the_shape_refuses_and_keeps_the_handle(self, live):
+        node, model = live()
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*shape_changed"):
+            model.update(data={"ids": ["ALPHA", "BRAVO", "DELTA"]})
+        assert _process(node).poll() is None
+        assert model.solve()[0] == {"selected": ["BRAVO", "GAMMA"]}
+
+    def test_a_component_is_attached_by_name(self, live):
+        _, model = live()
+        model.update(params={"budget": BUDGET, "max_items": 1}, components={"max_items": True})
+        assert model.timings.path == "updated"
+        assert model.solve()[0] == {"selected": ["ALPHA"]}
+        with pytest.raises(WorkerRefusal, match="unknown_component"):
+            model.update(components={"no_such": True})
+
+    def test_fix_and_free_change_the_answer(self, live):
+        _, model = live()
+        assert model.fix({"select": {"ALPHA": 1}}) == 1
+        assert model.timings.path == "reused"
+        assert model.solve()[0] == {"selected": ["ALPHA"]}
+        assert model.fix({"select": {("BRAVO",): 0}}) == 2
+        assert model.free({"select": ["ALPHA"]}) == 1
+        assert model.solve()[0] == {"selected": ["ALPHA"]}  # BRAVO out: ALPHA alone wins
+        assert model.free() == 0
+        assert model.solve()[0] == {"selected": ["BRAVO", "GAMMA"]}
+
+    def test_fixing_infeasibly_is_a_well_formed_non_optimal_solve(self, live):
+        node, model = live()
+        model.fix({"select": {"ALPHA": 1, "BRAVO": 1}})
+        solution, record = model.solve()
+        assert record.termination == "INFEASIBLE" and record.objective is None
+        assert solution == {"selected": None}
+        assert _process(node).poll() is None
+
+    @pytest.mark.parametrize(("values", "kind"), [
+        ({"select": {"NOISE": 1}}, "unknown_key"),
+        ({"select": {"ALPHA": 2}}, "bad_value"),
+        ({"weights": {"ALPHA": 1}}, "unknown_group"),
+    ])
+    def test_a_bad_fix_is_refused_by_the_worker_and_changes_nothing(self, live, values, kind):
+        node, model = live()
+        with pytest.raises(WorkerRefusal, match=rf"budgeted_select.*{kind}"):
+            model.fix(values)
+        assert _process(node).poll() is None
+        assert model.solve()[0] == {"selected": ["BRAVO", "GAMMA"]}
+
+    @pytest.mark.parametrize("values", [{"select": {True: 1}}, {"select": {"ALPHA": "1"}},
+                                        {"select": {"ALPHA": float("nan")}}, {"select": []},
+                                        {"": {"ALPHA": 1}}, []])
+    def test_a_fix_of_the_wrong_shape_is_refused_before_sending(self, tmp_path, live, values):
+        log = tmp_path / "requests.jsonl"
+        node, model = live(log=log)
+        with pytest.raises(WorkerRefusal, match=r"\(payload\)"):
+            model.fix(values)
+        assert [r["op"] for r in _requests(log)] == ["hello", "open"]
+        assert _process(node).poll() is None
+
+    def test_a_caller_supplied_start_seeds_a_limited_solve(self, live):
+        _, model = live()
+        assert model.solve(limits={"node_limit": 1})[0] == {"selected": []}
+        assert model.solve_record.termination == "NODE_LIMIT"
+        assert model.timings.start_accepted is None
+        assert model.start({"select": {"ALPHA": 1}}) == 1  # a partial start
+        assert model.timings.start_source == "values"
+        assert model.solve(limits={"node_limit": 1})[0] == {"selected": ["ALPHA"]}
+        assert model.timings.start_accepted is True
+        assert model.timings.start_source == "values"
+
+    def test_an_infeasible_start_is_reported_not_accepted(self, live):
+        _, model = live()
+        model.start({"select": {"ALPHA": 1, "BRAVO": 1, "GAMMA": 1}})
+        model.solve(limits={"node_limit": 1})
+        assert model.timings.start_accepted is False
+
+    def test_start_last_uses_the_models_own_last_solution(self, live):
+        _, model = live()
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*no_solution"):
+            model.start("last")
+        model.solve()
+        assert model.start("last") == 3
+        assert model.solve(limits={"node_limit": 1})[0] == {"selected": ["BRAVO", "GAMMA"]}
+        assert model.timings.start_source == "last"
+        assert model.start(None) == 0
+        assert model.timings.start_source is None
+
+    @pytest.mark.parametrize("limits", [{"nodes": 1}, {"node_limit": 0}, {"node_limit": True},
+                                        {"node_limit": 1.5}, {"time_limit": -1},
+                                        {"time_limit": float("inf")}, {"mip_rel_gap": -0.1},
+                                        {"solution_limit": 0}, [], "x"])
+    def test_limits_of_the_wrong_shape_are_refused_before_sending(self, tmp_path, live, limits):
+        log = tmp_path / "requests.jsonl"
+        node, model = live(log=log)
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(limits\)"):
+            model.solve(limits=limits)
+        assert [r["op"] for r in _requests(log)] == ["hello", "open"]
+        assert _process(node).poll() is None
+
+    def test_limits_cross_the_wire_exactly(self, tmp_path, live):
+        log = tmp_path / "requests.jsonl"
+        _, model = live(log=log)
+        model.solve(limits={"time_limit": 5.0, "node_limit": 10, "mip_rel_gap": 0.0,
+                            "solution_limit": 2})
+        solve = _requests(log)[-1]
+        assert solve == {"id": 3, "op": "solve", "handle": "h1",
+                         "limits": {"time_limit": 5.0, "node_limit": 10, "mip_rel_gap": 0.0,
+                                    "solution_limit": 2}}
+
+    def test_the_open_request_is_exact(self, tmp_path, live):
+        log = tmp_path / "requests.jsonl"
+        live(log=log)
+        opened = _requests(log)[1]
+        assert opened == {"id": 2, "op": "open", "program": "budgeted_select",
+                          "data": ELIGIBLE, "params": {"budget": BUDGET},
+                          "solver": DEFAULT_SOLVER,
+                          "solver_options": {"mip_rel_gap": 0, "threads": 1, "random_seed": 0},
+                          "components": {}}
+
+    def test_the_context_manager_closes_and_a_closed_handle_refuses(self, tmp_path):
+        log = tmp_path / "requests.jsonl"
+
+        class Backed(JumpBudgetedSelect):
+            worker_command = fake_command("--request-log", log)
+            start_timeout = FAKE_START_TIMEOUT
+
+        with Backed("select", PARAMS).open(_inputs()) as model:
+            model.solve()
+        assert model.closed
+        assert _requests(log)[-1] == {"id": 4, "op": "close", "handle": "h1"}
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(closed\)"):
+            model.solve()
+        model.close()  # idempotent
+        assert len(_requests(log)) == 4
+
+    def test_a_closed_model_is_reused_from_the_pool_with_its_fixes_released(self, live):
+        node, model = live()
+        model.fix({"select": {"ALPHA": 1}})
+        model.close()
+        again = node.open(_inputs())
+        try:
+            assert again.handle == "h2" and again.timings.path == "reused"
+            assert again.timings.pool["models"] == 1
+            assert again.solve()[0] == {"selected": ["BRAVO", "GAMMA"]}
+        finally:
+            again.close()
+
+    def test_a_pool_hit_with_new_numbers_is_updated_not_rebuilt(self, live):
+        node, model = live()
+        model.close()
+        node.params = {**node.params, "budget": 6.0}
+        again = node.open(_inputs())
+        try:
+            assert again.timings.path == "updated" and again.timings.build_seconds == 0
+            assert again.solve()[0] == {"selected": ["ALPHA"]}
+        finally:
+            again.close()
+
+    def test_a_held_model_is_never_shared(self, live):
+        node, model = live()
+        second = node.open(_inputs())
+        try:
+            assert second.timings.path == "built" and second.timings.pool["models"] == 2
+        finally:
+            second.close()
+
+    def test_past_the_count_cap_the_least_recent_model_is_evicted(self, live):
+        node, model = live(models=1)
+        other = node.open(_inputs(survivors=["ALPHA"]))
+        try:
+            assert other.timings.pool == {"models": 1, "bytes": 1000, "evicted": 1,
+                                          "evictions": 1}
+            with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(evicted\)"):
+                model.solve()
+            assert _worker(node).starts == 1  # refused, never rebuilt behind the caller
+            assert _process(node).poll() is None
+            assert other.solve()[0] == {"selected": ["ALPHA"]}
+        finally:
+            other.close()
+        model.close()  # an evicted handle closes cleanly
+        assert model.closed
+
+    def test_past_the_byte_cap_the_least_recent_model_is_evicted(self, live):
+        node, model = live(nbytes=3500)
+        other = node.open(_inputs(survivors=["ALPHA"]))
+        try:
+            assert other.timings.pool["evicted"] == 1
+            assert other.timings.pool["bytes"] == 1000
+        finally:
+            other.close()
+
+    def test_a_handle_from_a_killed_worker_is_stale_and_never_reopened(self, tmp_path, live):
+        log = tmp_path / "requests.jsonl"
+        node, model = live(log=log)
+        _worker(node).close()
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(stale_handle\)"):
+            model.solve()
+        assert _worker(node).pid is None and _worker(node).starts == 1
+        node.run(_ctx(tmp_path), _inputs())  # a fresh worker for the next caller
+        with pytest.raises(WorkerRefusal, match=r"\(stale_handle\)"):
+            model.fix({"select": {"ALPHA": 1}})
+        assert "fix" not in [r["op"] for r in _requests(log)]
+
+    def test_without_an_update_hook_every_change_is_a_visible_rebuild(self, live):
+        node, model = live("--mode", "no-update")
+        assert node.describe()["update"] is False
+        model.update(params={"budget": 6.0})
+        assert model.timings.path == "rebuilt"
+        assert model.solve()[0] == {"selected": ["ALPHA"]}
+        model.close()
+        again = node.open(_inputs())
+        try:
+            assert again.timings.path == "rebuilt"
+        finally:
+            again.close()
+
+    @pytest.mark.parametrize("patch", [
+        {"path": "cached"}, {"build_seconds": -1}, {"solve_seconds": "0"},
+        {"transfer_seconds": None}, {"start_accepted": "yes"}, {"start_source": "guess"},
+        {"pool": {"models": 1}}, {"pool": {"models": -1, "bytes": 0, "evicted": 0,
+                                           "evictions": 0}},
+        {"extra": 1},
+    ], ids=repr)
+    def test_a_mistyped_timings_block_kills_the_worker(self, tmp_path, patch):
+        class Backed(JumpBudgetedSelect):
+            worker_command = fake_command("--mode", "bad-timings", "--patch", json.dumps(patch))
+            start_timeout = FAKE_START_TIMEOUT
+
+        node = Backed("select", PARAMS)
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(timings\)"):
+            node.open(_inputs())
+        assert _worker(node).pid is None
+
+    def test_a_non_json_payload_refuses_at_open_before_any_worker_starts(self, spawned):
+        class Nan(JumpBudgetedSelect):
+            worker_command = fake_command()
+
+            def payload(self, inputs, params):
+                return {**super().payload(inputs, params), "value": [float("nan")] * 3}
+
+        with pytest.raises(WorkerRefusal, match=r"\(payload\)"):
+            Nan("select", PARAMS).open(_inputs())
+        assert spawned == []
+
+    def test_bad_data_is_refused_by_the_worker_and_keeps_it(self, nodes):
+        class Short(JumpBudgetedSelect):
+            def payload(self, inputs, params):
+                return {**super().payload(inputs, params), "cost": [1.0]}
+
+        node = nodes(cls=Short, timeout=30.0)
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*bad_data"):
+            node.open(_inputs())
+        assert _process(node).poll() is None
+
+
+class TestWrongHandleEcho:
+    def test_a_reply_echoing_another_handle_is_malformed_and_kills(self, tmp_path):
+        class Backed(JumpBudgetedSelect):
+            worker_command = fake_command("--mode", "wrong-handle", "--once",
+                                          tmp_path / "flag")
+            start_timeout = FAKE_START_TIMEOUT
+
+        node = Backed("select", PARAMS)
+        model = node.open(_inputs())  # open issues the handle: nothing to echo
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(malformed\).*handle"):
+            model.solve()
+        assert _worker(node).pid is None
+
+
+class TestRunReuse:
+    """Opt-in re-use inside run(): the same knob ScenarioUtilitySolve uses."""
+
+    def _reusing(self, log, **attrs):
+        class Reusing(JumpBudgetedSelect):
+            _PERSISTENT_MODEL_REUSE = True
+            worker_command = fake_command("--request-log", log)
+            start_timeout = FAKE_START_TIMEOUT
+
+        for name, value in attrs.items():
+            setattr(Reusing, name, value)
+        return Reusing
+
+    def test_the_knob_is_opt_in_and_named_as_the_pyomo_one(self):
+        from dskit.pipeline.libs.pyomo import ScenarioUtilitySolve
+
+        assert JumpSolve._PERSISTENT_MODEL_REUSE is False
+        assert ScenarioUtilitySolve._PERSISTENT_MODEL_REUSE is False
+        assert JumpSolve._PERSISTENT_CACHE_SIZE == ScenarioUtilitySolve._PERSISTENT_CACHE_SIZE
+
+    def test_fresh_nodes_per_fold_build_once_and_reuse_after(self, tmp_path):
+        log = tmp_path / "requests.jsonl"
+        cls = self._reusing(log)
+        outs, paths = [], []
+        for _ in range(3):
+            node = cls("select", PARAMS)
+            outs.append(node.run(_ctx(tmp_path), _inputs()))
+            paths.append([(op, t.path) for op, t in node.timings])
+            assert node.solve_record.termination == "OPTIMAL"
+        assert outs[0]["positions"] == ["BRAVO", "GAMMA"] and outs[0] == outs[1] == outs[2]
+        assert paths == [[("open", "built"), ("solve", "reused")],
+                         [("open", "reused"), ("solve", "reused")],
+                         [("open", "reused"), ("solve", "reused")]]
+        assert [r["op"] for r in _requests(log)] == (
+            ["hello"] + ["open", "solve", "close"] * 3)
+
+    def test_new_numbers_update_and_a_new_shape_builds(self, tmp_path):
+        cls = self._reusing(tmp_path / "requests.jsonl")
+        cls("select", PARAMS).run(_ctx(tmp_path), _inputs())
+        node = cls("select", {**PARAMS, "budget": 6.0})
+        assert node.run(_ctx(tmp_path), _inputs())["positions"] == ["ALPHA"]
+        assert node.timings[0][1].path == "updated"
+        node = cls("select", PARAMS)
+        node.run(_ctx(tmp_path), _inputs(survivors=["ALPHA", "BRAVO"]))
+        assert node.timings[0][1].path == "built"
+
+    def test_reuse_returns_what_the_one_shot_returns(self, tmp_path, nodes):
+        plain = nodes(timeout=30.0)
+        expected = plain.run(_ctx(tmp_path), _inputs())
+        reusing = self._reusing(tmp_path / "requests.jsonl")("select", PARAMS)
+        assert reusing.run(_ctx(tmp_path), _inputs()) == expected
+        assert reusing.solve_record.to_obj() | {"seconds": 0} == (
+            plain.solve_record.to_obj() | {"seconds": 0})
+
+    @pytest.mark.parametrize(("name", "value"), [
+        ("_PERSISTENT_MODEL_REUSE", 1), ("_PERSISTENT_MODEL_REUSE", "yes"),
+        ("_PERSISTENT_CACHE_SIZE", 0), ("_PERSISTENT_CACHE_SIZE", True),
+        ("_PERSISTENT_CACHE_SIZE", 2.0), ("_PERSISTENT_CACHE_BYTES", 0),
+    ])
+    def test_a_bad_knob_refuses_by_name_before_any_worker_starts(self, tmp_path, spawned,
+                                                                  name, value):
+        cls = self._reusing(tmp_path / "requests.jsonl", **{name: value})
+        with pytest.raises(TypeError, match=name):
+            cls("select", PARAMS).run(_ctx(tmp_path), _inputs())
+        assert spawned == []
+
+
+# ---------------------------------------------------------------------------
+# The reviewed backlog of the v1 candidate
+# ---------------------------------------------------------------------------
+
+
+class TestBacklog:
+    def test_a_float_literal_that_overflows_is_malformed_not_infinity(self, tmp_path, nodes):
+        node = nodes("--mode", "float-overflow")
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(malformed\)"):
+            node.run(_ctx(tmp_path), _inputs())
+        assert _worker(node).pid is None
+
+    def test_a_deeply_nested_reply_is_malformed_and_kills_the_worker(self, tmp_path, nodes):
+        node = nodes("--mode", "deep-reply", timeout=30.0)
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(malformed\)"):
+            node.run(_ctx(tmp_path), _inputs())
+        assert _worker(node).pid is None
+
+    def test_nesting_past_the_protocol_depth_is_malformed(self):
+        worker = JuliaWorker(fake_command())
+        line = json.dumps({"id": 1, "ok": True, "solution": [[[]]], "record": {}})
+        assert jump._json_depth(json.loads(line)) == 4
+        deep = '{"id": 1, "ok": true, "solution": ' + "[" * 600 + "]" * 600 + ', "record": {}}'
+        with pytest.raises(WorkerRefusal, match=r"\(malformed\).*deep"):
+            worker._reply("budgeted_select", "solve", deep, 1)
+
+    def test_an_interrupted_solve_discards_the_worker(self, tmp_path, nodes):
+        import signal
+        import threading
+
+        flag = tmp_path / "misbehaved"
+        node = nodes("--mode", "hang", "--once", flag, timeout=30.0)
+        timer = threading.Timer(1.0, os.kill, (os.getpid(), signal.SIGINT))
+        timer.start()
+        try:
+            with pytest.raises(KeyboardInterrupt):
+                node.run(_ctx(tmp_path), _inputs())
+        finally:
+            timer.cancel()
+        assert _worker(node).pid is None
+        assert node.run(_ctx(tmp_path), _inputs())["positions"] == ["BRAVO", "GAMMA"]
+        assert _worker(node).starts == 2
+
+    def test_the_start_timeout_bounds_a_slow_hello(self, tmp_path):
+        import time
+
+        class Slow(JumpBudgetedSelect):
+            worker_command = fake_command("--mode", "slow-hello")
+            request_timeout = 60.0
+            start_timeout = SHORT_TIMEOUT
+
+        started = time.perf_counter()
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(timeout\)") as excinfo:
+            Slow("select", PARAMS).run(_ctx(tmp_path), _inputs())
+        assert f"after {SHORT_TIMEOUT:g} s" in str(excinfo.value)
+        assert time.perf_counter() - started < FAKE_START_TIMEOUT / 2
+
+    def test_the_libs_package_names_the_jump_pack(self):
+        from dskit.pipeline import libs
+
+        assert "``jump.py``" in libs.__doc__
+
+    def test_a_busy_worker_outlives_a_killed_parent_only_until_its_solve_ends(self, tmp_path):
+        import signal
+        import time
+
+        pidfile = tmp_path / "worker.pid"
+        script = "\n".join([
+            "import sys",
+            f"sys.path.insert(0, {str(HERE)!r})",
+            "from test_jump import FAKE_START_TIMEOUT, PARAMS, _inputs, fake_command",
+            "from dskit.pipeline.libs.jump import JumpBudgetedSelect",
+            "from dskit.pipeline.node import NodeContext",
+            "class Busy(JumpBudgetedSelect):",
+            f"    worker_command = fake_command('--mode', 'slow-solve', '--delay', '4',"
+            f" '--pidfile', {str(pidfile)!r})",
+            "    start_timeout = FAKE_START_TIMEOUT",
+            f"ctx = NodeContext(name='t', asof='2026-01-01', run_dir={str(tmp_path)!r})",
+            "Busy('select', PARAMS).run(ctx, _inputs())",
+        ])
+        parent = subprocess.Popen([sys.executable, "-c", script],
+                                  env={**os.environ, "PYTHONPATH": str(ROOT)})
+        try:
+            deadline = time.monotonic() + FAKE_START_TIMEOUT
+            while not pidfile.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            time.sleep(1.0)  # the worker has answered hello and is inside the solve
+            worker = int(pidfile.read_text(encoding="utf-8"))
+            parent.send_signal(signal.SIGKILL)
+            parent.wait(timeout=10)
+            assert _alive(worker)  # busy: it does not see EOF until the solve ends
+            deadline = time.monotonic() + 20
+            while _alive(worker) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            assert not _alive(worker)
+        finally:
+            if parent.poll() is None:
+                parent.kill()

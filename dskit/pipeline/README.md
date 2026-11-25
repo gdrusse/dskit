@@ -809,7 +809,9 @@ hooks); **jump** (ADR-0328) `jump-budgeted-select` + `JumpSolve` base
 (`payload`/`extract` hooks; JuMP builds and solves in a long-lived Julia subprocess,
 `JuliaWorker`, speaking JSON lines, one per launch command per process so walk-forward
 folds share it; the pack imports and plans with no Julia; the solve record is the pyomo
-`SolveRecord`); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures`
+`SolveRecord`; protocol v2 adds live models, `LiveModel` handles to update, fix, free,
+warm-start and re-solve in place, with a `Timings` block whose `path` shows every
+rebuild, and opt-in re-use in `run()` via `_PERSISTENT_MODEL_REUSE`); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures`
 (or the concrete `ReturnWindows`) and wire by import path. Heavy imports live
 inside `run()` — the tier rule.
 
