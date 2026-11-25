@@ -2,6 +2,120 @@
 
 ## TL;DR
 
+25 November: the working formulation now includes marginal calibration and its
+chronological selection procedure. Resume with PIT alignment across assets and
+expiry ranks, then define the copula. No calibration fitting, validation or joint
+scenario experiment was run in this session.
+
+## 25 November formulation checkpoint
+
+Owner: Russell; author: GPT-6. The owner requested “wrap, merge, and purge”.
+This is an editorial handoff of previously agreed definitions, not a new model,
+execution approval, or change to locked Path rows. Base:
+`0d90f01edd659ed32b6b88aa08a3682fbbb4f6fc` (remote main).
+Allowed repository changes: this memo, the child re-entry note, its archive, and
+the index_options row of the root re-entry index. No code, tests, configs, Path,
+ledgers, protected outcomes, or other lanes are changed.
+
+Canonical document: [DSKit MIO Formulation Working Draft](https://chatgpt.com/space/page_d967bc9d4dac81919850190243a4439d),
+saved sequence 22, 292 blocks. Sequence 21 contains the agreed definitions;
+sequence 22 changes only the restart pointer and labels the old cadence status
+as historical. Both replacement paragraphs were read back exactly. Rendered UI
+was not rechecked. Attached reading copies predate the latest definitions.
+
+Agreed components in the main body and appendices:
+
+- Daily observed log returns, conditional mean, mean-zero innovations and
+  conditional variance. A zero expected innovation does not mean zero variance;
+  the appendix derives this and separates true quantities from estimates.
+- Daily observation/cutoff d, historical origin a, calendar DTE t, session count
+  eta, future risk-session offset g and original expiry rank rho. Tau is retired;
+  v remains occupied. Weekly solving does not redefine the daily return input.
+- Current frozen forecast preprocessing and the smooth mixture CDF, then one
+  raw PIT per stock-expiry-origin, shared by contracts using that forecast.
+  Only mature outcomes actually available by cutoff enter the update.
+- Expanding per-stock/per-original-rank total and threshold counts. The threshold
+  grid is a configuration input; its agreed default spans 0.01 to 0.99 with
+  11 thresholds. Store counters incrementally, not an unlimited PIT vector.
+- A corrected CDF obtained by composing the base CDF with a monotone endpoint-
+  anchored map. Historical corrected PITs use the map issued with the forecast,
+  never today's map. Keep raw and corrected assessment streams separate.
+- A working map with knots (A + zeta * beta)/(M + zeta), linearly interpolated
+  between thresholds and endpoints. Zeta is one configurable positive strength
+  shared across groups; it is not an independent-observation count.
+- Chronological warmup, tuning and later evaluation. Compare strength candidates
+  on the same eligible mature cohort and A0002's primary proper score; freeze
+  the chosen strength and update policy before later evaluation. Counter updates
+  may continue causally. Selection is not proof of improvement over identity.
+
+Open before implementation: numerical strengths/dates, aggregation weights,
+minimum evidence, uncertainty under overlapping outcomes, recent monitoring,
+pass/fail tolerances, promotion/fallback actions and corrected-stream counter
+notation. EWMA initialization uses prior dates; its numerical configuration and
+mean estimator remain open. No parameters were selected by data in this session.
+The working calibration family is not an empirically validated winner.
+
+Next: define a joint observation's origin, target-date and cutoff alignment,
+missing/maturing dimensions and original expiry-rank identity. Then propose the
+copula and compact joint-state retention. Marginal threshold counts cannot
+recover joint dependence. Risk-checkpoint forecasts, IV evolution, scenario
+wealth/cash, CVaR constraints and feasible dynamic hedging remain downstream.
+Each new definition must be shown mathematically for owner confirmation.
+
+The strategy is ongoing; daily/weekly solving and individual contracts up to
+60 calendar DTE are different clocks. The cadence study remains separately
+owned. The earlier memo below records its 24 November checkpoint only; inspect
+its latest receipts before using those counts or launching a retry.
+
+Research completed, preserved outside Git:
+
+- `/home/russell/reports/MIO recalibration fitting methods.md` (synthesis).
+- `/home/russell/research_notes/MIO recalibration fitting methods/`:
+  `methods.md`, `validation.md`, `streaming.md` (source-backed assessments).
+- `/home/russell/mio-formulation-view-20261125/` (earlier reading copies).
+
+The report compares empirical monotone recalibration, stabilization, alternatives
+and streaming limits. It distinguishes marginal calibration from copula fitting.
+The frozen fixed_loc linear pool does not already apply this PIT correction;
+the existing market-calibration helper concerns the market baseline. No helper
+was changed or wired into the predictive/MIO process here.
+
+Path A0002 controls scoring; A0003 controls windows; A0006 controls asset/expiry
+rank; A0008/A0009 freeze forecast recipe/universe; A0010 remains unchanged.
+2019 and 2020–2023 have prior model-selection exposure, so warmup/development
+validation there is not a newly clean test. Protected 2024+ outcomes were not
+read, and this handoff does not authorize opening them.
+
+## 25 November verification and closure
+
+Acceptance: retain the agreed draft and research, record an unambiguous restart,
+archive the replaced lane note verbatim, preserve unrelated history and remove
+only this task's clean, merged worktree/branch. This is pure editorial scope;
+under skeptic-review.md it receives accuracy/link and documentation checks,
+not production-code review. No behavioral contracts or formulas changed at wrap.
+Verification: `PYTHONPATH=. /home/russell/dskit/.venv/bin/python -m pytest
+ tests/docs/test_budgets.py -q` passed all 4 tests (0.09 s); `git diff --check`
+passed. Exact archive preservation, historical memo preservation, local Markdown
+links and the four-file allowed scope were checked. The child note is 40 lines.
+Page sequence 22 readback matched both edits and retained 292 blocks. No full
+suite, model fit, replay, protected-data read or UI-render check was performed.
+Final publication and task-only worktree removal are verified in the Git/tool
+receipts for this wrap; no empirical result is implied by these checks.
+
+Local main began at `aa1d73fd94d799c3fececd54a047eb8331a83869`, 21 commits ahead of
+remote main. Publish only this isolated handoff, then integrate locally without
+publishing unrelated commits. Preserve the cadence checkout and other sessions.
+Durable research and reading copies remain; purge targets only the temporary
+wrap worktree and its contained local branch after successful publication.
+
+## Historical checkpoint: 24 November 2026
+
+The remainder preserves the earlier handoff verbatim except its top heading.
+Its tau notation and current-status wording are superseded by the checkpoint
+above; its frozen cadence identities and receipts remain useful references.
+
+## TL;DR
+
 Continue the mathematical MIO from cash and holdings, then define portfolio risk
 and hedging. The corrected daily/weekly experiment is unfinished: zero of six
 arms completed. Disk headroom recovered; the prepared retry still needs RAM admission.

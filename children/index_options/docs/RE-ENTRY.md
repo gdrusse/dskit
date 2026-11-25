@@ -1,41 +1,40 @@
 # RE-ENTRY - index_options
 
-Updated 2026-11-24 by GPT-6 (MIO design, cadence experiment, storage wrap).
+Updated 2026-11-25 by GPT-6 (MIO formulation and calibration handoff).
 
 ## Now
 
-- Resume our [MIO working draft](https://chatgpt.com/space/page_d967bc9d4dac81919850190243a4439d). It is distinct from the older implemented Kelly formulation.
-- Agreed: buy/sell and call/put superscripts; contract/stock/DTE subscripts; integer trades x, known holdings h and cash B; current bid/ask costs, per-trade fees, expiry payoffs, and calendar-DTE roll.
-- Open: cash/portfolio-value equations, joint asset scenarios, tail risk, concentration and dynamic hedging. Explain briefly; restate each agreed addition mathematically.
-- Corrected daily/weekly experiment has **0/6 completed arms**. A 5 GiB run was OOM-killed after 12/14 weekly decisions. A guarded 6 GiB retry is prepared, not run; no empirical cadence recommendation exists.
-- Reviewed research code: `22128802100b0372d965536ac25447d0b0c18329`. Explicit entry dates and next-fill expiry eligibility preserve legacy defaults.
-- Non-DSKit relocation completed: 10.64 GB verified on D; shared DSKit data stayed on C. C measured17.3 GB free; normal10 GiB reserve passes, but each job needs fresh RAM/disk admission.
-- Prior speed-panel evidence: relax faster in8/8 frozen states; warm dropped. This establishes neither profitability nor the final formulation for this working draft.
+- [MIO working draft](https://chatgpt.com/space/page_d967bc9d4dac81919850190243a4439d): saved sequence 22, 292 blocks. Formulation definitions are agreed; calibration fitting and validation have not run.
+- Defined daily returns, conditional mean/variance and estimates; forecast normalization and CDFs; raw/corrected PITs; expanding stock-by-original-expiry-rank counters; stabilized monotone recalibration and chronological parameter selection. Appendices explain the derivations and pseudocode.
+- Notation: d is the daily observation/cutoff clock, a a historical origin, t calendar DTE, eta sessions to expiry, g a future session offset, rho original expiry rank. Tau was retired; v is already occupied. Preserve all existing contract subscripts/superscripts.
+- User prefers brief steps, each new mathematical definition restated for confirmation. Chat uses LaTeX display delimiters, never dollar-dollar; the Page uses native math fences.
+- Cash/portfolio value, copula, forecasts at intermediate risk checkpoints, IV dynamics, CVaR and dynamic hedging remain unfinished. The strategy continues indefinitely; eligible contracts up to 60 DTE do not impose a strategy end date.
+- Daily/weekly cadence is a separate study. Its 24 November status in the older memo is historical, not verified current job status. Preserve its checkout, jobs and receipts; no cadence conclusion is made here.
 
 ## Next
 
-1. Read the working draft's Resume here section and the session memo. Continue from portfolio state (B,h), then agree cash and risk equations.
-2. For the cadence study, restore the exact frozen checkout if purged, verify code/driver/config/analysis hashes, and check storage plus host RAM.
-3. Run the first missing job from `jobs-solve-6g.json` serially only when admitted. Stop on refusal/failure; six valid corrected receipts are required before analysis. Reuse existing inputs.
-4. Compare net growth, drawdown, tail losses, capital-days, DTE attribution and doubled execution costs. Daily needs stable improvement; weekly or cash remains possible.
+1. Read the draft and the 25 November checkpoint at the top of the session memo.
+2. Define how settled PITs align across assets and original expiry ranks: origin, target date, information cutoff and incomplete observations. Do not infer joint dependence from marginal counters.
+3. Propose the copula estimator and its compact data/state requirements, one mathematical addition at a time, for confirmation.
+4. Before implementation, choose numerical recalibration settings, evidence/uncertainty rules, monitoring actions and acceptance versus identity. Then connect joint scenarios to risk checkpoints, scenario wealth, CVaR and feasible hedges.
 
 ## Blocked / owner decisions
 
-- OOM risk remains; 6 GiB fitting every arm is unproven. No study job is launched by this wrap.
-- A0008/A0009/A0010 remain locked. This separately authorized direct research runner is not the official sealed packet or a replacement for A0010.
-- The experiment holds entries to expiry. It does not answer early-exit/hedging frequency; American assignment and executable liquidation remain unmodeled.
-- Preserve other sessions' unpublished local-main changes and worktrees. Exact pins and integration receipts are in the memo and external verification record.
+- Strength candidates, actual warmup/tuning/evaluation dates, score weights, update policy and minimum-evidence/tolerance rules remain open. No empirical calibration or copula result exists from this session.
+- A0002/A0003/A0006/A0008/A0009/A0010 remain binding; no Path or run configuration changed. Used development years are not clean holdout evidence.
+- Cadence work holds positions to expiry; early-exit/hedge frequency and American assignment need their own treatment. Consult its latest receipts before resuming any run.
+- Main contains unrelated unpublished history. Publish only this session's bounded handoff; preserve other worktrees, environments and active jobs.
 
 ## Read first
 
 - [Working draft](https://chatgpt.com/space/page_d967bc9d4dac81919850190243a4439d)
-- [Session handoff and resume commands](memos/2026-11-24-mio-design-session.md)
+- [Session checkpoint and earlier cadence handoff](memos/2026-11-24-mio-design-session.md)
 - [Locked Path](decisioning/path.csv)
-- [Prior speed-panel final memo](../../../docs/memos/2026-11-19-mio-evaluation-final.md)
+- `/home/russell/reports/MIO recalibration fitting methods.md`
 - `/home/russell/data/index_options/runs/cadence-study/v20261124-fill-v2/verification.json`
 
 ## Do not
 
-- Use2024+ data, unseal holdouts, refit the frozen model, change Path/A0010, or rank cadence from the invalid old diagnostics.
-- Rerun the full suite, launch unguarded compute, lower reserves, overwrite results, or repoint an active shared environment.
-- Purge canonical data/evidence, active services or another session's branches. Restore the pinned checkout before reusing path-bound configs.
+- Treat agreed definitions as fitted/validated results, recalibration as a copula, or marginal counts as sufficient joint data. Retain pending forecast/map identities and define joint retention separately.
+- Use 2024+ data, unseal holdouts, refit the frozen model, alter Path/A0010 or launch model/replay jobs through this documentation wrap.
+- Rerun the full suite, lower storage reserves, overwrite canonical evidence, repoint shared environments, interrupt jobs or purge another session's branches/worktrees.
