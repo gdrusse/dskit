@@ -7194,3 +7194,77 @@ def test_explicit_decision_dates_preserve_cash_flows_and_refuse_replay_schedule_
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must refuse before solve")))
     with pytest.raises(ValueError, match="recorded"):
         different._method(params["methods"][0], None, recorded=result)
+
+
+def _fill_life_fixture(decision, expiries, omitted=()):
+    """A known session calendar and competing near/far expiries at one signal."""
+    import copy
+    params, inputs = _packet_clock_fixture()
+    data = inputs["X"]
+    forecast, context = copy.deepcopy(data["forecasts"][0]), copy.deepcopy(data["contexts"][0])
+    quotes = [copy.deepcopy(r) for r in data["chain"]
+              if r["date"] == "2019-01-02" and r["expiration"] == "2019-02-01"]
+    data["bars"] = [r for r in data["bars"] if r["date"] not in omitted]
+    days = [r["date"] for r in data["bars"]]
+    params["clocks"].update(sessions=days, entry_end_before="2019-02-09")
+    params["selected_pairs"][0].update(dte_min=1, dte_max=60)
+    params.update(decision_dates=[decision], require_fill_before_expiry=True)
+    data["forecasts"] = [{**forecast, "quote_date": decision, "expiry": e} for e in expiries]
+    data["contexts"] = [{**context, "quote_date": decision, "expiry": e, "settlement_date": e}
+                        for e in expiries]
+    data["chain"] = [{**q, "date": day, "expiration": e} for e in expiries for day in days
+                     if decision <= day <= e for q in quotes]
+    return params, inputs
+
+
+def test_fill_life_excludes_expiry_at_fill_and_trades_the_executable_alternative():
+    params, inputs = _fill_life_fixture("2019-01-03", ["2019-01-04", "2019-01-08"])
+    result = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs).run()["methods"][0]
+    decision = result["decisions"][0]
+    assert decision["candidate_books"] == 1
+    assert {r["expiry"] for r in decision["refusals"] if r["reason"] == "expiry_not_after_fill"} == {"2019-01-04"}
+    assert result["trades"] and {b["expiry"] for b in result["trades"]} == {"2019-01-08"}
+    assert {b["fill_date"] for b in result["trades"]} == {"2019-01-04"}
+    assert not any(b["reason"] == "fill_basis_or_session" for b in result["rejected"])
+
+
+def test_fill_life_uses_next_session_across_a_holiday_weekend():
+    params, inputs = _fill_life_fixture("2019-01-18", ["2019-01-21", "2019-01-22", "2019-01-23"],
+                                      omitted=["2019-01-21"])
+    groups, metadata, refused = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._prepare("2019-01-18")
+    assert len(groups) == 1 and [m["expiry"] for m in metadata] == ["2019-01-23"]
+    assert {r["expiry"] for r in refused} == {"2019-01-21", "2019-01-22"}
+    assert {r["fill_date"] for r in refused} == {"2019-01-22"}
+
+
+def test_fill_life_no_next_session_cannot_offer_a_contract():
+    params, inputs = _fill_life_fixture("2019-02-07", ["2019-02-08"], omitted=["2019-02-08"])
+    groups, metadata, refused = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._prepare("2019-02-07")
+    assert groups == metadata == []
+    assert refused == [{"symbol": "X", "expiry": "2019-02-08", "reason": "no_fill_session"}]
+
+
+def test_fill_life_false_and_absent_preserve_the_legacy_menu():
+    params, inputs = _fill_life_fixture("2019-01-03", ["2019-01-04", "2019-01-08"])
+    params["require_fill_before_expiry"] = False
+    false = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._prepare("2019-01-03")
+    del params["require_fill_before_expiry"]
+    absent = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)._prepare("2019-01-03")
+    assert false == absent
+    assert {m["expiry"] for m in absent[1]} == {"2019-01-04", "2019-01-08"}
+
+
+@pytest.mark.parametrize("bad", [0, 1, None, "true", [], {}])
+def test_fill_life_refuses_non_boolean_configuration(bad):
+    params, _inputs = _packet_clock_fixture()
+    params["require_fill_before_expiry"] = bad
+    with pytest.raises(ValueError, match="require_fill_before_expiry"):
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_fill_life_requires_clocks_only_when_constructing():
+    params, inputs = _weekly_portfolio_fixture()
+    params["require_fill_before_expiry"] = True
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    with pytest.raises(ValueError, match="require_fill_before_expiry.*clocks"):
+        ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)

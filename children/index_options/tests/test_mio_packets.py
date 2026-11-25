@@ -3205,3 +3205,17 @@ def test_copula_packet_discards_out_of_window_rows_before_materialization(study,
     bounded = MIOPacketInputs.read_bounded(study, MIOStudyContract().resolve(study)["read_bounds"],
                                           MIOStudyContract.packet(study), tmp_path/"quotes", None)
     assert bounded["inputs"]["X"]["copula_bars"] == rows[1:3]
+
+
+def test_fill_life_flag_passes_packet_intake_and_replay_without_extending_entries(study):
+    """The public facade sees the flag before clocks exist, then preserves fill/tail boundaries."""
+    study["domain"]["params"]["require_fill_before_expiry"] = True
+    _registry, _plan, permit = _open(study)
+    intake = MIOPacketInputs("intake", {"study": study}).run(None, {"permit": permit})
+    packet = MIOPacketStudy("study", {"study": study}).run(None, {"permit": permit, **intake})
+    assert [(r["status"], r["replay_parity"]) for r in packet["results"]] == [("completed", True)]
+    result = packet["results"][0]["result"]
+    assert result["trades"]
+    entry_end = intake["bounded_inputs"]["clocks"]["entry_end_before"]
+    assert all(b["fill_date"] < min(b["expiry"], entry_end) for b in result["trades"])
+    assert result["decisions"][-1]["status"] == "no_entry_fill_session"

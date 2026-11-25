@@ -37479,3 +37479,28 @@ Acceptance: default weekly identity; explicit daily sessions trade only on those
 invalid/duplicate/unsorted/non-session/tail dates and mixed timing declaration refuse; action replay cannot change
 the schedule. Focused tests and two independent candidate reviews before the real run.
 Benchmark one full166-name decision before dispatch; storage/RAM admission governs all writers.
+
+
+### ADR-0311 Amendment — Fill-eligible cadence comparison (2026-11-24)
+
+The authorized daily/weekly experiment exposed a pre-existing timing defect: a
+contract can enter the optimizer although its expiry is on the next fill session.
+This can displace executable choices. The original run is diagnostic only;
+remaining old arms are cancelled. No economic outcome informed this correction.
+
+Add optional `require_fill_before_expiry` (strict bool, default absent/false).
+When true, construction requires explicit clocks. Before quote preparation and
+optimization, retain only contracts whose expiry is strictly after the next
+actual session; record temporal refusals. Keep the entry-window fill guard.
+Prepared-cache identity already includes the flag and full clocks.
+
+Both cadences rerun in `v20261124-fill-v2`, reusing immutable old intake blobs
+and quote indexes. Reuse must bind the old config/receipt hashes and prove equal
+source, episode bounds, seal and policy; only the named eligibility flag and
+entry schedule may alter prepared parameters. Record old producer and new solver
+identities. A0008/A0009/A0010, model, risk limits, costs and sealed data stay fixed.
+
+Acceptance: equality/before/after next fill, holidays/weekends, no next session,
+legacy compatibility, strict validation, facade acceptance, cache separation,
+and reuse cross-episode refusal. Phase-0 reviewer: cadence_design_review. User
+authority: run the empirical test; this correction is necessary for its validity.
