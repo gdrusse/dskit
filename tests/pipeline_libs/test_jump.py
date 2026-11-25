@@ -1987,14 +1987,20 @@ class TestArrowHandoff:
     def test_the_example_plans_with_neither_pyarrow_nor_julia(self, tmp_path):
         script = "\n".join([
             "import sys",
-            "sys.modules['pyarrow'] = None",
+            "tried = []",
+            "class Block:",
+            "    def find_spec(self, name, path=None, target=None):",
+            "        if name.split('.')[0] == 'pyarrow':",
+            "            tried.append(name)",
+            "            raise ImportError('pyarrow is blocked')",
+            "sys.meta_path.insert(0, Block())",
             "from dskit.pipeline.document import load_document",
             "from dskit.pipeline.libs import jump",
             "from dskit.pipeline.node import DEFAULT_NODE_KINDS",
             "from dskit.pipeline.planner import plan",
             "jump.register()",
             f"plan(load_document({str(EXAMPLE)!r}), DEFAULT_NODE_KINDS)",
-            "assert 'pyarrow' not in [m for m in sys.modules if sys.modules[m] is not None]",
+            "assert tried == [], tried  # planning never even tried to import pyarrow",
         ])
         env = {**os.environ, "PYTHONPATH": str(ROOT), "PATH": str(tmp_path)}
         subprocess.run([sys.executable, "-c", script], check=True, timeout=60, env=env)
@@ -2040,12 +2046,13 @@ class TestSearch:
             self, searching):
         model, _ = searching()
         solution, record, trajectory = model.search("fix_and_reoptimise", SEARCH_PARAMS,
-                                                    limits={"rounds": 20}, seed=2)
-        assert solution == {"selected": ["A", "F"]}
-        assert isinstance(record, SolveRecord) and record.objective == 11.0
+                                                    limits={"rounds": 20}, seed=7)
+        assert solution == {"selected": ["D", "E", "F"]}
+        assert isinstance(record, SolveRecord) and record.objective == 11.5
         assert all(isinstance(row, jump.SearchRound) for row in trajectory)
-        assert _rows(trajectory) == [(1, 11.0, 11.0, True, 2), (2, 11.0, 11.0, False, 2),
-                                     (3, 11.0, 11.0, False, 2), (4, 11.0, 11.0, False, 2)]
+        assert _rows(trajectory) == [(1, 9.0, 9.0, True, 2), (2, 11.5, 11.5, True, 2),
+                                     (3, 11.5, 11.5, False, 2), (4, 11.5, 11.5, False, 2),
+                                     (5, 11.5, 11.5, False, 2)]
         assert model.solve_record is record and model.trajectory == trajectory
         assert model.timings.path == "reused" and model.timings.start_accepted is None
 
@@ -2054,11 +2061,39 @@ class TestSearch:
         first, _ = searching()
         again, _ = searching()
         other, _ = searching()
-        one = first.search("fix_and_reoptimise", SEARCH_PARAMS, seed=2)
-        two = again.search("fix_and_reoptimise", SEARCH_PARAMS, seed=2)
+        one = first.search("fix_and_reoptimise", SEARCH_PARAMS, seed=7)
+        two = again.search("fix_and_reoptimise", SEARCH_PARAMS, seed=7)
         three = other.search("fix_and_reoptimise", SEARCH_PARAMS, seed=1)
         assert one[0] == two[0] and _rows(one[2]) == _rows(two[2])
-        assert three[0] == {"selected": ["B", "F"]}
+        assert three[0] == {"selected": ["A", "F"]}
+
+    def test_the_seeded_draw_is_the_specs_splitmix64_and_partial_fisher_yates(self):
+        """Restated from the spec, so a Julia search can match the fake draw for draw."""
+        u64 = (1 << 64) - 1
+
+        def splitmix(seed):
+            state = seed
+            while True:
+                state = (state + 0x9E3779B97F4A7C15) & u64
+                z = ((state ^ (state >> 30)) * 0xBF58476D1CE4E5B9) & u64
+                z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & u64
+                yield z ^ (z >> 31)
+
+        # SplitMix64's published test vector for seed 0.
+        outputs = splitmix(0)
+        assert [next(outputs) for _ in range(3)] == [
+            0xE220A8397B1DCDAF, 0x6E789E6AA1B965F4, 0x06C45D188009454F]
+        stream, keys = splitmix(7), ["A", "B", "C", "D", "E", "F"]
+        expected = []
+        for _ in range(2):
+            pool = list(keys)
+            for j in range(2):
+                t = j + next(stream) % (len(pool) - j)
+                pool[j], pool[t] = pool[t], pool[j]
+            expected.append(pool[:2])
+        fake = jump_fake_worker().SplitMix64(7)
+        assert [fake.draw(keys, 2), fake.draw(keys, 2)] == expected == [["D", "F"],
+                                                                       ["A", "E"]]
 
     def test_the_request_is_exact_on_the_wire(self, searching):
         model, log = searching()
@@ -2155,3 +2190,468 @@ class TestSearch:
         loops = [n for n in ast.walk(ast.parse(source)) if isinstance(n, (ast.For, ast.While))]
         assert loops == []
         assert "search" in jump.OPS
+
+
+# ---------------------------------------------------------------------------
+# Candidate ca735fd3 skeptic corrections
+# ---------------------------------------------------------------------------
+
+#: Three items on which the last solution at budget 10 (all three) breaks a fix or a
+#: smaller budget.
+STALE_DATA = {"ids": ["A", "B", "C"], "cost": [1.0, 2.0, 3.0], "value": [5.0, 4.0, 9.0]}
+STALE_SEARCH = {"free": 1, "stall": 2}
+
+
+@pytest.fixture()
+def stale():
+    """Open STALE_DATA models on one fake worker at a budget; the worker closes after."""
+    worker = JuliaWorker(fake_command())
+
+    def build(budget):
+        return worker.open("budgeted_select", STALE_DATA, {"budget": budget}, DEFAULT_SOLVER,
+                           {}, timeout=30.0, start_timeout=FAKE_START_TIMEOUT)
+
+    yield build
+    worker.close()
+
+
+class TestSearchNeverReturnsAStaleIncumbent:
+    """A last solution found under other fixes, data, params or components is no incumbent."""
+
+    def test_a_fix_made_after_the_last_solve_binds_the_search(self, stale):
+        model = stale(10.0)
+        assert model.solve()[0] == {"selected": ["A", "B", "C"]}
+        model.fix({"select": {"A": 0}})
+        solution, record, _ = model.search("fix_and_reoptimise", STALE_SEARCH, seed=3)
+        assert solution == {"selected": ["B", "C"]}
+        assert record.objective == 13.0 and record.termination == "OPTIMAL"
+
+    def test_new_params_after_the_last_solve_bind_the_search(self, stale):
+        model = stale(10.0)
+        model.solve()
+        model.update(params={"budget": 3.0})
+        solution, record, _ = model.search("fix_and_reoptimise", STALE_SEARCH, seed=3)
+        assert solution == {"selected": ["C"]} and record.objective == 9.0
+
+    def test_new_data_after_the_last_solve_binds_the_search(self, stale):
+        model = stale(10.0)
+        model.solve()
+        model.update(data={"cost": [1.0, 2.0, 30.0]})
+        solution, record, _ = model.search("fix_and_reoptimise", STALE_SEARCH, seed=3)
+        assert solution == {"selected": ["A", "B"]} and record.objective == 9.0
+
+    def test_another_nodes_solution_never_comes_back_through_a_pool_hit(self, stale):
+        first = stale(10.0)
+        first.solve()
+        first.close()
+        second = stale(3.0)
+        assert second.timings.path == "updated"
+        solution, record, _ = second.search("fix_and_reoptimise", STALE_SEARCH, seed=3)
+        assert solution == {"selected": ["C"]} and record.objective == 9.0
+        assert second.start("last") == 3  # the pool hit kept it, as a start only
+
+
+def _rewrite(monkeypatch, op, change, nth=1):
+    """Rewrite the ``nth`` ``ok`` reply to a request of ``op`` before the pack checks it."""
+    original = JuliaWorker._exchange_once
+    seen = []
+
+    def rewriting(self, program, request, timeout, expect):
+        reply = original(self, program, request, timeout, expect)
+        if request["op"] == op:
+            seen.append(op)
+            if len(seen) == nth:
+                change(reply)
+        return reply
+
+    monkeypatch.setattr(JuliaWorker, "_exchange_once", rewriting)
+
+
+GOOD_DESCRIBE = {"program": "p",
+                 "schema": {"fields": {"ids": {"type": "string", "dims": ["item"]},
+                                       "cost": {"type": "float64", "dims": ["item"]}},
+                            "dims": {"item": "ids"}},
+                 "variables": {"select": {"index": ["item"], "domain": "binary"}},
+                 "components": [], "update": True}
+
+
+class TestDescribeNeverRaisesRaw:
+    @pytest.mark.parametrize("path", [
+        ("schema", "fields", "cost", "type"), ("schema", "fields", "ids", "type"),
+        ("variables", "select", "domain"), ("schema", "fields", "cost", "dims"),
+        ("schema", "dims", "item"),
+    ], ids=repr)
+    def test_an_unhashable_value_is_a_problem_not_a_type_error(self, path):
+        reply = json.loads(json.dumps(GOOD_DESCRIBE))
+        assert jump._describe_problems(reply, "p") == []
+        target = reply
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = [target[path[-1]]]
+        assert jump._describe_problems(reply, "p")
+
+    def test_a_mistyped_describe_on_the_wire_is_malformed_and_kills(self, monkeypatch, nodes):
+        _rewrite(monkeypatch, "describe",
+                 lambda r: r["schema"]["fields"]["cost"].update(type=["float64"]))
+        node = nodes(timeout=30.0)
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(malformed\)"):
+            node.open(_inputs())
+        assert _worker(node).pid is None
+
+
+class TestBookkeepingFollowsTheWorker:
+    def test_an_interrupt_after_an_update_reply_kills_the_worker(self, monkeypatch, live):
+        node, model = live()
+        original = jump.LiveModel._settle
+
+        def interrupted(self, reply, data=None):
+            if data is not None:
+                raise KeyboardInterrupt
+            original(self, reply, data)
+
+        monkeypatch.setattr(jump.LiveModel, "_settle", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            model.update(data={"cost": [1.0, 2.0, 100.0]})
+        assert _worker(node).pid is None
+        with pytest.raises(WorkerRefusal, match=r"\(stale_handle\)"):
+            model.solve()
+
+    def test_an_interrupt_while_opening_the_handle_kills_the_worker(self, monkeypatch, nodes):
+        def interrupted(self, *args, **kwargs):
+            raise KeyboardInterrupt
+
+        node = nodes(timeout=30.0)
+        node.describe()
+        monkeypatch.setattr(jump.LiveModel, "__init__", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            node.open(_inputs())
+        assert _worker(node).pid is None  # no held handle leaks in a live pool
+
+    def test_the_digest_is_computed_before_the_update_is_sent(self, tmp_path, monkeypatch,
+                                                              live):
+        log = tmp_path / "requests.jsonl"
+        node, model = live(log=log)
+        sent, data = len(_requests(log)), model.data
+
+        def interrupted(self, full):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(jump.DataContract, "digest", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            model.update(data={"cost": [1.0, 2.0, 100.0]})
+        assert len(_requests(log)) == sent and model.data is data
+        assert _process(node).poll() is None
+        assert model.solve()[0] == {"selected": ["BRAVO", "GAMMA"]}
+
+
+class TestARefusedSearchSaysItsStartStays:
+    def test_the_refusal_names_the_start_left_in_effect(self, searching):
+        model, _ = searching()
+        with pytest.raises(WorkerRefusal, match=r"\(unknown_search\).*start sent before "
+                                                r"the search IS in effect") as excinfo:
+            model.search("nope", {}, start={"select": {"A": 1}})
+        assert excinfo.value.kind == "unknown_search"
+        assert model.timings.start_source == "values"
+
+    def test_without_a_start_the_refusal_is_the_workers_own(self, searching):
+        model, _ = searching()
+        with pytest.raises(WorkerRefusal) as excinfo:
+            model.search("nope", {})
+        assert "in effect" not in str(excinfo.value)
+
+
+class TestTimingsRules:
+    @pytest.mark.parametrize(("op", "patch"), [
+        ("fix", {"path": "built"}),
+        ("fix", {"path": "updated"}),
+        ("fix", {"start_accepted": True}),
+        ("solve", {"start_accepted": True}),
+        ("solve", {"path": "updated"}),
+        ("open", {"solve_seconds": 1.0}),
+        ("open", {"path": "updated", "build_seconds": 1.0}),
+        ("open", {"pool": {"models": 1, "bytes": 3000, "evicted": 1, "evictions": 0}}),
+        ("fix", {"pool": {"models": 1, "bytes": 3000, "evicted": 1, "evictions": 1}}),
+        ("update", {"path": "built"}),
+    ], ids=repr)
+    def test_a_timings_block_breaking_the_spec_rules_kills(self, op, patch):
+        class Backed(JumpBudgetedSelect):
+            worker_command = fake_command("--mode", "bad-timings", "--on", op,
+                                          "--patch", json.dumps(patch))
+            request_timeout = 30.0
+            start_timeout = FAKE_START_TIMEOUT
+
+        node = Backed("select", PARAMS)
+        calls = {"fix": lambda m: m.fix({"select": {"ALPHA": 1}}),
+                 "solve": lambda m: m.solve(),
+                 "update": lambda m: m.update(params={"budget": 6.0})}
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(timings\)"):
+            model = node.open(_inputs())
+            calls[op](model)
+        assert _worker(node).pid is None
+
+    def test_an_update_reply_changing_the_signature_is_malformed(self, monkeypatch, live):
+        node, model = live()
+        _rewrite(monkeypatch, "update", lambda r: r.update(signature="shape:other"))
+        with pytest.raises(WorkerRefusal, match=r"\(malformed\).*shape_changed"):
+            model.update(params={"budget": 6.0})
+        assert _worker(node).pid is None
+
+    @pytest.mark.parametrize(("nth", "handle"), [(1, "x1"), (1, "h0"), (1, "h01"),
+                                                 (2, "h1")])
+    def test_an_open_reply_with_a_handle_off_the_counter_is_malformed(self, monkeypatch,
+                                                                      nodes, nth, handle):
+        _rewrite(monkeypatch, "open", lambda r: r.update(handle=handle), nth=nth)
+        node = nodes(timeout=30.0)
+        with pytest.raises(WorkerRefusal, match=r"\(malformed\).*counter"):
+            for _ in range(nth):
+                node.open(_inputs())
+        assert _worker(node).pid is None
+
+
+class TestPoolRecency:
+    """The fake's pool is the executable reference: pin LRU order and the strict caps."""
+
+    def test_untouched_the_least_recently_opened_model_is_the_victim(self, live):
+        node, first = live(models=2)
+        second = node.open(_inputs(["ALPHA"]))
+        third = node.open(_inputs(["BRAVO"]))
+        try:
+            assert third.timings.pool["evicted"] == 1
+            with pytest.raises(WorkerRefusal, match=r"\(evicted\)"):
+                first.solve()
+            assert second.solve()[0] == {"selected": ["ALPHA"]}
+            assert first.close() is False  # an evicted handle closes unpooled
+        finally:
+            second.close()
+            third.close()
+
+    def test_a_successful_op_makes_its_model_the_most_recent(self, live):
+        node, first = live(models=2)
+        second = node.open(_inputs(["ALPHA"]))
+        first.solve()
+        third = node.open(_inputs(["BRAVO"]))
+        try:
+            with pytest.raises(WorkerRefusal, match=r"\(evicted\)"):
+                second.solve()
+            assert first.solve()[0] == {"selected": ["BRAVO", "GAMMA"]}
+        finally:
+            second.close()
+            third.close()
+
+    def test_an_error_reply_leaves_recency_unchanged(self, live):
+        node, first = live(models=2)
+        second = node.open(_inputs(["ALPHA"]))
+        with pytest.raises(WorkerRefusal, match=r"\(unknown_key\)"):
+            first.fix({"select": {"NOPE": 1}})
+        third = node.open(_inputs(["BRAVO"]))
+        try:
+            with pytest.raises(WorkerRefusal, match=r"\(evicted\)"):
+                first.solve()
+            assert second.solve()[0] == {"selected": ["ALPHA"]}
+        finally:
+            second.close()
+            third.close()
+
+    def test_close_makes_the_model_the_most_recent(self, live):
+        node, first = live(models=2)
+        second = node.open(_inputs(["ALPHA"]))
+        assert first.close() is True
+        third = node.open(_inputs(["BRAVO"]))
+        again = node.open(_inputs())
+        try:
+            with pytest.raises(WorkerRefusal, match=r"\(evicted\)"):
+                second.solve()
+            assert again.timings.path == "reused"  # the closed model stayed pooled
+        finally:
+            for model in (second, third, again):
+                model.close()
+
+    def test_the_count_cap_evicts_only_past_it(self, live):
+        node, first = live(models=2)
+        second = node.open(_inputs(["ALPHA"]))
+        try:
+            assert second.timings.pool == {"models": 2, "bytes": 4000, "evicted": 0,
+                                           "evictions": 0}
+        finally:
+            second.close()
+
+    def test_the_byte_cap_evicts_only_past_it(self, live):
+        node, first = live(nbytes=4000)
+        second = node.open(_inputs(["ALPHA"]))
+        try:
+            assert second.timings.pool["evicted"] == 0 and second.timings.pool["bytes"] == 4000
+        finally:
+            second.close()
+
+    def test_evictions_count_since_the_worker_started(self, live):
+        node, first = live(models=1)
+        second = node.open(_inputs(["ALPHA"]))
+        third = node.open(_inputs(["BRAVO"]))
+        try:
+            assert third.timings.pool == {"models": 1, "bytes": 1000, "evicted": 1,
+                                          "evictions": 2}
+        finally:
+            second.close()
+            third.close()
+
+    def test_a_pool_hit_keeps_the_last_solution_for_start_last(self, live):
+        node, model = live()
+        model.solve()
+        model.close()
+        again = node.open(_inputs())
+        try:
+            assert again.timings.path == "reused"
+            assert again.start("last") == 3 and again.timings.start_source == "last"
+        finally:
+            again.close()
+
+
+class TestWireRefusalsOnEveryPath:
+    def test_a_wrong_update_digest_kills_the_worker(self, live):
+        node, model = live("--mode", "bad-digest", "--on", "update")
+        with pytest.raises(WorkerRefusal, match=r"\(digest\)"):
+            model.update(data={"value": [1.0, 6.0, 6.0]})
+        assert _worker(node).pid is None
+
+    def test_a_wrong_handle_echo_on_an_update_kills_the_worker(self, live):
+        node, model = live("--mode", "wrong-handle", "--on", "update")
+        with pytest.raises(WorkerRefusal, match=r"\(malformed\).*handle"):
+            model.update(params={"budget": 6.0})
+        assert _worker(node).pid is None
+
+    def test_a_trajectory_past_the_round_limit_kills_the_worker(self, searching):
+        model, _ = searching("--mode", "extra-round")
+        with pytest.raises(WorkerRefusal, match=r"\(trajectory\).*the request allowed 1"):
+            model.search("fix_and_reoptimise", SEARCH_PARAMS, limits={"rounds": 1}, seed=7)
+        assert model._worker.pid is None
+
+
+class TestArrowEncoding:
+    def test_every_type_and_shape_is_written_as_the_spec_names(self, tmp_path):
+        pa = pytest.importorskip("pyarrow")
+        contract = jump.DataContract("p", WIDE_SCHEMA)
+        handoff = jump._ArrowHandoff(0, str(tmp_path))
+        try:
+            wire, files = handoff.encode(contract, WIDE, contract.check(WIDE))
+            assert wire["scale"] == 2  # a scalar always travels as JSON
+            read = {}
+            for name in ("name", "code", "grid", "flag"):
+                ref = wire[name]["arrow"]
+                table = pa.ipc.open_file(ref["path"]).read_all()
+                read[name] = (ref["shape"], table.schema.field("values").type,
+                              table.column("values").to_pylist())
+            assert read == {
+                "name": ([2], pa.string(), ["r1", "r2"]),
+                "code": ([3], pa.int64(), [7, -1, 0]),
+                "grid": ([2, 3], pa.float64(), [1.0, -0.0, 2.0, 3.5, 4.0, 5.0]),
+                "flag": ([2], pa.bool_(), [True, False]),
+            }
+            handoff.remove(files)
+            assert _files(tmp_path) == []
+        finally:
+            handoff.discard()
+
+    def test_a_failed_write_removes_the_files_already_written(self, tmp_path, monkeypatch):
+        pytest.importorskip("pyarrow")
+        contract = jump.DataContract("p", WIDE_SCHEMA)
+        handoff = jump._ArrowHandoff(0, str(tmp_path))
+        original, calls = jump._ArrowHandoff._write, []
+
+        def failing(self, *args):
+            calls.append(args)
+            if len(calls) == 2:
+                raise OSError("disk full")
+            return original(self, *args)
+
+        monkeypatch.setattr(jump._ArrowHandoff, "_write", failing)
+        try:
+            with pytest.raises(OSError, match="disk full"):
+                handoff.encode(contract, WIDE, contract.check(WIDE))
+            assert len(calls) == 2 and _files(tmp_path) == []
+        finally:
+            handoff.discard()
+
+
+class _Raw:
+    """A bare JSON-lines client of the fake worker (no pack in between)."""
+
+    def __init__(self):
+        self.process = subprocess.Popen(fake_command(), stdin=subprocess.PIPE,
+                                        stdout=subprocess.PIPE, text=True)
+        self.next_id = 0
+
+    def send(self, **request):
+        self.next_id += 1
+        self.process.stdin.write(json.dumps({"id": self.next_id, **request}) + "\n")
+        self.process.stdin.flush()
+        line = self.process.stdout.readline()
+        assert line, "the fake died without a reply"
+        return json.loads(line)
+
+    def close(self):
+        self.process.kill()
+        self.process.wait()
+        self.process.stdin.close()
+        self.process.stdout.close()
+
+
+@pytest.fixture()
+def raw():
+    client = _Raw()
+    assert client.send(op="hello", settings={"pool_models": 4, "pool_bytes": 1 << 32})["ok"]
+    yield client
+    client.close()
+
+
+def _raw_open(raw, data=None):
+    reply = raw.send(op="open", program="budgeted_select", data=data or ELIGIBLE,
+                     params={"budget": 10.0}, solver=DEFAULT_SOLVER, solver_options={},
+                     components={})
+    return reply
+
+
+class TestTheFakeIsAsStrictAsTheSpec:
+    @pytest.mark.parametrize("limits", [
+        {"node_limit": "x"}, {"node_limit": 0}, {"node_limit": True}, {"time_limit": -1},
+        {"time_limit": 0}, {"mip_rel_gap": "a"}, {"mip_rel_gap": -0.1},
+        {"solution_limit": 1.5},
+    ], ids=repr)
+    def test_a_mistyped_limit_is_bad_request(self, raw, limits):
+        handle = _raw_open(raw)["handle"]
+        for request in ({"op": "solve", "handle": handle, "limits": limits},
+                        {"op": "search", "handle": handle, "search": "fix_and_reoptimise",
+                         "params": SEARCH_PARAMS, "seed": 1, "limits": {},
+                         "round_limits": limits}):
+            reply = raw.send(**request)
+            assert reply["ok"] is False and reply["error"]["kind"] == "bad_request"
+        assert raw.send(op="solve", handle=handle, limits={})["ok"] is True
+
+    @pytest.mark.parametrize("change", [
+        {"extra": 1}, {"params": None},
+    ], ids=["extra-key", "missing-params"])
+    def test_a_one_shot_solve_of_the_wrong_key_set_is_bad_request(self, raw, change):
+        request = {"op": "solve", "program": "budgeted_select", "data": ELIGIBLE,
+                   "params": {"budget": 10.0}, "solver": DEFAULT_SOLVER,
+                   "solver_options": {}, **change}
+        request = {k: v for k, v in request.items() if v is not None}
+        reply = raw.send(**request)
+        assert reply["ok"] is False and reply["error"]["kind"] == "bad_request"
+
+    def test_a_non_number_fix_value_is_bad_request(self, raw):
+        handle = _raw_open(raw)["handle"]
+        reply = raw.send(op="fix", handle=handle,
+                         values={"select": {"keys": [["ALPHA"]], "values": [True]}})
+        assert reply["ok"] is False and reply["error"]["kind"] == "bad_request"
+
+    def test_an_arrow_stream_file_is_bad_data(self, raw, tmp_path):
+        pa = pytest.importorskip("pyarrow")
+        import hashlib
+
+        path = tmp_path / "cost.arrows"
+        table = pa.table({"values": pa.array(ELIGIBLE["cost"], type=pa.float64())})
+        with pa.OSFile(str(path), "wb") as sink, pa.ipc.new_stream(sink, table.schema) as out:
+            out.write_table(table)
+        ref = {"arrow": {"path": str(path), "sha256": hashlib.sha256(
+            path.read_bytes()).hexdigest(), "shape": [3]}}
+        reply = _raw_open(raw, {**ELIGIBLE, "cost": ref})
+        assert reply["ok"] is False and reply["error"]["kind"] == "bad_data"

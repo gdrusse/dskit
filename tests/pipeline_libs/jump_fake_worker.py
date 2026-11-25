@@ -22,10 +22,14 @@ count at ``params.max_items``. The one-shot ``solve`` is v1 unchanged and ignore
 (field set, element types, one length per dimension, distinct labels, finite numbers), and
 read an Arrow reference (pyarrow, imported only then) after checking its sha256. ONE
 search is registered, ``fix_and_reoptimise`` (params exactly ``{free, stall}``): each round
-frees ``free`` variables drawn by ``random.Random(seed)`` from those the caller has not
-fixed, fixes the rest at the incumbent, re-solves from the incumbent under the round
-limits, and accepts a strictly better objective; it is done after ``stall`` rounds in a
-row without one. The same seed gives the same trajectory.
+frees ``free`` variables drawn by the spec's seeded draw (:class:`SplitMix64` and a
+partial Fisher-Yates over the caller's unfixed keys in ascending order) from those the
+caller has not fixed, fixes the rest at the incumbent, re-solves from the incumbent under
+the round limits, and accepts a strictly better objective; it is done after ``stall``
+rounds in a row without one. The same seed gives the same trajectory in any language
+that follows the spec. A search takes the model's last solution as its incumbent only
+when that solution was found under the model's current data, params, components and
+fixes; otherwise it solves first.
 
 ``--mode`` picks a behaviour, never an edit to this file. At ``hello``:
 
@@ -58,6 +62,10 @@ At the first session reply that can carry it (``--once`` as above):
 ``wrong-handle``   the first reply to a request naming a handle echoes another one
 ``bad-digest``     the first ``open``/``update`` reply carries a digest of other data
 ``bad-trajectory`` the first search trajectory's first row updated by ``--patch``
+``extra-round``    the first search trajectory gains one well-typed row past its last
+
+``--on OP`` limits these four to the replies of request op ``OP`` (``solve`` meaning a
+handle solve), so a test can aim one at an ``update`` or a ``search``.
 
 Answering correctly throughout:
 
@@ -82,7 +90,6 @@ import itertools
 import json
 import math
 import os
-import random
 import struct
 import sys
 import time
@@ -144,7 +151,8 @@ HELLO_MODES = ("bad-protocol", "v1-only", "stdout-noise", "bool-id", "hello-erro
 SOLVE_MODES = ("crash", "hang", "malformed", "wrong-id", "error-reply", "bad-record",
                "patch-record", "dup-key", "extra-key", "over-budget", "float-overflow",
                "deep-reply")
-TIMINGS_MODES = ("bad-timings", "wrong-handle", "bad-digest", "bad-trajectory")
+TIMINGS_MODES = ("bad-timings", "wrong-handle", "bad-digest", "bad-trajectory",
+                 "extra-round")
 CLEAN_MODES = ("ok", "noisy-stderr", "big-reply", "linger", "slow-solve", "no-update")
 MODES = CLEAN_MODES + HELLO_MODES + SOLVE_MODES + TIMINGS_MODES
 
@@ -168,6 +176,36 @@ SEED_BOUND = 1 << 53
 
 #: What a schema type is as an Arrow column type name (``str(pyarrow type)``).
 ARROW_TYPES = {"float64": "double", "int64": "int64", "string": "string", "bool": "bool"}
+
+
+#: SplitMix64's constants (the spec's seeded draw).
+_SPLITMIX_GAMMA = 0x9E3779B97F4A7C15
+_SPLITMIX_MIX1 = 0xBF58476D1CE4E5B9
+_SPLITMIX_MIX2 = 0x94D049BB133111EB
+_U64 = (1 << 64) - 1
+
+
+class SplitMix64:
+    """The spec's generator: SplitMix64 seeded with the request's ``seed``."""
+
+    def __init__(self, seed):
+        self.state = seed & _U64
+
+    def next(self):
+        """The next 64-bit output."""
+        self.state = (self.state + _SPLITMIX_GAMMA) & _U64
+        z = self.state
+        z = ((z ^ (z >> 30)) * _SPLITMIX_MIX1) & _U64
+        z = ((z ^ (z >> 27)) * _SPLITMIX_MIX2) & _U64
+        return z ^ (z >> 31)
+
+    def draw(self, candidates, k):
+        """``k`` of ``candidates`` by a partial Fisher-Yates: one output per pick."""
+        pool = list(candidates)
+        for j in range(k):
+            t = j + self.next() % (len(pool) - j)
+            pool[j], pool[t] = pool[t], pool[j]
+        return pool[:k]
 
 
 class Refused(Exception):
@@ -341,7 +379,10 @@ def _arrow_values(name, ref, kind):
         raise Refused("bad_data", f"{name!r}: the Arrow file's sha256 is not the one sent")
     import pyarrow as pa
 
-    table = pa.ipc.open_file(pa.BufferReader(raw)).read_all()
+    try:
+        table = pa.ipc.open_file(pa.BufferReader(raw)).read_all()
+    except (pa.ArrowInvalid, OSError) as exc:
+        raise Refused("bad_data", f"{name!r}: not an Arrow IPC file: {exc}") from None
     if table.column_names != ["values"] or str(table.schema.field("values").type) != (
             ARROW_TYPES[kind]):
         raise Refused("bad_data", f"{name!r}: the Arrow file must be one column 'values' "
@@ -403,8 +444,16 @@ def _check_params(params, attached):
 
 
 def _check_limits(limits):
+    """Refuse (``bad_request``) per-solve limits of the wrong key set or type."""
     if not isinstance(limits, dict) or set(limits) - set(LIMIT_KEYS):
         raise Refused("bad_request", f"limits must be an object over {list(LIMIT_KEYS)}")
+    ok = {"time_limit": lambda v: _is_number(v) and v > 0,
+          "node_limit": lambda v: _is_int(v, 1),
+          "mip_rel_gap": lambda v: _is_number(v) and v >= 0,
+          "solution_limit": lambda v: _is_int(v, 1)}
+    for key, value in limits.items():
+        if not ok[key](value):
+            raise Refused("bad_request", f"limit {key!r} has the wrong type or range")
     return limits
 
 
@@ -423,6 +472,8 @@ def _keys(group_obj, model, with_values):
             raise Refused("bad_request", f"a select key is [id], got {key!r}")
         if key[0] not in model.data["ids"]:
             raise Refused("unknown_key", f"select has no key {key!r}")
+        if with_values and not _is_number(value):
+            raise Refused("bad_request", f"a value must be a number, got {value!r}")
         if with_values and value not in (0, 1):
             raise Refused("bad_value", f"select is binary: {value!r} is not 0 or 1")
         pairs.append((key[0], value))
@@ -458,6 +509,7 @@ class Model:
         self.start_source = None
         self.last = None
         self.last_record = None
+        self.last_state = None
         self.held = False
 
     @property
@@ -467,6 +519,14 @@ class Model:
     def state(self):
         return (data_digest(self.data), json.dumps(self.params, sort_keys=True),
                 tuple(sorted(self.attached)))
+
+    def solve_state(self):
+        """What a solution depends on: the data, params, components and fixes."""
+        return self.state(), tuple(sorted(self.fixed.items()))
+
+    def keep(self, solution, record):
+        """Make ``solution`` the last one, recording the state it was found under."""
+        self.last, self.last_record, self.last_state = solution, record, self.solve_state()
 
     def release(self):
         """A pool hit: every fix released and every start cleared; the last solution kept."""
@@ -489,6 +549,8 @@ class FakeWorker:
         self.evicted_handles = set()
         self.issued = 0
         self.evictions = 0
+        self.on = None
+        self.touched = None
 
     def _reply(self, obj):
         if self.mode == "noisy-stderr":
@@ -580,6 +642,10 @@ class FakeWorker:
             raise Refused("unknown_program", f"no program named {request['program']!r}")
 
     def _answer(self, request):
+        if set(request) != REQUEST_KEYS["solve"]:
+            self._error(request, "bad_request",
+                        f"a solve request is exactly {sorted(REQUEST_KEYS['solve'])}")
+            return
         if request["program"] != PROGRAM:
             self._error(request, "unknown_program", f"no program named {request['program']!r}")
             return
@@ -615,7 +681,7 @@ class FakeWorker:
         if handle not in self.handles:
             raise Refused("unknown_handle", f"no open handle {handle!r}")
         model = self.handles[handle]
-        self.pool.move_to_end(id(model))
+        self.touched = model  # most recent only once the op succeeds
         return model
 
     def _describe(self, request):
@@ -764,8 +830,7 @@ class FakeWorker:
         record = _record(model.key[2], ids, budget, chosen, objective, complete, cost,
                          seconds)
         if chosen is not None:
-            model.last = {i: int(i in chosen) for i in ids}
-            model.last_record = record
+            model.keep({i: int(i in chosen) for i in ids}, record)
         return {"handle": request["handle"], "solution": {"selected": chosen},
                 "record": record,
                 "timings": self._timings(model, "reused", solve=seconds, accepted=accepted)}
@@ -795,7 +860,7 @@ class FakeWorker:
         value = dict(zip(ids, model.data["value"]))
         budget = float(model.params["budget"])
         max_items = model.params["max_items"] if "max_items" in model.attached else None
-        rng = random.Random(seed)
+        rng = SplitMix64(seed)
         began = time.perf_counter()
         solving = 0.0
 
@@ -814,20 +879,22 @@ class FakeWorker:
         caller = dict(model.fixed)
         first_accepted = None
         incumbent, record = model.last, model.last_record
-        if incumbent is None or model.start is not None:
+        if (incumbent is None or model.start is not None
+                or model.last_state != model.solve_state()):
             chosen, objective, record, first_accepted, _ = solve(caller, model.start)
             incumbent = None if chosen is None else {i: int(i in chosen) for i in ids}
         trajectory = []
         if incumbent is not None:
             best = sum(value[i] for i in ids if incumbent[i])
-            pool, stall = sorted(i for i in ids if i not in caller), 0
+            pool = sorted((i for i in ids if i not in caller), key=lambda k: k.encode("utf-8"))
+            stall = 0
             while stall < params["stall"]:
                 if "rounds" in limits and len(trajectory) >= limits["rounds"]:
                     break
                 if ("time_limit" in limits
                         and time.perf_counter() - began >= limits["time_limit"]):
                     break
-                hood = set(rng.sample(pool, min(params["free"], len(pool))))
+                hood = set(rng.draw(pool, min(params["free"], len(pool))))
                 fixed = {**{i: incumbent[i] for i in ids if i not in hood}, **caller}
                 chosen, objective, found, _, seconds = solve(fixed, incumbent)
                 better = chosen is not None and objective > best + 1e-12
@@ -841,7 +908,7 @@ class FakeWorker:
                         {i: int(i in chosen) for i in ids}, objective, found, 0)
                 else:
                     stall += 1
-            model.last, model.last_record = incumbent, record
+            model.keep(incumbent, record)
         record = {**record, "seconds": time.perf_counter() - began}
         selected = None if incumbent is None else [i for i in sorted(ids) if incumbent[i]]
         return {"handle": request["handle"], "solution": {"selected": selected},
@@ -856,7 +923,8 @@ class FakeWorker:
             return {"handle": handle, "pooled": False}
         if handle not in self.handles:
             raise Refused("unknown_handle", f"no open handle {handle!r}")
-        self.handles.pop(handle).held = False
+        model = self.handles.pop(handle)
+        model.held, self.touched = False, model
         return {"handle": handle, "pooled": True}
 
     def _session(self, request, op):
@@ -865,6 +933,7 @@ class FakeWorker:
                "fix": self._fix, "free": self._free, "start": self._start,
                "handle-solve": self._handle_solve, "search": self._search,
                "close": self._close}
+        self.touched = None
         try:
             if set(request) != REQUEST_KEYS[op]:
                 raise Refused("bad_request", f"a {op} request is exactly "
@@ -873,18 +942,25 @@ class FakeWorker:
         except Refused as refused:
             self._error(request, refused.kind, str(refused))
             return
-        if self.mode == "bad-timings" and "timings" in body and self._misbehaves(
+        if self.touched is not None and id(self.touched) in self.pool:
+            self.pool.move_to_end(id(self.touched))  # every successful handle op, close too
+        aimed = self.on is None or self.on == request["op"]
+        if self.mode == "bad-timings" and aimed and "timings" in body and self._misbehaves(
                 TIMINGS_MODES):
             body["timings"].update(self.patch)
-        elif self.mode == "wrong-handle" and "handle" in request and self._misbehaves(
-                TIMINGS_MODES):
+        elif self.mode == "wrong-handle" and aimed and "handle" in request and (
+                self._misbehaves(TIMINGS_MODES)):
             body["handle"] = "h999"
-        elif self.mode == "bad-digest" and "digest" in body and self._misbehaves(
+        elif self.mode == "bad-digest" and aimed and "digest" in body and self._misbehaves(
                 TIMINGS_MODES):
             body["digest"] = data_digest({"ids": []})
-        elif self.mode == "bad-trajectory" and body.get("trajectory") and self._misbehaves(
-                TIMINGS_MODES):
+        elif self.mode == "bad-trajectory" and aimed and body.get("trajectory") and (
+                self._misbehaves(TIMINGS_MODES)):
             body["trajectory"][0].update(self.patch)
+        elif self.mode == "extra-round" and aimed and body.get("trajectory") and (
+                self._misbehaves(TIMINGS_MODES)):
+            rows = body["trajectory"]
+            rows.append({**rows[-1], "round": len(rows) + 1, "accepted": False})
         self._reply({"id": request["id"], "ok": True, **body})
 
     def serve(self):
@@ -921,14 +997,18 @@ def main(argv=None):
     parser.add_argument("--patch", default="{}", help="patch-record/bad-timings: JSON object")
     parser.add_argument("--delay", type=float, default=3600.0,
                         help="slow-hello/slow-solve: seconds to sleep")
+    parser.add_argument("--on", default=None,
+                        help="aim the session misbehaviours at this request op only")
     parser.add_argument("--pidfile", default=None, help="write this process's id here on start")
     parser.add_argument("--request-log", default=None, help="append every request line here")
     args = parser.parse_args(argv)
     if args.pidfile is not None:
         with open(args.pidfile, "w", encoding="utf-8") as out:
             out.write(str(os.getpid()))
-    FakeWorker(args.mode, args.once, json.loads(args.patch), args.delay,
-               args.request_log).serve()
+    worker = FakeWorker(args.mode, args.once, json.loads(args.patch), args.delay,
+                        args.request_log)
+    worker.on = args.on
+    worker.serve()
 
 
 if __name__ == "__main__":

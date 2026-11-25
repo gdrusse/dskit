@@ -3,7 +3,8 @@
 One module per library (``pyomo.py``, ``sklearn.py``, ``torch.py`` plus
 its catalog sibling ``torch_ts.py``, ``transformers.py``, ``optuna.py``,
 ``numpy.py``, ``sb3.py``, ``matplotlib.py``, ``mlflow.py``, and ``jump.py``,
-which drives a Julia subprocess and imports no third-party library at all).
+which drives a Julia subprocess and imports a third-party library, pyarrow, only
+inside the method that writes an Arrow handoff file).
 Each may NAME its library, but imports it only inside a method (``run()``
 for a node pack)
 — enforced twice by

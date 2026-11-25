@@ -129,12 +129,14 @@ from __future__ import annotations
 
 import atexit
 import collections
+import contextlib
 import hashlib
 import json
 import math
 import os
 import pathlib
 import queue
+import re
 import shutil
 import signal
 import struct
@@ -276,6 +278,12 @@ _REPLY_KEYS = {
     "shutdown": frozenset({"id", "ok"}),
 }
 
+#: The reply kinds that run the solver (``solve_seconds`` and ``start_accepted`` apply).
+_SOLVING_REPLIES = frozenset({"handle-solve", "search"})
+
+#: A handle: ``h`` and a decimal counter from 1 (the wire spec).
+_HANDLE = re.compile(r"h[1-9][0-9]*")
+
 #: The exact key set of a timings block's ``pool`` object.
 _POOL_KEYS = ("models", "bytes", "evicted", "evictions")
 
@@ -346,6 +354,7 @@ class WorkerRefusal(RuntimeError):
         super().__init__(f"JuMP program {program!r} refused ({kind}): {message}")
         self.program = program
         self.kind = kind
+        self.message = message
 
 
 # -- strict JSON and the record check ----------------------------------------
@@ -587,6 +596,37 @@ def _timings_problems(obj):
     return problems
 
 
+def _timings_rule_problems(op, obj):
+    """Return the breaches of the spec's cross-field timings rules for reply kind ``op``.
+
+    ``obj`` is a well-typed timings block. The rules: ``path`` is ``reused`` for every
+    op but ``open`` and ``update`` (and an ``update`` never ``built``); ``build_seconds``
+    is 0 unless ``built`` or ``rebuilt``; ``solve_seconds`` is 0 and ``start_accepted``
+    null for every op but a solve or a search; ``start_accepted`` is null when no start
+    is in effect; only an ``open`` evicts, and never more than the evictions so far.
+    """
+    problems = []
+    path = obj["path"]
+    if op not in ("open", "update") and path != "reused":
+        problems.append(f"timings.path must be 'reused' for {op}, got {path!r}")
+    if op == "update" and path == "built":
+        problems.append("timings.path of an update is never 'built'")
+    if path not in ("built", "rebuilt") and obj["build_seconds"] != 0:
+        problems.append(f"timings.build_seconds must be 0 when the path is {path!r}")
+    solving = op in _SOLVING_REPLIES
+    if not solving and obj["solve_seconds"] != 0:
+        problems.append(f"timings.solve_seconds must be 0 for {op}")
+    if obj["start_accepted"] is not None and (not solving or obj["start_source"] is None):
+        problems.append("timings.start_accepted must be null but for a solve or a search "
+                        "with a start in effect")
+    pool = obj["pool"]
+    if op != "open" and pool["evicted"] != 0:
+        problems.append(f"timings.pool.evicted must be 0 for {op}: only an open evicts")
+    if pool["evicted"] > pool["evictions"]:
+        problems.append("timings.pool.evicted exceeds the evictions since the worker started")
+    return problems
+
+
 @dataclass(frozen=True)
 class SearchRound:
     """One round of a worker-side search (ADR-0328 A6): a row of the trajectory.
@@ -673,8 +713,13 @@ def _names(value):
             and len(set(value)) == len(value))
 
 
+def _one_of(value, allowed):
+    """Whether ``value`` is a string in ``allowed`` (an unhashable value is simply not)."""
+    return isinstance(value, str) and value in allowed
+
+
 def _describe_problems(reply, program):
-    """Return the problems of an ``ok`` describe reply's body."""
+    """Return the problems of an ``ok`` describe reply's body (any JSON value: never raises)."""
     problems = []
     if reply["program"] != program:
         problems.append(f"program must echo {program!r}")
@@ -684,17 +729,17 @@ def _describe_problems(reply, program):
         return problems + ["schema must be exactly {fields, dims}, two objects"]
     for name, spec in schema["fields"].items():
         if (not _is_name(name) or not isinstance(spec, dict) or set(spec) != {"type", "dims"}
-                or spec["type"] not in _FIELD_TYPES or not _names(spec["dims"])):
+                or not _one_of(spec["type"], _FIELD_TYPES) or not _names(spec["dims"])):
             problems.append(f"schema.fields[{name!r}] must be {{type, dims}}")
     for name, label in schema["dims"].items():
         spec = schema["fields"].get(label) if isinstance(label, str) else None
         if not _is_name(name) or not (label is None or (
                 isinstance(spec, dict) and spec.get("dims") == [name]
-                and spec.get("type") in _LABEL_TYPES)):
+                and _one_of(spec.get("type"), _LABEL_TYPES))):
             problems.append(f"schema.dims[{name!r}] must be null or name a one-dimensional "
                             f"string or int64 field over {name!r}")
     used = {dim for spec in schema["fields"].values() if isinstance(spec, dict)
-            and isinstance(spec.get("dims"), list) for dim in spec["dims"]}
+            and _names(spec.get("dims")) for dim in spec["dims"]}
     undeclared = sorted(used - set(schema["dims"]), key=str)
     if undeclared:
         problems.append(f"schema.dims must declare every dimension a field uses; missing "
@@ -702,7 +747,7 @@ def _describe_problems(reply, program):
     variables = reply["variables"]
     if not isinstance(variables, dict) or not all(
             _is_name(name) and isinstance(spec, dict) and set(spec) == {"index", "domain"}
-            and _names(spec["index"]) and spec["domain"] in _DOMAINS
+            and _names(spec["index"]) and _one_of(spec["domain"], _DOMAINS)
             for name, spec in variables.items()):
         problems.append("variables must map group names to {index, domain}")
     if not _names(reply["components"]):
@@ -1108,16 +1153,19 @@ def _write_line(stream, text, errors):
 def _check_payload(program, request):
     """Refuse (``payload``) a request that is not JSON with finite numbers, before sending.
 
-    A ``data`` object is checked field by field first, so the refusal names the field.
+    A ``data`` object is checked field by field first, so the refusal names the field;
+    the rest of the request is then checked without it, so no field is serialised twice.
     """
     data = request.get("data")
-    for name, value in (data.items() if isinstance(data, dict) else ()):
-        try:
-            json.dumps(value, allow_nan=False)
-        except (TypeError, ValueError) as exc:
-            raise WorkerRefusal(program, "payload",
-                                f"data field {name!r} is not JSON with finite numbers: "
-                                f"{exc}") from exc
+    if isinstance(data, dict):
+        for name, value in data.items():
+            try:
+                json.dumps(value, allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise WorkerRefusal(program, "payload",
+                                    f"data field {name!r} is not JSON with finite numbers: "
+                                    f"{exc}") from exc
+        request = {**request, "data": {name: None for name in data}}
     try:
         json.dumps(request, allow_nan=False)
     except (TypeError, ValueError) as exc:
@@ -1219,6 +1267,7 @@ class JuliaWorker:
         self._handoff = _ArrowHandoff(self.transport["arrow_threshold"],
                                       self.transport["scratch_root"])
         self._described = {}
+        self._handles = set()
         _EVERY_WORKER.add(self)
         self.info = None
         self.starts = 0
@@ -1333,17 +1382,20 @@ class JuliaWorker:
         return self._described[program]
 
     def _send_data(self, program, contract, request, data, full, timeout, expect):
-        """Send a request whose ``data`` is checked: Arrow files written, removed, digest checked."""
+        """Send a request whose ``data`` is checked: Arrow files written, removed, digest checked.
+
+        The digest of the data sent is computed BEFORE sending, so nothing slow runs
+        between the reply and the bookkeeping that follows it.
+        """
+        expected = contract.digest(full)
         wire, files = self._handoff.encode(contract, data, full)
         try:
             reply = self._exchange(program, {**request, "data": wire}, timeout, expect=expect)
         finally:
             self._handoff.remove(files)
-        if "handle" in request and reply["handle"] != request["handle"]:
-            raise self._malformed(program, f"a reply for handle {reply['handle']!r}, the "
-                                  f"request named {request['handle']!r}", json.dumps(reply))
-        self._session_checks(program, expect, reply)
-        expected = contract.digest(full)
+        with self._settling():
+            self._echo_checks(program, request, expect, reply)
+            self._session_checks(program, expect, reply)
         if reply["digest"] != expected:
             self._discard()
             raise WorkerRefusal(program, "digest",
@@ -1398,11 +1450,10 @@ class JuliaWorker:
             full = contract.check(data)
             reply = self._send_data(program, contract, body, data, full, float(timeout),
                                     "open")
-            if not _is_name(reply["handle"]):
-                raise self._malformed(program, "an open reply naming no handle",
-                                      json.dumps(reply))
-            return LiveModel(self, self.starts, program, solver, reply, float(timeout),
-                             contract, full)
+            with self._settling():
+                self._handles.add(reply["handle"])
+                return LiveModel(self, self.starts, program, solver, reply, float(timeout),
+                                 contract, full)
 
     def _session(self, model, op, body, check_payload=True):
         """Send one op on ``model``'s handle; return the validated ``ok`` reply.
@@ -1429,23 +1480,57 @@ class JuliaWorker:
                 full = model.contract.check(body["data"], model.data)
                 reply = self._send_data(program, model.contract, request, body["data"],
                                         full, model.timeout, expect)
-                model.data = full
+                with self._settling():
+                    if reply["signature"] != model.signature:
+                        raise self._malformed(
+                            program, f"an update reply changing the signature from "
+                            f"{model.signature!r} (the worker must refuse it as "
+                            f"shape_changed)", json.dumps(reply))
+                    model._settle(reply, data=full)
                 return reply
             reply = self._exchange(program, request, model.timeout, expect=expect)
-            if reply["handle"] != model.handle:
-                raise self._malformed(program, f"a reply for handle {reply['handle']!r}, "
-                                      f"the request named {model.handle!r}",
-                                      json.dumps(reply))
-            self._session_checks(program, expect, reply)
-            if expect in ("handle-solve", "search"):
-                reply["record"] = self._record(program, reply["record"], model.solver)
-            if expect == "search":
-                problems = _trajectory_problems(reply["trajectory"],
-                                                body["limits"].get("rounds"))
-                if problems:
-                    self._discard()
-                    raise WorkerRefusal(program, "trajectory", "; ".join(problems))
+            with self._settling():
+                self._echo_checks(program, request, expect, reply)
+                self._session_checks(program, expect, reply)
+                if expect in ("handle-solve", "search"):
+                    reply["record"] = self._record(program, reply["record"], model.solver)
+                if expect == "search":
+                    problems = _trajectory_problems(reply["trajectory"],
+                                                    body["limits"].get("rounds"))
+                    if problems:
+                        self._discard()
+                        raise WorkerRefusal(program, "trajectory", "; ".join(problems))
+                model._settle(reply)
             return reply
+
+    @contextlib.contextmanager
+    def _settling(self):
+        """Kill the worker when anything but a refusal interrupts the work after a reply.
+
+        The worker has applied the request by then, so Python's record of the model (its
+        data, digest, signature, timings) must follow it or the worker must go: a
+        ``KeyboardInterrupt`` or ``MemoryError`` here would otherwise leave Python
+        believing the model is in a state it is not in.
+        """
+        try:
+            yield
+        except WorkerRefusal:
+            raise
+        except BaseException:
+            self._discard()
+            raise
+
+    def _echo_checks(self, program, request, op, reply):
+        """Kill the worker (``malformed``) on a wrong handle echo or a reissued handle."""
+        if "handle" in request and reply["handle"] != request["handle"]:
+            raise self._malformed(program, f"a reply for handle {reply['handle']!r}, the "
+                                  f"request named {request['handle']!r}", json.dumps(reply))
+        if op == "open" and not (isinstance(reply["handle"], str)
+                                 and _HANDLE.fullmatch(reply["handle"])
+                                 and reply["handle"] not in self._handles):
+            raise self._malformed(program, "an open reply whose handle is not 'h' and a "
+                                  "counter this worker process has not issued before",
+                                  json.dumps(reply))
 
     def _session_checks(self, program, op, reply):
         """Kill the worker on a mistyped session body (``malformed``) or timings (``timings``)."""
@@ -1453,7 +1538,8 @@ class JuliaWorker:
         if problems:
             raise self._malformed(program, "; ".join(problems), json.dumps(reply))
         if "timings" in reply:
-            problems = _timings_problems(reply["timings"])
+            problems = _timings_problems(reply["timings"]) or _timings_rule_problems(
+                op, reply["timings"])
             if problems:
                 self._discard()
                 raise WorkerRefusal(program, "timings", "; ".join(problems))
@@ -1543,6 +1629,7 @@ class JuliaWorker:
         process, self._process = self._process, None
         self.info = None
         self._described = {}
+        self._handles = set()
         self._handoff.discard()
         if process is None:
             return ""
@@ -1739,11 +1826,23 @@ class LiveModel:
         self.closed = False
 
     def _op(self, op, body, check_payload=True):
-        """Send ``op`` on this handle, keep its timings, return the reply."""
-        reply = self._worker._session(self, op, body, check_payload)
+        """Send ``op`` on this handle; return the reply (the worker settles this record)."""
+        return self._worker._session(self, op, body, check_payload)
+
+    def _settle(self, reply, data=None):
+        """Follow a validated reply: timings, data and digest, record and trajectory.
+
+        Called by the worker under its lock, inside the guard that kills the worker when
+        this is interrupted, so this record never parts from the worker's model.
+        """
         if "timings" in reply:
             self.timings = Timings(**reply["timings"])
-        return reply
+        if data is not None:
+            self.data, self.signature, self.digest = data, reply["signature"], reply["digest"]
+        if "record" in reply:
+            self.solve_record = reply["record"]
+        if "trajectory" in reply:
+            self.trajectory = tuple(SearchRound(**row) for row in reply["trajectory"])
 
     def _variables(self, values, with_values):
         """Return the wire form of ``values``, refusing a bad shape (``payload``)."""
@@ -1772,9 +1871,8 @@ class LiveModel:
             The new data digest (also on :attr:`digest`); :attr:`timings` says
             ``updated``, ``reused`` (nothing changed) or ``rebuilt`` (no ``update!``).
         """
-        reply = self._op("update", {"data": dict(data or {}), "params": params,
-                                    "components": dict(components or {})})
-        self.signature, self.digest = reply["signature"], reply["digest"]
+        self._op("update", {"data": dict(data or {}), "params": params,
+                            "components": dict(components or {})})
         return self.digest
 
     def fix(self, values):
@@ -1858,7 +1956,6 @@ class LiveModel:
         if problems:
             raise WorkerRefusal(self.program, "limits", "; ".join(problems))
         reply = self._op("solve", {"limits": dict(limits)})
-        self.solve_record = reply["record"]
         return reply["solution"], self.solve_record
 
     def search(self, algorithm, params=None, limits=None, seed=0, start=None,
@@ -1882,7 +1979,9 @@ class LiveModel:
             The search's only source of randomness, in ``[0, SEED_BOUND)``.
         start : str, dict or None
             Sent as :meth:`start` first when not None (``"last"`` or ``{group: {key:
-            value}}``); the search's first solve then runs from it.
+            value}}``); the search's first solve then runs from it. The start is its own
+            request, so a search the worker then refuses leaves it in effect, and the
+            refusal says so.
         round_limits : dict or None
             Per-solve limits of every round (as :meth:`solve`); None is ``{}``.
 
@@ -1919,9 +2018,17 @@ class LiveModel:
         _check_payload(self.program, body)
         if start is not None:
             self.start(start)
-        reply = self._op("search", body, check_payload=False)
-        self.solve_record = reply["record"]
-        self.trajectory = tuple(SearchRound(**row) for row in reply["trajectory"])
+        try:
+            reply = self._op("search", body, check_payload=False)
+        except WorkerRefusal as refusal:
+            alive = (self._worker._process is not None
+                     and self._worker.starts == self.generation)
+            if start is None or not alive or refusal.kind in ("closed", "stale_handle"):
+                raise
+            raise WorkerRefusal(
+                self.program, refusal.kind,
+                f"{refusal.message}; the start sent before the search IS in effect on the model (start_source "
+                f"{self.timings.start_source!r}): clear it with start(None)") from refusal
         return reply["solution"], self.solve_record, self.trajectory
 
     def close(self):
