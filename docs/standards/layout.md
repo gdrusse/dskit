@@ -47,8 +47,8 @@ dskit/
 │   │                          #   summary.md + self-contained report.html + CSVs;
 │   │                          #   own README + CLAUDE.md
 │   └── journal/               # child action ledger (ADR-0056); CSV + generated md
-├── julia/                     # (planned, ADR-0328 Julia half) Julia packages a tier-2 pack drives:
-│                              #   DskitJuMP, the worker behind dskit/pipeline/libs/jump.py
+├── julia/                     # Julia packages a tier-2 pack drives (ADR-0328): DskitJuMP,
+│                              #   the worker behind dskit/pipeline/libs/jump.py
 ├── tools/
 │   ├── merge/                 # ADR-0109 merge drivers + install.sh
 │   ├── sweep/                 # the sweep tool + its commit-msg hook
