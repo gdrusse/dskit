@@ -110,7 +110,7 @@ end
 """One wire element as a `T`, or the refusal `bad_data` naming the field."""
 function element(::Type{Float64}, name::String, v)
     v isa Float64 && return v
-    v isa Int && abs(v) <= FLOAT64_EXACT && return Float64(v)
+    v isa Int && -FLOAT64_EXACT <= v <= FLOAT64_EXACT && return Float64(v)  # abs(typemin) < 0
     if v isa Integer && !(v isa Bool)
         refuse("bad_data", "$(repr(name)): an integer of magnitude above 2^53 is not " *
                            "exactly a float64; write it as a float")

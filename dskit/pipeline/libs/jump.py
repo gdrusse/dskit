@@ -1390,11 +1390,13 @@ class JuliaWorker:
         Returns
         -------
         list of str
-            ``julia --project=<repo>/julia/DskitJuMP -e "<worker entry>"``.
+            ``julia --startup-file=no --project=<repo>/julia/DskitJuMP -e "<worker entry>"``:
+            no user ``startup.jl`` runs, so none can write to the reply channel.
         """
         root = pathlib.Path(__file__).resolve().parents[3]
         package = root.joinpath(*JULIA_PACKAGE)
-        return [JULIA_EXECUTABLE, f"--project={package}", "-e", WORKER_ENTRY]
+        return [JULIA_EXECUTABLE, "--startup-file=no", f"--project={package}", "-e",
+                WORKER_ENTRY]
 
     @property
     def pid(self):

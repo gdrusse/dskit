@@ -203,6 +203,7 @@ class TestPlanWithoutJulia:
         package = pathlib.Path(jump.__file__).resolve().parents[3] / "julia" / "DskitJuMP"
         assert command[0] == "julia"
         assert f"--project={package}" in command
+        assert "--startup-file=no" in command  # a user's startup.jl never reaches stdout
 
     def test_a_document_naming_the_node_reaches_the_planner_without_julia(self, monkeypatch):
         monkeypatch.setenv("PATH", "")
@@ -1024,9 +1025,33 @@ class TestShippedExample:
 JULIA = shutil.which("julia")
 JULIA_PACKAGE_DIR = ROOT.joinpath(*jump.JULIA_PACKAGE)
 
+#: Where Julia's installers put ``julia`` (juliaup; a tarball linked into ~/.local/bin),
+#: looked at only to word the skip reason when it is installed but not on PATH.
+_JULIA_USUAL_DIRS = (pathlib.Path.home() / ".juliaup" / "bin",
+                     pathlib.Path.home() / ".local" / "bin")
 
-@pytest.mark.skipif(JULIA is None, reason="Julia is not installed (no `julia` on PATH): "
-                    "the real-worker parity test needs it")
+
+def _no_julia_reason(what):
+    """The skip reason without ``julia`` on PATH: installed elsewhere, or not at all."""
+    found = next((d for d in _JULIA_USUAL_DIRS if os.access(d / "julia", os.X_OK)), None)
+    if found is not None:
+        return (f"Julia is installed at {found / 'julia'} but {found} is not on PATH: "
+                f"add {found} to PATH to run {what}")
+    return f"Julia is not installed (no `julia` on PATH): {what} needs it"
+
+
+def test_the_skip_reason_names_the_directory_to_add_to_path(tmp_path, monkeypatch):
+    julia = tmp_path / "julia"
+    julia.write_text("")
+    julia.chmod(0o755)
+    monkeypatch.setitem(globals(), "_JULIA_USUAL_DIRS", (tmp_path / "none", tmp_path))
+    assert _no_julia_reason("x") == (f"Julia is installed at {julia} but {tmp_path} is not "
+                                     f"on PATH: add {tmp_path} to PATH to run x")
+    monkeypatch.setitem(globals(), "_JULIA_USUAL_DIRS", (tmp_path / "none",))
+    assert _no_julia_reason("x") == "Julia is not installed (no `julia` on PATH): x needs it"
+
+
+@pytest.mark.skipif(JULIA is None, reason=_no_julia_reason("the real-worker parity test"))
 @pytest.mark.skipif(not (JULIA_PACKAGE_DIR / "Project.toml").is_file(),
                     reason=f"the Julia package {JULIA_PACKAGE_DIR} is not built yet "
                     "(ADR-0328 phase 1, Julia half): the real-worker parity test needs it")
@@ -2912,7 +2937,7 @@ class TestValuesThatPassTheSchemaButNotTheWire:
         reply = raw.send(op="describe", program=LONE)
         assert reply["ok"] is False and reply["error"]["kind"] == "bad_request"
 
-    @pytest.mark.parametrize("big", [(1 << 53) + 1, -(1 << 60), 1 << 1100])
+    @pytest.mark.parametrize("big", [(1 << 53) + 1, -(1 << 60), -(1 << 63), 1 << 1100])
     def test_an_integer_inexact_in_a_float64_is_bad_data_naming_the_field(self, big):
         with pytest.raises(WorkerRefusal, match=r"\(bad_data\).*'scale'.*2\^53"):
             jump.DataContract("p", WIDE_SCHEMA).check({**WIDE, "scale": big})
@@ -3130,8 +3155,8 @@ class TestTheFakeIsAReferenceForAnySchema:
 WORKERS = (
     pytest.param("fake", id="fake"),
     pytest.param("julia", id="julia", marks=[
-        pytest.mark.skipif(JULIA is None, reason="Julia is not installed (no `julia` on "
-                           "PATH): the real worker's conformance needs it"),
+        pytest.mark.skipif(JULIA is None,
+                           reason=_no_julia_reason("the real worker's conformance")),
         pytest.mark.skipif(not (JULIA_PACKAGE_DIR / "Project.toml").is_file(),
                            reason=f"the Julia package {JULIA_PACKAGE_DIR} is not built: "
                            "the real worker's conformance needs it")]),
@@ -3432,6 +3457,11 @@ class TestCrossWorkerConformance:
                     ) == "bad_data"
         assert _raw(worker, {"op": "open", **full, "data": {**ELIGIBLE, "cost": [1, 2**53 + 1,
                                                                                 3]}}
+                    ) == "bad_data"
+        # the int64 minimum too (Julia's abs of it is negative): the schema refuses it, not
+        # the solver, which takes it as an objective coefficient
+        least = [-(1 << 63)] + list(ELIGIBLE["value"][1:])
+        assert _raw(worker, {"op": "open", **full, "data": {**ELIGIBLE, "value": least}}
                     ) == "bad_data"
         assert _raw(worker, {"op": "solve", "handle": "h99", "limits": {}}) == "unknown_handle"
         assert _raw(worker, {"op": "solve", "handle": model.handle,

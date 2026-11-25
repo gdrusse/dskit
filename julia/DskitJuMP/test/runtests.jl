@@ -136,6 +136,32 @@ function stand!(s, h, chosen)
     lm.last = D.LastSolution(values, rec, h, lm.version)
 end
 
+# --- the search incumbent rule, clause by clause, through the wire only -------------------
+
+"""The optimum of `SEARCH_KS` under budget 9 ({A, C, D})."""
+const SEARCH_OPT = 12.0
+open_search(s; params=Dict("budget" => 9.0), program="budgeted_select", options=OPTS) =
+    open_ks(s; data=SEARCH_KS, params, program, options)
+
+"""
+Leave on handle `h` a feasible, NOT optimal last solution that `h` itself found under the
+model's current state: a huge `mip_rel_gap` stops HiGHS at its first incumbent. Returns its
+objective; a search that wrongly lets it stand returns it instead of `SEARCH_OPT`.
+"""
+function stale!(s, h)
+    r = solve_h(s, h; limits=Dict("time_limit" => TEST_TIME_LIMIT, "mip_rel_gap" => 1e9))
+    objective = r["record"]["objective"]
+    @test objective isa Float64 && objective < SEARCH_OPT  # the precondition: a poor point
+    return objective
+end
+
+"""A search that runs no round (its time limit is spent by the check before round 1)."""
+no_round(s, h) = search_h(s, h; limits=Dict("time_limit" => 1e-9))
+
+"""Whether a no-round search's record shows a first solve ran (the point did not stand)."""
+fresh(r) = r["ok"] && r["record"]["objective"] == SEARCH_OPT && r["timings"]["solve_seconds"] > 0 &&
+           r["record"]["termination"] == "SEARCH_TIME_LIMIT" && isempty(r["trajectory"])
+
 @testset "DskitJuMP" begin
 
 @testset "digest and default signature match the Python reference byte for byte" begin
@@ -511,6 +537,11 @@ end
     @test bad_data(merge(KS, Dict("cost" => [1.0, "x", 2.0]))) == "bad_data"
     @test bad_data(merge(KS, Dict("cost" => [1.0, [2.0], 3.0]))) == "bad_data"
     @test bad_data(merge(KS, Dict("cost" => [1, 2^53 + 1, 3]))) == "bad_data"
+    # the schema refuses them, not the solver (an objective coefficient HiGHS would take)
+    for big in (-2^53 - 1, typemin(Int))  # abs(typemin(Int)) is negative in Int64
+        r = open_ks(s; data=merge(KS, Dict("value" => [1, big, 3])))
+        @test kind(r) == "bad_data" && occursin("2^53", r["error"]["message"])
+    end
     r = open_ks(s; data=merge(KS, Dict("value" => [1, 2^53, 3])))
     @test r["ok"] && rpc(s, "close"; handle=r["handle"])["pooled"]
     @test bad_data(merge(KS, Dict("cost" => [1, 2^53, 3]))) == "bad_data"  # HiGHS refuses 9e15
@@ -518,7 +549,8 @@ end
     m0 = live(s, "h1")
     r = rpc(s, "update"; handle="h1", data=Dict("cost" => [1.0, 1e300, 3.0]), params=nothing,
             components=Dict())
-    @test kind(r) == "bad_data" && occursin("was rebuilt", r["error"]["message"])  # never silent    @test live(s, "h1").digest == digest && live(s, "h1").version == version
+    @test kind(r) == "bad_data" && occursin("was rebuilt", r["error"]["message"])  # never silent
+    @test live(s, "h1").digest == digest && live(s, "h1").version == version
     @test bad_data(merge(KS, Dict("ids" => ["a", "a", "c"]))) == "bad_data"
     @test bad_data(merge(KS, Dict("cost" => Dict("arrow" => Dict())))) == "bad_data"
     @test bad_data(merge(KS, Dict("budget" => Dict("arrow" => Dict())))) == "bad_data"
@@ -757,6 +789,156 @@ end
     r = search_h(s, g; params=Dict("free" => 3, "stall" => 2))
     @test r["solution"] == Dict("assigned" => [["i1", "b2"], ["i2", "b3"]])
     @test r["record"]["termination"] == "SEARCH_DONE" && length(r["trajectory"]) == 2
+end
+
+@testset "search incumbent: each clause of the rule bites on the real worker" begin
+    s = Session(models=8)
+    h = open_search(s)["handle"]
+    # it exists: a model never solved runs the first solve
+    @test fresh(no_round(s, h))
+    # control: all clauses hold, so the poor point stands (no solve, its objective)
+    poor = stale!(s, h)
+    r = no_round(s, h)
+    @test r["record"]["objective"] == poor && r["timings"]["solve_seconds"] == 0
+    # no start values: a start in effect forbids standing (and survives the search)
+    stale!(s, h)
+    rpc(s, "start"; handle=h, source="last", values=Dict())
+    r = no_round(s, h)
+    @test fresh(r) && r["timings"]["start_source"] == "last"
+    rpc(s, "start"; handle=h, source="none", values=Dict())
+    # the same handle: another holder of the pooled model, same data, no fixes, no starts
+    stale!(s, h)
+    rpc(s, "close"; handle=h)
+    r = open_search(s)
+    @test r["timings"]["path"] == "reused"
+    h = r["handle"]
+    @test fresh(no_round(s, h))
+    # an update with the same data changes no state: the point stands
+    poor = stale!(s, h)
+    @test rpc(s, "update"; handle=h, data=Dict("value" => SEARCH_KS["value"]), params=nothing,
+              components=Dict())["timings"]["path"] == "reused"
+    @test no_round(s, h)["record"]["objective"] == poor
+    # the data, in place and by a rebuild
+    for program in ("budgeted_select", "budgeted_select_rebuild")
+        g = open_search(s; program)["handle"]
+        stale!(s, g)
+        r = rpc(s, "update"; handle=g, data=Dict("value" => [5.0, 4.0, 4.0, 3.0, 2.4, 6.0]),
+                params=nothing, components=Dict())
+        @test r["timings"]["path"] == (program == "budgeted_select" ? "updated" : "rebuilt")
+        @test fresh(no_round(s, g))
+    end
+    # the params
+    stale!(s, h)
+    rpc(s, "update"; handle=h, data=Dict(), params=Dict("budget" => 9.5), components=Dict())
+    @test fresh(no_round(s, h))
+    # the attached components (the cap's param already standing, so only they change)
+    g = open_search(s; params=Dict("budget" => 9.0, "max_items" => 3))["handle"]
+    stale!(s, g)
+    r = rpc(s, "update"; handle=g, data=Dict(), params=nothing, components=Dict("max_items" => true))
+    @test r["timings"]["path"] == "updated"
+    @test fresh(no_round(s, g))
+    # a fix
+    stale!(s, h)
+    rpc(s, "fix"; handle=h, values=Dict("select" => Dict("keys" => [["A"]], "values" => [1])))
+    @test fresh(no_round(s, h))
+    # a free: the optimum under F = 1 (11.5) is poor once F is released
+    rpc(s, "free"; handle=h, targets="all")
+    rpc(s, "fix"; handle=h, values=Dict("select" => Dict("keys" => [["F"]], "values" => [1])))
+    r = solve_h(s, h)
+    @test r["record"]["termination"] == "OPTIMAL" && r["record"]["objective"] < SEARCH_OPT
+    rpc(s, "free"; handle=h, targets="all")
+    @test fresh(no_round(s, h))
+end
+
+# --- per-solve limits take effect, for one solve only ----------------------------------
+
+@testset "per-solve limits take effect and never leak into the next solve" begin
+    s = Session()
+    # the model's own time limit (a solver option) bounds every solve sent without one
+    options = merge(Dict{String,Any}(OPTS), Dict("time_limit" => TEST_TIME_LIMIT))
+    h = open_search(s; options)["handle"]
+    model = live(s, h).model
+    clean(r) = r["record"]["termination"] == "OPTIMAL" && r["record"]["objective"] == SEARCH_OPT
+    r = solve_h(s, h; limits=Dict("time_limit" => 1e-6))
+    @test r["record"]["termination"] == "TIME_LIMIT" && r["record"]["objective"] === nothing
+    @test r["solution"] == Dict("selected" => nothing)
+    @test clean(solve_h(s, h; limits=Dict()))
+    @test get_attribute(model, MOI.TimeLimitSec()) == TEST_TIME_LIMIT
+    r = solve_h(s, h; limits=Dict("mip_rel_gap" => 1e9))
+    @test r["record"]["objective"] < SEARCH_OPT
+    @test clean(solve_h(s, h; limits=Dict()))
+    @test get_attribute(model, MOI.RelativeGapTolerance()) == 0.0
+    # a solution limit (presolve off, so HiGHS branches): SOLUTION_LIMIT, the optimum unproven
+    sl = Dict("ids" => ["a", "b", "c", "d", "e", "f"], "cost" => [10.0, 6.0, 13.0, 9.0, 5.0, 12.0],
+              "value" => [10.5, 15.5, 7.5, 12.5, 17.5, 9.5])
+    g = open_ks(s; data=sl, params=Dict("budget" => 28.0),
+                options=merge(options, Dict("presolve" => "off")))["handle"]
+    r = solve_h(s, g; limits=Dict("solution_limit" => 1))
+    @test r["record"]["termination"] == "SOLUTION_LIMIT" && r["record"]["gap"] > 0
+    r = solve_h(s, g; limits=Dict())
+    @test r["record"]["termination"] == "OPTIMAL" && r["record"]["gap"] == 0.0
+    @test get_attribute(live(s, g).model, MOI.SolutionLimit()) === nothing
+    # a search's round limits apply to every round: a round given no time returns its start
+    # (the incumbent), so nothing improves; without them round 1 finds the optimum
+    poor = stale!(s, h)
+    hood6 = Dict("free" => 6, "stall" => 2)
+    r = search_h(s, h; params=hood6, round_limits=Dict("time_limit" => 1e-6))
+    @test r["record"]["termination"] == "SEARCH_DONE"
+    @test rows(r) == [(1, poor, false, 6), (2, poor, false, 6)]
+    @test clean(solve_h(s, h; limits=Dict()))  # the round limit did not leak
+    @test get_attribute(model, MOI.TimeLimitSec()) == TEST_TIME_LIMIT
+    stale!(s, h)
+    r = search_h(s, h; params=hood6, round_limits=Dict())
+    @test rows(r) == [(1, SEARCH_OPT, true, 6), (2, SEARCH_OPT, false, 6), (3, SEARCH_OPT, false, 6)]
+    # the overall round limit stops it after exactly that many rounds
+    r = search_h(s, h; params=Dict("free" => 1, "stall" => 100), limits=Dict("rounds" => 3))
+    @test r["record"]["termination"] == "SEARCH_ROUND_LIMIT" && length(r["trajectory"]) == 3
+    @test clean(solve_h(s, h; limits=Dict()))
+end
+
+# --- a refused update leaves the handle as it was -----------------------------------------
+
+@testset "a refused update leaves the handle as it was, on both reference programs" begin
+    s = Session()
+    # budgeted_select: b fixed at 1, the cap of one item attached, a start on b. The refused
+    # update changes b's value (applied in place) before b's cost (refused): without the
+    # rebuild the half-changed model would answer 9.0, not 2.5.
+    h = open_ks(s; params=Dict("budget" => 4.0, "max_items" => 1),
+                components=Dict("max_items" => true))["handle"]
+    rpc(s, "fix"; handle=h, values=Dict("select" => Dict("keys" => [["b"]], "values" => [1])))
+    rpc(s, "start"; handle=h, source="values", values=Dict("select" => Dict("keys" => [["b"]], "values" => [1])))
+    before = solve_h(s, h)
+    @test before["solution"] == Dict("selected" => ["b"]) && before["record"]["objective"] == 2.5
+    digest = live(s, h).digest
+    r = rpc(s, "update"; handle=h, data=Dict("value" => [3.0, 9.0, 4.0], "cost" => [1.0, 1e300, 3.0]),
+            params=nothing, components=Dict())
+    @test kind(r) == "bad_data"
+    after = solve_h(s, h)
+    @test after["solution"] == before["solution"] && after["record"] == merge(before["record"],
+          Dict("seconds" => after["record"]["seconds"]))
+    @test after["timings"]["start_source"] == "values"
+    @test rpc(s, "fix"; handle=h, values=Dict())["fixed"] == 1
+    @test rpc(s, "update"; handle=h, data=Dict(), params=nothing, components=Dict())["digest"] == digest
+    @test start_value(live(s, h).index.all[2]) == 1.0
+    # assignment: x[i2, b3] fixed at 0, max_per_bin attached, a start. The refused update
+    # sets value[i1, b1] = 100 (first in update!'s order) before weight[i2, b3] (refused).
+    g = open_ga(s; params=Dict("max_per_bin" => 1), components=Dict("max_per_bin" => true))["handle"]
+    rpc(s, "fix"; handle=g, values=Dict("x" => Dict("keys" => [["i2", "b3"]], "values" => [0])))
+    rpc(s, "start"; handle=g, source="values", values=Dict("x" => Dict("keys" => [["i1", "b1"]], "values" => [1])))
+    before = solve_h(s, g)
+    @test before["solution"] == Dict("assigned" => [["i1", "b1"], ["i2", "b2"]])
+    @test before["record"]["objective"] == 6.5 && before["record"]["constraints"] == 8
+    digest = live(s, g).digest
+    r = rpc(s, "update"; handle=g, data=Dict("value" => [[100.0, 2.0, 0.0], [4.0, 5.5, 6.0]],
+                                             "weight" => [[1.0, 1.0, 1.0], [2.0, 2.0, 1e300]]),
+            params=nothing, components=Dict())
+    @test kind(r) == "bad_data"
+    after = solve_h(s, g)
+    @test after["solution"] == before["solution"] && after["record"] == merge(before["record"],
+          Dict("seconds" => after["record"]["seconds"]))
+    @test after["timings"]["start_source"] == "values"
+    @test rpc(s, "fix"; handle=g, values=Dict())["fixed"] == 1
+    @test rpc(s, "update"; handle=g, data=Dict(), params=nothing, components=Dict())["digest"] == digest
 end
 
 end # testset DskitJuMP
