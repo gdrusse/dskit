@@ -1,0 +1,35 @@
+{
+  "name": "jump-select-demo",
+  "notes": "The tier-2 JumpSolve doorway (ADR-0328) behind the REAL owned stat_test, the JuMP twin of pyomo-solve.json. A deterministic toy source emits per-instrument cluster evidence plus a candidate deck; the owned edge test decides WHICH instruments survive; JumpBudgetedSelect (dskit/pipeline/libs/jump.py) then solves a 0/1 knapsack over the SURVIVING candidates only, inside a hard budget, in a long-lived Julia worker. The deck is rigged as in the pyomo example: NOISE carries the largest value but no edge evidence, so the gate must exclude it; among the survivors greedy-by-value takes ALPHA (9) while the optimum is BRAVO+GAMMA (12). The document plans on a machine with no Julia; RUNNING it needs julia on PATH and the julia/DskitJuMP package (the suite substitutes the Python fake worker through the node's worker_command). The toy source lives in the pyomo pack's test module, so this document plans from a repo checkout; swap that one node for your own data source to make it real.",
+
+  "outputs": { "run_root": "" },
+
+  "pipeline": {
+    "evidence": {
+      "uses": "tests.pipeline_libs.test_pyomo:OpportunityDeck",
+      "params": { "seed": 0 },
+      "notes": "role data. Deterministic fixture: scores = instrument -> {cluster: paired improvement} (the stat test's food), candidates = [{id, cost, value}] keyed by the same instrument ids."
+    },
+
+    "edge_test": {
+      "uses": "stat_test",
+      "inputs": { "scores": "$evidence.scores" },
+      "params": { "alpha": 0.05, "correction": "bh", "n_boot": 2000, "seed": 0 },
+      "notes": "role stat_test, toolkit-OWNED. One-sided event-clustered bootstrap PER instrument, then one BH correction across the family; never pooled."
+    },
+
+    "select": {
+      "uses": "dskit.pipeline.libs.jump:JumpBudgetedSelect",
+      "inputs": {
+        "candidates": "$evidence.candidates",
+        "survivors": "$edge_test.survivors"
+      },
+      "params": {
+        "budget": 10.0,
+        "solver": "HiGHS",
+        "solver_options": {}
+      },
+      "notes": "role capital. The survivors wire is structural: un-gated capital refuses to plan. Only surviving ids reach the Julia program; an empty gate deploys zero WITHOUT starting the worker; the reported outlay can never exceed budget (post-solve assertion, refused by name). The solver name's shape is checked at plan; whether the Julia environment provides it is checked at run."
+    }
+  }
+}

@@ -57,6 +57,9 @@ EXAMPLES = pathlib.Path(__file__).parents[2] / "examples" / "pipeline"
 #: than shipping unpinned: a new example ADDS a line, and an existing
 #: line that has to change is a breaking identity move.
 PINNED_EXAMPLE_HASHES = {
+    "jump-budgeted-select.json": (
+        "34b45e4511436d38fdff3ecdd17d5e648696cc36c868ae1eb828da275a244b68"
+    ),
     "model-sweep.json": (
         "c01ae84ec899e1d80e5324d38e9262bceaa0438cde0a4e6bcf2700827c484493"
     ),

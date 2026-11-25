@@ -805,7 +805,10 @@ by multiple downstream heads; never a hub name at run time); **optuna** `optuna-
 (categorical lists AND `{"low", "high"[, "log"][, "int"]}` continuous ranges;
 `hpo-grid` keeps refusing ranges — enumerating an interval is meaningless);
 **pyomo** `pyomo-budgeted-select` + `PyomoSolve` base (`build_model`/`extract`
-hooks); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures`
+hooks); **jump** (ADR-0328) `jump-budgeted-select` + `JumpSolve` base
+(`payload`/`extract` hooks; JuMP builds and solves in a long-lived Julia subprocess,
+`JuliaWorker`, speaking JSON lines, so the pack imports and plans with no Julia; the
+solve record is the pyomo `SolveRecord`); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures`
 (or the concrete `ReturnWindows`) and wire by import path. Heavy imports live
 inside `run()` — the tier rule.
 
