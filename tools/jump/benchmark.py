@@ -7,8 +7,9 @@ honestly where JuMP is faster and where it is not.
 
 The program is the ``assignment`` reference (generalized assignment: each item to at
 most one bin, each bin within its capacity, maximise the value assigned), written here a
-second time in pyomo exactly as the Julia worker builds it (same variables, rows,
-coefficients and objective), solved by HiGHS through ``appsi_highs`` on one side and
+second time in pyomo as the same program the Julia worker builds (same variables, rows,
+coefficients and objective; the variables are created item-major here and bin-major in
+the worker, and HiGHS's solve time depends on that column order), solved by HiGHS through ``appsi_highs`` on one side and
 through the worker on the other, with the same time limit and the same HiGHS options.
 
 Measured per size (``items`` items, ``bins`` bins; rows = items + bins):

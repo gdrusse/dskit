@@ -3293,6 +3293,30 @@ class TestCrossWorkerConformance:
             model.update(data={"ids": ["ALPHA", "BRAVO", "DELTA"]})
         assert model.update(params={"budget": BUDGET}) == model.digest
 
+    def test_every_update_setter_reaches_the_next_solve(self, conformant):
+        # A changed number the worker failed to apply would solve the old numbers under
+        # the new digest: each field and param below moves the unique optimum.
+        worker = conformant()
+        knapsack = _copen(worker, data=UNIQUE, params={"budget": 9.0, "max_items": 2},
+                          components={"max_items": True})
+        assert knapsack.solve(_limits())[0] == {"selected": ["A", "F"]}
+        for cap, chosen, objective in ((1, ["F"], 6.0), (3, ["A", "B", "D"], 12.0)):
+            knapsack.update(params={"budget": 9.0, "max_items": cap})  # the standing row
+            assert knapsack.timings.path == "updated"
+            solution, record = knapsack.solve(_limits())
+            assert solution == {"selected": chosen}
+            _optimal(record, objective)
+        model = _copen(worker, "assignment")
+        moved = {**ASSIGN, "value": [[2.0, 9.0], [5.0, 4.0], [1.0, 3.0]]}
+        value, assigned = _brute_assignment(moved)
+        assert assigned != _brute_assignment(ASSIGN)[1]
+        model.update(data={"value": moved["value"]})
+        assert model.timings.path == "updated"
+        assert model.digest == _canon(_schema("assignment"), moved)
+        solution, record = model.solve(_limits())
+        assert solution == {"assigned": assigned}
+        _optimal(record, value)
+
     def test_fix_free_and_start(self, conformant):
         worker = conformant()
         model = _copen(worker)
@@ -3464,4 +3488,8 @@ class TestCrossWorkerConformance:
         assert solution == {"selected": None} and trajectory == ()
         assert (record.status, record.termination, record.objective, record.gap) == (
             "NO_SOLUTION", "SEARCH_NO_INCUMBENT", None, None)
+        assert record.bound is None  # an infeasible first solve reports no bound
+        _, solved = model.solve(_limits())
+        assert (solved.termination, solved.objective, solved.bound) == (
+            "INFEASIBLE", None, None)
         assert model.free() == 0  # the search restored exactly the caller's four fixes

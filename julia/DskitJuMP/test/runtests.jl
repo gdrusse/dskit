@@ -308,6 +308,14 @@ end
     r = solve_h(s, "h1")
     @test r["solution"] == Dict("selected" => ["c"]) && r["record"]["constraints"] == 2
     @test length(r["record"]["binding"]) == 1
+    # the standing cap's right-hand side, in place
+    r = rpc(s, "update"; handle="h1", data=Dict(), params=Dict("budget" => 4.0, "max_items" => 2),
+            components=Dict())
+    @test r["timings"]["path"] == "updated" && live(s, "h1").model === model
+    @test solve_h(s, "h1")["solution"] == Dict("selected" => ["a", "c"])
+    r = rpc(s, "update"; handle="h1", data=Dict(), params=Dict("budget" => 4.0, "max_items" => 1),
+            components=Dict())
+    @test solve_h(s, "h1")["solution"] == Dict("selected" => ["c"])
     r = rpc(s, "update"; handle="h1", data=Dict(), params=nothing, components=Dict("max_items" => false))
     @test r["timings"]["path"] == "updated"
     r = solve_h(s, "h1")
@@ -368,6 +376,14 @@ end
     @test rec["binding"][1]["binding"] == 2 && rec["binding"][1]["min_slack"] == 0.0
     @test rec["binding"][2]["min_slack"] == 1.0
     model = live(s, "h1").model
+    # the objective coefficients alone, in place, then back
+    r = rpc(s, "update"; handle="h1", data=Dict("value" => [[5.0, 1.0, 1.0], [1.0, 1.0, 7.0]]),
+            params=nothing, components=Dict())
+    @test r["timings"]["path"] == "updated" && live(s, "h1").model === model
+    r = solve_h(s, "h1")
+    @test r["solution"] == Dict("assigned" => [["i1", "b1"], ["i2", "b3"]]) && r["record"]["objective"] == 12.0
+    rpc(s, "update"; handle="h1", data=Dict("value" => GA["value"]), params=nothing, components=Dict())
+    @test solve_h(s, "h1")["record"]["objective"] == 8.0
     r = rpc(s, "update"; handle="h1", data=Dict("capacity" => [2.0, 2.5, 1.0]), params=nothing,
             components=Dict())
     @test r["timings"]["path"] == "updated" && live(s, "h1").model === model
@@ -462,6 +478,20 @@ end
     @test open_ks(o; options=Dict("threads" => 1))["timings"]["path"] == "built"
 end
 
+@testset "models with different HiGHS threads solve side by side in one worker" begin
+    s = Session(models=8)
+    handles = String[]
+    for threads in (2, 1, 2, 1)
+        r = open_ks(s; options=Dict("threads" => threads, "mip_rel_gap" => 0))
+        push!(handles, r["handle"])
+        rec = solve_h(s, r["handle"])["record"]
+        @test (rec["termination"], rec["objective"]) == ("OPTIMAL", 7.0)
+    end
+    for h in handles  # every live model again, each on its own count
+        @test solve_h(s, h)["record"]["termination"] == "OPTIMAL"
+    end
+end
+
 @testset "every error kind, and an error changes nothing" begin
     s = Session()
     open_ks(s)
@@ -486,9 +516,9 @@ end
     @test bad_data(merge(KS, Dict("cost" => [1, 2^53, 3]))) == "bad_data"  # HiGHS refuses 9e15
     # an update the solver refuses leaves the handle as it was
     m0 = live(s, "h1")
-    @test kind(rpc(s, "update"; handle="h1", data=Dict("cost" => [1.0, 1e300, 3.0]), params=nothing,
-                   components=Dict())) == "bad_data"
-    @test live(s, "h1").digest == digest && live(s, "h1").version == version
+    r = rpc(s, "update"; handle="h1", data=Dict("cost" => [1.0, 1e300, 3.0]), params=nothing,
+            components=Dict())
+    @test kind(r) == "bad_data" && occursin("was rebuilt", r["error"]["message"])  # never silent    @test live(s, "h1").digest == digest && live(s, "h1").version == version
     @test bad_data(merge(KS, Dict("ids" => ["a", "a", "c"]))) == "bad_data"
     @test bad_data(merge(KS, Dict("cost" => Dict("arrow" => Dict())))) == "bad_data"
     @test bad_data(merge(KS, Dict("budget" => Dict("arrow" => Dict())))) == "bad_data"
@@ -678,6 +708,8 @@ end
     r = search_h(s, h)
     @test r["record"]["termination"] == "SEARCH_NO_INCUMBENT" && r["record"]["status"] == "NO_SOLUTION"
     @test r["record"]["objective"] === nothing && r["record"]["gap"] === nothing
+    @test r["record"]["bound"] === nothing  # an infeasible solve reports no bound
+    @test solve_h(s, h)["record"]["bound"] === nothing
     @test isempty(r["trajectory"]) && r["solution"] == Dict("selected" => nothing)
     @test BUILDS[] == 1 && live(s, h).model === model
     # every refusal changes nothing
@@ -698,6 +730,24 @@ end
     r = open_ks(s; solver="NoLimits", options=Dict())
     @test kind(search_h(s, r["handle"]; round_limits=Dict("node_limit" => 5))) == "bad_limits"
     @test kind(search_h(s, r["handle"]; round_limits=Dict())) == "solve_failed"
+    # a point whose objective the solver reports infinite: a named refusal, nothing changed
+    r = open_ks(s; data=Dict("ids" => ["a", "b", "c"], "cost" => [1.0, 1.0, 1.0],
+                             "value" => [1e20, 2.0, 3.0]), params=Dict("budget" => 2.0))
+    inf = live(s, r["handle"])
+    rec = solve_h(s, r["handle"])["record"]
+    @test rec["status"] == "FEASIBLE_POINT" && rec["objective"] === nothing
+    last_inf = inf.last
+    for (hood, stall) in ((1, 1), (3, 1))
+        @test kind(search_h(s, r["handle"]; params=Dict("free" => hood, "stall" => stall))) == "bad_data"
+    end
+    @test inf.last === last_inf
+    # a finite incumbent {b} stands; a round's point (with a) is infinite
+    inf.last =D.LastSolution(Float64[0, 1, 0], merge(inf.last.record, Dict{String,Any}("objective" => 2.0)),
+                              r["handle"], inf.version)
+    last_inf = inf.last
+    @test kind(search_h(s, r["handle"]; params=Dict("free" => 3, "stall" => 1))) == "bad_data"
+    @test inf.last === last_inf && isempty(inf.fixed)
+    @test all(v -> !is_fixed(v) && start_value(v) === nothing, inf.index.all)
     # a two-dimensional group: keys in ascending order, element by element
     r = open_ga(s)
     g = r["handle"]

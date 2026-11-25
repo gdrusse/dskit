@@ -316,6 +316,21 @@ function at_values(lm::LiveModel, values::Union{Nothing,Vector{Float64}})
     return v -> values[position[v]]
 end
 
+"""
+    point_objective(record)
+
+The objective of a solve that found a point, or the refusal `bad_data`: a search compares
+objectives, and the solver reports none finite when a coefficient is at its infinity.
+"""
+function point_objective(record::Dict{String,Any})
+    objective = record["objective"]
+    objective === nothing &&
+        refuse("bad_data", "the solver reports no finite objective at the point it found " *
+                           "(a coefficient at or above the solver's infinity): a search " *
+                           "cannot compare it")
+    return objective::Float64
+end
+
 """The search record's gap: |objective - bound| / |objective|, null when unknown."""
 function search_gap(objective, bound)
     (objective === nothing || bound === nothing) && return nothing
@@ -362,7 +377,7 @@ function run_search!(lm::LiveModel, handle::String, search::Search, seed::UInt64
         bound = found["bound"]  # the whole model's, never a round's neighbourhood
         if incumbent !== nothing
             st = SearchState(SplitMix64(seed), search_candidates(lm), objective_sense(lm.model),
-                             found["objective"], incumbent, trajectory)
+                             point_objective(found), incumbent, trajectory)
             while true
                 done(search, st) && (stop = SEARCH_DONE; break)
                 limits.rounds !== nothing && length(trajectory) >= limits.rounds &&
@@ -383,7 +398,7 @@ function run_search!(lm::LiveModel, handle::String, search::Search, seed::UInt64
                 empty!(round_fixed)
                 changing += time() - started
                 candidate = values === nothing ? nothing :
-                            Candidate(record["objective"], values, record)
+                            Candidate(point_objective(record), values, record)
                 better = candidate !== nothing && accept(search, st, candidate)
                 push!(trajectory, Dict{String,Any}(
                     "round" => length(trajectory) + 1, "objective" => record["objective"],

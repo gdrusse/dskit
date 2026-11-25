@@ -139,8 +139,15 @@ function change!(lm::LiveModel{P,D,Q,S}, setup::Setup{D,Q}, cols::Columns,
         catch err
             # The model may be half changed: construct it again from the setup it had,
             # fixes and starts re-applied, so the refusal leaves the handle as it was.
-            rebuild!(lm, lm.setup)
-            guarded(() -> rethrow(err), "update")
+            # The error reply has no timings, so its message records the rebuild.
+            build, update = rebuild!(lm, lm.setup)
+            note = "; the half-changed model was rebuilt from its previous data " *
+                   "($(round(build + update; digits=3)) s)"
+            try
+                guarded(() -> rethrow(err), "update")  # always a Refusal
+            catch refusal
+                throw(Refusal(refusal.kind, refusal.message * note))
+            end
         end
         seconds = time() - started
         adopt!(lm, setup, cols, digest)

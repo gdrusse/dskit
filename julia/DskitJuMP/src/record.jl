@@ -51,8 +51,15 @@ function binding_row(name::String, refs::AbstractVector{<:ConstraintRef}, point:
                             "min_slack" => point ? finite_or_null(least) : nothing)
 end
 
-"""The record's `bound`: the solver's objective bound when it reports a finite one."""
+"""Terminations that prove the model has no point: a bound reported with one means nothing."""
+const NO_POINT_PROVEN = (MOI.INFEASIBLE, MOI.INFEASIBLE_OR_UNBOUNDED, MOI.LOCALLY_INFEASIBLE)
+
+"""
+The record's `bound`: the solver's objective bound when it reports a finite one; null
+after a solve that proved infeasibility (HiGHS reports 0 there, not a bound).
+"""
 function record_bound(model::Model)
+    termination_status(model) in NO_POINT_PROVEN && return nothing
     try
         return finite_or_null(objective_bound(model))
     catch

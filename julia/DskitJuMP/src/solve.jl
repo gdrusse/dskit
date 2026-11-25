@@ -152,6 +152,32 @@ function guarded(f::Function, what::String)
     end
 end
 
+"""The HiGHS `threads` option the process-wide HiGHS scheduler was last started for."""
+const HIGHS_THREADS = Ref{Union{Nothing,Int}}(nothing)
+
+"""
+    prepare_scheduler!(model)
+
+HiGHS runs every model of the process on one global scheduler sized by the `threads`
+option of the first solve; a later solve asking another count fails (`OTHER_ERROR`, no
+point). Models with different `solver_options` share one worker, so before a HiGHS
+solve whose `threads` differs from the scheduler's, reset it (`Highs_resetGlobalScheduler`,
+safe here: the worker solves one model at a time on one thread).
+"""
+function prepare_scheduler!(model::Model)
+    name = try
+        solver_name(model)
+    catch
+        ""
+    end
+    name == "HiGHS" || return
+    threads = Int(MOI.get(backend(model), MOI.RawOptimizerAttribute("threads")))
+    HIGHS_THREADS[] === nothing || HIGHS_THREADS[] == threads ||
+        HiGHS.Highs_resetGlobalScheduler(1)
+    HIGHS_THREADS[] = threads
+    return
+end
+
 """
     run_optimize!(model)
 
@@ -161,6 +187,7 @@ refusal `solve_failed`.
 function run_optimize!(model::Model)
     started = time()
     try
+        prepare_scheduler!(model)
         optimize!(model)
     catch err
         refuse("solve_failed", "the optimizer raised: $(first(sprint(showerror, err), 300))")
