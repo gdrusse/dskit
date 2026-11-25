@@ -72,8 +72,11 @@ sent: a mismatch is the refusal ``digest`` and kills the worker. The v1 one-shot
 Search (ADR-0328 A6)
 --------------------
 :meth:`LiveModel.search` runs a search algorithm REGISTERED IN THE WORKER on the live
-model and returns the incumbent, its record and the per-round trajectory, each field
-checked like every other reply. Python contains no search algorithm.
+model and returns the incumbent, the search's record and the per-round trajectory, each
+field checked like every other reply. The search record never reads as a proof of
+optimality: its ``termination`` is the search's stop reason (:data:`SEARCH_TERMINATIONS`)
+and its ``bound`` the whole model's, never a neighbourhood's. Python contains no search
+algorithm.
 
 Wire protocol (version :data:`PROTOCOL_VERSION`)
 -------------------------------------------------
@@ -104,7 +107,8 @@ type-checked and finite; an integer too large for a float is not finite), a mist
 timings block (``timings``), a data digest other than that of the data sent (``digest``),
 a mistyped search trajectory (``trajectory``), and an exchange interrupted on this side by anything, a
 ``KeyboardInterrupt`` included (re-raised as it is; the late reply could otherwise be
-read as the next request's). A payload that is not JSON (``payload``), limits of the
+read as the next request's). A payload that is not JSON with finite numbers and UTF-8
+text (``payload``; a lone surrogate is not UTF-8), limits of the
 wrong shape (``limits``) and a closed (``closed``) or stale (``stale_handle``) handle
 refuse before anything is sent. The one non-refusal is the pyomo twin's over-budget
 assertion (``AssertionError``), kept verbatim.
@@ -162,6 +166,7 @@ __all__ = [
     "DEFAULT_SHUTDOWN_TIMEOUT",
     "DEFAULT_SOLVER",
     "DEFAULT_START_TIMEOUT",
+    "FLOAT64_EXACT",
     "JULIA_EXECUTABLE",
     "JULIA_PACKAGE",
     "LIMIT_KEYS",
@@ -173,6 +178,8 @@ __all__ = [
     "PROTOCOL_VERSION",
     "SCRATCH_PREFIX",
     "SEARCH_LIMIT_KEYS",
+    "SEARCH_STATUSES",
+    "SEARCH_TERMINATIONS",
     "SEED_BOUND",
     "START_SOURCES",
     "WORKER_ENTRY",
@@ -207,9 +214,25 @@ START_SOURCES = ("last", "values", "none")
 #: The overall limits a ``search`` may carry (its rounds take :data:`LIMIT_KEYS`).
 SEARCH_LIMIT_KEYS = ("time_limit", "rounds")
 
+#: The largest magnitude at which every integer is exact in a float64. A ``float64``
+#: data element written as a JSON integer must not exceed it (``bad_data``): above it the
+#: value solved would not be the value sent, and an Arrow float64 column refuses it.
+FLOAT64_EXACT = 1 << 53
+
 #: A search ``seed`` is an integer in ``[0, SEED_BOUND)``, exact in a float64 (Julia
 #: and JSON parsers agree on every such integer).
-SEED_BOUND = 1 << 53
+SEED_BOUND = FLOAT64_EXACT
+
+#: A search record's ``termination``: the search's stop reason, never a solver's (so a
+#: search never reads as a proof of optimality). ``SEARCH_DONE`` the algorithm's ``done``;
+#: ``SEARCH_ROUND_LIMIT`` / ``SEARCH_TIME_LIMIT`` the overall limits;
+#: ``SEARCH_ROUND_NO_POINT`` a round ended with no primal point; ``SEARCH_NO_INCUMBENT``
+#: the first solve found no primal point (no round ran).
+SEARCH_TERMINATIONS = ("SEARCH_DONE", "SEARCH_ROUND_LIMIT", "SEARCH_TIME_LIMIT",
+                       "SEARCH_ROUND_NO_POINT", "SEARCH_NO_INCUMBENT")
+
+#: A search record's ``status``: with an incumbent, and without one.
+SEARCH_STATUSES = ("FEASIBLE_POINT", "NO_SOLUTION")
 
 #: Elements above which one array of an ``open``/``update`` travels as an Arrow file
 #: instead of JSON (a worker setting; the node knob ``arrow_threshold`` defaults to it).
@@ -383,16 +406,35 @@ def _finite_float(text):
     return value
 
 
+def _is_text(value):
+    """Whether the string ``value`` is valid Unicode text (no lone surrogate: UTF-8 encodable)."""
+    if value.isascii():
+        return True
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _json_depth(obj):
-    """Return how many arrays and objects ``obj`` nests (a scalar is 0), without recursion."""
+    """Return how many arrays and objects ``obj`` nests (a scalar is 0), without recursion.
+
+    Raises ``ValueError`` on a string (a key included) holding a lone surrogate (an
+    unpaired UTF-16 surrogate escape): it is not UTF-8 text, so not protocol JSON.
+    """
     deepest, stack = 0, [(obj, 1)]
     while stack:
         value, depth = stack.pop()
         if isinstance(value, dict):
             children = value.values()
+            stack.extend((key, depth) for key in value)
         elif isinstance(value, list):
             children = value
         else:
+            if isinstance(value, str) and not _is_text(value):
+                raise ValueError(f"the string {value!r:.{_QUOTE_CHARS}} holds a lone "
+                                 "surrogate (not UTF-8 text)")
             continue
         deepest = max(deepest, depth)
         stack.extend((child, depth + 1) for child in children)
@@ -457,10 +499,12 @@ def _row_problems(i, row):
     return problems
 
 
-def _record_problems(obj, solver):
+def _record_problems(obj, solver, search=False):
     """Return the problems of a worker's record object against the SolveRecord wire shape.
 
     ``solver`` is the name the request asked for; the record must name the same one.
+    ``search`` applies the search-record rules (:func:`_search_record_problems`); any
+    other record must not name a search stop as its termination.
     """
     names = set(SolveRecord.field_names())
     if not isinstance(obj, dict):
@@ -490,6 +534,41 @@ def _record_problems(obj, solver):
     else:
         for i, row in enumerate(obj["binding"]):
             problems.extend(_row_problems(i, row))
+    if problems:
+        return problems
+    if search:
+        return _search_record_problems(obj)
+    if obj["termination"] in SEARCH_TERMINATIONS:
+        return [f"record.termination {obj['termination']!r} names a search stop: only a "
+                "search record may"]
+    return []
+
+
+def _search_record_problems(obj):
+    """Return the breaches of the search-record rules by a well-typed record.
+
+    A search record never reads as a proof of optimality: its ``termination`` is one of
+    :data:`SEARCH_TERMINATIONS`; ``status`` is ``FEASIBLE_POINT`` exactly when it has an
+    incumbent (``objective`` not null), and ``termination`` is ``SEARCH_NO_INCUMBENT``
+    exactly when it has none; ``gap`` is null whenever ``objective`` or ``bound`` is.
+    """
+    termination, status, objective = obj["termination"], obj["status"], obj["objective"]
+    with_incumbent, without_incumbent = SEARCH_STATUSES
+    no_incumbent = SEARCH_TERMINATIONS[-1]
+    problems = []
+    if termination not in SEARCH_TERMINATIONS:
+        problems.append(f"a search record's termination must be one of "
+                        f"{list(SEARCH_TERMINATIONS)}, got {termination!r:.{_QUOTE_CHARS}}")
+    found = objective is not None
+    expected = with_incumbent if found else without_incumbent
+    if status != expected:
+        problems.append(f"a search record's status must be {expected!r} when its objective "
+                        f"is {'set' if found else 'null'}")
+    if found == (termination == no_incumbent):
+        problems.append(f"a search record's termination is {no_incumbent!r} exactly when it "
+                        "has no incumbent (objective null)")
+    if obj["gap"] is not None and (objective is None or obj["bound"] is None):
+        problems.append("a search record's gap must be null when its objective or bound is")
     return problems
 
 
@@ -585,8 +664,9 @@ def _timings_problems(obj):
     for key in ("build_seconds", "update_seconds", "transfer_seconds", "solve_seconds"):
         if not _is_number(obj[key], low=0):
             problems.append(f"timings.{key} must be a finite number >= 0")
-    if obj["start_source"] not in (None, "last", "values"):
-        problems.append("timings.start_source must be null, 'last' or 'values'")
+    sources = [s for s in START_SOURCES if s != "none"]
+    if not (obj["start_source"] is None or _one_of(obj["start_source"], sources)):
+        problems.append(f"timings.start_source must be null or one of {sources}")
     if not (obj["start_accepted"] is None or isinstance(obj["start_accepted"], bool)):
         problems.append("timings.start_accepted must be a bool or null")
     pool = obj["pool"]
@@ -616,6 +696,9 @@ def _timings_rule_problems(op, obj):
     solving = op in _SOLVING_REPLIES
     if not solving and obj["solve_seconds"] != 0:
         problems.append(f"timings.solve_seconds must be 0 for {op}")
+    if op == "handle-solve" and obj["update_seconds"] != 0:
+        problems.append("timings.update_seconds must be 0 for a solve (limits are no change "
+                        "to the model)")
     if obj["start_accepted"] is not None and (not solving or obj["start_source"] is None):
         problems.append("timings.start_accepted must be null but for a solve or a search "
                         "with a start in effect")
@@ -861,7 +944,8 @@ def _element_bytes(kind, values):
 def _element_ok(kind, value):
     """Whether one element is of the schema type ``kind``."""
     if kind == "float64":
-        return _is_number(value)
+        return _is_number(value) and not (isinstance(value, int)
+                                          and abs(value) > FLOAT64_EXACT)
     if kind == "int64":
         return (isinstance(value, int) and not isinstance(value, bool)
                 and _INT64_MIN <= value <= _INT64_MAX)
@@ -952,6 +1036,11 @@ class DataContract:
         else:
             shape, flat = (), (value,)
         bad = next((v for v in flat if not _element_ok(kind, v)), _MISSING)
+        if (bad is not _MISSING and kind == "float64" and isinstance(bad, int)
+                and not isinstance(bad, bool) and abs(bad) > FLOAT64_EXACT):
+            raise self._refuse(f"field {name!r} holds float64 elements, got the integer "
+                               f"{bad!r:.{_QUOTE_CHARS}}, of magnitude above 2^53 and so not "
+                               "exactly a float64: send it as a float")
         if bad is not _MISSING:
             raise self._refuse(f"field {name!r} holds {kind} elements, got "
                                f"{bad!r:.{_QUOTE_CHARS}}")
@@ -1150,27 +1239,41 @@ def _write_line(stream, text, errors):
         errors.append(exc)
 
 
-def _check_payload(program, request):
-    """Refuse (``payload``) a request that is not JSON with finite numbers, before sending.
+def _wire_text(value):
+    """``value`` as protocol JSON text, UTF-8 encodable; ``ValueError``/``TypeError`` if not.
 
-    A ``data`` object is checked field by field first, so the refusal names the field;
-    the rest of the request is then checked without it, so no field is serialised twice.
+    Finite numbers only, and no lone surrogate in any string or key (a
+    ``UnicodeEncodeError`` is a ``ValueError``): the wire is UTF-8.
+    """
+    text = json.dumps(value, allow_nan=False, ensure_ascii=False)
+    text.encode("utf-8")
+    return text
+
+
+def _check_payload(program, request):
+    """Refuse (``payload``) a request that is not protocol JSON, before sending.
+
+    Protocol JSON is finite numbers and valid UTF-8 text (no lone surrogate). A ``data``
+    object is checked field by field first, so the refusal names the field; the rest of
+    the request is then checked without it, so no field is serialised twice.
     """
     data = request.get("data")
     if isinstance(data, dict):
         for name, value in data.items():
             try:
-                json.dumps(value, allow_nan=False)
+                _wire_text(name)
+                _wire_text(value)
             except (TypeError, ValueError) as exc:
                 raise WorkerRefusal(program, "payload",
-                                    f"data field {name!r} is not JSON with finite numbers: "
-                                    f"{exc}") from exc
+                                    f"data field {name!r} is not JSON with finite numbers "
+                                    f"and UTF-8 text: {exc}") from exc
         request = {**request, "data": {name: None for name in data}}
     try:
-        json.dumps(request, allow_nan=False)
+        _wire_text(request)
     except (TypeError, ValueError) as exc:
         raise WorkerRefusal(program, "payload",
-                            f"the request is not JSON-serialisable: {exc}") from exc
+                            f"the request is not JSON with finite numbers and UTF-8 text: "
+                            f"{exc}") from exc
 
 
 def _kill_group(process):
@@ -1366,6 +1469,7 @@ class JuliaWorker:
         Asked once per worker process and program: the reply is kept until the worker
         is discarded (a restarted worker may run another package version).
         """
+        _check_payload(program, {"op": "describe", "program": program})
         with self._lock:
             self._ensure_started(program, float(start_timeout))
             return json.loads(json.dumps(self._described_body(program, float(timeout))))
@@ -1492,8 +1596,9 @@ class JuliaWorker:
             with self._settling():
                 self._echo_checks(program, request, expect, reply)
                 self._session_checks(program, expect, reply)
-                if expect in ("handle-solve", "search"):
-                    reply["record"] = self._record(program, reply["record"], model.solver)
+                if expect in _SOLVING_REPLIES:
+                    reply["record"] = self._record(program, reply["record"], model.solver,
+                                                   search=expect == "search")
                 if expect == "search":
                     problems = _trajectory_problems(reply["trajectory"],
                                                     body["limits"].get("rounds"))
@@ -1544,9 +1649,12 @@ class JuliaWorker:
                 self._discard()
                 raise WorkerRefusal(program, "timings", "; ".join(problems))
 
-    def _record(self, program, record, solver):
-        """Return the :class:`SolveRecord` of a reply's record, or kill the worker (``record``)."""
-        problems = _record_problems(record, solver)
+    def _record(self, program, record, solver, search=False):
+        """Return the :class:`SolveRecord` of a reply's record, or kill the worker (``record``).
+
+        ``search`` checks a search's record: its termination is a search stop reason.
+        """
+        problems = _record_problems(record, solver, search)
         if problems:
             self._discard()
             raise WorkerRefusal(program, "record", "; ".join(problems))
@@ -1785,8 +1893,16 @@ class LiveModel:
         (checked against :attr:`data` on every change).
     timings : Timings
         The timings block of the last op.
+    path_counts : dict
+        Every path of :data:`PATHS` to how many replies on this handle (the ``open``
+        included) took it, so a rebuild is recorded even after later ops overwrite
+        :attr:`timings`.
+    last_rebuild : Timings or None
+        The timings block of the most recent ``rebuilt`` reply on this handle; None when
+        the model was never rebuilt.
     solve_record : SolveRecord or None
-        The record of the last :meth:`solve` or :meth:`search`.
+        The record of the last :meth:`solve` or :meth:`search` (a search's names its stop
+        reason, one of :data:`SEARCH_TERMINATIONS`, never a solver's termination).
     trajectory : tuple of SearchRound
         The rounds of the last :meth:`search`; ``()`` before one.
     closed : bool
@@ -1817,7 +1933,9 @@ class LiveModel:
         self.handle = reply["handle"]
         self.signature = reply["signature"]
         self.digest = reply["digest"]
-        self.timings = Timings(**reply["timings"])
+        self.path_counts = dict.fromkeys(PATHS, 0)
+        self.last_rebuild = None
+        self._took(Timings(**reply["timings"]))
         self.timeout = timeout
         self.contract = contract
         self.data = data
@@ -1836,13 +1954,20 @@ class LiveModel:
         this is interrupted, so this record never parts from the worker's model.
         """
         if "timings" in reply:
-            self.timings = Timings(**reply["timings"])
+            self._took(Timings(**reply["timings"]))
         if data is not None:
             self.data, self.signature, self.digest = data, reply["signature"], reply["digest"]
         if "record" in reply:
             self.solve_record = reply["record"]
         if "trajectory" in reply:
             self.trajectory = tuple(SearchRound(**row) for row in reply["trajectory"])
+
+    def _took(self, timings):
+        """Record one reply's timings: the latest block, the path count, the last rebuild."""
+        self.timings = timings
+        self.path_counts[timings.path] += 1
+        if timings.path == "rebuilt":
+            self.last_rebuild = timings
 
     def _variables(self, values, with_values):
         """Return the wire form of ``values``, refusing a bad shape (``payload``)."""
@@ -1922,12 +2047,13 @@ class LiveModel:
         int
             How many variables carry a start value now.
         """
+        last, values, none = START_SOURCES
         if source is None:
-            body = {"source": "none", "values": {}}
-        elif source == "last":
-            body = {"source": "last", "values": {}}
+            body = {"source": none, "values": {}}
+        elif source == last:
+            body = {"source": last, "values": {}}
         else:
-            body = {"source": "values", "values": self._variables(source, True)}
+            body = {"source": values, "values": self._variables(source, True)}
         return self._op("start", body)["started"]
 
     def solve(self, limits=None):
@@ -1988,17 +2114,19 @@ class LiveModel:
         Returns
         -------
         tuple
-            ``(solution, record, trajectory)``: the incumbent, the
-            :class:`~dskit.pipeline.libs.pyomo.SolveRecord` of its solve (``seconds`` the
-            whole search's), and a tuple of :class:`SearchRound`; also on
-            :attr:`solve_record` and :attr:`trajectory`.
+            ``(solution, record, trajectory)``: the incumbent, the search's
+            :class:`~dskit.pipeline.libs.pyomo.SolveRecord` (``termination`` its stop
+            reason, one of :data:`SEARCH_TERMINATIONS`; ``bound`` and ``gap`` the whole
+            model's, null when unknown; ``seconds`` the whole search's), and a tuple of
+            :class:`SearchRound`; also on :attr:`solve_record` and :attr:`trajectory`.
 
         Raises
         ------
         WorkerRefusal
             Kind ``limits`` or ``payload`` (nothing sent) for limits, a name, params or a
             seed of the wrong shape; ``trajectory`` (the worker killed) for a mistyped
-            trajectory; the worker's own kinds (``unknown_search``, ...) otherwise.
+            trajectory, ``record`` (the worker killed) for a record breaking the search
+            rules; the worker's own kinds (``unknown_search``, ...) otherwise.
         """
         limits = {} if limits is None else limits
         round_limits = {} if round_limits is None else round_limits

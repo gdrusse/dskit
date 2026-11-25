@@ -51,6 +51,18 @@ from dskit.pipeline.node import (
 )
 from dskit.pipeline.planner import plan
 
+try:
+    import pyarrow  # noqa: F401  (only asked whether it is installed)
+except ImportError:
+    _PYARROW = False
+else:
+    _PYARROW = True
+
+#: The tests that write or read Arrow files; skipped by name without the extra.
+needs_pyarrow = pytest.mark.skipif(
+    not _PYARROW, reason="pyarrow is not installed (the 'parquet' extra): the Arrow "
+    "handoff cannot be exercised")
+
 HERE = pathlib.Path(__file__).parent
 FAKE_WORKER = HERE / "jump_fake_worker.py"
 ROOT = pathlib.Path(__file__).parents[2]
@@ -1845,6 +1857,7 @@ def _files(root):
 
 
 class TestArrowHandoff:
+    @needs_pyarrow
     def test_an_array_past_the_threshold_crosses_as_an_arrow_file(self, tmp_path):
         log, root = tmp_path / "requests.jsonl", tmp_path / "scratch"
         root.mkdir()
@@ -1877,6 +1890,7 @@ class TestArrowHandoff:
         assert _requests(log)[2]["data"] == ELIGIBLE
         assert list(root.iterdir()) == []  # no directory until a file is needed
 
+    @needs_pyarrow
     def test_the_arrow_file_is_the_one_column_ipc_file_the_spec_names(self, tmp_path,
                                                                       monkeypatch):
         import pyarrow as pa
@@ -1902,6 +1916,7 @@ class TestArrowHandoff:
         assert floats == sorted([ELIGIBLE["cost"], ELIGIBLE["value"]])
         assert strings == [ELIGIBLE["ids"]]
 
+    @needs_pyarrow
     def test_a_refused_request_leaves_no_arrow_file(self, tmp_path):
         root = tmp_path / "scratch"
         root.mkdir()
@@ -1911,6 +1926,7 @@ class TestArrowHandoff:
                 model.update(data={"ids": ["ALPHA", "BRAVO", "DELTA"]})
             assert _files(root) == []
 
+    @needs_pyarrow
     def test_a_killed_worker_takes_its_scratch_directory_with_it(self, tmp_path):
         root = tmp_path / "scratch"
         root.mkdir()
@@ -2224,7 +2240,8 @@ class TestSearchNeverReturnsAStaleIncumbent:
         model.fix({"select": {"A": 0}})
         solution, record, _ = model.search("fix_and_reoptimise", STALE_SEARCH, seed=3)
         assert solution == {"selected": ["B", "C"]}
-        assert record.objective == 13.0 and record.termination == "OPTIMAL"
+        assert record.objective == 13.0 and record.termination == "SEARCH_DONE"
+        assert record.bound == 13.0 and record.gap == 0.0  # the whole model's first solve
 
     def test_new_params_after_the_last_solve_bind_the_search(self, stale):
         model = stale(10.0)
@@ -2527,8 +2544,10 @@ class TestWireRefusalsOnEveryPath:
 
 
 class TestArrowEncoding:
+    @needs_pyarrow
     def test_every_type_and_shape_is_written_as_the_spec_names(self, tmp_path):
-        pa = pytest.importorskip("pyarrow")
+        import pyarrow as pa
+
         contract = jump.DataContract("p", WIDE_SCHEMA)
         handoff = jump._ArrowHandoff(0, str(tmp_path))
         try:
@@ -2551,8 +2570,8 @@ class TestArrowEncoding:
         finally:
             handoff.discard()
 
+    @needs_pyarrow
     def test_a_failed_write_removes_the_files_already_written(self, tmp_path, monkeypatch):
-        pytest.importorskip("pyarrow")
         contract = jump.DataContract("p", WIDE_SCHEMA)
         handoff = jump._ArrowHandoff(0, str(tmp_path))
         original, calls = jump._ArrowHandoff._write, []
@@ -2643,9 +2662,11 @@ class TestTheFakeIsAsStrictAsTheSpec:
                          values={"select": {"keys": [["ALPHA"]], "values": [True]}})
         assert reply["ok"] is False and reply["error"]["kind"] == "bad_request"
 
+    @needs_pyarrow
     def test_an_arrow_stream_file_is_bad_data(self, raw, tmp_path):
-        pa = pytest.importorskip("pyarrow")
         import hashlib
+
+        import pyarrow as pa
 
         path = tmp_path / "cost.arrows"
         table = pa.table({"values": pa.array(ELIGIBLE["cost"], type=pa.float64())})
@@ -2655,3 +2676,445 @@ class TestTheFakeIsAsStrictAsTheSpec:
             path.read_bytes()).hexdigest(), "shape": [3]}}
         reply = _raw_open(raw, {**ELIGIBLE, "cost": ref})
         assert reply["ok"] is False and reply["error"]["kind"] == "bad_data"
+
+
+# ---------------------------------------------------------------------------
+# Candidate ff5d6b5e skeptic corrections
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def worker_of():
+    """Fake workers by argv; every one closes after the test."""
+    made = []
+
+    def build(*args):
+        made.append(JuliaWorker(fake_command(*args)))
+        return made[-1]
+
+    yield build
+    for worker in made:
+        worker.close()
+
+
+def _open(worker, program="budgeted_select", data=None, params=None, components=None):
+    defaults = {"budgeted_select": (SEARCH_DATA, {"budget": 9.0}),
+                "assignment": (ASSIGN, {})}[program]
+    return worker.open(program, defaults[0] if data is None else data,
+                       defaults[1] if params is None else params, DEFAULT_SOLVER, {},
+                       components, timeout=30.0, start_timeout=FAKE_START_TIMEOUT)
+
+
+class TestAPoolHitNeverHandsOverAnIncumbent:
+    """One reading: a pool hit keeps the last solution as start material only."""
+
+    def test_another_holders_point_is_no_incumbent_even_in_the_same_state(self, worker_of):
+        worker = worker_of()
+        first = _open(worker)
+        first.start({"select": {"F": 1}})
+        assert first.solve({"node_limit": 1})[0] == {"selected": ["F"]}  # a poor point
+        first.start(None)
+        first.close()
+        second = _open(worker)  # the same data, params and components: nothing changed
+        assert second.timings.path == "reused"
+        solution, record, trajectory = second.search("fix_and_reoptimise", SEARCH_PARAMS,
+                                                     limits={"rounds": 20}, seed=7)
+        # The old fake took {F} as the incumbent and climbed to the local 11.5 from it.
+        assert solution == {"selected": ["A", "B", "D"]} and record.objective == 12.0
+        assert not any(row.accepted for row in trajectory)
+        assert record.bound == 12.0  # the second handle's own first solve, whole model
+
+    def test_a_pool_hit_clears_fixes_and_starts_and_keeps_the_point_for_start_last(
+            self, worker_of):
+        worker = worker_of()
+        first = _open(worker)
+        first.fix({"select": {"A": 1}})
+        first.start({"select": {"B": 1}})
+        first.solve()
+        first.close()
+        second = _open(worker)
+        assert second.timings.start_source is None
+        assert second.fix({}) == 0
+        assert second.start("last") == len(SEARCH_DATA["ids"])
+
+    def test_the_same_handle_in_the_same_state_keeps_its_incumbent(self, worker_of):
+        model = _open(worker_of())
+        model.start({"select": {"F": 1}})
+        model.solve({"node_limit": 1})
+        model.start(None)
+        _, record, trajectory = model.search("fix_and_reoptimise", SEARCH_PARAMS, seed=7)
+        assert trajectory[0].accepted  # it improved {F}: {F} stood as the incumbent
+        assert record.bound is None and record.gap is None  # the NODE_LIMIT solve's
+
+
+def _observed(mode):
+    """Every caller-visible answer of one session script, path and seconds aside."""
+    worker = JuliaWorker(fake_command("--mode", mode))
+    try:
+        model = _open(worker)
+        seen = [model.fix({"select": {"A": 1}}), model.start({"select": {"B": 1}})]
+        model.solve()
+        model.update(params={"budget": 7.0})
+        seen += [model.timings.path, model.timings.start_source, model.fix({})]
+        solution, record = model.solve({"node_limit": 2})
+        seen += [solution, record.objective, record.termination, model.timings.start_accepted]
+        model.update(data={"value": [5.0, 4.0, 4.0, 3.0, 2.5, 9.0]},
+                     components={"max_items": True}, params={"budget": 7.0, "max_items": 2})
+        seen += [model.timings.start_source, model.start("last"), model.free(),
+                 model.search("fix_and_reoptimise", SEARCH_PARAMS, seed=3)[0]]
+        return seen
+    finally:
+        worker.close()
+
+
+class TestARebuildLosesNothing:
+    def test_a_rebuild_is_visible_only_through_path_and_timings(self):
+        rebuilt, updated = _observed("no-update"), _observed("ok")
+        assert rebuilt[2] == "rebuilt" and updated[2] == "updated"
+        assert rebuilt[:2] + rebuilt[3:] == updated[:2] + updated[3:]
+        assert updated[3] == "values" and updated[4] == 1  # the start and the fix stayed
+
+    def test_the_fake_carries_the_specs_list_over_a_rebuild(self):
+        fake = jump_fake_worker()
+        assert set(fake.CARRIED_BY_A_REBUILD) == {
+            "fixed", "start", "start_source", "last", "last_record", "last_state",
+            "last_handle", "held"}
+
+
+class TestARebuildIsAlwaysRecorded:
+    def test_the_handle_counts_paths_and_keeps_the_last_rebuild(self, worker_of):
+        model = _open(worker_of("--mode", "no-update"))
+        assert model.path_counts == {"built": 1, "reused": 0, "updated": 0, "rebuilt": 0}
+        model.update(params={"budget": 8.0})
+        rebuild = model.timings
+        assert rebuild.path == "rebuilt" and model.last_rebuild is rebuild
+        model.fix({"select": {"A": 1}})
+        model.solve()
+        assert model.timings.path == "reused"  # the reply no longer shows it ...
+        assert model.last_rebuild is rebuild  # ... the handle still does
+        assert model.path_counts == {"built": 1, "reused": 2, "updated": 0, "rebuilt": 1}
+
+    def test_an_updating_program_records_no_rebuild(self, worker_of):
+        model = _open(worker_of())
+        model.update(params={"budget": 8.0})
+        assert model.last_rebuild is None and model.path_counts["updated"] == 1
+
+
+class TestTheSearchRecordIsNoProof:
+    def test_a_done_search_names_its_stop_and_the_whole_models_bound(self, searching):
+        model, _ = searching()
+        model.fix({"select": {"A": 0}})
+        _, record, _ = model.search("fix_and_reoptimise", SEARCH_PARAMS, seed=7)
+        assert record.termination == "SEARCH_DONE" and record.status == "FEASIBLE_POINT"
+        assert record.bound == record.objective == 11.5 and record.gap == 0.0
+
+    def test_a_neighbourhood_round_never_lends_its_bound(self, searching):
+        model, _ = searching()  # {F} stands: found under a node limit, no bound
+        _, record, trajectory = model.search("fix_and_reoptimise", SEARCH_PARAMS, seed=7)
+        assert any(row.bound == row.objective for row in trajectory)  # rounds: "optimal"
+        assert record.termination == "SEARCH_DONE"
+        assert record.bound is None and record.gap is None
+
+    def test_the_round_and_time_limits_are_named(self, searching):
+        model, _ = searching()
+        assert model.search("fix_and_reoptimise", SEARCH_PARAMS, limits={"rounds": 1},
+                            seed=7)[1].termination == "SEARCH_ROUND_LIMIT"
+        model.fix({"select": {"A": 1}})  # a new state: the search solves first
+        _, record, trajectory = model.search("fix_and_reoptimise", SEARCH_PARAMS,
+                                             limits={"time_limit": 1e-9}, seed=7)
+        assert record.termination == "SEARCH_TIME_LIMIT" and trajectory == ()
+
+    def test_no_incumbent_is_named_with_an_empty_trajectory(self, searching):
+        model, _ = searching()
+        model.fix({"select": {"A": 1, "B": 1, "F": 1}})  # over the budget
+        solution, record, trajectory = model.search("fix_and_reoptimise", SEARCH_PARAMS)
+        assert solution == {"selected": None} and trajectory == ()
+        assert (record.termination, record.status) == ("SEARCH_NO_INCUMBENT", "NO_SOLUTION")
+        assert record.objective is None and record.gap is None
+
+    def test_the_fake_gap_is_the_specs(self):
+        gap = jump_fake_worker().search_gap
+        assert [gap(None, 1.0), gap(2.0, None), gap(2.0, 2.0), gap(0.0, 1.0),
+                gap(4.0, 5.0), gap(-4.0, -3.0)] == [None, None, 0.0, None, 0.25, 0.25]
+
+    @pytest.mark.parametrize("patch", [
+        {"termination": "OPTIMAL"},
+        {"termination": "SEARCH_NO_INCUMBENT"},
+        {"status": "NO_SOLUTION"},
+        {"bound": None, "gap": 0.0},
+        {"objective": None},
+    ], ids=repr)
+    def test_python_kills_a_search_record_breaking_the_rules(self, searching, patch):
+        model, _ = searching("--mode", "patch-search", "--patch", json.dumps(patch))
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(record\)"):
+            model.search("fix_and_reoptimise", SEARCH_PARAMS, seed=7)
+        assert model._worker.pid is None
+
+    def test_a_solve_record_naming_a_search_stop_is_refused(self, monkeypatch, live):
+        node, model = live()
+        _rewrite(monkeypatch, "solve", lambda r: r["record"].update(termination="SEARCH_DONE"))
+        with pytest.raises(WorkerRefusal, match=r"\(record\).*search stop"):
+            model.solve()
+        assert _worker(node).pid is None
+
+    def test_a_solve_reporting_update_seconds_breaks_the_timings_rules(self, tmp_path):
+        class Backed(JumpBudgetedSelect):
+            worker_command = fake_command("--mode", "bad-timings", "--on", "solve",
+                                          "--patch", json.dumps({"update_seconds": 0.5}))
+            start_timeout = FAKE_START_TIMEOUT
+
+        model = Backed("select", PARAMS).open(_inputs())
+        with pytest.raises(WorkerRefusal, match=r"\(timings\).*update_seconds"):
+            model.solve()
+
+
+LONE = "\ud800"
+
+
+class TestValuesThatPassTheSchemaButNotTheWire:
+    def test_a_lone_surrogate_in_data_refuses_by_field_before_any_worker_starts(
+            self, spawned):
+        node = _logged(_Payload, "unused.jsonl", patch={"ids": ["ALPHA", LONE, "GAMMA"]})
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(payload\).*'ids'.*UTF-8"):
+            node.open(_inputs())
+        assert spawned == []
+
+    @pytest.mark.parametrize("call", [
+        lambda m: m.fix({"select": {LONE: 1}}),
+        lambda m: m.start({"select": {LONE: 1}}),
+        lambda m: m.free({"select": [LONE]}),
+        lambda m: m.search("fix_and_reoptimise", {LONE: 1}),
+        lambda m: m.search(LONE, {}),
+        lambda m: m.update(params={"budget": 1.0, "note": LONE}),
+    ], ids=["fix", "start", "free", "search-params", "search-name", "update-params"])
+    def test_a_lone_surrogate_anywhere_refuses_before_sending(self, tmp_path, live, call):
+        log = tmp_path / "requests.jsonl"
+        node, model = live(log=log)
+        with pytest.raises(WorkerRefusal, match=r"\(payload\)"):
+            call(model)
+        assert [r["op"] for r in _requests(log)] == ["hello", "describe", "open"]
+        assert _process(node).poll() is None
+
+    def test_a_lone_surrogate_program_name_refuses_describe(self, worker_of, spawned):
+        with pytest.raises(WorkerRefusal, match=r"\(payload\)"):
+            worker_of().describe(LONE)
+        assert spawned == []
+
+    @pytest.mark.parametrize("line", [f'{{"id": 1, "x": "{chr(92)}ud800"}}',
+                                      f'{{"id": 1, "{chr(92)}udc00": 1}}'])
+    def test_a_reply_holding_a_lone_surrogate_is_not_protocol_json(self, line):
+        with pytest.raises(ValueError, match="surrogate"):
+            jump._strict_loads(line)
+
+    def test_the_fake_refuses_a_lone_surrogate_as_bad_request(self, raw):
+        reply = raw.send(op="describe", program=LONE)
+        assert reply["ok"] is False and reply["error"]["kind"] == "bad_request"
+
+    @pytest.mark.parametrize("big", [(1 << 53) + 1, -(1 << 60), 1 << 1100])
+    def test_an_integer_inexact_in_a_float64_is_bad_data_naming_the_field(self, big):
+        with pytest.raises(WorkerRefusal, match=r"\(bad_data\).*'scale'.*2\^53"):
+            jump.DataContract("p", WIDE_SCHEMA).check({**WIDE, "scale": big})
+
+    def test_two_to_the_53_is_still_exact(self):
+        contract = jump.DataContract("p", WIDE_SCHEMA)
+        assert contract.check({**WIDE, "scale": 1 << 53})["scale"] == ((), (1 << 53,))
+
+    @needs_pyarrow
+    def test_on_the_arrow_path_too_it_is_bad_data_and_nothing_is_written(self, tmp_path):
+        log, root = tmp_path / "requests.jsonl", tmp_path / "scratch"
+        root.mkdir()
+        node = _logged(_Payload, log, arrow_threshold=2, scratch_root=str(root),
+                       patch={"value": [1 << 60, 1.0, 1.0]})
+        with pytest.raises(WorkerRefusal, match=r"\(bad_data\).*'value'.*2\^53"):
+            node.open(_inputs())
+        assert [r["op"] for r in _requests(log)] == ["hello", "describe"]
+        assert _files(root) == []
+
+    @needs_pyarrow
+    def test_an_exact_large_integer_crosses_the_arrow_path(self, tmp_path):
+        log, root = tmp_path / "requests.jsonl", tmp_path / "scratch"
+        root.mkdir()
+        node = _logged(_Payload, log, arrow_threshold=2, scratch_root=str(root),
+                       patch={"value": [1 << 53, 1.0, 1.0]})
+        with node.open(_inputs()) as model:
+            assert model.solve()[0] == {"selected": ["ALPHA"]}
+
+    def test_the_fake_refuses_an_inexact_float64_integer(self, raw):
+        reply = _raw_open(raw, {**ELIGIBLE, "cost": [1 << 60, 5.0, 5.0]})
+        assert reply["ok"] is False and reply["error"]["kind"] == "bad_data"
+
+
+class TestDeclaredConstantsAreTheOnesUsed:
+    def test_every_reply_kind_is_an_op_or_the_handle_solve(self):
+        assert set(jump._REPLY_KEYS) == set(jump.OPS) | {"handle-solve"}
+
+    def test_start_sources_are_the_fakes(self):
+        assert jump.START_SOURCES == jump_fake_worker().START_SOURCES
+
+    def test_the_search_stops_are_the_fakes(self):
+        fake = jump_fake_worker()
+        assert jump.SEARCH_TERMINATIONS == (
+            fake.SEARCH_DONE, fake.SEARCH_ROUND_LIMIT, fake.SEARCH_TIME_LIMIT,
+            fake.SEARCH_ROUND_NO_POINT, fake.SEARCH_NO_INCUMBENT)
+        assert jump.SEED_BOUND == jump.FLOAT64_EXACT == fake.FLOAT64_EXACT
+
+    def test_fix_free_and_start_report_their_update_seconds(self, worker_of):
+        model = _open(worker_of())
+        model.fix({"select": {"A": 1}})
+        assert model.timings.update_seconds > 0
+        model.start({"select": {"B": 1}})
+        assert model.timings.update_seconds > 0
+        model.free()
+        assert model.timings.update_seconds > 0
+        model.solve()
+        assert model.timings.update_seconds == 0
+
+
+#: A tiny generalized assignment with a unique optimum: P to big (8), Q and R to small.
+ASSIGN = {"items": ["P", "Q", "R"], "bins": ["big", "small"],
+          "value": [[8.0, 3.0], [5.0, 4.0], [6.0, 5.0]],
+          "weight": [[4.0, 2.0], [3.0, 2.0], [3.0, 2.0]],
+          "capacity": [5.0, 4.0]}
+
+
+def _brute_assignment(data, max_per_bin=None, fixed=None):
+    """The optimum restated independently: every item to a bin or none."""
+    items, bins = data["items"], data["bins"]
+    best = None
+    for choice in __import__("itertools").product([None, *range(len(bins))], repeat=len(items)):
+        load, count, ok = [0.0] * len(bins), [0] * len(bins), True
+        for i, b in enumerate(choice):
+            if b is not None:
+                load[b] += data["weight"][i][b]
+                count[b] += 1
+        ok = all(load[b] <= data["capacity"][b] + 1e-9 for b in range(len(bins)))
+        ok = ok and (max_per_bin is None or max(count) <= max_per_bin)
+        for (item, bin_), v in (fixed or {}).items():
+            ok = ok and ((choice[items.index(item)] == bins.index(bin_)) == bool(v))
+        value = sum(data["value"][i][b] for i, b in enumerate(choice) if b is not None)
+        if ok and (best is None or value > best[0] + 1e-12):
+            best = (value, [[items[i], bins[b]] for i, b in enumerate(choice) if b is not None])
+    return best
+
+
+class TestTheAssignmentReference:
+    def test_describe_publishes_a_two_dimensional_contract(self, worker_of):
+        described = worker_of().describe("assignment")
+        assert described["schema"]["fields"]["value"] == {"type": "float64",
+                                                          "dims": ["item", "bin"]}
+        assert described["schema"]["dims"] == {"item": "items", "bin": "bins"}
+        assert described["variables"] == {"x": {"index": ["item", "bin"],
+                                                "domain": "binary"}}
+        assert described["components"] == ["max_per_bin"]
+
+    def test_the_brute_force_is_the_optimum_and_the_record_the_specs(self, worker_of):
+        model = _open(worker_of(), "assignment")
+        assert model.digest == _canon(jump_fake_worker().Assignment.schema, ASSIGN)
+        assert model.timings.pool["bytes"] == 6000  # 1000 per variable
+        solution, record = model.solve()
+        value, assigned = _brute_assignment(ASSIGN)
+        assert solution == {"assigned": assigned} == {"assigned": [["P", "big"],
+                                                                   ["Q", "small"],
+                                                                   ["R", "small"]]}
+        assert record.objective == value == 17.0 and record.termination == "OPTIMAL"
+        assert (record.variables, record.constraints) == (6, 5)
+        assert [(r["name"], r["rows"]) for r in record.binding] == [("one_bin", 3),
+                                                                     ("capacity", 2)]
+
+    def test_a_fix_on_a_two_dimensional_key_changes_the_answer(self, worker_of):
+        model = _open(worker_of(), "assignment")
+        assert model.fix({"x": {("R", "big"): 1}}) == 1
+        value, assigned = _brute_assignment(ASSIGN, fixed={("R", "big"): 1})
+        assert model.solve()[0] == {"assigned": assigned} and model.solve_record.objective == value
+        with pytest.raises(WorkerRefusal, match=r"\(unknown_key\)"):
+            model.fix({"x": {("R", "huge"): 1}})
+        with pytest.raises(WorkerRefusal, match=r"\(bad_request\)"):
+            model.fix({"x": {"R": 1}})
+
+    def test_numbers_and_the_component_change_in_place(self, worker_of):
+        model = _open(worker_of(), "assignment")
+        changed = {**ASSIGN, "capacity": [9.0, 4.0]}
+        model.update(data={"capacity": [9.0, 4.0]}, params={"max_per_bin": 1},
+                     components={"max_per_bin": True})
+        assert model.timings.path == "updated"
+        value, assigned = _brute_assignment(changed, max_per_bin=1)
+        assert model.solve()[0] == {"assigned": assigned}
+        assert model.solve_record.constraints == 7
+        with pytest.raises(WorkerRefusal, match=r"\(shape_changed\)"):
+            model.update(data={"bins": ["big", "tiny"]})
+        with pytest.raises(WorkerRefusal, match=r"\(bad_data\)"):
+            model.update(data={"value": [[1.0, 2.0], [3.0, 4.0]]})
+
+    def test_params_other_than_max_per_bin_are_bad_request(self, worker_of):
+        with pytest.raises(WorkerRefusal, match=r"\(bad_request\)"):
+            _open(worker_of(), "assignment", params={"budget": 1.0})
+
+    def test_a_search_runs_over_two_dimensional_keys(self, worker_of):
+        model = _open(worker_of(), "assignment")
+        solution, record, trajectory = model.search("fix_and_reoptimise",
+                                                    {"free": 2, "stall": 2}, seed=7)
+        assert solution == {"assigned": _brute_assignment(ASSIGN)[1]}
+        assert record.termination == "SEARCH_DONE" and len(trajectory) == 2
+
+    @needs_pyarrow
+    def test_a_two_dimensional_field_crosses_as_arrow(self, tmp_path):
+        root = tmp_path / "scratch"
+        root.mkdir()
+        log = tmp_path / "requests.jsonl"
+        worker = JuliaWorker(fake_command("--request-log", log),
+                             transport={"arrow_threshold": 2, "scratch_root": str(root)})
+        try:
+            model = _open(worker, "assignment")
+            assert _requests(log)[2]["data"]["value"]["arrow"]["shape"] == [3, 2]
+            assert model.digest == _canon(jump_fake_worker().Assignment.schema, ASSIGN)
+            assert model.solve()[0] == {"assigned": _brute_assignment(ASSIGN)[1]}
+        finally:
+            worker.close()
+
+
+def _spec_signature(schema, data):
+    """The default signature restated from the spec, unlabelled dimensions included."""
+    import hashlib
+    import struct
+
+    def name(text):
+        raw = text.encode("utf-8")
+        return struct.pack("<I", len(raw)) + raw
+
+    def length(dim):
+        for spec_name, spec in schema["fields"].items():
+            if dim in spec["dims"]:
+                value = data[spec_name]
+                for _ in range(spec["dims"].index(dim)):
+                    value = value[0]
+                return len(value)
+        return 0
+
+    out = [b"dskit-shape-v1\n"]
+    for dim in sorted(schema["dims"], key=lambda k: k.encode("utf-8")):
+        label = schema["dims"][dim]
+        out += [name(dim), struct.pack("<Q", length(dim))]
+        if label is None:
+            out.append(b"\x00")
+        else:
+            out.append(b"\x01")
+            for v in data[label]:
+                out.append(name(v) if isinstance(v, str) else struct.pack("<q", v))
+    return "shape:" + hashlib.sha256(b"".join(out)).hexdigest()
+
+
+class TestTheFakeIsAReferenceForAnySchema:
+    def test_the_digest_of_a_wide_schema_is_the_specs(self):
+        assert jump_fake_worker().data_digest(WIDE, WIDE_SCHEMA) == _canon(WIDE_SCHEMA, WIDE)
+
+    def test_the_signature_of_an_unlabelled_dimension_is_the_specs(self):
+        fake = jump_fake_worker()
+        assert fake.shape_signature(WIDE, WIDE_SCHEMA) == _spec_signature(WIDE_SCHEMA, WIDE)
+        wider = {**WIDE, "code": [7, -1, 0, 4], "grid": [[1.0] * 4, [2.0] * 4]}
+        assert fake.shape_signature(wider, WIDE_SCHEMA) != fake.shape_signature(
+            WIDE, WIDE_SCHEMA)  # an unlabelled length is structure too
+
+    def test_the_signature_of_two_labelled_dimensions_is_the_specs(self):
+        schema = jump_fake_worker().Assignment.schema
+        assert jump_fake_worker().shape_signature(ASSIGN, schema) == _spec_signature(
+            schema, ASSIGN)
