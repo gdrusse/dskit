@@ -5,8 +5,8 @@ Run as ``python jump_fake_worker.py [--mode MODE] [--once FLAG_FILE] [--patch JS
 line on stdin and answers one JSON object per line on stdout, exactly as
 ``dskit.pipeline.libs.jump.JuliaWorker`` expects of the real worker, so the pack's suite
 needs no Julia. It is the executable reference of the wire protocol v2 (the ADR-0328
-amendment 1 entry of ``docs/architecture/decision-log.md``) for every op but ``search`` and
-the Arrow reference: it holds live models in a pool keyed ``(program, signature, solver,
+amendment 1 entry of ``docs/architecture/decision-log.md``), every op and the Arrow
+reference included: it holds live models in a pool keyed ``(program, signature, solver,
 solver_options)`` with a count and a byte cap and LRU eviction, and reports the real path
 (built / reused / updated / rebuilt) of every change.
 
@@ -17,6 +17,15 @@ forced in or out, and under a ``node_limit`` the enumeration stops early with th
 feasible) as its first incumbent. The one optional component, ``max_items``, caps the
 count at ``params.max_items``. The one-shot ``solve`` is v1 unchanged and ignores extra
 ``data`` keys, so a test can pad a payload.
+
+``open`` and ``update`` check their ``data`` against the declared schema on this side too
+(field set, element types, one length per dimension, distinct labels, finite numbers), and
+read an Arrow reference (pyarrow, imported only then) after checking its sha256. ONE
+search is registered, ``fix_and_reoptimise`` (params exactly ``{free, stall}``): each round
+frees ``free`` variables drawn by ``random.Random(seed)`` from those the caller has not
+fixed, fixes the rest at the incumbent, re-solves from the incumbent under the round
+limits, and accepts a strictly better objective; it is done after ``stall`` rounds in a
+row without one. The same seed gives the same trajectory.
 
 ``--mode`` picks a behaviour, never an edit to this file. At ``hello``:
 
@@ -47,6 +56,8 @@ At the first session reply that can carry it (``--once`` as above):
 
 ``bad-timings``    the first timings block updated by ``--patch`` (a JSON object)
 ``wrong-handle``   the first reply to a request naming a handle echoes another one
+``bad-digest``     the first ``open``/``update`` reply carries a digest of other data
+``bad-trajectory`` the first search trajectory's first row updated by ``--patch``
 
 Answering correctly throughout:
 
@@ -71,6 +82,7 @@ import itertools
 import json
 import math
 import os
+import random
 import struct
 import sys
 import time
@@ -122,6 +134,7 @@ REQUEST_KEYS = {
     "start": {"id", "op", "handle", "source", "values"},
     "solve": {"id", "op", "program", "data", "params", "solver", "solver_options"},
     "handle-solve": {"id", "op", "handle", "limits"},
+    "search": {"id", "op", "handle", "search", "params", "seed", "limits", "round_limits"},
     "close": {"id", "op", "handle"},
     "shutdown": {"id", "op"},
 }
@@ -131,7 +144,7 @@ HELLO_MODES = ("bad-protocol", "v1-only", "stdout-noise", "bool-id", "hello-erro
 SOLVE_MODES = ("crash", "hang", "malformed", "wrong-id", "error-reply", "bad-record",
                "patch-record", "dup-key", "extra-key", "over-budget", "float-overflow",
                "deep-reply")
-TIMINGS_MODES = ("bad-timings", "wrong-handle")
+TIMINGS_MODES = ("bad-timings", "wrong-handle", "bad-digest", "bad-trajectory")
 CLEAN_MODES = ("ok", "noisy-stderr", "big-reply", "linger", "slow-solve", "no-update")
 MODES = CLEAN_MODES + HELLO_MODES + SOLVE_MODES + TIMINGS_MODES
 
@@ -143,6 +156,18 @@ BIG_REPLY_ROWS = 40_000
 
 #: Nesting depth of ``deep-reply`` (far past any recursion limit).
 DEEP_REPLY_DEPTH = 100_000
+
+#: The registered searches and the exact params each takes.
+SEARCHES = {"fix_and_reoptimise": ("free", "stall")}
+
+#: The overall limits a search takes.
+SEARCH_LIMIT_KEYS = ("time_limit", "rounds")
+
+#: A seed is an integer in [0, SEED_BOUND).
+SEED_BOUND = 1 << 53
+
+#: What a schema type is as an Arrow column type name (``str(pyarrow type)``).
+ARROW_TYPES = {"float64": "double", "int64": "int64", "string": "string", "bool": "bool"}
 
 
 class Refused(Exception):
@@ -288,8 +313,48 @@ def _is_number(value):
             and math.isfinite(value))
 
 
+def _element_ok(kind, value):
+    if kind == "float64":
+        return _is_number(value)
+    if kind == "int64":
+        return _is_int(value) and -(1 << 63) <= value < (1 << 63)
+    if kind == "string":
+        return isinstance(value, str)
+    return isinstance(value, bool)
+
+
+def _arrow_values(name, ref, kind):
+    """Read one Arrow reference whole after checking it; ``bad_data`` naming the field."""
+    if not isinstance(ref, dict) or set(ref) != {"path", "sha256", "shape"}:
+        raise Refused("bad_data", f"{name!r}: an Arrow reference is exactly "
+                      "{path, sha256, shape}")
+    path, shape = ref["path"], ref["shape"]
+    if (not isinstance(path, str) or not os.path.isabs(path) or not isinstance(shape, list)
+            or len(shape) != 1 or not _is_int(shape[0], 0)):
+        raise Refused("bad_data", f"{name!r}: an absolute path and a shape over 'item'")
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError as exc:
+        raise Refused("bad_data", f"{name!r}: cannot read the Arrow file: {exc}") from None
+    if hashlib.sha256(raw).hexdigest() != ref["sha256"]:
+        raise Refused("bad_data", f"{name!r}: the Arrow file's sha256 is not the one sent")
+    import pyarrow as pa
+
+    table = pa.ipc.open_file(pa.BufferReader(raw)).read_all()
+    if table.column_names != ["values"] or str(table.schema.field("values").type) != (
+            ARROW_TYPES[kind]):
+        raise Refused("bad_data", f"{name!r}: the Arrow file must be one column 'values' "
+                      f"of {kind}")
+    column = table.column("values")
+    if column.null_count or len(column) != shape[0]:
+        raise Refused("bad_data", f"{name!r}: the Arrow column must hold {shape[0]} values "
+                      "and no nulls")
+    return column.to_pylist()
+
+
 def _check_data(data, partial):
-    """Refuse ``data`` (``bad_data``) unless it fits the schema; return it."""
+    """Refuse ``data`` (``bad_data``) unless it fits the schema; return it, Arrow read."""
     if not isinstance(data, dict):
         raise Refused("bad_request", "data must be an object")
     fields = SCHEMA["fields"]
@@ -299,15 +364,17 @@ def _check_data(data, partial):
     missing = sorted(set(fields) - set(data))
     if missing and not partial:
         raise Refused("bad_data", f"the field {missing[0]!r} is required")
+    out = {}
     for name, values in data.items():
+        kind = fields[name]["type"]
+        if isinstance(values, dict) and set(values) == {"arrow"}:
+            values = _arrow_values(name, values["arrow"], kind)
         if not isinstance(values, list):
             raise Refused("bad_data", f"{name!r} must be a list over 'item'")
-        kind = fields[name]["type"]
-        ok = (all(isinstance(v, str) for v in values) if kind == "string"
-              else all(_is_number(v) for v in values))
-        if not ok:
+        if not all(_element_ok(kind, v) for v in values):
             raise Refused("bad_data", f"{name!r} must hold {kind} values")
-    return data
+        out[name] = values
+    return out
 
 
 def _check_full(data):
@@ -390,6 +457,7 @@ class Model:
         self.start = None
         self.start_source = None
         self.last = None
+        self.last_record = None
         self.held = False
 
     @property
@@ -693,13 +761,93 @@ class FakeWorker:
             ids, cost, value, budget, fixed=model.fixed, start=model.start,
             node_limit=limits.get("node_limit"), max_items=max_items)
         seconds = time.perf_counter() - started
-        if chosen is not None:
-            model.last = {i: int(i in chosen) for i in ids}
         record = _record(model.key[2], ids, budget, chosen, objective, complete, cost,
                          seconds)
+        if chosen is not None:
+            model.last = {i: int(i in chosen) for i in ids}
+            model.last_record = record
         return {"handle": request["handle"], "solution": {"selected": chosen},
                 "record": record,
                 "timings": self._timings(model, "reused", solve=seconds, accepted=accepted)}
+
+    def _search(self, request):
+        """The base loop and the one reference search (see the module docstring)."""
+        model = self._model(request)
+        if request["search"] not in SEARCHES:
+            raise Refused("unknown_search", f"no search named {request['search']!r}")
+        params, seed = request["params"], request["seed"]
+        if (not isinstance(params, dict) or set(params) != set(SEARCHES[request["search"]])
+                or not all(_is_int(v, 1) for v in params.values())):
+            raise Refused("bad_request", "fix_and_reoptimise takes exactly {free, stall}, "
+                          "integers >= 1")
+        if not _is_int(seed, 0) or seed >= SEED_BOUND:
+            raise Refused("bad_request", f"seed must be an integer in [0, {SEED_BOUND})")
+        limits = request["limits"]
+        if (not isinstance(limits, dict) or set(limits) - set(SEARCH_LIMIT_KEYS)
+                or ("rounds" in limits and not _is_int(limits["rounds"], 1))
+                or ("time_limit" in limits and not (_is_number(limits["time_limit"])
+                                                    and limits["time_limit"] > 0))):
+            raise Refused("bad_request", f"limits must be an object over "
+                          f"{list(SEARCH_LIMIT_KEYS)}")
+        node_limit = _check_limits(request["round_limits"]).get("node_limit")
+        ids = model.data["ids"]
+        cost = dict(zip(ids, model.data["cost"]))
+        value = dict(zip(ids, model.data["value"]))
+        budget = float(model.params["budget"])
+        max_items = model.params["max_items"] if "max_items" in model.attached else None
+        rng = random.Random(seed)
+        began = time.perf_counter()
+        solving = 0.0
+
+        def solve(fixed, start):
+            nonlocal solving
+            started = time.perf_counter()
+            chosen, objective, complete, accepted = _knapsack(
+                ids, cost, value, budget, fixed=fixed, start=start, node_limit=node_limit,
+                max_items=max_items)
+            seconds = time.perf_counter() - started
+            solving += seconds
+            record = _record(model.key[2], ids, budget, chosen, objective, complete, cost,
+                             seconds)
+            return chosen, objective, record, accepted, seconds
+
+        caller = dict(model.fixed)
+        first_accepted = None
+        incumbent, record = model.last, model.last_record
+        if incumbent is None or model.start is not None:
+            chosen, objective, record, first_accepted, _ = solve(caller, model.start)
+            incumbent = None if chosen is None else {i: int(i in chosen) for i in ids}
+        trajectory = []
+        if incumbent is not None:
+            best = sum(value[i] for i in ids if incumbent[i])
+            pool, stall = sorted(i for i in ids if i not in caller), 0
+            while stall < params["stall"]:
+                if "rounds" in limits and len(trajectory) >= limits["rounds"]:
+                    break
+                if ("time_limit" in limits
+                        and time.perf_counter() - began >= limits["time_limit"]):
+                    break
+                hood = set(rng.sample(pool, min(params["free"], len(pool))))
+                fixed = {**{i: incumbent[i] for i in ids if i not in hood}, **caller}
+                chosen, objective, found, _, seconds = solve(fixed, incumbent)
+                better = chosen is not None and objective > best + 1e-12
+                trajectory.append({"round": len(trajectory) + 1, "objective": objective,
+                                   "bound": found["bound"], "seconds": seconds,
+                                   "accepted": better, "neighbourhood": len(hood)})
+                if chosen is None:
+                    break
+                if better:
+                    incumbent, best, record, stall = (
+                        {i: int(i in chosen) for i in ids}, objective, found, 0)
+                else:
+                    stall += 1
+            model.last, model.last_record = incumbent, record
+        record = {**record, "seconds": time.perf_counter() - began}
+        selected = None if incumbent is None else [i for i in sorted(ids) if incumbent[i]]
+        return {"handle": request["handle"], "solution": {"selected": selected},
+                "record": record, "trajectory": trajectory,
+                "timings": self._timings(model, "reused", solve=solving,
+                                         accepted=first_accepted)}
 
     def _close(self, request):
         handle = request["handle"]
@@ -715,7 +863,8 @@ class FakeWorker:
         """Answer one session op: its body, a well-formed error, or a chosen misbehaviour."""
         ops = {"describe": self._describe, "open": self._open, "update": self._update,
                "fix": self._fix, "free": self._free, "start": self._start,
-               "handle-solve": self._handle_solve, "close": self._close}
+               "handle-solve": self._handle_solve, "search": self._search,
+               "close": self._close}
         try:
             if set(request) != REQUEST_KEYS[op]:
                 raise Refused("bad_request", f"a {op} request is exactly "
@@ -730,6 +879,12 @@ class FakeWorker:
         elif self.mode == "wrong-handle" and "handle" in request and self._misbehaves(
                 TIMINGS_MODES):
             body["handle"] = "h999"
+        elif self.mode == "bad-digest" and "digest" in body and self._misbehaves(
+                TIMINGS_MODES):
+            body["digest"] = data_digest({"ids": []})
+        elif self.mode == "bad-trajectory" and body.get("trajectory") and self._misbehaves(
+                TIMINGS_MODES):
+            body["trajectory"][0].update(self.patch)
         self._reply({"id": request["id"], "ok": True, **body})
 
     def serve(self):
@@ -747,7 +902,8 @@ class FakeWorker:
                 self._answer(request)
             elif op == "solve":
                 self._session(request, "handle-solve")
-            elif op in ("describe", "open", "update", "fix", "free", "start", "close"):
+            elif op in ("describe", "open", "update", "fix", "free", "start", "search",
+                        "close"):
                 self._session(request, op)
             elif op == "shutdown":
                 self._reply({"id": request["id"], "ok": True})

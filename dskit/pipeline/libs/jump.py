@@ -50,6 +50,31 @@ re-use is opt-in through ``_PERSISTENT_MODEL_REUSE``, the knob
 :class:`~dskit.pipeline.libs.pyomo.ScenarioUtilitySolve` uses for its persistent model; a
 node that does not opt in sends exactly the v1 one-shot ``solve``.
 
+The data contract (ADR-0328 A4)
+-------------------------------
+Julia owns each program's schema (field name, element type, shape in named
+dimensions). Python reads it through ``describe``, once per worker process and program,
+and never keeps a schema of its own: :class:`DataContract` wraps the worker's reply.
+Every ``open`` and ``update`` is checked against it BEFORE anything is sent (an unknown
+or missing field, a wrong element type, a ragged value, dimensions that disagree across
+fields, repeated labels: each refuses as ``bad_data`` naming the program and the field;
+a non-finite number refuses as ``payload`` naming the field, before any worker starts),
+and the worker checks again. Small values travel as JSON; an array of more than the
+worker's ``arrow_threshold`` elements travels as an Arrow IPC file in the worker's own
+scratch directory (under ``scratch_root``), referenced by path and sha256, removed as
+soon as its request is answered or refused, and the directory with the worker. pyarrow
+is imported only there, on the run path; without it such an array refuses as ``arrow``,
+naming the extra to install. Every ``open`` and ``update`` reply carries the digest of
+the data the worker applied, and :meth:`DataContract.digest` recomputes it from what was
+sent: a mismatch is the refusal ``digest`` and kills the worker. The v1 one-shot
+``solve`` is unchanged: JSON only, no contract.
+
+Search (ADR-0328 A6)
+--------------------
+:meth:`LiveModel.search` runs a search algorithm REGISTERED IN THE WORKER on the live
+model and returns the incumbent, its record and the per-round trajectory, each field
+checked like every other reply. Python contains no search algorithm.
+
 Wire protocol (version :data:`PROTOCOL_VERSION`)
 -------------------------------------------------
 The complete specification, every op, field, type, error kind and the digest's byte
@@ -76,7 +101,8 @@ failed ``hello`` (including a well-formed error reply to it), death (``died``), 
 past the node's time limit (``timeout``, which also bounds writing the request), a line
 that is not the protocol (``malformed``), a mistyped record (``record``, every field
 type-checked and finite; an integer too large for a float is not finite), a mistyped
-timings block (``timings``), and an exchange interrupted on this side by anything, a
+timings block (``timings``), a data digest other than that of the data sent (``digest``),
+a mistyped search trajectory (``trajectory``), and an exchange interrupted on this side by anything, a
 ``KeyboardInterrupt`` included (re-raised as it is; the late reply could otherwise be
 read as the next request's). A payload that is not JSON (``payload``), limits of the
 wrong shape (``limits``) and a closed (``closed``) or stale (``stale_handle``) handle
@@ -95,21 +121,28 @@ versions of the worker that solved are on ``worker_info`` (reset with ``solve_re
 the start of every run); writing them into a run's record is not done yet (ADR-0328
 decision 5, deferred to the Julia half).
 
-Import cost: stdlib and toolkit only, no Julia and no third-party library, ever.
+Import cost: stdlib and toolkit only, no Julia, ever; the one third-party library,
+pyarrow, is imported inside the Arrow writer and only when an array crosses the threshold.
 """
 
 from __future__ import annotations
 
 import atexit
 import collections
+import hashlib
 import json
+import math
 import os
 import pathlib
 import queue
+import shutil
 import signal
+import struct
 import subprocess
+import tempfile
 import threading
 import time
+import weakref
 from abc import abstractmethod
 from dataclasses import dataclass, fields
 
@@ -118,9 +151,12 @@ from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
 from dskit.pipeline.records import number_ok
 
 __all__ = [
+    "ARROW_EXTRA",
+    "DEFAULT_ARROW_THRESHOLD",
     "DEFAULT_POOL_BYTES",
     "DEFAULT_POOL_MODELS",
     "DEFAULT_REQUEST_TIMEOUT",
+    "DEFAULT_SCRATCH_ROOT",
     "DEFAULT_SHUTDOWN_TIMEOUT",
     "DEFAULT_SOLVER",
     "DEFAULT_START_TIMEOUT",
@@ -133,12 +169,17 @@ __all__ = [
     "OPTIMAL_TERMINATION",
     "PATHS",
     "PROTOCOL_VERSION",
+    "SCRATCH_PREFIX",
+    "SEARCH_LIMIT_KEYS",
+    "SEED_BOUND",
     "START_SOURCES",
     "WORKER_ENTRY",
+    "DataContract",
     "JuliaWorker",
     "JumpBudgetedSelect",
     "JumpSolve",
     "LiveModel",
+    "SearchRound",
     "Timings",
     "WorkerRefusal",
     "register",
@@ -148,9 +189,9 @@ __all__ = [
 #: Version 2 is ADR-0328 amendment 1 (live models); a version-1 worker is refused.
 PROTOCOL_VERSION = 2
 
-#: The operations this pack sends (the protocol's ``search`` is not sent yet).
-OPS = ("hello", "describe", "open", "update", "fix", "free", "start", "solve", "close",
-       "shutdown")
+#: The operations this pack sends: every op of the protocol.
+OPS = ("hello", "describe", "open", "update", "fix", "free", "start", "solve", "search",
+       "close", "shutdown")
 
 #: What a timings block's ``path`` may say happened to the model.
 PATHS = ("built", "reused", "updated", "rebuilt")
@@ -160,6 +201,27 @@ LIMIT_KEYS = ("time_limit", "node_limit", "mip_rel_gap", "solution_limit")
 
 #: What a ``start`` request's ``source`` may be (``"none"`` clears every start value).
 START_SOURCES = ("last", "values", "none")
+
+#: The overall limits a ``search`` may carry (its rounds take :data:`LIMIT_KEYS`).
+SEARCH_LIMIT_KEYS = ("time_limit", "rounds")
+
+#: A search ``seed`` is an integer in ``[0, SEED_BOUND)``, exact in a float64 (Julia
+#: and JSON parsers agree on every such integer).
+SEED_BOUND = 1 << 53
+
+#: Elements above which one array of an ``open``/``update`` travels as an Arrow file
+#: instead of JSON (a worker setting; the node knob ``arrow_threshold`` defaults to it).
+DEFAULT_ARROW_THRESHOLD = 1 << 16
+
+#: Where a worker's scratch directory is made; ``None`` is the system temporary
+#: directory (``tempfile.gettempdir()``). The node knob ``scratch_root`` defaults to it.
+DEFAULT_SCRATCH_ROOT = None
+
+#: The name prefix of every worker's scratch directory (one per worker process).
+SCRATCH_PREFIX = "dskit-jump-"
+
+#: The dskit extra that installs pyarrow, named in the refusal when it is missing.
+ARROW_EXTRA = "parquet"
 
 #: The worker's default pool caps, sent in ``hello`` (the node knobs
 #: ``_PERSISTENT_CACHE_SIZE`` and ``_PERSISTENT_CACHE_BYTES`` default to these). Four
@@ -208,6 +270,8 @@ _REPLY_KEYS = {
     "start": frozenset({"id", "ok", "handle", "started", "timings"}),
     "solve": frozenset({"id", "ok", "solution", "record"}),
     "handle-solve": frozenset({"id", "ok", "handle", "solution", "record", "timings"}),
+    "search": frozenset({"id", "ok", "handle", "solution", "record", "trajectory",
+                         "timings"}),
     "close": frozenset({"id", "ok", "handle", "pooled"}),
     "shutdown": frozenset({"id", "ok"}),
 }
@@ -215,9 +279,23 @@ _REPLY_KEYS = {
 #: The exact key set of a timings block's ``pool`` object.
 _POOL_KEYS = ("models", "bytes", "evicted", "evictions")
 
-#: The schema's element types and the variable groups' domains (``describe``).
-_FIELD_TYPES = frozenset({"float64", "int64", "string", "bool"})
+#: The schema's element types, each with its one-byte digest tag (the wire spec's
+#: byte layout), and the variable groups' domains (``describe``).
+_TYPE_TAGS = {"float64": b"f", "int64": b"i", "string": b"s", "bool": b"b"}
+_FIELD_TYPES = frozenset(_TYPE_TAGS)
 _DOMAINS = frozenset({"binary", "integer", "continuous"})
+
+#: The element types a label field may have.
+_LABEL_TYPES = frozenset({"string", "int64"})
+
+#: The first bytes of the canonical data digest's input (the wire spec).
+_DIGEST_MAGIC = b"dskit-data-v1\n"
+
+#: The closed range of an ``int64`` element.
+_INT64_MIN, _INT64_MAX = -(1 << 63), (1 << 63) - 1
+
+#: The one column of an Arrow handoff file.
+_ARROW_COLUMN = "values"
 
 #: Characters of a lowercase hex sha256 (a data digest).
 _DIGEST_CHARS = 64
@@ -249,8 +327,9 @@ class WorkerRefusal(RuntimeError):
         The Julia program the node asked for.
     kind : str
         Why: ``start``, ``protocol``, ``died``, ``timeout``, ``malformed``, ``payload``,
-        ``record``, ``timings``, ``limits``, ``closed``, ``stale_handle``,
-        ``termination``, ``solution``, or the ``kind`` of a worker's own error reply
+        ``record``, ``timings``, ``trajectory``, ``digest``, ``limits``, ``arrow``,
+        ``closed``, ``stale_handle``, ``termination``, ``solution``, ``bad_data`` (also
+        raised here, before sending), or the ``kind`` of a worker's own error reply
         (``evicted``, ``shape_changed``, ``bad_data``, ...; the ADR lists them all).
     message : str
         The detail.
@@ -508,6 +587,86 @@ def _timings_problems(obj):
     return problems
 
 
+@dataclass(frozen=True)
+class SearchRound:
+    """One round of a worker-side search (ADR-0328 A6): a row of the trajectory.
+
+    Parameters
+    ----------
+    round : int
+        1, 2, ... in order.
+    objective, bound : float or None
+        The round's solve, None when it found no point (or no bound).
+    seconds : float
+        The round's wall time.
+    accepted : bool
+        Whether the search took the round's point as its new incumbent.
+    neighbourhood : int
+        How many variables the round freed.
+
+    Examples
+    --------
+    ::
+
+        row = SearchRound(round=1, objective=12.0, bound=12.0, seconds=0.01,
+                          accepted=True, neighbourhood=2)
+        row.to_obj()["accepted"]  # True
+    """
+
+    round: int
+    objective: object
+    bound: object
+    seconds: float
+    accepted: bool
+    neighbourhood: int
+
+    @classmethod
+    def field_names(cls):
+        """Return the wire keys of a trajectory row, in order.
+
+        Returns
+        -------
+        tuple of str
+        """
+        return tuple(f.name for f in fields(cls))
+
+    def to_obj(self):
+        """Return the row as JSON-able data.
+
+        Returns
+        -------
+        dict
+            The wire keys.
+        """
+        return {name: getattr(self, name) for name in self.field_names()}
+
+
+def _trajectory_problems(rows, rounds):
+    """Return the problems of a search reply's trajectory; ``rounds`` is the request's cap."""
+    if not isinstance(rows, list):
+        return [f"the trajectory must be a list of rows, got {rows!r:.{_QUOTE_CHARS}}"]
+    names = set(SearchRound.field_names())
+    problems = []
+    if rounds is not None and len(rows) > rounds:
+        problems.append(f"the trajectory has {len(rows)} rounds, the request allowed {rounds}")
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict) or set(row) != names:
+            problems.append(f"trajectory[{i}] must be exactly {sorted(names)}")
+            continue
+        if not _is_int(row["round"]) or row["round"] != i + 1:
+            problems.append(f"trajectory[{i}].round must be the integer {i + 1}")
+        for key in ("objective", "bound"):
+            if not _is_number(row[key], nullable=True):
+                problems.append(f"trajectory[{i}].{key} must be a finite number or null")
+        if not _is_number(row["seconds"], low=0):
+            problems.append(f"trajectory[{i}].seconds must be a finite number >= 0")
+        if not isinstance(row["accepted"], bool):
+            problems.append(f"trajectory[{i}].accepted must be a bool")
+        if not _is_int(row["neighbourhood"]):
+            problems.append(f"trajectory[{i}].neighbourhood must be an integer >= 0")
+    return problems
+
+
 def _names(value):
     """Whether ``value`` is a list of distinct non-empty strings."""
     return (isinstance(value, list) and all(_is_name(v) for v in value)
@@ -528,8 +687,18 @@ def _describe_problems(reply, program):
                 or spec["type"] not in _FIELD_TYPES or not _names(spec["dims"])):
             problems.append(f"schema.fields[{name!r}] must be {{type, dims}}")
     for name, label in schema["dims"].items():
-        if not _is_name(name) or not (label is None or label in schema["fields"]):
-            problems.append(f"schema.dims[{name!r}] must name a field or be null")
+        spec = schema["fields"].get(label) if isinstance(label, str) else None
+        if not _is_name(name) or not (label is None or (
+                isinstance(spec, dict) and spec.get("dims") == [name]
+                and spec.get("type") in _LABEL_TYPES)):
+            problems.append(f"schema.dims[{name!r}] must be null or name a one-dimensional "
+                            f"string or int64 field over {name!r}")
+    used = {dim for spec in schema["fields"].values() if isinstance(spec, dict)
+            and isinstance(spec.get("dims"), list) for dim in spec["dims"]}
+    undeclared = sorted(used - set(schema["dims"]), key=str)
+    if undeclared:
+        problems.append(f"schema.dims must declare every dimension a field uses; missing "
+                        f"{undeclared}")
     variables = reply["variables"]
     if not isinstance(variables, dict) or not all(
             _is_name(name) and isinstance(spec, dict) and set(spec) == {"index", "domain"}
@@ -610,6 +779,297 @@ def _wire_variables(values, with_values):
     return wire
 
 
+def _search_limits_problems(limits):
+    """Return the problems of a search's overall ``limits`` (checked before sending)."""
+    if not isinstance(limits, dict):
+        return [f"limits must be an object over {list(SEARCH_LIMIT_KEYS)}, got {limits!r}"]
+    problems = [f"unknown search limit {key!r} (known: {list(SEARCH_LIMIT_KEYS)})"
+                for key in sorted(set(limits) - set(SEARCH_LIMIT_KEYS), key=str)]
+    if "time_limit" in limits and not (_is_number(limits["time_limit"])
+                                       and limits["time_limit"] > 0):
+        problems.append("time_limit must be a finite number of seconds > 0")
+    if "rounds" in limits and not _is_int(limits["rounds"], low=1):
+        problems.append("rounds must be an integer >= 1")
+    return problems
+
+
+# -- the data contract (ADR-0328 A4) ---------------------------------------------
+
+
+def _name_bytes(text):
+    """Return a name as the digest writes it: UTF-8 byte length (u32 LE), then the bytes."""
+    raw = text.encode("utf-8")
+    return struct.pack("<I", len(raw)) + raw
+
+
+def _element_bytes(kind, values):
+    """Every element of ``values`` (one type) as the digest writes it, concatenated."""
+    if kind == "float64":
+        return struct.pack(f"<{len(values)}d", *(float(v) + 0.0 for v in values))
+    if kind == "int64":
+        return struct.pack(f"<{len(values)}q", *values)
+    if kind == "bool":
+        return bytes(1 if v else 0 for v in values)
+    return b"".join(_name_bytes(v) for v in values)
+
+
+def _element_ok(kind, value):
+    """Whether one element is of the schema type ``kind``."""
+    if kind == "float64":
+        return _is_number(value)
+    if kind == "int64":
+        return (isinstance(value, int) and not isinstance(value, bool)
+                and _INT64_MIN <= value <= _INT64_MAX)
+    if kind == "string":
+        return isinstance(value, str)
+    return isinstance(value, bool)
+
+
+def _flatten(value, ndim):
+    """Return ``(shape, flat)`` of nested lists ``ndim`` deep, row-major; ``ValueError`` if ragged.
+
+    An empty list at one level gives length 0 to every deeper dimension.
+    """
+    level, shape = [value], []
+    for depth in range(ndim):
+        if not all(isinstance(item, (list, tuple)) for item in level):
+            raise ValueError(f"must be lists nested {ndim} deep (one per dimension); "
+                             f"level {depth + 1} holds a non-list")
+        lengths = {len(item) for item in level}
+        if len(lengths) > 1:
+            raise ValueError(f"is ragged at level {depth + 1} (lengths {sorted(lengths)})")
+        size = lengths.pop() if lengths else 0
+        shape.append(size)
+        level = [element for item in level for element in item]
+    return tuple(shape), tuple(level)
+
+
+class DataContract:
+    """A program's data schema, as the worker's ``describe`` published it (ADR-0328 A4).
+
+    Julia owns the schema; this object only wraps the ``schema`` of a ``describe``
+    reply (it copies nothing of its own), validates a payload against it before anything
+    is sent, and computes the canonical data digest exactly as the wire spec states, so a
+    reply's ``digest`` is checked against what was sent.
+
+    Parameters
+    ----------
+    program : str
+        The program the schema belongs to (every refusal names it).
+    schema : dict
+        ``{fields, dims}`` from a well-formed ``describe`` reply.
+
+    Examples
+    --------
+    ::
+
+        contract = DataContract("budgeted_select", {
+            "fields": {"ids": {"type": "string", "dims": ["item"]},
+                       "cost": {"type": "float64", "dims": ["item"]}},
+            "dims": {"item": "ids"}})
+        data = contract.check({"ids": ["A", "B"], "cost": [1.0, 2.0]})
+        data["cost"]  # ((2,), (1.0, 2.0))
+        len(contract.digest(data))  # 64
+    """
+
+    def __init__(self, program, schema):
+        self.program = program
+        self.schema = schema
+
+    def element_type(self, name):
+        """Return the element type of field ``name``.
+
+        Parameters
+        ----------
+        name : str
+            A schema field.
+
+        Returns
+        -------
+        str
+            ``float64``, ``int64``, ``string`` or ``bool``.
+        """
+        return self.schema["fields"][name]["type"]
+
+    def _refuse(self, message):
+        """Return the ``bad_data`` refusal naming the program."""
+        return WorkerRefusal(self.program, "bad_data", message)
+
+    def _field(self, name, value):
+        """Return ``(shape, flat)`` of one field's value, refusing a wrong type or shape."""
+        spec = self.schema["fields"][name]
+        dims, kind = spec["dims"], spec["type"]
+        if dims:
+            try:
+                shape, flat = _flatten(value, len(dims))
+            except ValueError as exc:
+                raise self._refuse(f"field {name!r} over {dims} {exc}") from None
+        else:
+            shape, flat = (), (value,)
+        bad = next((v for v in flat if not _element_ok(kind, v)), _MISSING)
+        if bad is not _MISSING:
+            raise self._refuse(f"field {name!r} holds {kind} elements, got "
+                               f"{bad!r:.{_QUOTE_CHARS}}")
+        return shape, flat
+
+    def check(self, data, current=None):
+        """Validate ``data`` against the schema; return the model's full data after it.
+
+        Parameters
+        ----------
+        data : dict
+            Field name to value: every field at ``open`` (``current`` None), any subset
+            at ``update``.
+        current : dict or None
+            The model's full data (as this method returns it) for an ``update``.
+
+        Returns
+        -------
+        dict
+            Field name to ``(shape, flat elements)`` over every field.
+
+        Raises
+        ------
+        WorkerRefusal
+            Kind ``bad_data`` naming the program and the field: an unknown or (at open)
+            missing field, a wrong element type, a value nested other than its
+            dimensions, two fields disagreeing on a dimension's length, a label field
+            with a repeated value.
+        """
+        fields = self.schema["fields"]
+        if not isinstance(data, dict):
+            raise self._refuse(f"data must be an object of field name to value, got "
+                               f"{type(data).__name__}")
+        unknown = sorted(set(data) - set(fields), key=str)
+        if unknown:
+            raise self._refuse(f"no field named {unknown[0]!r} (the schema's fields: "
+                               f"{sorted(fields)})")
+        missing = sorted(set(fields) - set(data))
+        if current is None and missing:
+            raise self._refuse(f"the field {missing[0]!r} is required at open")
+        full = {**(current or {}), **{name: self._field(name, data[name])
+                                      for name in sorted(data)}}
+        lengths = {}
+        for name in [n for n in sorted(full) if n not in data] + sorted(data):
+            for dim, size in zip(fields[name]["dims"], full[name][0]):
+                other = lengths.setdefault(dim, (size, name))
+                if other[0] != size:
+                    raise self._refuse(
+                        f"field {name!r} has {size} along {dim!r}, field {other[1]!r} "
+                        f"has {other[0]}")
+        for dim, label in self.schema["dims"].items():
+            flat = full[label][1] if label is not None else ()
+            if len(set(flat)) != len(flat):
+                raise self._refuse(f"the label field {label!r} of {dim!r} must hold "
+                                   "distinct values")
+        return full
+
+    def digest(self, full):
+        """Return the canonical digest of the full data (the wire spec's byte layout).
+
+        Parameters
+        ----------
+        full : dict
+            What :meth:`check` returned.
+
+        Returns
+        -------
+        str
+            64 lowercase hex characters (sha256).
+        """
+        out = hashlib.sha256(_DIGEST_MAGIC)
+        for name in sorted(full, key=lambda key: key.encode("utf-8")):
+            shape, flat = full[name]
+            kind = self.element_type(name)
+            out.update(_name_bytes(name) + _TYPE_TAGS[kind] + struct.pack("<I", len(shape))
+                       + b"".join(struct.pack("<Q", size) for size in shape))
+            out.update(_element_bytes(kind, flat))
+        return out.hexdigest()
+
+
+#: A sentinel no element can be.
+_MISSING = object()
+
+#: Live scratch directories, removed at interpreter exit even if a worker never closed.
+_SCRATCH_DIRS = set()
+
+
+def _remove_scratch(directory):
+    """Remove one scratch directory and forget it (missing is fine)."""
+    _SCRATCH_DIRS.discard(directory)
+    shutil.rmtree(directory, ignore_errors=True)
+
+
+def _remove_every_scratch():
+    """Remove every scratch directory still live (interpreter exit: no file outlives it)."""
+    for directory in list(_SCRATCH_DIRS):
+        _remove_scratch(directory)
+
+
+class _ArrowHandoff:
+    """One worker's Arrow transport: its scratch directory and the files of one request."""
+
+    def __init__(self, threshold, root):
+        self.threshold = threshold
+        self.root = root
+        self.directory = None
+        self._count = 0
+
+    def encode(self, contract, data, full):
+        """Return ``(wire data, files)``: JSON values, or Arrow references past the threshold."""
+        wire, files = {}, []
+        try:
+            for name in sorted(data):
+                shape, flat = full[name]
+                if shape and math.prod(shape) > self.threshold:
+                    wire[name] = {"arrow": self._write(contract, name, shape, flat, files)}
+                else:
+                    wire[name] = data[name]
+        except BaseException:
+            self.remove(files)
+            raise
+        return wire, files
+
+    def _write(self, contract, name, shape, flat, files):
+        """Write one field as an Arrow IPC file; return its reference."""
+        try:
+            import pyarrow as pa
+        except ImportError:
+            raise WorkerRefusal(
+                contract.program, "arrow",
+                f"field {name!r} holds {math.prod(shape)} elements, more than the Arrow "
+                f"threshold {self.threshold}, and pyarrow is not installed: install the "
+                f"{ARROW_EXTRA!r} extra (pip install 'dskit[{ARROW_EXTRA}]')") from None
+        if self.directory is None:
+            self.directory = tempfile.mkdtemp(prefix=SCRATCH_PREFIX, dir=self.root)
+            _SCRATCH_DIRS.add(self.directory)
+        self._count += 1
+        path = pathlib.Path(self.directory, f"a{self._count}.arrow").resolve()
+        files.append(path)
+        types = {"float64": pa.float64(), "int64": pa.int64(), "string": pa.string(),
+                 "bool": pa.bool_()}
+        table = pa.table({_ARROW_COLUMN: pa.array(flat, type=types[contract.element_type(name)])})
+        with pa.OSFile(str(path), "wb") as sink, pa.ipc.new_file(sink, table.schema) as out:
+            out.write_table(table)
+        sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        return {"path": str(path), "sha256": sha, "shape": list(shape)}
+
+    @staticmethod
+    def remove(files):
+        """Remove one request's files (missing is fine)."""
+        for path in files:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+
+    def discard(self):
+        """Remove the scratch directory and everything in it (idempotent)."""
+        directory, self.directory = self.directory, None
+        if directory is not None:
+            _remove_scratch(directory)
+
+
 # -- the pipes -----------------------------------------------------------------
 
 
@@ -646,7 +1106,18 @@ def _write_line(stream, text, errors):
 
 
 def _check_payload(program, request):
-    """Refuse (``payload``) a request that is not JSON with finite numbers, before sending."""
+    """Refuse (``payload``) a request that is not JSON with finite numbers, before sending.
+
+    A ``data`` object is checked field by field first, so the refusal names the field.
+    """
+    data = request.get("data")
+    for name, value in (data.items() if isinstance(data, dict) else ()):
+        try:
+            json.dumps(value, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise WorkerRefusal(program, "payload",
+                                f"data field {name!r} is not JSON with finite numbers: "
+                                f"{exc}") from exc
     try:
         json.dumps(request, allow_nan=False)
     except (TypeError, ValueError) as exc:
@@ -669,6 +1140,27 @@ def _kill_group(process):
             process.kill()
 
 
+def _default_transport():
+    """Return the data handoff settings when none are given (the named defaults)."""
+    return {"arrow_threshold": DEFAULT_ARROW_THRESHOLD, "scratch_root": DEFAULT_SCRATCH_ROOT}
+
+
+#: Every worker object alive, registered or not, so interpreter exit closes each one
+#: while its pipe threads still run (a collector-time ``__del__`` at finalization would
+#: close a pipe a daemon reader still holds, which aborts the interpreter).
+_EVERY_WORKER = weakref.WeakSet()
+
+
+def _close_every_worker():
+    """Close every worker object, then every scratch directory (the ``atexit`` hook)."""
+    for worker in list(_EVERY_WORKER):
+        worker.close()
+    _remove_every_scratch()
+
+
+atexit.register(_close_every_worker)
+
+
 class JuliaWorker:
     """One long-lived Julia worker process and the JSON-lines protocol to it.
 
@@ -688,6 +1180,12 @@ class JuliaWorker:
     settings : dict or None
         The pool caps sent in ``hello``, exactly ``{pool_models, pool_bytes}`` (integers
         >= 1); None means :data:`DEFAULT_POOL_MODELS` and :data:`DEFAULT_POOL_BYTES`.
+    transport : dict or None
+        The data handoff, exactly ``{arrow_threshold, scratch_root}``: arrays of more
+        elements than ``arrow_threshold`` (int >= 0) travel as Arrow files in a scratch
+        directory made under ``scratch_root`` (None: the system temporary directory),
+        one per worker process and removed with it; None means
+        :data:`DEFAULT_ARROW_THRESHOLD` and :data:`DEFAULT_SCRATCH_ROOT`.
 
     Attributes
     ----------
@@ -711,11 +1209,17 @@ class JuliaWorker:
         worker.close()
     """
 
-    def __init__(self, command, *, shutdown_timeout=DEFAULT_SHUTDOWN_TIMEOUT, settings=None):
+    def __init__(self, command, *, shutdown_timeout=DEFAULT_SHUTDOWN_TIMEOUT, settings=None,
+                 transport=None):
         self.command = [str(part) for part in command]
         self.shutdown_timeout = float(shutdown_timeout)
         self.settings = dict(settings or {"pool_models": DEFAULT_POOL_MODELS,
                                           "pool_bytes": DEFAULT_POOL_BYTES})
+        self.transport = dict(transport or _default_transport())
+        self._handoff = _ArrowHandoff(self.transport["arrow_threshold"],
+                                      self.transport["scratch_root"])
+        self._described = {}
+        _EVERY_WORKER.add(self)
         self.info = None
         self.starts = 0
         self._process = None
@@ -807,15 +1311,45 @@ class JuliaWorker:
         ------
         WorkerRefusal
             As :meth:`solve`; a mistyped body is ``malformed`` and kills the worker.
+
+        Notes
+        -----
+        Asked once per worker process and program: the reply is kept until the worker
+        is discarded (a restarted worker may run another package version).
         """
         with self._lock:
             self._ensure_started(program, float(start_timeout))
-            reply = self._exchange(program, {"op": "describe", "program": program},
-                                   float(timeout))
+            return json.loads(json.dumps(self._described_body(program, float(timeout))))
+
+    def _described_body(self, program, timeout):
+        """Return the kept ``describe`` body of ``program``, asking the worker the first time."""
+        if program not in self._described:
+            reply = self._exchange(program, {"op": "describe", "program": program}, timeout)
             problems = _describe_problems(reply, program)
             if problems:
                 raise self._malformed(program, "; ".join(problems), json.dumps(reply))
-            return {key: reply[key] for key in _REPLY_KEYS["describe"] - {"id", "ok"}}
+            self._described[program] = {
+                key: reply[key] for key in _REPLY_KEYS["describe"] - {"id", "ok"}}
+        return self._described[program]
+
+    def _send_data(self, program, contract, request, data, full, timeout, expect):
+        """Send a request whose ``data`` is checked: Arrow files written, removed, digest checked."""
+        wire, files = self._handoff.encode(contract, data, full)
+        try:
+            reply = self._exchange(program, {**request, "data": wire}, timeout, expect=expect)
+        finally:
+            self._handoff.remove(files)
+        if "handle" in request and reply["handle"] != request["handle"]:
+            raise self._malformed(program, f"a reply for handle {reply['handle']!r}, the "
+                                  f"request named {request['handle']!r}", json.dumps(reply))
+        self._session_checks(program, expect, reply)
+        expected = contract.digest(full)
+        if reply["digest"] != expected:
+            self._discard()
+            raise WorkerRefusal(program, "digest",
+                                f"the worker applied data of digest {reply['digest']}, the "
+                                f"data sent has digest {expected}; the worker was killed")
+        return reply
 
     def open(self, program, data, params, solver, solver_options, components=None, *,
              timeout=DEFAULT_REQUEST_TIMEOUT, start_timeout=DEFAULT_START_TIMEOUT):
@@ -848,7 +1382,10 @@ class JuliaWorker:
         Raises
         ------
         WorkerRefusal
-            As :meth:`solve`.
+            As :meth:`solve`; ``bad_data`` (nothing but ``describe`` sent) when ``data``
+            fails the program's schema, ``arrow`` when an array past the threshold needs
+            the missing pyarrow, ``digest`` (the worker killed) when the reply's digest is
+            not that of the data sent.
         """
         body = {"op": "open", "program": program, "data": data, "params": params,
                 "solver": solver, "solver_options": solver_options,
@@ -856,15 +1393,23 @@ class JuliaWorker:
         _check_payload(program, body)
         with self._lock:
             self._ensure_started(program, float(start_timeout))
-            reply = self._exchange(program, body, float(timeout))
+            contract = DataContract(program,
+                                    self._described_body(program, float(timeout))["schema"])
+            full = contract.check(data)
+            reply = self._send_data(program, contract, body, data, full, float(timeout),
+                                    "open")
             if not _is_name(reply["handle"]):
                 raise self._malformed(program, "an open reply naming no handle",
                                       json.dumps(reply))
-            self._session_checks(program, "open", reply)
-            return LiveModel(self, self.starts, program, solver, reply, float(timeout))
+            return LiveModel(self, self.starts, program, solver, reply, float(timeout),
+                             contract, full)
 
     def _session(self, model, op, body, check_payload=True):
-        """Send one op on ``model``'s handle; return the validated ``ok`` reply."""
+        """Send one op on ``model``'s handle; return the validated ``ok`` reply.
+
+        An ``update`` body's ``data`` is checked against the model's contract and sent
+        through :meth:`_send_data`; the model's full data follows a successful reply.
+        """
         program = model.program
         if model.closed:
             raise WorkerRefusal(program, "closed",
@@ -880,14 +1425,26 @@ class JuliaWorker:
                     "killed or restarted; it is never rebuilt behind the caller: open a "
                     "new model")
             expect = "handle-solve" if op == "solve" else op
+            if op == "update":
+                full = model.contract.check(body["data"], model.data)
+                reply = self._send_data(program, model.contract, request, body["data"],
+                                        full, model.timeout, expect)
+                model.data = full
+                return reply
             reply = self._exchange(program, request, model.timeout, expect=expect)
             if reply["handle"] != model.handle:
                 raise self._malformed(program, f"a reply for handle {reply['handle']!r}, "
                                       f"the request named {model.handle!r}",
                                       json.dumps(reply))
             self._session_checks(program, expect, reply)
-            if expect == "handle-solve":
+            if expect in ("handle-solve", "search"):
                 reply["record"] = self._record(program, reply["record"], model.solver)
+            if expect == "search":
+                problems = _trajectory_problems(reply["trajectory"],
+                                                body["limits"].get("rounds"))
+                if problems:
+                    self._discard()
+                    raise WorkerRefusal(program, "trajectory", "; ".join(problems))
             return reply
 
     def _session_checks(self, program, op, reply):
@@ -985,6 +1542,8 @@ class JuliaWorker:
         """
         process, self._process = self._process, None
         self.info = None
+        self._described = {}
+        self._handoff.discard()
         if process is None:
             return ""
         try:
@@ -1127,15 +1686,22 @@ class LiveModel:
         The ``open`` reply: ``handle``, ``signature``, ``digest``, ``timings``.
     timeout : float
         Seconds each later request on the handle may take.
+    contract : DataContract
+        The program's schema, as the worker described it.
+    data : dict
+        The model's full data, as :meth:`DataContract.check` returned it.
 
     Attributes
     ----------
     handle, signature, digest : str
-        The worker's handle, the model's shape key and the digest of its current data.
+        The worker's handle, the model's shape key and the digest of its current data
+        (checked against :attr:`data` on every change).
     timings : Timings
         The timings block of the last op.
     solve_record : SolveRecord or None
-        The record of the last :meth:`solve`.
+        The record of the last :meth:`solve` or :meth:`search`.
+    trajectory : tuple of SearchRound
+        The rounds of the last :meth:`search`; ``()`` before one.
     closed : bool
         Whether :meth:`close` ran.
 
@@ -1151,9 +1717,12 @@ class LiveModel:
             solution, record = model.solve(limits={"time_limit": 5.0})
             model.update(params={"budget": 8.0})
             model.timings.path  # 'updated'
+            solution, record, rounds = model.search(
+                "fix_and_reoptimise", {"free": 2, "stall": 3}, limits={"rounds": 10},
+                seed=7)
     """
 
-    def __init__(self, worker, generation, program, solver, reply, timeout):
+    def __init__(self, worker, generation, program, solver, reply, timeout, contract, data):
         self._worker = worker
         self.generation = generation
         self.program = program
@@ -1163,7 +1732,10 @@ class LiveModel:
         self.digest = reply["digest"]
         self.timings = Timings(**reply["timings"])
         self.timeout = timeout
+        self.contract = contract
+        self.data = data
         self.solve_record = None
+        self.trajectory = ()
         self.closed = False
 
     def _op(self, op, body, check_payload=True):
@@ -1186,8 +1758,9 @@ class LiveModel:
         Parameters
         ----------
         data : dict or None
-            Any subset of the schema's fields (None changes none); a change of shape is
-            the worker's ``shape_changed`` refusal, never a rebuild.
+            Any subset of the schema's fields (None changes none), checked against the
+            program's schema before sending (``bad_data``); a change of shape is the
+            worker's ``shape_changed`` refusal, never a rebuild.
         params : dict or None
             The program's params, replacing the current ones; None keeps them.
         components : dict or None
@@ -1288,6 +1861,69 @@ class LiveModel:
         self.solve_record = reply["record"]
         return reply["solution"], self.solve_record
 
+    def search(self, algorithm, params=None, limits=None, seed=0, start=None,
+               round_limits=None):
+        """Run a search algorithm registered in the worker on this live model.
+
+        The loop runs in the worker (ADR-0328 A6): each round frees the algorithm's
+        neighbourhood, fixes the rest at the incumbent and re-solves the live model.
+        Python sends the request and checks the reply; it holds no search algorithm.
+
+        Parameters
+        ----------
+        algorithm : str
+            The search's registry name in the worker.
+        params : dict or None
+            The search's own knobs (the worker checks them); None is ``{}``.
+        limits : dict or None
+            Overall limits, any of :data:`SEARCH_LIMIT_KEYS` (``time_limit`` seconds > 0,
+            ``rounds`` an integer >= 1); None is ``{}``.
+        seed : int
+            The search's only source of randomness, in ``[0, SEED_BOUND)``.
+        start : str, dict or None
+            Sent as :meth:`start` first when not None (``"last"`` or ``{group: {key:
+            value}}``); the search's first solve then runs from it.
+        round_limits : dict or None
+            Per-solve limits of every round (as :meth:`solve`); None is ``{}``.
+
+        Returns
+        -------
+        tuple
+            ``(solution, record, trajectory)``: the incumbent, the
+            :class:`~dskit.pipeline.libs.pyomo.SolveRecord` of its solve (``seconds`` the
+            whole search's), and a tuple of :class:`SearchRound`; also on
+            :attr:`solve_record` and :attr:`trajectory`.
+
+        Raises
+        ------
+        WorkerRefusal
+            Kind ``limits`` or ``payload`` (nothing sent) for limits, a name, params or a
+            seed of the wrong shape; ``trajectory`` (the worker killed) for a mistyped
+            trajectory; the worker's own kinds (``unknown_search``, ...) otherwise.
+        """
+        limits = {} if limits is None else limits
+        round_limits = {} if round_limits is None else round_limits
+        params = {} if params is None else params
+        problems = _search_limits_problems(limits) + [
+            f"round_limits: {p}" for p in _limits_problems(round_limits)]
+        if problems:
+            raise WorkerRefusal(self.program, "limits", "; ".join(problems))
+        if not _is_name(algorithm) or not isinstance(params, dict):
+            raise WorkerRefusal(self.program, "payload",
+                                "a search is a non-empty name and an object of params")
+        if not _is_int(seed) or seed >= SEED_BOUND:
+            raise WorkerRefusal(self.program, "payload",
+                                f"seed must be an integer in [0, {SEED_BOUND}), got {seed!r}")
+        body = {"search": algorithm, "params": dict(params), "seed": seed,
+                "limits": dict(limits), "round_limits": dict(round_limits)}
+        _check_payload(self.program, body)
+        if start is not None:
+            self.start(start)
+        reply = self._op("search", body, check_payload=False)
+        self.solve_record = reply["record"]
+        self.trajectory = tuple(SearchRound(**row) for row in reply["trajectory"])
+        return reply["solution"], self.solve_record, self.trajectory
+
     def close(self):
         """Release the handle (idempotent); the model stays in the worker's pool.
 
@@ -1324,25 +1960,28 @@ class LiveModel:
 
 
 class _WorkerRegistry:
-    """The process's workers, one per launch command and pool settings (see the module)."""
+    """The process's workers, one per launch command, pool settings and transport."""
 
     def __init__(self):
         self._workers = {}
         self._lock = threading.Lock()
 
     @staticmethod
-    def _key(command, settings):
-        """Return the registry key of ``command`` under ``settings``."""
-        return (tuple(str(part) for part in command), tuple(sorted(settings.items())))
+    def _key(command, settings, transport):
+        """Return the registry key of ``command`` under ``settings`` and ``transport``."""
+        return (tuple(str(part) for part in command), tuple(sorted(settings.items())),
+                tuple(sorted(transport.items())))
 
-    def worker(self, command, settings=None):
-        """Return the worker of ``command`` and ``settings``, created (not started) on first use."""
+    def worker(self, command, settings=None, transport=None):
+        """Return the worker of ``command``, ``settings`` and ``transport``, made on first use."""
         settings = dict(settings or {"pool_models": DEFAULT_POOL_MODELS,
                                      "pool_bytes": DEFAULT_POOL_BYTES})
-        key = self._key(command, settings)
+        transport = dict(transport or _default_transport())
+        key = self._key(command, settings, transport)
         with self._lock:
             if key not in self._workers:
-                self._workers[key] = JuliaWorker(key[0], settings=settings)
+                self._workers[key] = JuliaWorker(key[0], settings=settings,
+                                                 transport=transport)
             return self._workers[key]
 
     def live(self):
@@ -1351,12 +1990,13 @@ class _WorkerRegistry:
             return sorted(key[0] for key, worker in self._workers.items()
                           if worker.pid is not None)
 
-    def close(self, command, settings=None):
+    def close(self, command, settings=None, transport=None):
         """Shut down and forget the worker of ``command`` (every settings when None)."""
         command = tuple(str(part) for part in command)
         with self._lock:
             keys = [key for key in self._workers if key[0] == command
-                    and (settings is None or key == self._key(command, settings))]
+                    and (settings is None or key == self._key(
+                        command, settings, transport or _default_transport()))]
             workers = [self._workers.pop(key) for key in keys]
         for worker in workers:
             worker.close()
@@ -1459,6 +2099,33 @@ class JumpSolve(Node):
     _PERSISTENT_MODEL_REUSE = False
     _PERSISTENT_CACHE_SIZE = DEFAULT_POOL_MODELS
     _PERSISTENT_CACHE_BYTES = DEFAULT_POOL_BYTES
+
+    #: The worker's data handoff (ADR-0328 A4): arrays of more elements than this go as
+    #: Arrow files, in a scratch directory made under ``scratch_root`` (None: the system
+    #: temporary directory). Workers with other values are other workers.
+    arrow_threshold = DEFAULT_ARROW_THRESHOLD
+    scratch_root = DEFAULT_SCRATCH_ROOT
+
+    @classmethod
+    def transport_problems(cls):
+        """Return the problems of the class's data-handoff knobs (checked before any start).
+
+        Returns
+        -------
+        list of str
+            ``arrow_threshold`` must be an integer >= 0, ``scratch_root`` None or an
+            existing directory.
+        """
+        problems = []
+        if not _is_int(cls.arrow_threshold):
+            problems.append(f"arrow_threshold must be an integer >= 0, got "
+                            f"{cls.arrow_threshold!r}")
+        root = cls.scratch_root
+        if root is not None and not (isinstance(root, (str, os.PathLike))
+                                     and os.path.isdir(root)):
+            problems.append(f"scratch_root must be None or an existing directory, got "
+                            f"{root!r}")
+        return problems
 
     @classmethod
     def persistent_problems(cls):
@@ -1623,7 +2290,7 @@ class JumpSolve(Node):
 
     def close(self):
         """Stop the worker of this node's launch command (idempotent); it restarts on use."""
-        _POOL.close(self._command(), self._settings())
+        _POOL.close(self._command(), self._settings(), self._transport())
 
     def _open_data(self, worker, data, components=None):
         """Open a live model of the program's ``data`` on ``worker``."""
@@ -1650,6 +2317,15 @@ class JumpSolve(Node):
         return {"pool_models": self._PERSISTENT_CACHE_SIZE,
                 "pool_bytes": self._PERSISTENT_CACHE_BYTES}
 
+    def _transport(self):
+        """Return the worker's data handoff from the class knobs, refusing bad ones."""
+        problems = self.transport_problems()
+        if problems:
+            raise TypeError(f"{type(self).__name__}: " + "; ".join(problems))
+        root = self.scratch_root
+        return {"arrow_threshold": self.arrow_threshold,
+                "scratch_root": None if root is None else str(pathlib.Path(root).resolve())}
+
     def _command(self):
         """Return this node's launch command."""
         command = self.worker_command
@@ -1665,7 +2341,7 @@ class JumpSolve(Node):
 
     def _the_worker(self):
         """Return the process's worker for this node's command and pool settings."""
-        return _POOL.worker(self._command(), self._settings())
+        return _POOL.worker(self._command(), self._settings(), self._transport())
 
 
 class JumpBudgetedSelect(JumpSolve):

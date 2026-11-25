@@ -811,7 +811,11 @@ hooks); **jump** (ADR-0328) `jump-budgeted-select` + `JumpSolve` base
 folds share it; the pack imports and plans with no Julia; the solve record is the pyomo
 `SolveRecord`; protocol v2 adds live models, `LiveModel` handles to update, fix, free,
 warm-start and re-solve in place, with a `Timings` block whose `path` shows every
-rebuild, and opt-in re-use in `run()` via `_PERSISTENT_MODEL_REUSE`); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures`
+rebuild, and opt-in re-use in `run()` via `_PERSISTENT_MODEL_REUSE`; a `DataContract`
+read from the worker's `describe` checks every `open`/`update` before sending and its
+digest after; arrays past `arrow_threshold` cross as Arrow files in a per-worker scratch
+directory, pyarrow imported only then; `LiveModel.search` runs a search registered in
+the worker, Python holding none); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures`
 (or the concrete `ReturnWindows`) and wire by import path. Heavy imports live
 inside `run()` — the tier rule.
 
