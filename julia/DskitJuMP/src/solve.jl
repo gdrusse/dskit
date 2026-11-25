@@ -99,6 +99,21 @@ function limit_attributes(l::Limits)
 end
 
 """
+    check_limits(model, limits)
+
+The MOI attributes and values of `limits`, or `bad_limits` naming the first one the
+solver of `model` cannot apply.
+"""
+function check_limits(model::Model, limits::Limits)
+    attrs = limit_attributes(limits)
+    for (attr, _) in attrs
+        MOI.supports(backend(model), attr) ||
+            refuse("bad_limits", "the solver cannot apply the limit $(nameof(typeof(attr)))")
+    end
+    return attrs
+end
+
+"""
     with_limits(f, model, limits)
 
 Run `f()` with `limits` set on `model`, then restore every one to what it was (the
@@ -106,11 +121,7 @@ model's `solver_options`). A limit the solver cannot apply is `bad_limits`, refu
 before any is set.
 """
 function with_limits(f::Function, model::Model, limits::Limits)
-    attrs = limit_attributes(limits)
-    for (attr, _) in attrs
-        MOI.supports(backend(model), attr) ||
-            refuse("bad_limits", "the solver cannot apply the limit $(nameof(typeof(attr)))")
-    end
+    attrs = check_limits(model, limits)
     saved = [attr => MOI.get(backend(model), attr) for (attr, _) in attrs]
     try
         for (attr, v) in attrs
@@ -179,7 +190,8 @@ function one_shot_solve(p::Program, setup::Setup, solver::String, options::Dict{
     seconds = run_optimize!(model)
     point = has_point(model)
     rows = record_rows(p, state, setup, point)
-    out = solution(p, state, setup, model, point), solve_record(model, solver, seconds, rows)
+    out = solution(p, state, setup, point ? point_value : nothing),
+          solve_record(model, solver, seconds, rows)
     MOI.empty!(backend(model))
     return out
 end

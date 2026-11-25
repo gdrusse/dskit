@@ -489,7 +489,7 @@ function solve_live(lm::LiveModel, handle::String, limits::Limits)
         lm.last = LastSolution(Float64[point_value(v) for v in lm.index.all], record, handle,
                                lm.version)
     end
-    return solution(lm.program, lm.state, lm.setup, model, point), record, seconds
+    return solution(lm.program, lm.state, lm.setup, point ? point_value : nothing), record, seconds
 end
 
 """The `close` reply body: release the handle; its model stays idle in the pool."""

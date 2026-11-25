@@ -3,9 +3,11 @@
 Nothing here needs Julia. ``jump_fake_worker.py`` speaks the pack's JSON-lines protocol
 from Python (a real brute-force knapsack, so answers are real) and misbehaves on request
 (wrong protocol, noise, crash, hang, malformed or duplicated keys, wrong id, error reply,
-bad record, deaf, ...), chosen by argv. The one test that needs the real worker, parity with
-the pyomo ``BudgetedSelect``, is skipped with a reason naming Julia when ``julia`` is not on
-``PATH``, or naming the package when ``julia/DskitJuMP`` is not built yet.
+bad record, deaf, ...), chosen by argv. The tests that need the real worker, parity with
+the pyomo ``BudgetedSelect`` and the julia half of the cross-worker conformance class (the
+same scenarios run against the fake and the real worker), are skipped with a reason naming
+Julia when ``julia`` is not on ``PATH``, or naming the package when ``julia/DskitJuMP`` is
+not built yet.
 
 Layout: **Units** (params, one owner, inputs, plan, no Julia), **Protocol** (hello, solve,
 one worker per launch command for the process), **Failures** (each refuses by program
@@ -3118,3 +3120,348 @@ class TestTheFakeIsAReferenceForAnySchema:
         schema = jump_fake_worker().Assignment.schema
         assert jump_fake_worker().shape_signature(ASSIGN, schema) == _spec_signature(
             schema, ASSIGN)
+
+
+# ---------------------------------------------------------------------------
+# Cross-worker conformance: the SAME scenarios against the fake and the real Julia worker
+# ---------------------------------------------------------------------------
+
+#: The two workers held to the wire spec; the Julia one is skipped by name when absent.
+WORKERS = (
+    pytest.param("fake", id="fake"),
+    pytest.param("julia", id="julia", marks=[
+        pytest.mark.skipif(JULIA is None, reason="Julia is not installed (no `julia` on "
+                           "PATH): the real worker's conformance needs it"),
+        pytest.mark.skipif(not (JULIA_PACKAGE_DIR / "Project.toml").is_file(),
+                           reason=f"the Julia package {JULIA_PACKAGE_DIR} is not built: "
+                           "the real worker's conformance needs it")]),
+)
+
+#: Seconds a real worker may take to start (a first start may precompile the package).
+JULIA_START_TIMEOUT = 600.0
+
+#: Seconds each conformance request may take, and the time limit on every solve sent.
+CONFORMANCE_TIMEOUT = 120.0
+CONFORMANCE_TIME_LIMIT = 30.0
+
+#: Options both workers take: HiGHS solves to a zero gap on one thread (the fake ignores
+#: them; they are part of the pool key on both).
+CONFORMANCE_OPTIONS = {"mip_rel_gap": 0, "threads": 1, "random_seed": 0}
+
+#: A six-item knapsack with a UNIQUE optimum (A, B, D = 12 under budget 9), so both
+#: workers must return the same point.
+UNIQUE = {"ids": ["A", "B", "C", "D", "E", "F"], "cost": [4.0, 3.0, 3.0, 2.0, 2.0, 5.0],
+          "value": [5.0, 4.0, 3.5, 3.0, 2.5, 6.0]}
+
+#: Tolerance on a number the SOLVER reports (bound, gap, a round's objective): the fake
+#: computes them exactly, HiGHS in floating point; the spec fixes the meaning, not the bits.
+SOLVER_TOL = 1e-6
+
+
+def _schema(program):
+    return getattr(jump_fake_worker(), {"budgeted_select": "BudgetedSelect",
+                                        "assignment": "Assignment"}[program]).schema
+
+
+@pytest.fixture()
+def conformant(request):
+    """Workers of the parametrized kind, each closed after the test."""
+    made = []
+
+    def build(**kwargs):
+        command = (fake_command() if request.param == "fake"
+                   else JuliaWorker.default_command())
+        made.append(JuliaWorker(command, **kwargs))
+        return made[-1]
+
+    build.kind = request.param
+    yield build
+    for worker in made:
+        worker.close()
+
+
+def _start_timeout(worker):
+    return FAKE_START_TIMEOUT if worker.command[0] == sys.executable else JULIA_START_TIMEOUT
+
+
+def _copen(worker, program="budgeted_select", data=None, params=None, components=None):
+    defaults = {"budgeted_select": (ELIGIBLE, {"budget": BUDGET}),
+                "assignment": (ASSIGN, {})}[program]
+    return worker.open(program, defaults[0] if data is None else data,
+                       defaults[1] if params is None else params, DEFAULT_SOLVER,
+                       CONFORMANCE_OPTIONS, components, timeout=CONFORMANCE_TIMEOUT,
+                       start_timeout=_start_timeout(worker))
+
+
+def _raw(worker, body, program="budgeted_select"):
+    """Send one request as written (no Python-side check) and return the refusal kind."""
+    with worker._lock:
+        worker._ensure_started(program, _start_timeout(worker))
+        with pytest.raises(WorkerRefusal) as refused:
+            worker._exchange(program, body, CONFORMANCE_TIMEOUT)
+    return refused.value.kind
+
+
+def _limits():
+    return {"time_limit": CONFORMANCE_TIME_LIMIT}
+
+
+def _optimal(record, objective):
+    """The record of an optimal solve whose objective is ``objective`` (exactly: binaries)."""
+    assert record.status == "FEASIBLE_POINT" and record.termination == "OPTIMAL"
+    assert record.objective == objective
+    assert record.bound == pytest.approx(objective, abs=SOLVER_TOL)
+    assert record.gap == pytest.approx(0.0, abs=SOLVER_TOL)
+
+
+@pytest.mark.parametrize("conformant", WORKERS, indirect=True)
+class TestCrossWorkerConformance:
+    """What the wire spec fixes, asserted identically of the fake and of the Julia worker.
+
+    Every expectation is the spec's (or an optimum restated independently), never one
+    worker's output copied as the other's answer. Solver-reported floats (a bound, a gap,
+    a round's objective) are compared within :data:`SOLVER_TOL`; ``start_accepted`` is
+    whatever the solver says (the fake's brute force says, HiGHS does not: null).
+    """
+
+    def test_hello_speaks_protocol_two(self, conformant):
+        worker = conformant()
+        worker.describe("budgeted_select", start_timeout=_start_timeout(worker))
+        assert worker.info["protocol"] == PROTOCOL_VERSION
+        assert all(isinstance(v, str) and v for v in worker.info["packages"].values())
+
+    def test_describe_publishes_both_reference_contracts(self, conformant):
+        worker = conformant()
+        timeout = _start_timeout(worker)
+        assert worker.describe("budgeted_select", start_timeout=timeout) == {
+            "program": "budgeted_select",
+            "schema": {"fields": {"ids": {"type": "string", "dims": ["item"]},
+                                  "cost": {"type": "float64", "dims": ["item"]},
+                                  "value": {"type": "float64", "dims": ["item"]}},
+                       "dims": {"item": "ids"}},
+            "variables": {"select": {"index": ["item"], "domain": "binary"}},
+            "components": ["max_items"], "update": True}
+        assert worker.describe("assignment", start_timeout=timeout) == {
+            "program": "assignment",
+            "schema": {"fields": {"items": {"type": "string", "dims": ["item"]},
+                                  "bins": {"type": "string", "dims": ["bin"]},
+                                  "value": {"type": "float64", "dims": ["item", "bin"]},
+                                  "weight": {"type": "float64", "dims": ["item", "bin"]},
+                                  "capacity": {"type": "float64", "dims": ["bin"]}},
+                       "dims": {"item": "items", "bin": "bins"}},
+            "variables": {"x": {"index": ["item", "bin"], "domain": "binary"}},
+            "components": ["max_per_bin"], "update": True}
+
+    def test_open_reports_the_specs_signature_digest_and_path(self, conformant):
+        worker = conformant()
+        model = _copen(worker)
+        schema = _schema("budgeted_select")
+        assert model.handle == "h1" and model.timings.path == "built"
+        assert model.digest == _canon(schema, ELIGIBLE)
+        assert model.signature == _spec_signature(schema, ELIGIBLE)
+        t = model.timings
+        assert t.build_seconds > 0 and t.update_seconds == 0 and t.solve_seconds == 0
+        assert t.start_source is None and t.start_accepted is None
+        assert (t.pool["models"], t.pool["evicted"], t.pool["evictions"]) == (1, 0, 0)
+        model.close()
+        again = _copen(worker)  # the same data: a pool hit, taken as it was
+        assert again.handle == "h2" and again.timings.path == "reused"
+        assert again.timings.pool["models"] == 1 and again.digest == model.digest
+        again.close()
+        changed = {**ELIGIBLE, "value": [1.0, 2.0, 3.0]}
+        third = _copen(worker, data=changed)  # a pool hit with new numbers: in place
+        assert third.timings.path == "updated" and third.timings.build_seconds == 0
+        assert third.digest == _canon(schema, changed)
+        assign = _copen(worker, "assignment")
+        assert assign.digest == _canon(_schema("assignment"), ASSIGN)
+        assert assign.signature == _spec_signature(_schema("assignment"), ASSIGN)
+
+    def test_update_applies_in_place_and_reports_the_digest(self, conformant):
+        worker = conformant()
+        model = _copen(worker)
+        schema = _schema("budgeted_select")
+        model.update(data={"value": [20.0, 1.0, 1.0]})
+        assert model.timings.path == "updated" and model.timings.build_seconds == 0
+        assert model.digest == _canon(schema, {**ELIGIBLE, "value": [20.0, 1.0, 1.0]})
+        assert model.solve(_limits())[0] == {"selected": ["ALPHA"]}
+        model.update()
+        assert model.timings.path == "reused" and model.timings.update_seconds == 0
+        model.update(params={"budget": 4.0})
+        assert model.timings.path == "updated"
+        assert model.solve(_limits())[0] == {"selected": []}
+        with pytest.raises(WorkerRefusal, match=r"\(shape_changed\)"):
+            model.update(data={"ids": ["ALPHA", "BRAVO", "DELTA"]})
+        assert model.update(params={"budget": BUDGET}) == model.digest
+
+    def test_fix_free_and_start(self, conformant):
+        worker = conformant()
+        model = _copen(worker)
+        solution, record = model.solve(_limits())
+        assert solution == {"selected": ["BRAVO", "GAMMA"]}
+        _optimal(record, 12.0)
+        assert model.fix({"select": {"ALPHA": 1}}) == 1
+        assert model.timings.path == "reused" and model.timings.solve_seconds == 0
+        assert model.solve(_limits())[0] == {"selected": ["ALPHA"]}
+        assert model.fix({"select": {"BRAVO": 0}}) == 2
+        assert model.free({"select": ["ALPHA"]}) == 1
+        solution, record = model.solve(_limits())
+        assert solution == {"selected": ["ALPHA"]}  # GAMMA (6) < ALPHA (9) alone
+        _optimal(record, 9.0)
+        assert model.free() == 0
+        assert model.start({"select": {"BRAVO": 1}}) == 1
+        assert model.timings.start_source == "values"
+        solution, _ = model.solve(_limits())
+        assert solution == {"selected": ["BRAVO", "GAMMA"]}  # a start never moves the optimum
+        assert model.timings.start_source == "values"
+        assert model.timings.start_accepted in (None, True)  # feasible: the solver's word
+        assert model.start("last") == 3 and model.timings.start_source == "last"
+        assert model.start(None) == 0 and model.timings.start_source is None
+        model.solve(_limits())
+        assert model.timings.start_accepted is None  # no start: null on every worker
+
+    def test_solutions_and_records_of_both_reference_programs(self, conformant):
+        worker = conformant()
+        knapsack = _copen(worker, data=UNIQUE, params={"budget": 9.0})
+        solution, record = knapsack.solve(_limits())
+        assert solution == {"selected": ["A", "B", "D"]}
+        _optimal(record, 12.0)
+        assert (record.solver, record.variables, record.constraints) == ("HiGHS", 6, 1)
+        assert list(record.binding) == [{"name": "budget", "rows": 1, "binding": 1,
+                                         "min_slack": 0.0}]
+        knapsack.update(params={"budget": 9.0, "max_items": 2},
+                        components={"max_items": True})
+        solution, record = knapsack.solve(_limits())
+        assert solution == {"selected": ["A", "F"]} and record.constraints == 2
+        model = _copen(worker, "assignment")
+        solution, record = model.solve(_limits())
+        value, assigned = _brute_assignment(ASSIGN)
+        assert solution == {"assigned": assigned}
+        _optimal(record, value)
+        assert (record.variables, record.constraints) == (6, 5)
+        assert [(r["name"], r["rows"], r["binding"]) for r in record.binding] == [
+            ("one_bin", 3, 3), ("capacity", 2, 1)]
+        assert [r["min_slack"] for r in record.binding] == [0.0, 0.0]
+        model.update(data={"capacity": [9.0, 4.0]}, params={"max_per_bin": 1},
+                     components={"max_per_bin": True})
+        assert model.timings.path == "updated"
+        value, assigned = _brute_assignment({**ASSIGN, "capacity": [9.0, 4.0]},
+                                            max_per_bin=1)
+        solution, record = model.solve(_limits())
+        assert solution == {"assigned": assigned} and record.objective == value
+        assert [r["name"] for r in record.binding] == ["one_bin", "capacity", "max_per_bin"]
+        assert record.constraints == 7
+        assert model.fix({"x": {("R", "small"): 0}}) == 1
+        value, assigned = _brute_assignment({**ASSIGN, "capacity": [9.0, 4.0]},
+                                            max_per_bin=1, fixed={("R", "small"): 0})
+        assert model.solve(_limits())[0] == {"assigned": assigned}
+
+    def test_the_pool_hit_and_eviction_paths(self, conformant):
+        worker = conformant(settings={"pool_models": 2, "pool_bytes": 1 << 40})
+        first = _copen(worker)
+        first.fix({"select": {"GAMMA": 0}})
+        first.solve(_limits())
+        first.close()
+        held = _copen(worker)  # a pool hit: the fix released, the start cleared
+        assert held.timings.path == "reused" and held.timings.pool["models"] == 1
+        assert held.solve(_limits())[0] == {"selected": ["BRAVO", "GAMMA"]}
+        other = _copen(worker, "assignment")  # a new key: built
+        assert other.timings.path == "built" and other.timings.pool["models"] == 2
+        third = _copen(worker, data={"ids": ["X"], "cost": [1.0], "value": [1.0]})
+        t = third.timings
+        assert (t.path, t.pool["models"], t.pool["evicted"], t.pool["evictions"]) == (
+            "built", 2, 1, 1)
+        with pytest.raises(WorkerRefusal, match=r"\(evicted\)"):
+            held.solve(_limits())
+        assert held.close() is False
+        assert other.solve(_limits())[1].objective == 17.0
+        assert worker.pid is not None
+
+    def test_every_error_kind_reachable_without_misbehaviour(self, conformant):
+        worker = conformant()
+        model = _copen(worker)
+        pid = worker.pid
+        with pytest.raises(WorkerRefusal, match=r"\(unknown_program\)"):
+            worker.describe("no_such_program")
+        with pytest.raises(WorkerRefusal, match=r"\(unknown_solver\)"):
+            worker.open("budgeted_select", ELIGIBLE, {"budget": BUDGET}, "NoSuchSolver", {},
+                        timeout=CONFORMANCE_TIMEOUT)
+        with pytest.raises(WorkerRefusal, match=r"\(unknown_component\)"):
+            _copen(worker, components={"no_such": True})
+        with pytest.raises(WorkerRefusal, match=r"\(no_solution\)"):
+            model.start("last")
+        for values, kind in (({"nope": {"ALPHA": 1}}, "unknown_group"),
+                             ({"select": {"DELTA": 1}}, "unknown_key"),
+                             ({"select": {"ALPHA": 0.5}}, "bad_value")):
+            with pytest.raises(WorkerRefusal, match=rf"\({kind}\)"):
+                model.fix(values)
+        with pytest.raises(WorkerRefusal, match=r"\(shape_changed\)"):
+            model.update(data={"ids": ["A", "B", "C"]})
+        with pytest.raises(WorkerRefusal, match=r"\(unknown_search\)"):
+            model.search("no_such_search", {})
+        with pytest.raises(WorkerRefusal, match=r"\(bad_request\)"):
+            model.search("fix_and_reoptimise", {"free": 0, "stall": 1})
+        full = {"program": "budgeted_select", "data": ELIGIBLE, "params": {"budget": BUDGET},
+                "solver": DEFAULT_SOLVER, "solver_options": {}, "components": {}}
+        assert _raw(worker, {"op": "no_such_op"}) == "unknown_op"
+        assert _raw(worker, {"op": "open", **full, "extra": 1}) == "bad_request"
+        assert _raw(worker, {"op": "open", **full, "data": {**ELIGIBLE, "cost": [1.0]}}
+                    ) == "bad_data"
+        assert _raw(worker, {"op": "open", **full, "data": {**ELIGIBLE, "cost": [1, 2**53 + 1,
+                                                                                3]}}
+                    ) == "bad_data"
+        assert _raw(worker, {"op": "solve", "handle": "h99", "limits": {}}) == "unknown_handle"
+        assert _raw(worker, {"op": "solve", "handle": model.handle,
+                             "limits": {"node_limit": 0}}) == "bad_request"
+        assert worker.pid == pid  # every refusal kept the worker
+        assert model.solve(_limits())[0] == {"selected": ["BRAVO", "GAMMA"]}
+
+    @needs_pyarrow
+    def test_an_arrow_transported_array(self, conformant, tmp_path):
+        root = tmp_path / "scratch"
+        root.mkdir()
+        worker = conformant(transport={"arrow_threshold": 2, "scratch_root": str(root)})
+        model = _copen(worker)  # every field of three elements crosses as Arrow
+        assert model.digest == _canon(_schema("budgeted_select"), ELIGIBLE)
+        assert model.solve(_limits())[0] == {"selected": ["BRAVO", "GAMMA"]}
+        model.update(data={"value": [20.0, 1.0, 1.0]})
+        assert model.timings.path == "updated"
+        assert model.solve(_limits())[0] == {"selected": ["ALPHA"]}
+        assign = _copen(worker, "assignment")  # a [3, 2] field, row-major
+        assert assign.digest == _canon(_schema("assignment"), ASSIGN)
+        assert assign.solve(_limits())[0] == {"assigned": _brute_assignment(ASSIGN)[1]}
+        assert [p for p in root.rglob("*.arrow")] == []  # each removed once answered
+        worker.close()
+        assert list(root.iterdir()) == []
+
+    def test_a_seeded_search_trajectory_and_its_record(self, conformant):
+        worker = conformant()
+        model = _copen(worker, data=UNIQUE, params={"budget": 9.0})
+        limits, rounds = {"rounds": 20}, _limits()
+        solution, record, trajectory = model.search(
+            "fix_and_reoptimise", {"free": 2, "stall": 3}, limits=limits, seed=7,
+            round_limits=rounds)
+        assert solution == {"selected": ["A", "B", "D"]}
+        assert (record.status, record.termination, record.objective) == (
+            "FEASIBLE_POINT", "SEARCH_DONE", 12.0)
+        assert record.bound == pytest.approx(12.0, abs=SOLVER_TOL)
+        assert record.gap == pytest.approx(0.0, abs=SOLVER_TOL)
+        assert [(r.round, r.accepted, r.neighbourhood) for r in trajectory] == [
+            (1, False, 2), (2, False, 2), (3, False, 2)]
+        assert [r.objective for r in trajectory] == pytest.approx([12.0] * 3, abs=SOLVER_TOL)
+        assert model.timings.path == "reused" and model.timings.build_seconds == 0
+        # the caller's fixes bind every round; the round limit is the stop reason
+        assert model.fix({"select": {"A": 0}}) == 1
+        solution, record, trajectory = model.search(
+            "fix_and_reoptimise", {"free": 10, "stall": 3}, limits={"rounds": 2}, seed=7,
+            round_limits=rounds)
+        assert solution == {"selected": ["D", "E", "F"]} and record.objective == 11.5
+        assert record.termination == "SEARCH_ROUND_LIMIT"
+        assert [(r.round, r.accepted, r.neighbourhood) for r in trajectory] == [
+            (1, False, 5), (2, False, 5)]
+        assert model.fix({"select": {"B": 1, "C": 1, "F": 1}}) == 4  # cost 11 > 9
+        solution, record, trajectory = model.search(
+            "fix_and_reoptimise", {"free": 2, "stall": 3}, seed=7, round_limits=rounds)
+        assert solution == {"selected": None} and trajectory == ()
+        assert (record.status, record.termination, record.objective, record.gap) == (
+            "NO_SOLUTION", "SEARCH_NO_INCUMBENT", None, None)
+        assert model.free() == 0  # the search restored exactly the caller's four fixes

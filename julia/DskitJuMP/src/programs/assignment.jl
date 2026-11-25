@@ -163,13 +163,12 @@ function constraint_groups(::Assignment, state::AssignmentState, setup::Setup)
     return out
 end
 
-function solution(::Assignment, state::AssignmentState, setup::Setup{AssignmentData}, ::Model,
-                  point::Bool)
-    point || return Dict{String,Any}("assigned" => nothing)
+function solution(::Assignment, state::AssignmentState, setup::Setup{AssignmentData}, at)
+    at === nothing && return Dict{String,Any}("assigned" => nothing)
     d, x = setup.data, state.x
     assigned = Any[]
     for i in axes(x, 1), b in axes(x, 2)
-        point_value(x[i, b]) > 0.5 && push!(assigned, [d.items[i], d.bins[b]])
+        at(x[i, b]) > 0.5 && push!(assigned, [d.items[i], d.bins[b]])
     end
     return Dict{String,Any}("assigned" => assigned)
 end

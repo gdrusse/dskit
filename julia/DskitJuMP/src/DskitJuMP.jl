@@ -15,7 +15,8 @@ A model is a `Program`: a concrete subtype declares its data schema, variable gr
 and optional components, and implements `build!` and `solution` (plus, optionally,
 `update!` so a change of numbers never rebuilds). The base lifecycle (`solve.jl`) owns
 optimizer resolution, options, limits, `optimize!` and the solve record; a program never
-calls `optimize!`.
+calls `optimize!`. A `Search` (`search.jl`) is the second pluggable type: a
+neighbourhood search whose base loop fixes, solves and frees the live model in place.
 
 Why the build is fast: data is parsed once into a typed struct per program before any
 model is touched; `build!` and `update!` run behind function barriers on concrete
@@ -23,6 +24,7 @@ types (`LiveModel{P,D,Q,S}`); models are `direct_model`s with string names off.
 """
 module DskitJuMP
 
+using Arrow
 using JuMP
 using HiGHS
 using JSON
@@ -31,7 +33,7 @@ using PrecompileTools: @setup_workload, @compile_workload
 
 const MOI = JuMP.MOI
 
-export Program, register_program!, serve
+export Program, Search, register_program!, register_search!, serve
 
 """The wire protocol version this worker speaks (`PROTOCOL_VERSION` in jump.py)."""
 const PROTOCOL_VERSION = 2
@@ -59,6 +61,7 @@ include("record.jl")
 include("solve.jl")
 include("pool.jl")
 include("session.jl")
+include("search.jl")
 include("worker.jl")
 include("programs/budgeted_select.jl")
 include("programs/assignment.jl")
@@ -66,6 +69,7 @@ include("programs/assignment.jl")
 function __init__()
     register_program!(BudgetedSelect())
     register_program!(Assignment())
+    register_search!(FixAndReoptimise)
     return
 end
 
@@ -73,7 +77,14 @@ end
     @compile_workload begin
         register_program!(BudgetedSelect())
         register_program!(Assignment())
-        serve(IOBuffer(join(precompile_requests(), "\n") * "\n"), IOBuffer())
+        register_search!(FixAndReoptimise)
+        dir = mktempdir()
+        path = joinpath(dir, "cost.arrow")
+        Arrow.write(path, (values=[1.0, 2.0],))
+        ref = Dict("arrow" => Dict("path" => path, "sha256" => bytes2hex(sha256(read(path))),
+                                   "shape" => [2]))
+        serve(IOBuffer(join(precompile_requests(ref), "\n") * "\n"), IOBuffer())
+        rm(dir; recursive=true)
     end
 end
 

@@ -815,7 +815,10 @@ rebuild, and opt-in re-use in `run()` via `_PERSISTENT_MODEL_REUSE`; a `DataCont
 read from the worker's `describe` checks every `open`/`update` before sending and its
 digest after; arrays past `arrow_threshold` cross as Arrow files in a per-worker scratch
 directory, pyarrow imported only then; `LiveModel.search` runs a search registered in
-the worker, Python holding none); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures`
+the worker, Python holding none; the worker is `julia/DskitJuMP`: every op, Arrow
+references read and sha256-checked, the `Search` seam with `fix_and_reoptimise`; one
+conformance class runs the same scenarios on the fake and the real worker, and
+`tools/jump/benchmark.py` times build, update and solve against pyomo); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures`
 (or the concrete `ReturnWindows`) and wire by import path. Heavy imports live
 inside `run()` — the tier rule.
 

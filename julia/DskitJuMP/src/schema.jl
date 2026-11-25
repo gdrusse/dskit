@@ -1,7 +1,8 @@
 # The data contract (ADR-0328 A4): a program's declared schema, the typed columns a
 # request's `data` is parsed into, and the canonical data digest and shape signature,
-# byte for byte as the wire spec writes them (and as jump.py and the fake compute them).
-# The Arrow handoff is part 2 of 2: an Arrow reference is refused by name here.
+# byte for byte as the wire spec writes them (and as jump.py and the fake compute them),
+# and the Arrow handoff: a non-scalar field may arrive as a reference to an Arrow IPC file
+# that is checked (sha256, format, column, type, nulls, length) and read whole.
 
 """The schema's element types, each with its one-byte digest tag."""
 const TYPE_TAGS = Dict("float64" => UInt8('f'), "int64" => UInt8('i'),
@@ -135,14 +136,99 @@ end
 """Whether `value` is an Arrow reference (`{"arrow": ...}`)."""
 is_arrow_ref(value) = value isa Dict{String,Any} && collect(keys(value)) == ["arrow"]
 
+"""The keys of an Arrow reference's body, sorted."""
+const ARROW_REF_KEYS = ["path", "sha256", "shape"]
+
+"""The one column an Arrow file carries."""
+const ARROW_COLUMN = :values
+
+"""The magic bytes that open and close an Arrow IPC FILE (a stream has neither)."""
+const ARROW_MAGIC = codeunits("ARROW1")
+
 """The column of one wire field value; `bad_data` naming the field when it does not fit."""
 function parse_column(spec::FieldSpec, value)
-    if !isempty(spec.dims) && is_arrow_ref(value)
-        refuse("bad_data", "$(repr(spec.name)): Arrow references are read by part 2 of " *
-                           "ADR-0328 amendment 1, not built in this worker yet")
-    end
+    !isempty(spec.dims) && is_arrow_ref(value) && return arrow_column(spec, value["arrow"])
     shape, flat = nested(spec.name, value, length(spec.dims))
     return typed_column(ELEMENT_TYPES[spec.type], spec.name, shape, flat)
+end
+
+"""
+    arrow_column(spec, ref)
+
+The column an Arrow reference names, read whole during the request: the reference is
+exactly `{path, sha256, shape}` (an absolute path, one length per dimension), the
+file's sha256 is checked before it is read, and it must be an Arrow IPC FILE whose one
+column `values` is of the field's type with no nulls and `prod(shape)` elements in
+row-major order. Anything else is `bad_data` naming the field. The file is never kept,
+moved or deleted.
+"""
+function arrow_column(spec::FieldSpec, ref)
+    name = spec.name
+    (ref isa Dict{String,Any} && sort!(collect(keys(ref))) == ARROW_REF_KEYS) ||
+        refuse("bad_data", "$(repr(name)): an Arrow reference is exactly {path, sha256, shape}")
+    path, digest, shape = ref["path"], ref["sha256"], ref["shape"]
+    ok = path isa String && isabspath(path) && digest isa String && shape isa Vector{Any} &&
+         length(shape) == length(spec.dims) && all(n -> n isa Int && n >= 0, shape)
+    ok || refuse("bad_data", "$(repr(name)): an Arrow reference needs an absolute path, " *
+                             "a sha256 and one length per dimension of $(spec.dims)")
+    bytes = try
+        read(path)
+    catch err
+        refuse("bad_data", "$(repr(name)): cannot read the Arrow file: " *
+                           first(sprint(showerror, err), 200))
+    end
+    bytes2hex(sha256(bytes)) == digest ||
+        refuse("bad_data", "$(repr(name)): the Arrow file's sha256 is not the one sent")
+    values = arrow_values(name, bytes)
+    return arrow_typed(ELEMENT_TYPES[spec.type], spec, Int[n for n in shape], values)
+end
+
+"""Whether `bytes` open and close with the Arrow IPC file magic."""
+function is_arrow_file(bytes::Vector{UInt8})
+    n = length(ARROW_MAGIC)
+    return length(bytes) >= 2n && view(bytes, 1:n) == ARROW_MAGIC &&
+           view(bytes, length(bytes)-n+1:length(bytes)) == ARROW_MAGIC
+end
+
+"""The `values` column of the Arrow IPC file in `bytes`; `bad_data` naming `name` if not one."""
+function arrow_values(name::String, bytes::Vector{UInt8})
+    is_arrow_file(bytes) || refuse("bad_data", "$(repr(name)): not an Arrow IPC file " *
+                                               "(a stream, or not Arrow at all)")
+    table = try
+        Arrow.Table(bytes)
+    catch err
+        refuse("bad_data", "$(repr(name)): not an Arrow IPC file: " *
+                           first(sprint(showerror, err), 200))
+    end
+    Arrow.Tables.columnnames(table) == [ARROW_COLUMN] ||
+        refuse("bad_data", "$(repr(name)): the Arrow file must hold one column 'values'")
+    return Arrow.Tables.getcolumn(table, ARROW_COLUMN)
+end
+
+"""Whether an Arrow string column is Utf8 (32-bit offsets), not LargeUtf8."""
+utf8_column(c::Arrow.List) = typeof(c).parameters[2] === Int32
+utf8_column(c::AbstractVector) = hasproperty(c, :arrays) && all(utf8_column, c.arrays)
+
+"""
+    arrow_typed(T, spec, shape, values)
+
+`values` as a `Column{T}` under `shape`: of the field's type (`float64` Float64, `int64`
+Int64, `string` Utf8, `bool` Boolean), no nulls, `prod(shape)` elements, finite floats.
+"""
+function arrow_typed(::Type{T}, spec::FieldSpec, shape::Vector{Int}, values) where {T}
+    name = spec.name
+    (nonmissingtype(eltype(values)) === T && (T !== String || utf8_column(values))) ||
+        refuse("bad_data", "$(repr(name)): the Arrow column must be of $(spec.type)")
+    length(values) == prod(shape) ||
+        refuse("bad_data", "$(repr(name)): the Arrow column must hold $(prod(shape)) values")
+    out = Vector{T}(undef, length(values))
+    for (i, v) in enumerate(values)
+        v === missing && refuse("bad_data", "$(repr(name)): the Arrow column holds a null")
+        T === Float64 && !isfinite(v) &&
+            refuse("bad_data", "$(repr(name)): the Arrow column holds a non-finite number")
+        out[i] = v
+    end
+    return Column{T}(shape, out)
 end
 
 """A `Column{T}` of `flat` under `shape` (a function barrier over the element type)."""

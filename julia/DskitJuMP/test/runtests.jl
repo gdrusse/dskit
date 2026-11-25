@@ -24,8 +24,26 @@ D.typed_params(::NoUpdateSelect, r::Dict{String,Any}, a::Vector{String}) =
 D.build!(m::Model, ::NoUpdateSelect, s::D.Setup) = D.build!(m, D.BudgetedSelect(), s)
 D.variables(::NoUpdateSelect, s) = D.variables(D.BudgetedSelect(), s)
 D.constraint_groups(::NoUpdateSelect, s, u::D.Setup) = D.constraint_groups(D.BudgetedSelect(), s, u)
-D.solution(::NoUpdateSelect, s, u::D.Setup, m::Model, p::Bool) = D.solution(D.BudgetedSelect(), s, u, m, p)
+D.solution(::NoUpdateSelect, s, u::D.Setup, at) = D.solution(D.BudgetedSelect(), s, u, at)
 register_program!(NoUpdateSelect())
+
+# --- a test-only program counting its builds (a search round must never rebuild) ----------
+
+const BUILDS = Ref(0)
+struct CountingSelect <: D.Program end
+D.program_name(::CountingSelect) = "budgeted_select_counting"
+for f in (:schema, :variable_groups, :components, :has_update)
+    @eval D.$f(::CountingSelect) = D.$f(D.BudgetedSelect())
+end
+D.typed_data(::CountingSelect, c::D.Columns) = D.typed_data(D.BudgetedSelect(), c)
+D.typed_params(::CountingSelect, r::Dict{String,Any}, a::Vector{String}) =
+    D.typed_params(D.BudgetedSelect(), r, a)
+D.build!(m::Model, ::CountingSelect, s::D.Setup) = (BUILDS[] += 1; D.build!(m, D.BudgetedSelect(), s))
+D.update!(m::Model, ::CountingSelect, st, a::D.Setup, b::D.Setup) = D.update!(m, D.BudgetedSelect(), st, a, b)
+D.variables(::CountingSelect, s) = D.variables(D.BudgetedSelect(), s)
+D.constraint_groups(::CountingSelect, s, u::D.Setup) = D.constraint_groups(D.BudgetedSelect(), s, u)
+D.solution(::CountingSelect, s, u::D.Setup, at) = D.solution(D.BudgetedSelect(), s, u, at)
+register_program!(CountingSelect())
 
 # --- a test-only solver that applies no per-solve limit and whose optimize! raises ------
 
@@ -98,6 +116,25 @@ open_ga(s; data=GA, params=Dict(), components=Dict()) =
         components)
 solve_h(s, h; limits=LIMITS) = rpc(s, "solve"; handle=h, limits)
 live(s::Session, h::String) = s.w.pool.models[s.w.pool.handles[h]]
+
+const SEARCH_KS = Dict("ids" => ["A", "B", "C", "D", "E", "F"], "cost" => [4.0, 3.0, 3.0, 2.0, 2.0, 5.0],
+                       "value" => [5.0, 4.0, 4.0, 3.0, 2.5, 6.0])
+const FR = Dict("free" => 2, "stall" => 3)
+search_h(s, h; params=FR, seed=7, limits=Dict("rounds" => 20), round_limits=LIMITS, search="fix_and_reoptimise") =
+    rpc(s, "search"; handle=h, search, params, seed, limits, round_limits)
+rows(r) = [(t["round"], t["objective"], t["accepted"], t["neighbourhood"]) for t in r["trajectory"]]
+
+"""Make the point `chosen` the handle's standing last solution (the fake suite's {F})."""
+function stand!(s, h, chosen)
+    lm = live(s, h)
+    values = Float64[k[1] in chosen ? 1.0 : 0.0 for g in lm.index.groups for k in g.keys]
+    rec = Dict{String,Any}("objective" => sum(SEARCH_KS["value"][i] for (i, id) in enumerate(SEARCH_KS["ids"])
+                                              if id in chosen),
+                           "bound" => 12.0, "binding" => Any[], "solver" => "HiGHS", "variables" => 6,
+                           "constraints" => 1, "status" => "FEASIBLE_POINT", "termination" => "NODE_LIMIT",
+                           "gap" => nothing, "seconds" => 0.0)
+    lm.last = D.LastSolution(values, rec, h, lm.version)
+end
 
 @testset "DskitJuMP" begin
 
@@ -454,6 +491,7 @@ end
     @test live(s, "h1").digest == digest && live(s, "h1").version == version
     @test bad_data(merge(KS, Dict("ids" => ["a", "a", "c"]))) == "bad_data"
     @test bad_data(merge(KS, Dict("cost" => Dict("arrow" => Dict())))) == "bad_data"
+    @test bad_data(merge(KS, Dict("budget" => Dict("arrow" => Dict())))) == "bad_data"
     @test kind(open_ga(s; data=merge(GA, Dict("value" => [[1.0, 2.0], [4.0, 5.5, 6.0]])))) == "bad_data"
     @test kind(rpc(s, "update"; handle="h1", data=Dict("ids" => ["a", "b", "z"]), params=nothing,
                    components=Dict())) == "shape_changed"
@@ -477,7 +515,7 @@ end
     @test kind(solve_h(s, "h1"; limits=Dict("time_limit" => 0))) == "bad_request"
     @test kind(solve_h(s, "h1"; limits=Dict("node_limit" => 1.5))) == "bad_request"
     @test kind(solve_h(s, "h1"; limits=Dict("gap" => 1))) == "bad_request"
-    @test kind(rpc(s, "search"; handle="h1", search="fix_and_reoptimise", params=Dict(), seed=0,
+    @test kind(rpc(s, "search"; handle="h1", search="nope", params=Dict(), seed=0,
                    limits=Dict(), round_limits=Dict())) == "unknown_search"
     @test lm.digest == digest && lm.version == version && isempty(lm.fixed) && lm.last === nothing
     # bad_limits and solve_failed: a solver that cannot apply a limit and always raises
@@ -497,6 +535,178 @@ end
     finally
         Base.ACTIVE_PROJECT[] = old
     end
+end
+
+@testset "Arrow references: read whole, checked, the same digest as JSON" begin
+    Arrow = D.Arrow
+    dir = mktempdir()
+    function arrow_ref(name, values; shape=[length(values)], file=true, column=:values, digest=nothing)
+        path = joinpath(dir, name)
+        open(path, "w") do io
+            Arrow.write(io, NamedTuple{(column,)}((values,)); file)
+        end
+        sha = digest === nothing ? bytes2hex(D.sha256(read(path))) : digest
+        return Dict("arrow" => Dict("path" => path, "sha256" => sha, "shape" => shape))
+    end
+    s = Session()
+    # the same values by Arrow and by JSON: the same digest, signature and answer
+    data = merge(KS, Dict("cost" => arrow_ref("cost.arrow", [1.0, 2.0, 3.0]),
+                          "ids" => arrow_ref("ids.arrow", ["a", "b", "c"])))
+    r = open_ks(s; data)
+    @test r["ok"] && r["digest"] == "9a0de6283e4634213cf43a2713c073449389ab28ee0a44b498c790cc7e660703"
+    @test r["signature"] == "shape:89219c90693bc51313ceedf1d7b15438b94015fae1a780339d07195ef0f91355"
+    @test solve_h(s, r["handle"])["solution"] == Dict("selected" => ["a", "c"])
+    @test isfile(joinpath(dir, "cost.arrow"))  # the worker never keeps, moves or deletes it
+    # two dimensions, row-major (first dimension outermost), -0.0 as +0.0
+    ga = merge(GA, Dict("value" => arrow_ref("v.arrow", [1.0, 2.0, -0.0, 4.0, 5.5, 6.0]; shape=[2, 3])))
+    r = open_ga(s; data=ga)
+    @test r["digest"] == "461167e475eefb6cf1e2d089145abbf9f6c4786fab923d076dc631e5b0e5d490"
+    @test solve_h(s, r["handle"])["solution"] == Dict("assigned" => [["i1", "b2"], ["i2", "b3"]])
+    # an update by Arrow
+    h = r["handle"]
+    r = rpc(s, "update"; handle=h, data=Dict("capacity" => arrow_ref("cap.arrow", [2.0, 2.5, 1.0])),
+            params=nothing, components=Dict())
+    @test r["timings"]["path"] == "updated" && r["timings"]["transfer_seconds"] >= 0
+    @test solve_h(s, h)["solution"] == Dict("assigned" => [["i1", "b1"], ["i2", "b2"]])
+    # every defect is bad_data naming the field, and changes nothing
+    lm = live(s, h)
+    digest, version = lm.digest, lm.version
+    bad(ref) = kind(rpc(s, "update"; handle=h, data=Dict("capacity" => ref), params=nothing,
+                        components=Dict()))
+    good = arrow_ref("c.arrow", [1.0, 1.0, 1.0])
+    with(f) = Dict("arrow" => merge(good["arrow"], f))
+    @test bad(with(Dict("sha256" => "0"^64))) == "bad_data"
+    @test bad(with(Dict("path" => "c.arrow"))) == "bad_data"                 # not absolute
+    @test bad(with(Dict("path" => joinpath(dir, "missing.arrow")))) == "bad_data"
+    @test bad(with(Dict("shape" => [3, 1]))) == "bad_data"                     # one length per dim
+    @test bad(with(Dict("shape" => [-3]))) == "bad_data"
+    @test bad(with(Dict("shape" => [2]))) == "bad_data"                        # 3 values, not 2
+    @test bad(Dict("arrow" => merge(good["arrow"], Dict("extra" => 1)))) == "bad_data"
+    @test bad(arrow_ref("s.arrow", [1.0, 1.0, 1.0]; file=false)) == "bad_data"  # a stream
+    @test bad(arrow_ref("n.arrow", [1.0, 1.0, 1.0]; column=:other)) == "bad_data"
+    @test bad(arrow_ref("i.arrow", [1, 1, 1])) == "bad_data"                   # int64, not float64
+    @test bad(arrow_ref("m.arrow", [1.0, missing, 1.0])) == "bad_data"         # a null
+    @test bad(arrow_ref("f.arrow", [1.0, Inf, 1.0])) == "bad_data"
+    garbage = joinpath(dir, "g.arrow")
+    write(garbage, "ARROW1\0\0garbageARROW1")
+    @test bad(Dict("arrow" => Dict("path" => garbage, "sha256" => bytes2hex(D.sha256(read(garbage))),
+                                   "shape" => [3]))) == "bad_data"
+    r = rpc(s, "update"; handle=h, data=Dict("capacity" => with(Dict("sha256" => "0"^64))),
+            params=nothing, components=Dict())
+    @test occursin("capacity", r["error"]["message"])
+    @test lm.digest == digest && lm.version == version
+    # a scalar field takes no Arrow reference; a label field by Arrow is checked for duplicates
+    @test kind(open_ks(s; data=merge(KS, Dict("ids" => arrow_ref("d.arrow", ["a", "a", "c"]))))) == "bad_data"
+end
+
+@testset "the seeded draw is the spec's SplitMix64 and partial Fisher-Yates" begin
+    g = D.SplitMix64(0)
+    @test [D.next!(g) for _ in 1:3] == [0xe220a8397b1dcdaf, 0x6e789e6aa1b965f4, 0x06c45d188009454f]
+    # the neighbourhoods the Python suite pins for seed 7 over A..F, two per round
+    g = D.SplitMix64(7)
+    keys = collect(1:6)  # A..F
+    @test [D.draw!(g, keys, 2), D.draw!(g, keys, 2)] == [[4, 6], [1, 5]]  # [D, F], [A, E]
+    @test keys == collect(1:6)
+    # ascending key order: groups by name bytes, strings by UTF-8 bytes, integers numerically
+    @test D.key_less((UInt8[0x61], D.KeyElem["b"]), (UInt8[0x62], D.KeyElem["a"]))
+    @test D.key_less((UInt8[0x61], D.KeyElem["Z"]), (UInt8[0x61], D.KeyElem["a"]))
+    @test D.key_less((UInt8[0x61], D.KeyElem[2]), (UInt8[0x61], D.KeyElem[10]))
+    @test D.key_less((UInt8[0x61], D.KeyElem["i", "b2"]), (UInt8[0x61], D.KeyElem["i", "b3"]))
+    @test !D.key_less((UInt8[0x61], D.KeyElem["x"]), (UInt8[0x61], D.KeyElem["x"]))
+end
+
+@testset "search: the seeded trajectory, in place, the record's meaning" begin
+    s = Session()
+    BUILDS[] = 0
+    r = open_ks(s; program="budgeted_select_counting", data=SEARCH_KS, params=Dict("budget" => 9.0))
+    h = r["handle"]
+    @test BUILDS[] == 1
+    lm = live(s, h)
+    model, nvars, ncons = lm.model, num_variables(lm.model), num_constraints(lm.model; count_variable_in_set_constraints=true)
+    # the fake suite's fixture: the poor point {F} stands; seed 7 gives the pinned trajectory
+    stand!(s, h, ["F"])
+    r = search_h(s, h)
+    @test r["ok"]
+    @test r["solution"] == Dict("selected" => ["D", "E", "F"])
+    @test rows(r) == [(1, 9.0, true, 2), (2, 11.5, true, 2), (3, 11.5, false, 2), (4, 11.5, false, 2),
+                      (5, 11.5, false, 2)]
+    rec = r["record"]
+    @test rec["termination"] == "SEARCH_DONE" && rec["status"] == "FEASIBLE_POINT"
+    @test rec["objective"] == 11.5 && rec["bound"] == 12.0          # the kept record's bound, never a round's
+    @test rec["gap"] ≈ 0.5 / 11.5 && rec["solver"] == "HiGHS"
+    @test rec["binding"][1]["name"] == "budget" && rec["binding"][1]["min_slack"] == 0.0  # at the incumbent
+    t = r["timings"]
+    @test t["path"] == "reused" && t["build_seconds"] == 0 && t["solve_seconds"] > 0
+    @test t["update_seconds"] > 0 && t["start_accepted"] === nothing && t["start_source"] === nothing
+    # a round costs bound changes and a solve, never a rebuild
+    @test BUILDS[] == 1 && live(s, h).model === model && num_variables(model) == nvars
+    @test num_constraints(model; count_variable_in_set_constraints=true) == ncons
+    @test all(v -> !is_fixed(v) && start_value(v) === nothing, lm.index.all)
+    # the incumbent is the last solution, found by this handle under this state: it stands
+    @test lm.last.handle == h && lm.last.version == lm.version && lm.last.record == rec
+    @test rpc(s, "start"; handle=h, source="last", values=Dict())["started"] == 6
+    @test [start_value(v) for v in lm.index.all] == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+    rpc(s, "start"; handle=h, source="none", values=Dict())
+    r = search_h(s, h; params=Dict("free" => 2, "stall" => 1))
+    @test rows(r)[1][2] == 11.5 && r["record"]["bound"] == 12.0  # stood: no first solve
+    # the same seed, the same trajectory; a start in effect forbids standing, and is restored
+    stand!(s, h, ["F"])
+    r2 = search_h(s, h)
+    rpc(s, "start"; handle=h, source="values", values=Dict("select" => Dict("keys" => [["F"]], "values" => [1])))
+    r3 = search_h(s, h)
+    @test rows(r3) == [(1, 12.0, false, 2), (2, 12.0, false, 2), (3, 12.0, false, 2)]
+    @test r3["record"]["objective"] == 12.0 && r3["record"]["bound"] ≈ 12.0
+    @test r3["timings"]["start_source"] == "values" && r3["timings"]["start_accepted"] === nothing
+    @test lm.start_source == "values" && start_value(lm.index.all[6]) == 1.0
+    @test count(v -> start_value(v) !== nothing, lm.index.all) == 1
+    rpc(s, "start"; handle=h, source="none", values=Dict())
+    # the caller's fixes are never freed by a round and survive the search
+    rpc(s, "fix"; handle=h, values=Dict("select" => Dict("keys" => [["A"], ["B"]], "values" => [0, 1])))
+    r = search_h(s, h; params=Dict("free" => 10, "stall" => 1))
+    @test rows(r) == [(1, r["record"]["objective"], false, 4)]        # 6 - 2 caller-fixed
+    @test r["solution"]["selected"][1] == "B" && !("A" in r["solution"]["selected"])
+    @test length(lm.fixed) == 2 && is_fixed(lm.index.all[1]) && is_fixed(lm.index.all[2])
+    @test count(is_fixed, lm.index.all) == 2
+    # the round limit, then the time limit, each the stop reason
+    r = search_h(s, h; limits=Dict("rounds" => 1))
+    @test r["record"]["termination"] == "SEARCH_ROUND_LIMIT" && length(r["trajectory"]) == 1
+    r = search_h(s, h; limits=Dict("time_limit" => 1e-9))
+    @test r["record"]["termination"] == "SEARCH_TIME_LIMIT" && isempty(r["trajectory"])
+    @test r["record"]["status"] == "FEASIBLE_POINT"
+    # no incumbent: the first solve finds no point; no round runs
+    rpc(s, "fix"; handle=h, values=Dict("select" => Dict("keys" => [["C"], ["F"]], "values" => [1, 1])))
+    r = search_h(s, h)
+    @test r["record"]["termination"] == "SEARCH_NO_INCUMBENT" && r["record"]["status"] == "NO_SOLUTION"
+    @test r["record"]["objective"] === nothing && r["record"]["gap"] === nothing
+    @test isempty(r["trajectory"]) && r["solution"] == Dict("selected" => nothing)
+    @test BUILDS[] == 1 && live(s, h).model === model
+    # every refusal changes nothing
+    version, last = lm.version, lm.last
+    @test kind(search_h(s, h; search="nope")) == "unknown_search"
+    @test kind(search_h(s, h; params=Dict("free" => 1))) == "bad_request"
+    @test kind(search_h(s, h; params=Dict("free" => 0, "stall" => 1))) == "bad_request"
+    @test kind(search_h(s, h; params=Dict("free" => 1, "stall" => 1, "x" => 1))) == "bad_request"
+    for seed in (-1, 2^53, 1.5, true)
+        @test kind(search_h(s, h; seed)) == "bad_request"
+    end
+    @test kind(search_h(s, h; limits=Dict("rounds" => 0))) == "bad_request"
+    @test kind(search_h(s, h; limits=Dict("time_limit" => 0))) == "bad_request"
+    @test kind(search_h(s, h; limits=Dict("nodes" => 1))) == "bad_request"
+    @test kind(search_h(s, h; round_limits=Dict("node_limit" => 0))) == "bad_request"
+    @test kind(search_h(s, "h99")) == "unknown_handle"
+    @test lm.version == version && lm.last === last && length(lm.fixed) == 4
+    r = open_ks(s; solver="NoLimits", options=Dict())
+    @test kind(search_h(s, r["handle"]; round_limits=Dict("node_limit" => 5))) == "bad_limits"
+    @test kind(search_h(s, r["handle"]; round_limits=Dict())) == "solve_failed"
+    # a two-dimensional group: keys in ascending order, element by element
+    r = open_ga(s)
+    g = r["handle"]
+    lm2 = live(s, g)
+    @test [lm2.index.groups[1].keys[p] for p in D.search_candidates(lm2)] ==
+          [["i1", "b1"], ["i1", "b2"], ["i1", "b3"], ["i2", "b1"], ["i2", "b2"], ["i2", "b3"]]
+    r = search_h(s, g; params=Dict("free" => 3, "stall" => 2))
+    @test r["solution"] == Dict("assigned" => [["i1", "b2"], ["i2", "b3"]])
+    @test r["record"]["termination"] == "SEARCH_DONE" && length(r["trajectory"]) == 2
 end
 
 end # testset DskitJuMP

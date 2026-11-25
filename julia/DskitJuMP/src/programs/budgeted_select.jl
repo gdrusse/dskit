@@ -130,9 +130,8 @@ function constraint_groups(::BudgetedSelect, state::BudgetedState, ::Setup)
     return Pair{String,Vector{LessRef}}["budget" => state.budget]
 end
 
-function solution(::BudgetedSelect, state::BudgetedState, setup::Setup{BudgetedData}, ::Model,
-                  point::Bool)
-    point || return Dict{String,Any}("selected" => nothing)
-    chosen = String[setup.data.ids[i] for (i, x) in enumerate(state.select) if point_value(x) > 0.5]
+function solution(::BudgetedSelect, state::BudgetedState, setup::Setup{BudgetedData}, at)
+    at === nothing && return Dict{String,Any}("selected" => nothing)
+    chosen = String[setup.data.ids[i] for (i, x) in enumerate(state.select) if at(x) > 0.5]
     return Dict{String,Any}("selected" => sort!(chosen))
 end

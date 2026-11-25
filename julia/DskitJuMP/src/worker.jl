@@ -26,7 +26,7 @@ const REQUEST_KEYS = Dict{String,Vector{String}}(
 const SETTINGS_KEYS = ["pool_bytes", "pool_models"]
 
 """The packages `hello` reports, with this package itself."""
-const REPORTED_PACKAGES = (JuMP, HiGHS, JSON, MOI, SHA)
+const REPORTED_PACKAGES = (Arrow, JuMP, HiGHS, JSON, MOI, SHA)
 
 # --- strict JSON reading ---------------------------------------------------------------
 
@@ -337,8 +337,7 @@ function answer(w::Worker, req::Dict{String,Any})
     kind == "start" && return op_start(w.pool, req)
     kind == "handle-solve" && return op_handle_solve(w.pool, req)
     kind == "close" && return op_close(w.pool, req)
-    kind == "search" && refuse("unknown_search",
-                               "no search is registered in this worker (the search seam is part 2)")
+    kind == "search" && return op_search(w.pool, req)
     w.stopping = true
     return Dict{String,Any}()
 end
@@ -408,8 +407,13 @@ function serve()
     return
 end
 
-"""Requests of the precompile workload: every op on both programs, tiny instances."""
-function precompile_requests()
+"""
+    precompile_requests(arrow = nothing)
+
+Requests of the precompile workload: every op on both programs, tiny instances; with an
+Arrow reference `arrow` to a two-element float64 file, also an `open` reading it.
+"""
+function precompile_requests(arrow=nothing)
     ks = Dict("ids" => ["a", "b"], "cost" => [1.0, 2.0], "value" => [3.0, 1.0])
     gap = Dict("items" => ["i", "j"], "bins" => ["b"], "value" => [[2.0], [1.0]],
                "weight" => [[1.0], [1.0]], "capacity" => [1.0])
@@ -450,8 +454,17 @@ function precompile_requests()
         Dict("id" => 21, "op" => "open", "program" => "assignment", "data" => gap,
              "params" => Dict(), "solver" => DEFAULT_SOLVER, "solver_options" => opts,
              "components" => Dict()),
-        Dict("id" => 22, "op" => "close", "handle" => "h3"),
-        Dict("id" => 23, "op" => "shutdown"),
+        Dict("id" => 22, "op" => "search", "handle" => "h3", "search" => "fix_and_reoptimise",
+             "params" => Dict("free" => 1, "stall" => 1), "seed" => 7,
+             "limits" => Dict("rounds" => 2), "round_limits" => Dict("time_limit" => 10.0)),
+        Dict("id" => 23, "op" => "close", "handle" => "h3"),
     ]
+    if arrow !== nothing
+        push!(reqs, Dict("id" => 24, "op" => "open", "program" => "budgeted_select",
+                         "data" => merge(ks, Dict("cost" => arrow)), "params" => Dict("budget" => 2.0),
+                         "solver" => DEFAULT_SOLVER, "solver_options" => opts, "components" => Dict()),
+              Dict("id" => 25, "op" => "close", "handle" => "h4"))
+    end
+    push!(reqs, Dict("id" => 26, "op" => "shutdown"))
     return String[canonical_json(r) for r in reqs]
 end

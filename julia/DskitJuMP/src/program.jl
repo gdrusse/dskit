@@ -21,7 +21,9 @@ Required hooks, for a concrete `P <: Program`:
   (`Q`); `Refusal("bad_request", ...)` when the program cannot build from them.
 - `build!(model, p, setup::Setup{D,Q})`: add variables, constraints and the objective;
   return the program's state `S` (its variable and constraint references).
-- `solution(p, state, setup, model, has_point::Bool)`: the named values to return.
+- `solution(p, state, setup, at)`: the named values to return; `at(v)` is variable
+  `v`'s value at the point (an integer variable's already rounded), `at === nothing`
+  when there is no point. The point is the last solve's, or a search's incumbent.
 - `variables(p, state)`: one array of `VariableRef` per group of `variable_groups`,
   in that order, each shaped by the group's index dimensions.
 - `constraint_groups(p, state, setup)`: the named constraint containers, in record
@@ -88,7 +90,7 @@ function typed_params end
 """Build program `p` into `model` from `setup`; return the program's state."""
 function build! end
 
-"""The solution object of program `p` (JSON-able), `has_point` false for none."""
+"""The solution object of program `p` (JSON-able) at the point `at` reads (`nothing`: none)."""
 function solution end
 
 """One `VariableRef` array per variable group of `p`, in declaration order."""
