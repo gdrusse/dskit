@@ -1355,6 +1355,7 @@ dskit/pipeline/
 │                      expected re-hedge cost (item_cost) and the re-hedged leg's settle/mark (forward_leg_rehedged_value)
 │                      (A1): seeded Brownian-bridge paths (bridges, path) and the re-hedge excess along one (path_excess)
 │                      (A2): iv_source vendor_else_mid (vendor iv if quoted, else the mid-implied vol; counted leg_iv_mid)
+│                      WorsePriceForwardHedge (ADR-0320): the fixed hedge struck at max(F, S) long, min(F, S) short
 ├── false_signal.py    per-signal false-signal probability (ADR-0152):
 │                      SignalEvidence + FalseSignalEstimator ->
 │                      pi_hat and a widened pi_widened (NOT a bound);

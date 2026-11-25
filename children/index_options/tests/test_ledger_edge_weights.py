@@ -497,3 +497,604 @@ def test_a_knob_week_is_deterministic_and_replays_from_record_and_worker_and_by_
         actions[0][next(i for i, q in enumerate(actions[0]) if q)] += 1
         with pytest.raises(Exception, match="differ"):
             study._method(arm, None, derived=wrong)
+
+
+# --- the two-scale worst-case edge (robust_scale): the lower of the forecast's and a jump-robust scale's value -----
+
+ROBUST = {"reference": {"kind": "rms", "window": 22}, "robust": {"kind": "rms_trimmed", "window": 22, "drop": 1}}
+DECISION = "2019-01-02"
+
+
+def _robust_arm(**extra):
+    return _arm(BASE, {"robust_scale": copy.deepcopy(ROBUST), **extra})
+
+
+def _shape_closes(inputs, returns_before):
+    """Rewrite the closes so the returns into the sessions up to the decision day are ``returns_before`` (oldest
+    first, the last one ending on the decision day); the decision close and everything after it are unchanged."""
+    bars = sorted(inputs["X"]["bars"], key=lambda r: r["date"])
+    at = next(i for i, r in enumerate(bars) if r["date"] == DECISION)
+    level = bars[at]["close"]
+    for k, r in enumerate(reversed(returns_before)):
+        bars[at-k-1]["close"] = level = level/math.exp(r)
+
+
+EQUAL = [.01*(-1)**i for i in range(40)]                     # no dominant day: every return the same magnitude
+JUMP = [.004*(-1)**i for i in range(39)] + [.08]              # one day carries most of the 22-day variance
+
+
+def _robust_study(returns, arm=None):
+    arm = arm or _robust_arm()
+    params, inputs = _hedged_world()
+    _shape_closes(inputs, returns)
+    params.update(methods=[arm], hedge_parity=dict(_PARITY), locked_method_ids=list(FORMULATIONS))
+    return arm, inputs, ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+
+
+def test_the_module_under_test_is_this_checkout():
+    import pathlib
+    import dskit.pipeline.libs.vol_estimators as ve
+    here = pathlib.Path(__file__).resolve().parents[3]
+    assert pathlib.Path(ledger_studies.__file__).resolve().is_relative_to(here)
+    assert pathlib.Path(ve.__file__).resolve().is_relative_to(here)
+
+
+def test_a_robust_scale_method_validates_and_a_malformed_one_refuses():
+    params, _ = _hedged_world()
+    params.update(methods=[_robust_arm()], hedge_parity=dict(_PARITY), locked_method_ids=list(FORMULATIONS))
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    for bad in ({"reference": ROBUST["reference"]}, {**ROBUST, "extra": 1}, "rms",
+                {**ROBUST, "robust": {"kind": "rms_trimmed", "window": 21, "drop": 1}},   # not the same window
+                {**ROBUST, "robust": {"kind": "high_low", "window": 22}},                 # reads no close
+                {**ROBUST, "robust": {"kind": "rms_trimmed", "window": 22}},
+                {**ROBUST, "robust": dict(ROBUST["reference"])}):                         # the same label
+        params.update(methods=[_arm(BASE, {"robust_scale": bad})])
+        with pytest.raises(ValueError):
+            ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_the_scale_ratio_is_one_without_a_dominant_day_and_below_one_with_one():
+    _, _, flat = _robust_study(EQUAL)
+    _, _, jump = _robust_study(JUMP)
+    ratio, _ = EdgeWeights(flat, flat.params["methods"][0]["kelly"]).scale_ratio("X", DECISION)
+    assert ratio == pytest.approx(1., abs=1e-9)
+    ratio, _ = EdgeWeights(jump, jump.params["methods"][0]["kelly"]).scale_ratio("X", DECISION)
+    window = JUMP[-22:]
+    full, rest = sum(r*r for r in window)/22, (sum(r*r for r in window)-max(r*r for r in window))/21
+    assert ratio == pytest.approx(math.sqrt(rest/full), rel=1e-8) and ratio < .5
+
+
+def test_the_scale_ratio_reads_no_bar_after_the_decision_day():
+    _, _, study = _robust_study(JUMP)
+    before = EdgeWeights(study, study.params["methods"][0]["kelly"]).scale_ratio("X", DECISION)
+    for day, close in study._bars["X"].items():
+        if day > DECISION:
+            study._bars["X"][day] = close*(3. if day.endswith("3") else .2)
+    assert EdgeWeights(study, study.params["methods"][0]["kelly"]).scale_ratio("X", DECISION) == before
+
+
+def test_a_short_history_is_unestimated():
+    _, _, study = _robust_study(JUMP)
+    first = study.history_calendar[10]
+    ratio, reason = EdgeWeights(study, study.params["methods"][0]["kelly"]).scale_ratio("X", first)
+    assert ratio is None and reason == "short_history"
+
+
+def _week_groups(study, arm):
+    groups, metadata, _ = study._prepare(DECISION)
+    forwards = ledger_studies.ParityForwards(study, study.params["hedge_parity"])
+    return [dict(g) for g in groups], metadata, EdgeWeights(study, arm["kelly"], forwards)
+
+
+def test_the_robust_adjustment_is_never_positive_and_cuts_a_long_out_of_the_money_call():
+    arm, _, study = _robust_study(JUMP)
+    configured, metadata, edge = _week_groups(study, arm)
+    out, record, multipliers = edge.apply(DECISION, configured, metadata)
+    long_calls = []
+    for group, meta in zip(out, metadata, strict=True):
+        assert all(a <= 0. for a in group["value_adjust"]), "it can remove edge, never create it"
+        for item, a in zip(meta["items"], group["value_adjust"]):
+            otm_call = item["right"] == "call" and item["strike"] > meta["spot"]*1.02 and not item.get("hedged")
+            if otm_call and item["sign"] == 1:
+                long_calls.append(a)
+            if otm_call and item["sign"] == -1:
+                assert a == 0., "a sold one is worth more on the narrower scale: its forecast value stands"
+    assert long_calls and min(long_calls) < 0, "a long out-of-the-money call is worth less on the narrower scale"
+    robust = record["robust_scale"]
+    assert robust["groups"] == len(out) and robust["scaled"] == len(out) and robust["unestimated"] == {}
+    assert robust["items_cut"] > 0 and robust["cut_total"] < 0 and robust["ratio"]["X"] < .5
+    assert robust["reference"] == "rms_22" and robust["robust"] == "rms_trim1_22"
+    assert set(multipliers.values()) == {1.}
+
+
+def test_with_no_dominant_day_the_adjustment_is_zero():
+    arm, _, study = _robust_study(EQUAL)
+    configured, metadata, edge = _week_groups(study, arm)
+    out, record, _ = edge.apply(DECISION, configured, metadata)
+    assert all(abs(a) < 1e-9 for g in out for a in g["value_adjust"])
+    assert record["robust_scale"]["scaled"] == 0 and record["robust_scale"]["items_cut"] == 0
+
+
+def test_the_cut_is_the_robust_projections_value_less_the_forecasts_times_the_multiplier():
+    arm, _, study = _robust_study(JUMP, _robust_arm(dte_tilt=.5))
+    configured, metadata, edge = _week_groups(study, arm)
+    out, _, multipliers = edge.apply(DECISION, configured, metadata)
+    ratio, _ = edge.scale_ratio("X", DECISION)
+    node = study._nodes["X"]
+    for group, meta, plain in zip(out, metadata, configured, strict=True):
+        forecast = study._forecasts["X"][DECISION, meta["expiry"]]
+        scale = float(study._contexts["X"][DECISION, meta["expiry"]]["reference_scale"])*ratio
+        masses = node._project(node._method_cdf(forecast, node.CDF_NOISE)[0], meta["spot"], scale,
+                               plain["grid"]).masses
+        robust = _expected({**plain, "masses": list(masses)})
+        m = multipliers[group["id"]]
+        assert m < 1.
+        want = [(m-1.)*e+m*min(0., r-e) for e, r in zip(_expected(plain), robust)]
+        assert group["value_adjust"] == pytest.approx(want, abs=1e-9)
+
+
+def test_a_robust_week_runs_records_its_cut_and_replays_from_its_record():
+    arm, _, study = _robust_study(JUMP)
+    result = study._method(arm, None)
+    week = result["decisions"][0]
+    assert week["kelly"]["edge_weights"]["robust_scale"]["items_cut"] > 0 and week["books"]
+    assert any(book["robust_cut"] < 0 for book in week["books"])
+    for book in week["books"]:
+        assert book["robust_cut"] <= 0. and book["edge_multiplier"] == 1.
+        assert book["expected_raw"] == pytest.approx(book["expected"]-book["robust_cut"], abs=1e-9)
+    assert study._method(arm, None, recorded=result) == result
+
+
+def test_a_tilted_books_robust_cut_carries_the_multiplier():
+    arm, _, study = _robust_study(JUMP, _robust_arm(dte_tilt=.5))
+    configured, metadata, edge = _week_groups(study, arm)
+    out, _, multipliers = edge.apply(DECISION, configured, metadata)
+    raw = EdgeWeights(study, _robust_arm()["kelly"]).apply(DECISION, [dict(g) for g in configured], metadata)[0]
+    q = [[1]*len(g["credit"]) for g in out]
+    books = [{"id": g["id"]} for g in out]
+    edge.stamp(books, metadata, q)
+    for book, g, plain in zip(books, out, raw, strict=True):
+        m = multipliers[g["id"]]
+        assert m < 1. and book["robust_cut"] == pytest.approx(m*sum(plain["value_adjust"]), abs=1e-9)
+
+
+def test_a_refused_robust_projection_cuts_every_positive_edge_to_zero(monkeypatch):
+    arm, _, study = _robust_study(JUMP)
+    configured, metadata, edge = _week_groups(study, arm)
+
+    def refuse(*a, **k):
+        raise ValueError("payoff tolerance")
+    monkeypatch.setattr(type(study._nodes["X"]), "_project", refuse)
+    out, record, _ = edge.apply(DECISION, configured, metadata)
+    for group, plain in zip(out, configured, strict=True):
+        assert group["value_adjust"] == [-max(0., e) for e in _expected(plain)]
+    assert record["robust_scale"]["unprojected"] == len(out)
+
+
+def test_with_the_scales_agreeing_the_robust_method_selects_what_the_base_selects():
+    arm, _, study = _robust_study(EQUAL)
+    base_arm = _arm(BASE)
+    _, _, base_study = _robust_study(EQUAL, base_arm)
+    robust, base = study._method(arm, None), base_study._method(base_arm, None)
+    assert robust["decisions"][0]["selection"]["quantities"] == base["decisions"][0]["selection"]["quantities"]
+    drop = ("edge_multiplier", "expected_raw", "robust_cut")
+    assert ([{k: v for k, v in t.items() if k not in drop} for t in robust["trades"]]
+            == [{k: v for k, v in t.items() if k not in drop} for t in base["trades"]])
+
+
+#: sha256 (:func:`_digest`) of the scored programs and the stable result of the robust-only week, recorded on 12597d1c
+#: (before ``forward_centre`` existed) by this test's own body: a robust-only method is unchanged.
+ROBUST_ONLY = {
+    "plain": ("bf7f6b2702fc8b2b7d2e7701af84d9836583322460961be349ca38978d43b668",
+              "cea1a862188f69512158d669aac682d26dcbaf17f4e4546512c52522ed94794e"),
+    "tilted": ("f41af62f7b52034730ff3c3d6cecdbc8442116935c2a05f6b3893a75b73add2c",
+               "5093ea59c0894518c4cf6b34a169644ecaa77e3348ef0e7207ee704241e5ca5a")}
+
+
+@pytest.mark.parametrize("key", sorted(ROBUST_ONLY))
+def test_a_robust_only_method_is_byte_for_byte_what_it_was(key, monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+    seen, real = [], TransportActionScore.__init__
+
+    def spy(scorer, program, *a, **k):
+        seen.append(program)
+        real(scorer, program, *a, **k)
+    monkeypatch.setattr(TransportActionScore, "__init__", spy)
+    arm, _, study = _robust_study(JUMP, _robust_arm(**({"dte_tilt": .5} if key == "tilted" else {})))
+    result = study._method(arm, None)
+    assert (_digest(seen), _digest(_stable(result))) == ROBUST_ONLY[key]
+    assert all("forward_cut" not in book for week in result["decisions"] for book in week.get("books", []))
+
+
+# --- the forward-centred worst-case edge (forward_centre): the lower of the value centred on spot and on the forward --
+
+SPOT = 100.
+
+
+def _forward(monkeypatch, ratio, source="parity"):
+    """Make every parity forward ``ratio`` times its spot (``source`` ``"spot"`` at ratio 1 is the no-pair case)."""
+    def forward(self, symbol, day, expiry, factor, exclude=()):
+        spot = self.spot(symbol, day, factor)
+        return (None, "no_spot") if spot is None else (spot*ratio, source)
+    monkeypatch.setattr(ledger_studies.ParityForwards, "forward", forward)
+
+
+def _centre_arm(**extra):
+    return _arm(BASE, {"forward_centre": True, **extra})
+
+
+def _centre_week(returns=EQUAL, arm=None):
+    arm = arm or _centre_arm()
+    _, _, study = _robust_study(returns, arm)
+    configured, metadata, edge = _week_groups(study, arm)
+    return arm, study, configured, metadata, edge
+
+
+def _masses(study, meta, plain, centre, scale_ratio=1.):
+    node = study._nodes["X"]
+    forecast = study._forecasts["X"][DECISION, meta["expiry"]]
+    scale = float(study._contexts["X"][DECISION, meta["expiry"]]["reference_scale"])*scale_ratio
+    return list(node._project(node._method_cdf(forecast, node.CDF_NOISE)[0], centre, scale, plain["grid"]).masses)
+
+
+def test_a_forward_centre_method_validates_and_a_malformed_or_unhedged_one_refuses():
+    params, _ = _hedged_world()
+    params.update(methods=[_centre_arm()], hedge_parity=dict(_PARITY), locked_method_ids=list(FORMULATIONS))
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    params.update(methods=[_centre_arm(robust_scale=copy.deepcopy(ROBUST))])
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    for bad in (False, 1, "yes", {}, None):
+        params.update(methods=[_arm(BASE, {"forward_centre": bad})])
+        with pytest.raises(ValueError):
+            ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    unhedged = {k: v for k, v in _centre_arm().items() if k != "hedge"}
+    replay = {**_centre_arm(), "hedge": {**_centre_arm()["hedge"], "mode": "replay"}}
+    assert ledger_studies.WeeklyOptionPortfolioStudy._kelly_valid({**_centre_arm()})
+    assert not ledger_studies.WeeklyOptionPortfolioStudy._kelly_valid(unhedged), "the forward is the hedge's"
+    assert not ledger_studies.WeeklyOptionPortfolioStudy._kelly_valid(replay), "only a program hedge prices the items"
+
+
+def test_with_the_forward_at_spot_the_adjustment_is_zero(monkeypatch):
+    for source in ("spot", "parity"):
+        _forward(monkeypatch, 1., source)
+        _, _, configured, metadata, edge = _centre_week()
+        out, record, _ = edge.apply(DECISION, configured, metadata)
+        assert all(a == 0. for g in out for a in g["value_adjust"])
+        centre = record["forward_centre"]
+        assert centre["agree"] == len(out) and centre["shifted"] == 0 and centre["items_cut"] == 0
+        assert centre["cut_total"] == 0.
+
+
+@pytest.mark.parametrize("ratio", [.9, 1.1])
+def test_the_adjustment_is_never_positive_and_cuts_the_bet_on_spot_against_the_forward(monkeypatch, ratio):
+    """Forward below spot: a sold in-the-money put (a synthetic long) and a bought call lose edge, a bought put gains
+    none; forward above spot, the mirror."""
+    _forward(monkeypatch, ratio)
+    _, study, configured, metadata, edge = _centre_week()
+    out, record, _ = edge.apply(DECISION, configured, metadata)
+    long_bet, short_bet, kept = [], [], []
+    for group, meta, plain in zip(out, metadata, configured, strict=True):
+        assert all(a <= 0. for a in group["value_adjust"]), "it can remove edge, never create it"
+        for item, a in zip(meta["items"], group["value_adjust"]):
+            below = ratio < 1
+            itm_short = item["sign"] == -1 and (item["right"] == "put" if below else item["right"] == "call") and (
+                item["strike"] > SPOT*1.02 if below else item["strike"] < SPOT*.98)
+            # a strike at the grid's outer point pays nothing on the grid whatever the centre
+            inside = plain["grid"][0] < item["strike"] < plain["grid"][-1]
+            bought_with = item["sign"] == 1 and item["right"] == ("call" if below else "put") and inside
+            bought_against = item["sign"] == 1 and item["right"] == ("put" if below else "call")
+            (long_bet if itm_short else short_bet if bought_with else kept if bought_against else []).append(a)
+    assert long_bet and max(long_bet) < 0, "the sold in-the-money option bets on spot against the forward"
+    assert short_bet and max(short_bet) < 0, "the bought option on the forward's wrong side loses edge"
+    assert kept and all(a == 0. for a in kept), "the option the forward favours gains nothing"
+    centre = record["forward_centre"]
+    assert centre["shifted"] == len(out) and centre["items_cut"] > 0 and centre["cut_total"] < 0
+    assert centre["ratio_min"] == centre["ratio_max"] == pytest.approx(ratio)
+
+
+def test_the_cut_is_the_forward_centred_projection_less_the_forecast_times_the_multiplier(monkeypatch):
+    _forward(monkeypatch, .9)
+    _, study, configured, metadata, edge = _centre_week(arm=_centre_arm(dte_tilt=.5))
+    out, _, multipliers = edge.apply(DECISION, configured, metadata)
+    for group, meta, plain in zip(out, metadata, configured, strict=True):
+        shifted = _expected({**plain, "masses": _masses(study, meta, plain, meta["spot"]*.9)})
+        m = multipliers[group["id"]]
+        assert m < 1.
+        want = [(m-1.)*e+m*min(0., f-e) for e, f in zip(_expected(plain), shifted)]
+        assert group["value_adjust"] == pytest.approx(want, abs=1e-9)
+
+
+@pytest.mark.parametrize("ratio", [.9, 1.1])
+def test_with_both_keys_the_value_is_the_least_of_the_four_valuations(monkeypatch, ratio):
+    _forward(monkeypatch, ratio)
+    arm = _centre_arm(robust_scale=copy.deepcopy(ROBUST))
+    _, study, configured, metadata, edge = _centre_week(JUMP, arm)
+    out, record, _ = edge.apply(DECISION, configured, metadata)
+    r, _ = edge.scale_ratio("X", DECISION)
+    assert r < .5
+    q = [[1]*len(g["credit"]) for g in out]
+    books = [{"id": g["id"]} for g in out]
+    edge.stamp(books, metadata, q)
+    for group, meta, plain, book in zip(out, metadata, configured, books, strict=True):
+        spot = meta["spot"]
+        values = [_expected({**plain, "masses": _masses(study, meta, plain, c, s)})
+                  for c, s in ((spot, r), (spot*ratio, 1.), (spot*ratio, r))]
+        e = _expected(plain)
+        want = [min(0., min(v[j] for v in values)-e[j]) for j in range(len(e))]
+        assert group["value_adjust"] == pytest.approx(want, abs=1e-9)
+        robust_only = [min(0., values[0][j]-e[j]) for j in range(len(e))]
+        assert book["robust_cut"] == pytest.approx(sum(robust_only), abs=1e-9)
+        assert book["forward_cut"] == pytest.approx(sum(want)-sum(robust_only), abs=1e-9)
+        assert book["forward_cut"] <= 0.
+    assert record["robust_scale"]["items_cut"] > 0 and record["forward_centre"]["items_cut"] > 0
+
+
+def test_the_forward_reads_nothing_after_the_decision_day(monkeypatch):
+    """The real parity forward of the decision-day chain: rows and closes after the day do not move the cut."""
+    def run(mutate):
+        params, inputs = _hedged_world(False)
+        _shape_closes(inputs, EQUAL)
+        if mutate:
+            for row in inputs["X"]["chain"]:
+                if row["date"] > DECISION:
+                    row["bid"], row["ask"] = row["bid"]*3+1, row["ask"]*3+1
+            for row in inputs["X"]["bars"]:
+                if row["date"] > DECISION:
+                    row["close"] *= .5
+        arm = _centre_arm()
+        params.update(methods=[arm], hedge_parity=dict(_PARITY), locked_method_ids=list(FORMULATIONS))
+        study = ledger_studies.WeeklyOptionPortfolioStudy(params, inputs)
+        configured, metadata, edge = _week_groups(study, arm)
+        return edge.apply(DECISION, configured, metadata), study, configured, metadata, edge
+    (before, study, configured, metadata, edge), (after, *_rest) = run(False), run(True)
+    assert before[1]["forward_centre"]["shifted"] > 0, "the world's decision chain has a parity forward off spot"
+    # the real owner's forward: the decision chain's parity forward 100.1 on a close of 100 (strike basis 1)
+    assert edge.forward_ratio(metadata[0], DECISION) == (pytest.approx(1.001, abs=1e-9), None)
+    for group, meta, plain in zip(before[0], metadata, configured, strict=True):
+        shifted = _expected({**plain, "masses": _masses(study, meta, plain, meta["spot"]*1.001)})
+        assert group["value_adjust"] == pytest.approx([min(0., f-e) for e, f in zip(_expected(plain), shifted)],
+                                                      abs=1e-9)
+    assert [g["value_adjust"] for g in before[0]] == [g["value_adjust"] for g in after[0]]
+    assert before[1] == after[1]
+
+
+def test_without_a_forward_the_week_trades_at_forecast_value_and_says_why(monkeypatch):
+    monkeypatch.setattr(ledger_studies.ParityForwards, "forward",
+                        lambda self, symbol, day, expiry, factor, exclude=(): (None, "duplicate_quote"))
+    _, _, configured, metadata, edge = _centre_week()
+    out, record, _ = edge.apply(DECISION, configured, metadata)
+    assert all(a == 0. for g in out for a in g["value_adjust"])
+    assert record["forward_centre"]["unestimated"] == {"duplicate_quote": len(out)}
+
+
+def test_a_refused_forward_projection_cuts_every_positive_edge_to_zero(monkeypatch):
+    _forward(monkeypatch, .9)
+    _, study, configured, metadata, edge = _centre_week()
+
+    def refuse(*a, **k):
+        raise ValueError("payoff tolerance")
+    monkeypatch.setattr(type(study._nodes["X"]), "_project", refuse)
+    out, record, _ = edge.apply(DECISION, configured, metadata)
+    for group, plain in zip(out, configured, strict=True):
+        assert group["value_adjust"] == [-max(0., e) for e in _expected(plain)]
+    assert record["forward_centre"]["unprojected"] == len(out)
+
+
+def test_a_forward_centre_week_runs_records_its_cut_and_replays_from_its_record(monkeypatch):
+    _forward(monkeypatch, .9)
+    arm, _, study = _robust_study(EQUAL, _centre_arm())
+    result = study._method(arm, None)
+    week = result["decisions"][0]
+    assert week["kelly"]["edge_weights"]["forward_centre"]["items_cut"] > 0
+    assert "robust_scale" not in week["kelly"]["edge_weights"]
+    for book in week["books"]:
+        assert book["forward_cut"] <= 0. and "robust_cut" not in book
+        assert book["expected_raw"] == pytest.approx(book["expected"]-book["forward_cut"], abs=1e-9)
+    assert week["books"] and any(book["forward_cut"] < 0 for book in week["books"])
+    assert study._method(arm, None, recorded=result) == result
+
+
+@pytest.mark.parametrize("tilt", [None, .5])
+def test_a_both_keys_week_stamps_both_cuts_and_replays_from_its_record(monkeypatch, tilt):
+    _forward(monkeypatch, .9)
+    extra = {"robust_scale": copy.deepcopy(ROBUST), **({} if tilt is None else {"dte_tilt": tilt})}
+    arm, _, study = _robust_study(JUMP, _centre_arm(**extra))
+    result = study._method(arm, None)
+    week = result["decisions"][0]
+    assert week["kelly"]["edge_weights"]["forward_centre"]["shifted"] > 0
+    assert week["kelly"]["edge_weights"]["robust_scale"]["scaled"] > 0 and week["books"]
+    for book in week["books"]:
+        assert book["robust_cut"] <= 0. and book["forward_cut"] <= 0.
+        if tilt is None:
+            assert book["expected_raw"] == pytest.approx(book["expected"]-book["robust_cut"]-book["forward_cut"],
+                                                         abs=1e-9)
+    assert study._method(arm, None, recorded=result) == result
+
+
+def test_with_the_forward_at_spot_the_forward_centre_method_selects_what_the_base_selects(monkeypatch):
+    _forward(monkeypatch, 1., "spot")
+    robust = {"robust_scale": copy.deepcopy(ROBUST)}
+    for extra, base_kelly in (({}, None), (robust, robust)):
+        arm, _, study = _robust_study(JUMP, _centre_arm(**extra))
+        base_arm = _arm(BASE, base_kelly)
+        _, _, base_study = _robust_study(JUMP, base_arm)
+        centred, base = study._method(arm, None), base_study._method(base_arm, None)
+        assert centred["decisions"][0]["selection"]["quantities"] == base["decisions"][0]["selection"]["quantities"]
+        drop = ("edge_multiplier", "expected_raw", "forward_cut")
+        assert ([{k: v for k, v in t.items() if k not in drop} for t in centred["trades"]]
+                == [{k: v for k, v in t.items() if k not in drop} for t in base["trades"]])
+
+
+# --- a hard per-name reserve cap on a kelly method (name_fraction below 1) --------------------------------------------
+
+NAME_CAP = .35
+
+
+def _capped_arm(fraction=NAME_CAP):
+    return {**_arm(BASE), "name_fraction": fraction}
+
+
+def test_a_kelly_method_may_declare_a_name_fraction_below_one():
+    params, _ = _hedged_world()
+    for fraction in (NAME_CAP, 1.):
+        params.update(methods=[_capped_arm(fraction)], hedge_parity=dict(_PARITY), locked_method_ids=list(FORMULATIONS))
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+    for fraction in (0., 1.5, float("nan")):
+        params.update(methods=[_capped_arm(fraction)])
+        with pytest.raises(ValueError):
+            ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+
+
+def test_the_kelly_limits_add_one_row_per_name_only_when_the_cap_is_declared():
+    account = SimpleNamespace(funding=1000., open={"a": {"symbol": "X", "reserve": 100.}},
+                              remaining=lambda members, f: 1000.*f-(100. if "X" in members else 0.))
+    study = SimpleNamespace(params={"symbols": ["X", "Y"]}, _kelly=ledger_studies.WeeklyOptionPortfolioStudy._kelly,
+                            _sizer=ledger_studies.WeeklyOptionPortfolioStudy._sizer)
+    limits = ledger_studies.WeeklyOptionPortfolioStudy._limits
+    plain = _arm(BASE)
+    assert limits(study, account, plain, None) == [{"members": ["X", "Y"], "upper": 900.}]
+    assert limits(study, account, plain, None, solve=True) == [{"members": ["X", "Y"], "upper": 850.}]
+    for solve, total in ((False, 900.), (True, 850.)):
+        assert limits(study, account, _capped_arm(), None, solve=solve) == [
+            {"members": ["X", "Y"], "upper": total}, {"members": ["X"], "upper": pytest.approx(250.)},
+            {"members": ["Y"], "upper": pytest.approx(350.)}]
+
+
+def test_a_capped_kelly_week_never_holds_more_than_the_cap_in_one_name(monkeypatch):
+    from dskit.pipeline.libs.pyomo import TransportActionScore
+    seen = []
+    real = TransportActionScore.__init__
+
+    def spy(scorer, program, *a, **k):
+        seen.append(copy.deepcopy(program))
+        real(scorer, program, *a, **k)
+    monkeypatch.setattr(TransportActionScore, "__init__", spy)
+    base_arm, arm = _arm(BASE), _capped_arm()
+    base = _study(base_arm)[2]._method(base_arm, None)
+    funding = base["decisions"][0]["funding"]
+    assert base["trades"][0]["reserve"] > NAME_CAP*funding, "uncapped, the one name takes most of the funding"
+    seen.clear()
+    result = _study(arm)[2]._method(arm, None)
+    week = result["decisions"][0]
+    scored = [p for p in seen if "utility" in p]
+    assert scored and all(any(c["upper"] == pytest.approx(NAME_CAP*funding) for c in p["caps"]) for p in scored)
+    assert week["status"] == "selected" and result["trades"]
+    assert sum(b["reserve"] for b in week["books"]) <= NAME_CAP*funding+1e-6
+    assert sum(t["reserve"] for t in result["trades"] if t["symbol"] == "X") <= NAME_CAP*funding+1e-6
+
+
+def test_the_fill_refuses_a_book_over_the_name_cap():
+    arm = _capped_arm()
+    _, _, study = _study(arm)
+    from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+    p = study.params
+    account = FundedOptionAccount(p["initial"], p["deposit"], p["deposit_every_days"], study.calendar[0])
+    day = study.calendar[1]
+    account.advance(day, {})
+    book = {"id": "b", "symbol": "X", "expiry": "2019-02-01", "reserve": NAME_CAP*account.funding+1., "credit": -1.}
+    assert not account.admit(day, [book], study._limits(account, arm, {"groups": []}))
+    assert account.admit(day, [{**book, "reserve": NAME_CAP*account.funding-1.}],
+                         study._limits(account, arm, {"groups": []}))
+
+
+def test_a_stock_margin_of_one_half_validates_and_scales_the_hedged_margin_floor(monkeypatch):
+    """Configuration only: ``hedge.margin_fraction`` .5 in place of .15 raises each hedged item's margin floor row."""
+    floors = {}
+    for margin in (.15, .5):
+        arm = _arm(BASE)
+        arm["hedge"]["margin_fraction"] = margin
+        scored, _ = _spy(monkeypatch)
+        params, _, study = _study(arm)
+        ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(params)
+        study._method(arm, None)
+        group = next(p for p in scored if "utility" in p)["groups"][0]
+        floors[margin] = group["reserve_rows"][-2]
+        monkeypatch.undo()
+    assert any(floors[.15])
+    assert floors[.5] == pytest.approx([v*.5/.15 for v in floors[.15]])
+
+
+# --- ADR-0323 and ADR-0324 beside the other keys: no sold in-the-money option and premium cover -----------------------
+
+def test_both_new_keys_run_beside_the_exercise_robust_tilt_settleable_and_name_cap_keys_and_replay(monkeypatch):
+    """Every key on one hedged arm: the week records both exercise and moneyness cuts, each program group carries the
+    cover row after the hedge's slope row, no book sells in the money, and the week replays from its record."""
+    scored, _ = _spy(monkeypatch)
+    arm = {**_robust_arm(dte_tilt=.5, short_call_above_exercise=True, short_not_in_the_money=True, premium_cover=1.,
+                         settleable_only=True), "name_fraction": NAME_CAP}
+    _, _, study = _robust_study(JUMP, arm)
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(study.params)
+    result = study._method(arm, None)
+    week = result["decisions"][0]
+    assert {"short_call_above_exercise", "short_not_in_the_money"} <= set(week)
+    assert week["short_not_in_the_money"] > 0 and week["books"], "the world's in-the-money items are cut, a book trades"
+    groups =[g for p in scored if "utility" in p for g in p["groups"]]
+    assert groups and all(len(g["linear_rows"]) == 2 for g in groups), "the hedge's slope row, then the cover row"
+    for book in week.get("books", []):
+        spot = book["spot"]
+        assert not any(leg["sign"] < 0 and ((leg["right"] == "put" and leg["strike"] > spot)
+                                            or (leg["right"] == "call" and leg["strike"] < spot))
+                       for leg in book["legs"])
+    assert study._method(arm, None, recorded=result) == result
+
+
+# --- ADR-0325: the credit floor on the hedged program ---------------------------------------------------------------
+
+FLOOR = .05
+
+
+def _ratio(trade):
+    return trade["decision_credit"] / trade["max_loss"]
+
+
+def test_a_thin_naked_put_the_plain_search_picks_is_redeployed_to_a_book_over_the_floor():
+    """The fair world's best unconstrained book is a naked put collecting under 5% of its worst-case loss."""
+    _, _, plain_study = _study(_arm(BASE), cheap_call=False)
+    plain = plain_study._method(_arm(BASE), None)
+    assert plain["trades"] and all(_ratio(t) < FLOOR for t in plain["trades"]), "premise: the plain book is thin"
+    arm = _arm(BASE, {"credit_floor": FLOOR})
+    _, _, study = _study(arm, cheap_call=False)
+    result = study._method(arm, None)
+    assert result["trades"], "the floor redeploys, it does not empty the week"
+    assert all(_ratio(t) >= FLOOR for t in result["trades"])
+    assert [b["legs"] for b in result["decisions"][0]["books"]] != [b["legs"] for b in plain["decisions"][0]["books"]]
+    assert study._method(arm, None, recorded=result) == result
+
+
+def test_on_a_hedged_book_the_rows_max_loss_is_the_programs_hedged_loss_without_the_hedge_costs(monkeypatch):
+    """The cheap-call world trades hedged twins: the floor rows at the chosen quantities read the hedged max loss."""
+    scored, _ = _spy(monkeypatch)
+    rho = 1e-3
+    arm = _arm(BASE, {"credit_floor": rho})
+    _, _, study = _study(arm)
+    result = study._method(arm, None)
+    (book,) = result["decisions"][0]["books"]
+    assert any(leg.get("hedged") for leg in book["legs"]) and book["program_hedge"]["cost_usd"] > 0
+    (group,) = [g for g in scored[-1]["groups"] if g["id"] == book["id"]]
+    (quantities,) = [q for q, gid in zip(result["decisions"][0]["selection"]["quantities"],
+                                         [g["id"] for g in scored[-1]["groups"]]) if gid == book["id"]]
+    strikes = {leg["strike"] for leg in book["legs"]}
+    assert len(group["linear_rows"]) >= 2 + len(strikes), "the slope row, then one floor row per kink"
+    activity = max(sum(c * q for c, q in zip(row["coefficients"], quantities, strict=True))
+                   for row in group["linear_rows"][1:])
+    loss = book["max_loss"] - book["program_hedge"]["cost_usd"]      # the decision book's loss carries the costs
+    assert activity == pytest.approx(rho * loss - book["credit"], rel=1e-9)
+
+
+def test_the_floor_runs_beside_every_other_kelly_key_and_replays(monkeypatch):
+    """Cover, moneyness, exercise, robust scale, name cap, settleable, dte tilt, a 0.9 wealth floor, longer moves."""
+    scored, _ = _spy(monkeypatch)
+    moves = [-.3, -.25, -.2, *_arm(BASE)["kelly"]["moves"], .2, .25, .3]
+    arm = {**_robust_arm(dte_tilt=.5, short_call_above_exercise=True, short_not_in_the_money=True, premium_cover=1.,
+                         settleable_only=True, credit_floor=FLOOR, wealth_floor=.9, moves=moves),
+           "name_fraction": NAME_CAP}
+    _, _, study = _robust_study(JUMP, arm)
+    ledger_studies.WeeklyOptionPortfolioStudy.validate_configuration(study.params)
+    result = study._method(arm, None)
+    week = result["decisions"][0]
+    groups = [g for p in scored if "utility" in p for g in p["groups"]]
+    assert groups and all(len(g["linear_rows"]) > 2 for g in groups), "slope, cover, then the floor rows"
+    assert week["books"] and result["trades"]
+    # The world's hedged synthetic cannot lose (a negative max loss), which any floor admits.
+    assert all(t["decision_credit"] >= FLOOR * t["max_loss"] and t["decision_credit"] > 0 for t in result["trades"])
+    assert study._method(arm, None, recorded=result) == result

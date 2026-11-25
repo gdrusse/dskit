@@ -21,6 +21,8 @@ every formulation and, detached, leaves every output byte-identical.
   and marks the path; inside a program the item is charged its EXPECTED re-hedge cost (``item_cost``) and a
   scenario carries what re-striking adds along a seeded forward path (``bridges``, ``path``, ``path_excess``;
   ADR-0316 Amendment 1).
+* :class:`WorsePriceForwardHedge` - the fixed hedge struck at the worse of the parity forward and spot for its side
+  (ADR-0320): a long hedge at ``max(F, S)``, a short one at ``min(F, S)``.
 
 Sign and units: held shares, negative is sold; ``u_i = -ratio x forward delta`` with the delta read from
 ``LegGreeks`` (``delta_f_sh``, never re-derived), and ONE net quantity per book
@@ -53,7 +55,8 @@ from dskit.pipeline.option_exposure import (
 from dskit.pipeline.option_structures import structure_max_loss
 from dskit.pipeline.records import number_ok
 
-__all__ = ["HedgeOverlay", "NullHedgeOverlay", "FixedDeltaForwardHedge", "DailyDeltaForwardHedge", "KINDS", "REFUSALS",
+__all__ = ["HedgeOverlay", "NullHedgeOverlay", "FixedDeltaForwardHedge", "DailyDeltaForwardHedge",
+           "WorsePriceForwardHedge", "KINDS", "REFUSALS",
            "forward_leg_rule", "forward_leg_net_settle", "forward_leg_spot_delta", "forward_leg_one_way_cost",
            "forward_leg_rehedged_value"]
 
@@ -324,7 +327,11 @@ class HedgeOverlay(ABC):
 
     @abstractmethod
     def reference(self, context):
-        """Return the level the hedge settles against, a positive forward the context supplies."""
+        """Return the level the hedge settles against, a positive forward the context supplies.
+
+        The context may also carry the day's ``spot`` and the leg's held ``units`` (the book's net quantity, or one
+        item's): a kind whose level depends on the side reads them (:class:`WorsePriceForwardHedge`).
+        """
 
     def book_units(self, entries, quantities):
         """Return the book's ONE net quantity ``{"units", "raw", "status"}``, truncated toward zero after snapping within 1e-9 of a whole share.
@@ -386,9 +393,11 @@ class HedgeOverlay(ABC):
     def legs(self, book, fill_context):
         """Return the replay legs for a :meth:`book_units` result: one forward leg struck at the fill reference.
 
-        ``residual = units - raw`` is what truncation left unhedged; a zero-unit leg is still returned.
+        ``residual = units - raw`` is what truncation left unhedged; a zero-unit leg is still returned. The reference
+        is read with the book's ``units`` added to ``fill_context``.
         """
-        return [{"instrument": "forward", "units": book["units"], "reference": self.reference(fill_context),
+        reference = self.reference({**fill_context, "units": book["units"]})
+        return [{"instrument": "forward", "units": book["units"], "reference": reference,
                  "residual": book["units"] - book["raw"]}]
 
     def item_cost(self, entry, reference, days):
@@ -822,5 +831,53 @@ class DailyDeltaForwardHedge(FixedDeltaForwardHedge):
         return super().item_cost(entry, reference, days) + expected
 
 
+class WorsePriceForwardHedge(FixedDeltaForwardHedge):
+    """The fixed-delta forward hedge struck at the worse of the parity forward and spot for its side (ADR-0320).
+
+    A forward struck at the option-implied parity forward is a price the account may not trade: where the forward
+    sits below spot (a name that is expensive to borrow) a LONG forward is cheaper than the stock, and a book that
+    buys it against a call sold under exercise value books the gap as riskless profit. This kind strikes a LONG
+    hedge at ``max(forward, spot)`` and a SHORT one at ``min(forward, spot)``: the stock where the stock is the worse
+    price, the forward otherwise (a short hedge below spot keeps the forward, so the implied borrow stays charged).
+    Units, sizing, costs, the margin floor and the daily mark level are the parent's; only :meth:`reference` reads
+    the side. No threshold.
+
+    Parameters
+    ----------
+    params : dict
+        Exactly :class:`FixedDeltaForwardHedge`'s keys, with ``kind`` ``"worse_price_forward"``.
+
+    Examples
+    --------
+    A long hedge of 300 shares on a name whose forward is 95 against a spot of 100 is struck at 100::
+
+        overlay = WorsePriceForwardHedge({**fixed_block, "kind": "worse_price_forward"})
+        overlay.reference({"forward": 95.0, "spot": 100.0, "units": 300})    # -> 100.0
+        overlay.reference({"forward": 95.0, "spot": 100.0, "units": -300})   # -> 95.0
+    """
+
+    KIND = "worse_price_forward"
+
+    def reference(self, context):
+        """Return ``max(forward, spot)`` for positive ``units``, ``min(forward, spot)`` for negative, else the forward.
+
+        Raises
+        ------
+        ValueError
+            When the context lacks a positive finite ``forward`` or ``spot``, or finite ``units``.
+        """
+        forward = _positive_forward(context)
+        spot, units = context.get("spot"), context.get("units")
+        if not (number_ok(spot) and spot > 0 and number_ok(units)):
+            raise ValueError(f"a worse-price hedge needs the context's positive 'spot' and finite 'units', "
+                             f"got spot {spot!r}, units {units!r}")
+        if units > 0:
+            return max(forward, spot)
+        if units < 0:
+            return min(forward, spot)
+        return forward
+
+
 #: The kinds a method's ``hedge.kind`` may name, to the class that builds them.
-KINDS = {FixedDeltaForwardHedge.KIND: FixedDeltaForwardHedge, DailyDeltaForwardHedge.KIND: DailyDeltaForwardHedge}
+KINDS = {FixedDeltaForwardHedge.KIND: FixedDeltaForwardHedge, DailyDeltaForwardHedge.KIND: DailyDeltaForwardHedge,
+         WorsePriceForwardHedge.KIND: WorsePriceForwardHedge}
