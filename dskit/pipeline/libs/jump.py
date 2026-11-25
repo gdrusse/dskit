@@ -25,7 +25,10 @@ by every later node with the same command. Each solve carries its node's own tim
 worker is stopped by :meth:`JumpSolve.close` (the worker of that node's command), by a
 protocol failure (the next solve starts a fresh one), or at interpreter exit (an
 ``atexit`` hook closes every worker). The real worker also exits on stdin EOF, so a
-Python process killed outright leaves no Julia behind.
+Python process killed outright leaves no Julia behind. The worker starts in its own process
+group and a discard SIGKILLs the whole group, so a launch wrapper that forks rather than
+execs (GNU ``timeout``, a shell) never leaves the real worker orphaned or holding the pipes;
+a wrapper that moves the worker out of that group (``setsid``) is outside this reach.
 
 Wire protocol (version :data:`PROTOCOL_VERSION`)
 -------------------------------------------------
@@ -47,14 +50,18 @@ strictly increasing per worker object) and ``op``; every reply carries the same 
 
 Refusal doctrine
 ----------------
-Every failure is a :class:`WorkerRefusal` naming the Julia program and a ``kind``. Only a
-well-formed ``ok: false`` reply to a ``solve`` keeps the worker (it answered the protocol,
-so its state is consistent). Everything else kills it and the NEXT solve starts a fresh
-one, never a silent retry: no start (``start``), a protocol mismatch (``protocol``), any
+Every failure is a :class:`WorkerRefusal` naming the Julia program and a ``kind``. A
+well-formed ``solve`` reply keeps the worker (it answered the protocol, so its state is
+consistent), whether it is an ``ok: false`` error reply or an ``ok: true`` reply whose
+content the subclass refuses (``termination``, not optimal; ``solution``, not the shape the
+program promises). Everything else kills it and the NEXT solve starts a fresh one, never a
+silent retry: no start (``start``), a protocol mismatch (``protocol``), any
 failed ``hello`` (including a well-formed error reply to it), death (``died``), a reply
 past the node's time limit (``timeout``, which also bounds writing the request), a line
-that is not the protocol (``malformed``), a mistyped record (``record``). A payload that
-is not JSON (``payload``) refuses before anything is sent or started.
+that is not the protocol (``malformed``), a mistyped record (``record``, every field
+type-checked and finite; an integer too large for a float is not finite). A payload that
+is not JSON (``payload``) refuses before anything is sent or started. The one non-refusal
+is the pyomo twin's over-budget assertion (``AssertionError``), kept verbatim.
 
 Role, output, knob and solve-record doctrines are :mod:`~dskit.pipeline.libs.pyomo`'s:
 ``role = "capital"`` and ``outputs = None`` on the base, a concrete subclass MUST declare
@@ -64,7 +71,9 @@ solver NAME's shape is checked at plan and its availability in Julia at run (the
 ``unknown_solver`` refusal), and every solve leaves a
 :class:`~dskit.pipeline.libs.pyomo.SolveRecord` (the very class, so the evaluation
 ``solve`` event has one shape whichever language solved) on ``solve_record``. The hello
-versions of the worker that solved are on ``worker_info``.
+versions of the worker that solved are on ``worker_info`` (reset with ``solve_record`` at
+the start of every run); writing them into a run's record is not done yet (ADR-0328
+decision 5, deferred to the Julia half).
 
 Import cost: stdlib and toolkit only, no Julia and no third-party library, ever.
 """
@@ -74,9 +83,10 @@ from __future__ import annotations
 import atexit
 import collections
 import json
-import math
+import os
 import pathlib
 import queue
+import signal
 import subprocess
 import threading
 import time
@@ -84,6 +94,7 @@ from abc import abstractmethod
 
 from dskit.pipeline.libs.pyomo import BudgetedSelect, PyomoSolve, SolveRecord
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
+from dskit.pipeline.records import number_ok
 
 __all__ = [
     "DEFAULT_REQUEST_TIMEOUT",
@@ -169,7 +180,8 @@ class WorkerRefusal(RuntimeError):
         The Julia program the node asked for.
     kind : str
         Why: ``start``, ``protocol``, ``died``, ``timeout``, ``malformed``, ``payload``,
-        ``record``, ``solution``, or the ``kind`` of a worker's own error reply.
+        ``record``, ``termination``, ``solution``, or the ``kind`` of a worker's own error
+        reply.
     message : str
         The detail.
 
@@ -217,12 +229,17 @@ def _is_int(value, low=0):
 
 
 def _is_number(value, nullable=False, low=None):
-    """Whether ``value`` is a finite JSON number (never a bool), or null when ``nullable``."""
+    """Whether ``value`` is a finite JSON number (``records.number_ok``), or null when ``nullable``.
+
+    A JSON integer too large for a float is not a number the toolkit can compute on: it
+    answers ``False`` here, never a raw ``OverflowError``.
+    """
     if value is None:
         return nullable
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    try:
+        return number_ok(value) and (low is None or value >= low)
+    except OverflowError:
         return False
-    return math.isfinite(value) and (low is None or value >= low)
 
 
 def _is_name(value):
@@ -335,6 +352,21 @@ def _write_line(stream, text, errors):
         errors.append(exc)
 
 
+def _kill_group(process):
+    """SIGKILL the process group ``process`` leads (it was started in its own session).
+
+    Sent even when the leader has already exited: a wrapper's children may outlive it in
+    the group. Linux never hands out a pid still in use as a process-group id, so the
+    group named by the leader's pid is ours until it is empty (then ``ESRCH``). Falls back
+    to killing the leader alone where the group cannot be signalled.
+    """
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        if process.poll() is None:
+            process.kill()
+
+
 class JuliaWorker:
     """One long-lived Julia worker process and the JSON-lines protocol to it.
 
@@ -377,7 +409,9 @@ class JuliaWorker:
         self._process = None
         self._lines = None
         self._stderr = None
+        self._stdout_thread = None
         self._stderr_thread = None
+        self._writer_thread = None
         self._next_id = 0
         self._lock = threading.Lock()
 
@@ -491,7 +525,7 @@ class JuliaWorker:
             process = subprocess.Popen(
                 self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-                bufsize=1,
+                bufsize=1, start_new_session=True,
             )
         except OSError as exc:
             raise WorkerRefusal(program, "start",
@@ -500,8 +534,9 @@ class JuliaWorker:
         self._process = process
         self._lines = queue.Queue()
         self._stderr = collections.deque(maxlen=_STDERR_TAIL_CHARS)
-        threading.Thread(target=_read_lines, args=(process.stdout, self._lines),
-                         daemon=True).start()
+        self._stdout_thread = threading.Thread(
+            target=_read_lines, args=(process.stdout, self._lines), daemon=True)
+        self._stdout_thread.start()
         self._stderr_thread = threading.Thread(
             target=_keep_tail, args=(process.stderr, self._stderr), daemon=True)
         self._stderr_thread.start()
@@ -513,23 +548,36 @@ class JuliaWorker:
         self.info = {key: reply[key] for key in ("protocol", "julia", "packages")}
 
     def _discard(self):
-        """Kill the process (if any), reap it, drop its pipes; return its stderr tail."""
+        """Kill the worker's whole process group, reap it, drop its pipes; return the stderr tail.
+
+        The worker starts in its own process group (``start_new_session``), so a launch
+        wrapper that forks rather than execs (GNU ``timeout``, a shell) dies with the real
+        worker it started: no grandchild is orphaned and none keeps the pipes open. A
+        stream is closed only once the thread servicing it has ended; a thread still
+        blocked on it (a process outside the group holding the pipe) is left to the
+        daemon, never waited on, so a discard is always bounded.
+        """
         process, self._process = self._process, None
         self.info = None
         if process is None:
             return ""
         try:
-            if process.poll() is None:
-                process.kill()
+            _kill_group(process)
             process.wait()
         finally:
-            if self._stderr_thread is not None:
-                self._stderr_thread.join(timeout=_STDERR_JOIN_SECONDS)
-            for stream in (process.stdin, process.stdout, process.stderr):
+            deadline = time.monotonic() + _STDERR_JOIN_SECONDS
+            for thread, stream in ((self._writer_thread, process.stdin),
+                                   (self._stdout_thread, process.stdout),
+                                   (self._stderr_thread, process.stderr)):
+                if thread is not None:
+                    thread.join(timeout=max(0.0, deadline - time.monotonic()))
+                if thread is not None and thread.is_alive():
+                    continue
                 try:
                     stream.close()
                 except (OSError, ValueError):
                     pass
+            self._writer_thread = None
         tail = "".join(self._stderr or ()).strip()
         return f" | stderr tail: {tail[-_STDERR_TAIL_CHARS:]}" if tail else ""
 
@@ -547,10 +595,11 @@ class JuliaWorker:
         errors = []
         writer = threading.Thread(target=_write_line,
                                   args=(self._process.stdin, line, errors), daemon=True)
+        self._writer_thread = writer
         writer.start()
         writer.join(timeout=max(0.0, deadline - time.monotonic()))
         if writer.is_alive():
-            tail = self._discard()  # closing the pipe frees the blocked writer
+            tail = self._discard()  # the killed group's pipe breaks and frees the writer
             raise WorkerRefusal(program, "timeout",
                                 f"timed out after {timeout:g} s writing the request (the "
                                 f"worker stopped reading); the worker was killed{tail}")
@@ -820,6 +869,7 @@ class JumpSolve(Node):
                 "subclass must set `program = \"<registry name>\"`"
             )
         self.solve_record = None
+        self.worker_info = None
         data = self.payload(inputs, self.params)
         name = self.params.get("solver", DEFAULT_SOLVER)
         self.log.info("solving %r with %r", program, name)
@@ -992,16 +1042,16 @@ class JumpBudgetedSelect(JumpSolve):
 
         Raises
         ------
-        RuntimeError
-            When the solve was not optimal.
         WorkerRefusal
-            Kind ``solution``, when the solution is not ``{"selected": [ids]}`` over
-            distinct ids that were sent.
+            Kind ``termination`` when the solve was not optimal; kind ``solution`` when
+            the solution is not ``{"selected": [ids]}`` over distinct ids that were sent.
+            Both judge a well-formed reply, so the worker is kept.
         """
         record = self.solve_record
         termination = None if record is None else record.termination
         if termination != OPTIMAL_TERMINATION:
-            raise RuntimeError(
+            raise WorkerRefusal(
+                self.program, "termination",
                 f"solver finished with termination {termination!r}, not "
                 f"{OPTIMAL_TERMINATION!r} — refusing to read a selection off a "
                 "non-optimal solve"

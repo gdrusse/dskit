@@ -5,7 +5,7 @@ from Python (a real brute-force knapsack, so answers are real) and misbehaves on
 (wrong protocol, noise, crash, hang, malformed or duplicated keys, wrong id, error reply,
 bad record, deaf, ...), chosen by argv. The one test that needs the real worker, parity with
 the pyomo ``BudgetedSelect``, is skipped with a reason naming Julia when ``julia`` is not on
-``PATH``.
+``PATH``, or naming the package when ``julia/DskitJuMP`` is not built yet.
 
 Layout: **Units** (params, one owner, inputs, plan, no Julia), **Protocol** (hello, solve,
 one worker per launch command for the process), **Failures** (each refuses by program
@@ -19,6 +19,7 @@ import gc
 import json
 import os
 import pathlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -170,7 +171,7 @@ class TestPlanWithoutJulia:
         assert command[0] == "julia"
         assert f"--project={package}" in command
 
-    def test_a_document_naming_the_node_plans_without_julia(self, monkeypatch):
+    def test_a_document_naming_the_node_reaches_the_planner_without_julia(self, monkeypatch):
         monkeypatch.setenv("PATH", "")
         assert shutil.which("julia") is None
         private = NodeKindRegistry()
@@ -509,8 +510,51 @@ class TestProtocol:
         node.solve_record = SolveRecord(
             solver="HiGHS", status="FEASIBLE_POINT", termination=termination, objective=None,
             bound=None, gap=None, seconds=0.0, variables=3, constraints=1, binding=())
-        with pytest.raises(RuntimeError, match="not 'OPTIMAL'"):
+        with pytest.raises(WorkerRefusal,
+                           match=r"budgeted_select.*\(termination\).*not 'OPTIMAL'"):
             node.extract({"selected": ["BRAVO"]})
+
+    @pytest.mark.parametrize("termination", ["INFEASIBLE", "TIME_LIMIT"])
+    def test_a_non_optimal_solve_on_the_wire_refuses_by_program_and_keeps_the_worker(
+        self, tmp_path, nodes, termination
+    ):
+        node = nodes("--mode", "patch-record", "--patch",
+                     json.dumps({"termination": termination}))
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(termination\)"):
+            node.run(_ctx(tmp_path), _inputs())
+        assert _process(node).poll() is None  # a well-formed reply: the worker is kept
+
+    def test_an_over_budget_selection_from_the_worker_is_refused(self, tmp_path, nodes):
+        node = nodes("--mode", "over-budget")
+        with pytest.raises(AssertionError, match="budget violated"):
+            node.run(_ctx(tmp_path), _inputs())
+
+    def test_the_wire_carries_the_program_params_and_the_pinned_solver_options(
+        self, tmp_path, nodes
+    ):
+        log = tmp_path / "requests.jsonl"
+        node = nodes("--request-log", log, solver_options={"threads": 4, "time_limit": 30})
+        node.run(_ctx(tmp_path), _inputs())
+        requests = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        assert [r["op"] for r in requests] == ["hello", "solve"]
+        solve = requests[1]
+        assert set(solve) == {"id", "op", "program", "data", "params", "solver",
+                              "solver_options"}
+        assert solve["program"] == "budgeted_select" and solve["solver"] == DEFAULT_SOLVER
+        assert solve["params"] == {"budget": BUDGET}
+        assert solve["solver_options"] == {"mip_rel_gap": 0, "threads": 4, "random_seed": 0,
+                                           "time_limit": 30}
+        assert solve["data"] == {"ids": ["ALPHA", "BRAVO", "GAMMA"], "cost": [6.0, 5.0, 5.0],
+                                 "value": [9.0, 6.0, 6.0]}
+
+    def test_a_refused_solve_clears_the_previous_worker_info(self, tmp_path, nodes):
+        node = nodes()
+        node.run(_ctx(tmp_path), _inputs())
+        assert node.worker_info is not None
+        node.worker_command = ["/nonexistent/never-launched"]
+        with pytest.raises(WorkerRefusal, match=r"\(start\)"):
+            node.run(_ctx(tmp_path), _inputs())
+        assert node.worker_info is None and node.solve_record is None
 
     @pytest.mark.parametrize("solution", [
         None, [], {}, {"selected": "BRAVO"}, {"selected": [1]},
@@ -667,9 +711,56 @@ class TestFailures:
 
         node = nodes("--mode", "hang")
         started = time.perf_counter()
-        with pytest.raises(WorkerRefusal, match="timed out"):
+        with pytest.raises(WorkerRefusal, match="timed out") as excinfo:
             node.run(_ctx(tmp_path), _inputs())
-        assert time.perf_counter() - started < 10 * SHORT_TIMEOUT + FAKE_START_TIMEOUT
+        # The solve is bounded by the node's request_timeout, never its start_timeout.
+        assert f"after {SHORT_TIMEOUT:g} s" in str(excinfo.value)
+        assert time.perf_counter() - started < FAKE_START_TIMEOUT / 2
+
+    @pytest.mark.parametrize(("mode", "kind"), [
+        ("hang", "timeout"),
+        ("malformed", "malformed"),
+        ("wrong-id", "malformed"),
+        ("bad-record", "record"),
+    ])
+    def test_a_wrapped_worker_is_killed_whole_and_never_hangs_the_refusal(
+        self, tmp_path, mode, kind
+    ):
+        # A wrapper that forks rather than execs (GNU timeout, a shell that does not exec)
+        # keeps the real worker as a grandchild holding the pipes: killing only the direct
+        # child would leave the readers blocked and the worker orphaned.
+        import time
+
+        pidfile = tmp_path / "worker.pid"
+        inner = " ".join(map(shlex.quote, fake_command("--mode", mode, "--pidfile", pidfile)))
+
+        class Wrapped(JumpBudgetedSelect):
+            worker_command = ["sh", "-c", f"{inner}; true"]
+            request_timeout = SHORT_TIMEOUT
+            start_timeout = FAKE_START_TIMEOUT
+
+        node = Wrapped("select", PARAMS)
+        started = time.perf_counter()
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select") as excinfo:
+            node.run(_ctx(tmp_path), _inputs())
+        assert excinfo.value.kind == kind
+        assert time.perf_counter() - started < FAKE_START_TIMEOUT / 2
+        grandchild = int(pidfile.read_text(encoding="utf-8"))
+        assert not _alive(grandchild)
+        assert _worker(node).pid is None
+
+    def test_close_of_a_wrapped_worker_that_ignores_shutdown_leaves_no_grandchild(
+        self, tmp_path
+    ):
+        # "deaf" answers hello, then never reads: close() times out on shutdown and kills.
+        pidfile = tmp_path / "worker.pid"
+        inner = " ".join(map(shlex.quote, fake_command("--mode", "deaf", "--pidfile", pidfile)))
+        worker = JuliaWorker(["sh", "-c", f"{inner}; true"], shutdown_timeout=SHORT_TIMEOUT)
+        worker._ensure_started("budgeted_select", FAKE_START_TIMEOUT)
+        grandchild = int(pidfile.read_text(encoding="utf-8"))
+        assert _alive(grandchild)
+        worker.close()
+        assert not _alive(grandchild) and worker.pid is None
 
 
 # ---------------------------------------------------------------------------
@@ -721,6 +812,13 @@ class TestRecordFromTheWire:
         node = nodes("--mode", "patch-record", "--patch", f'{{"objective": {token}}}')
         with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(malformed\)"):
             node.run(_ctx(tmp_path), _inputs())
+
+    @pytest.mark.parametrize("key", ["objective", "seconds", "gap", "bound"])
+    def test_an_integer_too_large_for_a_float_is_a_record_refusal(self, tmp_path, nodes, key):
+        node = nodes("--mode", "patch-record", "--patch", f'{{"{key}": 1{"0" * 400}}}')
+        with pytest.raises(WorkerRefusal, match=r"budgeted_select.*\(record\)"):
+            node.run(_ctx(tmp_path), _inputs())
+        assert _worker(node).pid is None
 
     def test_a_record_with_nulls_and_a_dual_is_accepted(self, tmp_path, nodes):
         patch = {"objective": None, "bound": None, "gap": None,
@@ -891,10 +989,14 @@ class TestShippedExample:
 # ---------------------------------------------------------------------------
 
 JULIA = shutil.which("julia")
+JULIA_PACKAGE_DIR = ROOT.joinpath(*jump.JULIA_PACKAGE)
 
 
 @pytest.mark.skipif(JULIA is None, reason="Julia is not installed (no `julia` on PATH): "
                     "the real-worker parity test needs it")
+@pytest.mark.skipif(not (JULIA_PACKAGE_DIR / "Project.toml").is_file(),
+                    reason=f"the Julia package {JULIA_PACKAGE_DIR} is not built yet "
+                    "(ADR-0328 phase 1, Julia half): the real-worker parity test needs it")
 class TestParityWithPyomo:
     def test_the_julia_knapsack_matches_the_pyomo_one(self, tmp_path):
         pytest.importorskip("pyomo")

@@ -1,6 +1,7 @@
 """A stand-in for the Julia worker: the JuMP pack's JSON-lines protocol in Python.
 
-Run as ``python jump_fake_worker.py [--mode MODE] [--once FLAG_FILE] [--patch JSON]``. It
+Run as ``python jump_fake_worker.py [--mode MODE] [--once FLAG_FILE] [--patch JSON]
+[--pidfile FILE] [--request-log FILE]``. It
 reads one JSON request per line on stdin and answers one JSON object per line on stdout,
 exactly as ``dskit.pipeline.libs.jump.JuliaWorker`` expects of the real worker, so the
 pack's suite needs no Julia. It solves ONE program, ``budgeted_select`` (a 0/1 knapsack),
@@ -27,6 +28,7 @@ At the first ``solve`` (with ``--once``, only until the flag file exists):
 ``patch-record``   answer with the record updated by ``--patch`` (a JSON object)
 ``dup-key``        answer with the key ``id`` twice (a wrong one first)
 ``extra-key``      answer with a key the protocol does not name
+``over-budget``    answer OPTIMAL with every candidate selected, budget ignored
 
 Answering correctly throughout:
 
@@ -34,6 +36,10 @@ Answering correctly throughout:
 ``noisy-stderr``   write a megabyte to stderr before every reply
 ``big-reply``      a record with many binding rows (a reply line of megabytes)
 ``linger``         on stdin EOF without ``shutdown``, sleep instead of exiting
+
+``--pidfile`` writes this process's id on start (so a test can find it behind a
+wrapper); ``--request-log`` appends every request line received (so a test can read what
+crossed the wire).
 """
 
 from __future__ import annotations
@@ -57,7 +63,7 @@ SOLVERS = ("HiGHS",)
 
 HELLO_MODES = ("bad-protocol", "stdout-noise", "bool-id", "hello-error", "deaf")
 SOLVE_MODES = ("crash", "hang", "malformed", "wrong-id", "error-reply", "bad-record",
-               "patch-record", "dup-key", "extra-key")
+               "patch-record", "dup-key", "extra-key", "over-budget")
 CLEAN_MODES = ("ok", "noisy-stderr", "big-reply", "linger")
 MODES = CLEAN_MODES + HELLO_MODES + SOLVE_MODES
 
@@ -115,8 +121,9 @@ def _solve(request):
 class FakeWorker:
     """The request loop, with one switchable behaviour."""
 
-    def __init__(self, mode, once, patch):
+    def __init__(self, mode, once, patch, request_log=None):
         self.mode = mode
+        self.request_log = request_log
         self.once = once
         self.patch = patch
         self.deaf = False
@@ -175,6 +182,8 @@ class FakeWorker:
             record.update(self.patch)
         elif self.mode == "extra-key":
             reply["debug"] = "not a protocol field"
+        elif self.mode == "over-budget":
+            reply["solution"] = {"selected": sorted(request["data"]["ids"])}
         elif self.mode == "dup-key":
             # A lenient parser keeps the LAST "id" (the right one) and accepts the reply.
             _write('{"id": 999999, ' + json.dumps(reply)[1:])
@@ -202,6 +211,9 @@ class FakeWorker:
 
     def serve(self):
         for line in sys.stdin:
+            if self.request_log is not None:
+                with open(self.request_log, "a", encoding="utf-8") as log:
+                    log.write(line)
             request = json.loads(line)
             op = request["op"]
             if op == "hello":
@@ -224,8 +236,13 @@ def main(argv=None):
     parser.add_argument("--mode", choices=MODES, default="ok")
     parser.add_argument("--once", default=None, help="flag file: misbehave only until it exists")
     parser.add_argument("--patch", default="{}", help="patch-record: JSON object for the record")
+    parser.add_argument("--pidfile", default=None, help="write this process's id here on start")
+    parser.add_argument("--request-log", default=None, help="append every request line here")
     args = parser.parse_args(argv)
-    FakeWorker(args.mode, args.once, json.loads(args.patch)).serve()
+    if args.pidfile is not None:
+        with open(args.pidfile, "w", encoding="utf-8") as out:
+            out.write(str(os.getpid()))
+    FakeWorker(args.mode, args.once, json.loads(args.patch), args.request_log).serve()
 
 
 if __name__ == "__main__":
