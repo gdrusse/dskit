@@ -1,37 +1,41 @@
 # RE-ENTRY - index_options
 
-Updated 2026-11-19 by Claude Opus 5.5 (MIO speed panel complete; wrapped).
+Updated 2026-11-24 by GPT-6 (MIO design, cadence experiment, storage wrap).
 
 ## Now
 
-- MIO speed panel COMPLETE: all 8 prespecified frozen states (Q1 Jan 4/Jan 11, Q2 Apr 1/Apr 20/Jun 8, Q3 Jul 1/Jul 20/Aug 3) ran plain and relax on WSL; warm on the 5 states with a prior book.
-- Relax: faster in 8/8 states (1416 s vs 2461 s total, -42%), higher utility in 5/8, summed utility +9%. Losses on Apr 20 (-13%), Jan 11 (-8.5%) and Jul 20 (-0.6%). Decision: relax is the default solve mode.
-- Warm (previous-climb MIP start): same picks as plain in 4/5, slower each time, and worse on Apr 20. Dropped.
-- Plain's stage 1 often stops at its gap/time limit (it ended in cash on Q2 Apr 1), so plain is not a certified baseline.
-- Q2 fixed-action accounting reproduces archived e2 economics (picks and P&L exact). The a1 live Q2 P&L gap comes from the solve, not the accounting.
-- Q1 risk/both were re-run and accepted on 2026-11-18 (+17,641 vs control +26,782); the old "owner-halted" note was stale.
-- Evidence lives outside Git under the run dir (paths in the final memo). The frozen-panel runner (v9 lock), the Q2/Q3 prefix capture with the disclosed noise class, the Q3 quote cache and the warm arm are all reviewed (no Critical/Major).
+- Resume our [MIO working draft](https://chatgpt.com/space/page_d967bc9d4dac81919850190243a4439d). It is distinct from the older implemented Kelly formulation.
+- Agreed: buy/sell and call/put superscripts; contract/stock/DTE subscripts; integer trades x, known holdings h and cash B; current bid/ask costs, per-trade fees, expiry payoffs, and calendar-DTE roll.
+- Open: cash/portfolio-value equations, joint asset scenarios, tail risk, concentration and dynamic hedging. Explain briefly; restate each agreed addition mathematically.
+- Corrected daily/weekly experiment has **0/6 completed arms**. A 5 GiB run was OOM-killed after 12/14 weekly decisions. A guarded 6 GiB retry is prepared, not run; no empirical cadence recommendation exists.
+- Reviewed research code: `22128802100b0372d965536ac25447d0b0c18329`. Explicit entry dates and next-fill expiry eligibility preserve legacy defaults.
+- Non-DSKit relocation completed: 10.64 GB verified on D; shared DSKit data stayed on C. C measured17.3 GB free; normal10 GiB reserve passes, but each job needs fresh RAM/disk admission.
+- Prior speed-panel evidence: relax faster in8/8 frozen states; warm dropped. This establishes neither profitability nor the final formulation for this working draft.
 
 ## Next
 
-1. Owner decision: adopt relax as the production default. If adopted, rerun the affected quarter controls with relax under the official harness.
-2. Combined calibration + risk + joint-history arm: never run on real data; needs its Q2 lock and reviews (EV/combined-feature-inventory-20261119.json).
-3. Reproducibility (cross-host identical picks) is deferred by the owner; revisit before any production claim.
+1. Read the working draft's Resume here section and the session memo. Continue from portfolio state (B,h), then agree cash and risk equations.
+2. For the cadence study, restore the exact frozen checkout if purged, verify code/driver/config/analysis hashes, and check storage plus host RAM.
+3. Run the first missing job from `jobs-solve-6g.json` serially only when admitted. Stop on refusal/failure; six valid corrected receipts are required before analysis. Reuse existing inputs.
+4. Compare net growth, drawdown, tail losses, capital-days, DTE attribution and doubled execution costs. Daily needs stable improvement; weekly or cash remains possible.
 
 ## Blocked / owner decisions
 
-- The official Q2 primary comparator/publication change still needs a concrete owner decision (skeptic-review.md:36).
-- Close candidates are unsupported beside the static hedge/DTE stack. Prior hedge-overlay, stock funding, A0006, hedge-cost, parity-forward, hard-to-borrow, origin_two, E1b and config-manifest issues remain unresolved.
+- OOM risk remains; 6 GiB fitting every arm is unproven. No study job is launched by this wrap.
+- A0008/A0009/A0010 remain locked. This separately authorized direct research runner is not the official sealed packet or a replacement for A0010.
+- The experiment holds entries to expiry. It does not answer early-exit/hedging frequency; American assignment and executable liquidation remain unmodeled.
+- Preserve other sessions' unpublished local-main changes and worktrees. Exact pins and integration receipts are in the memo and external verification record.
 
 ## Read first
 
-- [Final memo](../../../docs/memos/2026-11-19-mio-evaluation-final.md)
-- [Codex handoff](../../../docs/memos/2026-11-19-mio-claude-handoff.md)
-- [Takeover status log](/home/russell/data/index_options/runs/mio-combined-evaluation/v20261117/claude-takeover-status.md)
+- [Working draft](https://chatgpt.com/space/page_d967bc9d4dac81919850190243a4439d)
+- [Session handoff and resume commands](memos/2026-11-24-mio-design-session.md)
 - [Locked Path](decisioning/path.csv)
+- [Prior speed-panel final memo](../../../docs/memos/2026-11-19-mio-evaluation-final.md)
+- `/home/russell/data/index_options/runs/cadence-study/v20261124-fill-v2/verification.json`
 
 ## Do not
 
-- Treat the owner-accepted hedge-noise states as strict replays, relabel the failed strict a1 Q2 capture, or present tiny fixtures as real results.
-- Use 2024+ data, unseal holdouts, edit locked Path or A0010, or claim profit from solver-speed states.
-- Run unguarded compute, add Windows and WSL RAM, or lower reserves.
+- Use2024+ data, unseal holdouts, refit the frozen model, change Path/A0010, or rank cadence from the invalid old diagnostics.
+- Rerun the full suite, launch unguarded compute, lower reserves, overwrite results, or repoint an active shared environment.
+- Purge canonical data/evidence, active services or another session's branches. Restore the pinned checkout before reusing path-bound configs.

@@ -6,8 +6,8 @@ history questions, the memos and ADRs are reached from the lane note's links.
 
 | Lane | Note | State (one line, dated) |
 |---|---|---|
-| dskit core | "Core" below | 2026-11-17: current documentation reconciled with code; storage maintenance and legacy migration remain paused. |
-| index_options | children/index_options/docs/RE-ENTRY.md | 2026-11-19: MIO speed panel complete (8/8 states); relax faster 8/8, utility +9%, now default; warm dropped; Q1 risk/both accepted 11-18. |
+| dskit core | "Core" below | 2026-11-24: non-DSKit relocation complete; shared data retained; C17.3 GB/D734.2 GB free; upgrade/compaction not performed. |
+| index_options | children/index_options/docs/RE-ENTRY.md | 2026-11-24: working MIO draft saved; cash/risk next; corrected cadence study0/6, guarded6 GiB retry prepared. |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-19: historical 600-entry audit complete; method24 two-cell Kalshi recommendation beat market scores in later W4/W5; retrospective; protected tests closed; two final reviews passed |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
 | statistical_arbitrage | `children/statistical_arbitrage/docs/RE-ENTRY.md` | 2026-10-21: prediction-only studies ADR-0272..0275: ATM-spread reversion; best now the pooled-scaled blend on the vol-scaled label (ATM 20d R²oos 0.25→0.27, the most robust pass); Theta Greeks/flow/market features add nothing; skew none; no edge claim |
@@ -19,44 +19,30 @@ history questions, the memos and ADRs are reached from the lane note's links.
 
 ## Core (dskit itself)
 
-**Now.** 2026-11-17: documentation audit corrected current guides against
-shipped code (candidate `62c2c67e`); see
-`docs/memos/2026-11-17-documentation-code-audit.md` for checks and scope.
-ADR-0296 device selection (`94e785ac`) and
-ADR-0317 saved-fit forecast faults (`c38e2b28`) remain reviewed and integrated,
-with two clean final lenses each. PR #19 is merged; explicit-device defaults
-and frozen study identities remain unchanged. Host maintenance recovered
-113.2 GiB on C: after WSL compaction; recorders and mounts were restored.
-Disk/RAM admission, a data catalog, shared agent guidance and a 15-minute
-storage monitor are installed locally; those workstation tools are outside
-this repository. The alert/hook follow-up passed 25 focused tests.
+**Now.** 2026-11-24: non-DSKit relocation completed: 10.64 GB verified on D,
+old paths preserved, DSKit/shared inputs retained on C. Gears5 and the verified
+empty384 GiB D image were retired by owner request. Windows measured C17.3 GB
+and D734.2 GB free. Normal admission passes; the migration exception is retired.
+No WSL shutdown, upgrade or compaction occurred. The index_options lane holds
+the unfinished mathematical MIO and cadence-study re-entry.
 
-**Next.** Continue reusable candidates only through their existing review
-gates. Keep canonical data outside new worktrees and check the storage guard
-before bulk work. Classify legacy data before migration. The shared .venv
-still imports from the preserved `/home/russell/wt/claude-sonnet-5-5`
-checkout; verify imports before using new main code and never repoint an
-active environment. Existing worktree receipts retain unique work and pins.
+**Next.** Follow that lane note; check storage and host RAM before bulk work.
+The shared .venv imports from a preserved older checkout. Bind imports explicitly
+to reviewed code; never repoint an active environment.
 
-**Blocked / owner decisions.** Storage work is incomplete and paused at the
-owner's request. Retirement of the empty 384 GiB D: image and its six pending
-ADR-0313 jobs was approved, as was a WSL upgrade and isolated reclaim test;
-none was executed before the pause. Keep the current MIO batch running.
-WSL remains 2.7.10; automatic disk shrinking is not enabled, and a full distro
-backup was not made. Resume maintenance only when the owner resumes it.
-ADR-0284 still has four recorded Mac path-mapping Majors; this work did not
-clear them. Unreviewed experiments retain their design and study gates.
+**Blocked / owner decisions.** The WSL upgrade/sparse-reclaim pilot and full
+backup remain unperformed; wrap does not resume them. Preserve other sessions'
+unpublished commits, active jobs and frozen pins. Earlier ADR-0284 Mac
+path-mapping findings were not addressed here.
 
-**Read first.** ADR-0296/0317 in `docs/architecture/decision-log.md`;
-`/home/russell/storage-investigation/2026-11-15/worktree-closeout/maintenance-summary.json`;
+**Read first.** `/home/russell/storage-investigation/non-dskit-migration-20261124/completion-receipt.json`;
+`/home/russell/pmquant/docs/data-locations.md`;
 `/home/russell/storage-investigation/storage-policy.json`;
-`/home/russell/storage-investigation/storage-migration-plan.json`;
-`/home/russell/storage-investigation/2026-11-15/followup/verification.json`.
+`/home/russell/storage-investigation/storage-migration-plan.json`.
 
-**Do not.** Count WSL free space as additional C: capacity, claim automatic
-reclaim is active, delete protected results or rewrite frozen source pins.
-Development review is not real-run or deployment approval. Earlier notes:
-`docs/archive/re-entry/dskit-core.md`.
+**Do not.** Add WSL free space to C capacity, claim full backup or automatic
+reclaim was enabled, delete protected results, or treat development review as
+empirical evidence or deployment approval. Normal reserves are C10/D150 GiB.
 
 ## Protocol
 
