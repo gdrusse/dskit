@@ -1,37 +1,40 @@
 # RE-ENTRY - index_options
 
-Updated 2026-11-19 by Claude Opus 5.5 (MIO speed panel complete; wrapped).
+Updated 2026-11-25 by GPT-6 (MIO formulation and calibration handoff).
 
 ## Now
 
-- MIO speed panel COMPLETE: all 8 prespecified frozen states (Q1 Jan 4/Jan 11, Q2 Apr 1/Apr 20/Jun 8, Q3 Jul 1/Jul 20/Aug 3) ran plain and relax on WSL; warm on the 5 states with a prior book.
-- Relax: faster in 8/8 states (1416 s vs 2461 s total, -42%), higher utility in 5/8, summed utility +9%. Losses on Apr 20 (-13%), Jan 11 (-8.5%) and Jul 20 (-0.6%). Decision: relax is the default solve mode.
-- Warm (previous-climb MIP start): same picks as plain in 4/5, slower each time, and worse on Apr 20. Dropped.
-- Plain's stage 1 often stops at its gap/time limit (it ended in cash on Q2 Apr 1), so plain is not a certified baseline.
-- Q2 fixed-action accounting reproduces archived e2 economics (picks and P&L exact). The a1 live Q2 P&L gap comes from the solve, not the accounting.
-- Q1 risk/both were re-run and accepted on 2026-11-18 (+17,641 vs control +26,782); the old "owner-halted" note was stale.
-- Evidence lives outside Git under the run dir (paths in the final memo). The frozen-panel runner (v9 lock), the Q2/Q3 prefix capture with the disclosed noise class, the Q3 quote cache and the warm arm are all reviewed (no Critical/Major).
+- [MIO working draft](https://chatgpt.com/space/page_d967bc9d4dac81919850190243a4439d): saved sequence 22, 292 blocks. Formulation definitions are agreed; calibration fitting and validation have not run.
+- Defined daily returns, conditional mean/variance and estimates; forecast normalization and CDFs; raw/corrected PITs; expanding stock-by-original-expiry-rank counters; stabilized monotone recalibration and chronological parameter selection. Appendices explain the derivations and pseudocode.
+- Notation: d is the daily observation/cutoff clock, a a historical origin, t calendar DTE, eta sessions to expiry, g a future session offset, rho original expiry rank. Tau was retired; v is already occupied. Preserve all existing contract subscripts/superscripts.
+- User prefers brief steps, each new mathematical definition restated for confirmation. Chat uses LaTeX display delimiters, never dollar-dollar; the Page uses native math fences.
+- Cash/portfolio value, copula, forecasts at intermediate risk checkpoints, IV dynamics, CVaR and dynamic hedging remain unfinished. The strategy continues indefinitely; eligible contracts up to 60 DTE do not impose a strategy end date.
+- Daily/weekly cadence is a separate study. Its 24 November status in the older memo is historical, not verified current job status. Preserve its checkout, jobs and receipts; no cadence conclusion is made here.
 
 ## Next
 
-1. Owner decision: adopt relax as the production default. If adopted, rerun the affected quarter controls with relax under the official harness.
-2. Combined calibration + risk + joint-history arm: never run on real data; needs its Q2 lock and reviews (EV/combined-feature-inventory-20261119.json).
-3. Reproducibility (cross-host identical picks) is deferred by the owner; revisit before any production claim.
+1. Read the draft and the 25 November checkpoint at the top of the session memo.
+2. Define how settled PITs align across assets and original expiry ranks: origin, target date, information cutoff and incomplete observations. Do not infer joint dependence from marginal counters.
+3. Propose the copula estimator and its compact data/state requirements, one mathematical addition at a time, for confirmation.
+4. Before implementation, choose numerical recalibration settings, evidence/uncertainty rules, monitoring actions and acceptance versus identity. Then connect joint scenarios to risk checkpoints, scenario wealth, CVaR and feasible hedges.
 
 ## Blocked / owner decisions
 
-- The official Q2 primary comparator/publication change still needs a concrete owner decision (skeptic-review.md:36).
-- Close candidates are unsupported beside the static hedge/DTE stack. Prior hedge-overlay, stock funding, A0006, hedge-cost, parity-forward, hard-to-borrow, origin_two, E1b and config-manifest issues remain unresolved.
+- Strength candidates, actual warmup/tuning/evaluation dates, score weights, update policy and minimum-evidence/tolerance rules remain open. No empirical calibration or copula result exists from this session.
+- A0002/A0003/A0006/A0008/A0009/A0010 remain binding; no Path or run configuration changed. Used development years are not clean holdout evidence.
+- Cadence work holds positions to expiry; early-exit/hedge frequency and American assignment need their own treatment. Consult its latest receipts before resuming any run.
+- Main contains unrelated unpublished history. Publish only this session's bounded handoff; preserve other worktrees, environments and active jobs.
 
 ## Read first
 
-- [Final memo](../../../docs/memos/2026-11-19-mio-evaluation-final.md)
-- [Codex handoff](../../../docs/memos/2026-11-19-mio-claude-handoff.md)
-- [Takeover status log](/home/russell/data/index_options/runs/mio-combined-evaluation/v20261117/claude-takeover-status.md)
+- [Working draft](https://chatgpt.com/space/page_d967bc9d4dac81919850190243a4439d)
+- [Session checkpoint and earlier cadence handoff](memos/2026-11-24-mio-design-session.md)
 - [Locked Path](decisioning/path.csv)
+- `/home/russell/reports/MIO recalibration fitting methods.md`
+- `/home/russell/data/index_options/runs/cadence-study/v20261124-fill-v2/verification.json`
 
 ## Do not
 
-- Treat the owner-accepted hedge-noise states as strict replays, relabel the failed strict a1 Q2 capture, or present tiny fixtures as real results.
-- Use 2024+ data, unseal holdouts, edit locked Path or A0010, or claim profit from solver-speed states.
-- Run unguarded compute, add Windows and WSL RAM, or lower reserves.
+- Treat agreed definitions as fitted/validated results, recalibration as a copula, or marginal counts as sufficient joint data. Retain pending forecast/map identities and define joint retention separately.
+- Use 2024+ data, unseal holdouts, refit the frozen model, alter Path/A0010 or launch model/replay jobs through this documentation wrap.
+- Rerun the full suite, lower storage reserves, overwrite canonical evidence, repoint shared environments, interrupt jobs or purge another session's branches/worktrees.

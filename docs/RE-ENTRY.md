@@ -6,8 +6,8 @@ history questions, the memos and ADRs are reached from the lane note's links.
 
 | Lane | Note | State (one line, dated) |
 |---|---|---|
-| dskit core | "Core" below | 2026-11-17: current documentation reconciled with code; storage maintenance and legacy migration remain paused. |
-| index_options | children/index_options/docs/RE-ENTRY.md | 2026-11-19: MIO speed panel complete (8/8 states); relax faster 8/8, utility +9%, now default; warm dropped; Q1 risk/both accepted 11-18. |
+| dskit core | "Core" below | 2026-11-26: JuMP suite landed (ADR-0328 + amendment 1): Julia worker, live models, two reference programs; reviewed `42ddafca`; no real MIO model ported; C: at the 10 GiB reserve. |
+| index_options | children/index_options/docs/RE-ENTRY.md | 2026-11-25: MIO calibration definitions saved; fitting/validation pending; next align PITs across assets/expiry ranks, then define copula. |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-19: historical 600-entry audit complete; method24 two-cell Kalshi recommendation beat market scores in later W4/W5; retrospective; protected tests closed; two final reviews passed |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
 | statistical_arbitrage | `children/statistical_arbitrage/docs/RE-ENTRY.md` | 2026-10-21: prediction-only studies ADR-0272..0275: ATM-spread reversion; best now the pooled-scaled blend on the vol-scaled label (ATM 20d R²oos 0.25→0.27, the most robust pass); Theta Greeks/flow/market features add nothing; skew none; no edge claim |
@@ -19,44 +19,44 @@ history questions, the memos and ADRs are reached from the lane note's links.
 
 ## Core (dskit itself)
 
-**Now.** 2026-11-17: documentation audit corrected current guides against
-shipped code (candidate `62c2c67e`); see
-`docs/memos/2026-11-17-documentation-code-audit.md` for checks and scope.
-ADR-0296 device selection (`94e785ac`) and
-ADR-0317 saved-fit forecast faults (`c38e2b28`) remain reviewed and integrated,
-with two clean final lenses each. PR #19 is merged; explicit-device defaults
-and frozen study identities remain unchanged. Host maintenance recovered
-113.2 GiB on C: after WSL compaction; recorders and mounts were restored.
-Disk/RAM admission, a data catalog, shared agent guidance and a 15-minute
-storage monitor are installed locally; those workstation tools are outside
-this repository. The alert/hook follow-up passed 25 focused tests.
+**Now.** 2026-11-26: the JuMP suite landed (ADR-0328 and its amendment 1).
+`dskit/pipeline/libs/jump.py` is the Python doorway (`JumpSolve`, `JuliaWorker`,
+`LiveModel`, `DataContract`); `julia/DskitJuMP/` is the Julia package it drives
+through a long-lived subprocess speaking JSON lines (wire protocol v2, written
+out in the amendment). A model is built once and changed in place: open, update,
+fix, free, start, solve, search, close, a pooled model per shape, Arrow files
+for large arrays. Two reference programs ship, `budgeted_select` and
+`assignment`; no real MIO model is ported. Reviewed candidate `42ddafca`: two
+clean final skeptic lenses, zero Critical or Major. Julia tests 363 passed;
+`tests/pipeline_libs/test_jump.py` 449 passed, 7 skipped, with the cross-worker
+conformance and the pyomo parity test run against real Julia 1.13.4. Measured
+on the `assignment` program at 20,000 items: in-worker build 0.085 s against
+pyomo 1.04 s, an `open` seen from Python 0.31 to 0.37 s, an in-place update
+0.002 s, solves equal. The earlier storage and relocation state is unchanged
+and is in the archive.
 
-**Next.** Continue reusable candidates only through their existing review
-gates. Keep canonical data outside new worktrees and check the storage guard
-before bulk work. Classify legacy data before migration. The shared .venv
-still imports from the preserved `/home/russell/wt/claude-sonnet-5-5`
-checkout; verify imports before using new main code and never repoint an
-active environment. Existing worktree receipts retain unique work and pins.
+**Next.** Port the first real program (its own approval, a new formulation hash,
+never a replacement of a locked pyomo result). Run the 200,000-item size of
+`tools/jump/benchmark.py` once C: has headroom. Then the Minor backlog below.
 
-**Blocked / owner decisions.** Storage work is incomplete and paused at the
-owner's request. Retirement of the empty 384 GiB D: image and its six pending
-ADR-0313 jobs was approved, as was a WSL upgrade and isolated reclaim test;
-none was executed before the pause. Keep the current MIO batch running.
-WSL remains 2.7.10; automatic disk shrinking is not enabled, and a full distro
-backup was not made. Resume maintenance only when the owner resumes it.
-ADR-0284 still has four recorded Mac path-mapping Majors; this work did not
-clear them. Unreviewed experiments retain their design and study gates.
+**Blocked / owner decisions.** C: sits at the 10 GiB reserve; the staged
+`C:\Users\russe\compact-wsl.cmd` (untested, needs the admin prompt) would
+recover about 58 GiB. The WSL upgrade, sparse-reclaim pilot and full backup
+remain unperformed. Owner to confirm the choices the builders made where the
+amendment was silent (listed in its implementation notes): the `components`
+field, `shape_changed` refusing rather than rebuilding, labels counting as
+shape, the `internal` error kind, and the pool's byte cap reading Julia-side
+memory only. The disclosed Minor backlog (not fixed) closes the amendment.
 
-**Read first.** ADR-0296/0317 in `docs/architecture/decision-log.md`;
-`/home/russell/storage-investigation/2026-11-15/worktree-closeout/maintenance-summary.json`;
-`/home/russell/storage-investigation/storage-policy.json`;
-`/home/russell/storage-investigation/storage-migration-plan.json`;
-`/home/russell/storage-investigation/2026-11-15/followup/verification.json`.
+**Read first.** ADR-0328 and "ADR-0328 amendment 1" in
+`docs/architecture/decision-log.md`; `dskit/pipeline/README.md` "What ships";
+`tests/pipeline_libs/jump_fake_worker.py` (the executable protocol reference);
+`/home/russell/storage-investigation/storage-policy.json`.
 
-**Do not.** Count WSL free space as additional C: capacity, claim automatic
-reclaim is active, delete protected results or rewrite frozen source pins.
-Development review is not real-run or deployment approval. Earlier notes:
-`docs/archive/re-entry/dskit-core.md`.
+**Do not.** Run the Julia half of the suite without `~/.local/bin` on `PATH`
+and call the skips a pass. Treat the measured speedups as evidence beyond
+20,000 items, or as a solve speedup. Add WSL free space to C capacity, delete
+protected results, or treat development review as deployment approval.
 
 ## Protocol
 

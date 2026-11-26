@@ -273,3 +273,25 @@ def test_the_run_key_names_the_platform(tmp_path):
     import platform
     versions = runtime_versions("numpy")
     assert versions["machine"] == platform.machine() and versions["system"] == platform.system()
+
+
+def test_fill_life_cache_separates_flag_and_known_next_session(tmp_path):
+    from test_ledger_studies import _fill_life_fixture
+    day = "2019-01-18"
+    expiries = ["2019-01-22", "2019-01-23"]
+    params, inputs = _fill_life_fixture(day, expiries)
+    params["require_fill_before_expiry"] = False
+    legacy = WeeklyOptionPortfolioStudy(params, inputs, cache_root=tmp_path)
+    old = legacy._prepare(day)
+    params["require_fill_before_expiry"] = True
+    ordinary = WeeklyOptionPortfolioStudy(params, inputs, cache_root=tmp_path)
+    assert ordinary._prepared_key(day) != legacy._prepared_key(day)
+    assert ordinary._prepare(day) == old  # both expiries follow Monday in this synthetic calendar
+    holiday_params, holiday_inputs = _fill_life_fixture(day, expiries, omitted=["2019-01-21"])
+    holiday = WeeklyOptionPortfolioStudy(holiday_params, holiday_inputs, cache_root=tmp_path)
+    assert holiday._prepared_key(day) != ordinary._prepared_key(day)
+    assert [m["expiry"] for m in holiday._prepare(day)[1]] == ["2019-01-23"]
+    assert holiday.cache_counts()["mio-prepared-week"]["hit"] == 0
+    warm = WeeklyOptionPortfolioStudy(holiday_params, holiday_inputs, cache_root=tmp_path)
+    assert warm._prepare(day) == holiday._prepare(day)
+    assert warm.cache_counts()["mio-prepared-week"]["hit"] == 1

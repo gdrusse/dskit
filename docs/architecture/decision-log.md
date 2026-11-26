@@ -37612,6 +37612,60 @@ A0004 needs no note: its holdout rung is what decision 1 builds, inside A0003's 
 
 **Evidence (A0010 development evidence, under the design dir).** `measurements/concentration.json`, `universe.json`, `extra.json`, `gics_change_names.json`, `baseline_eval_r1pc10cf.json`, `baseline_eval_r1pc10_vs_r1pc10cf.json`, `negative_check_r1pc10cf_under_r1dv_caps.json` (r1pc10cf's recorded books against r1dv's caps: 1,889 check failures, so the checks catch what they test) and `r1dv_eval_before_any_result.json` (0 priced quarters; gate and entry PENDING). Tests: the ADR-0326 section of `children/index_options/tests/test_ledger_edge_weights.py`.
 
+
+
+## ADR-0311 Amendment — Explicit entry dates for the cadence experiment (2026-11-24)
+
+Owner request: “please run this test and make a recommendation, based empirically on how frequently we should trade.”
+This authorizes the named daily/weekly entry experiment and its minimal scheduling support; no live trading,
+holdout opening, change to Path or frozen A0010 results. Source base: 696931b0.
+Protocol: /home/russell/data/index_options/runs/cadence-study/v20261124/protocol.json.
+
+The weekly study already fills and marks daily, but hardcodes one decision per ISO week. Add optional
+decision_dates: a nonempty sorted unique list of canonical dates, each an actual entry session.
+Absence preserves the historical schedule and outputs. Refuse coexistence with timing-only decision_weeks.
+The packet facade must validate the same shape; construction verifies session membership. Recorded actions
+already bind to self.weeks; a different schedule refuses replay. The new field stays in parameter identity.
+No new accounting, optimizer, pricing or risk mechanism is introduced.
+
+The new research policy uses saved A0008 forecasts, A0009 names and 1–60 DTE; $10,000 initial, no deposits,
+25% outstanding reserve cap, 10% per-name reserve cap, a 10% filled-account shock cap and rho=.1.
+weekly_fraction=1 prevents a fresh weekly budget being multiplied by more decisions.
+Next-session bid/ask fills and $0.65 per contract are shared. Decisions are entry-only, positions held to expiry.
+Three episode starts: 2020Q1, 2021Q1, 2021Q2; Q2 entries end April30 to leave a full60day tail before July1.
+No2024+ data. Independent Phase0 reviewer /root/cadence_design_review identified and resolved the resetting
+capital/shock-budget confounds; reporting must preserve entry-only scope and overlapping/short-window uncertainty.
+
+Acceptance: default weekly identity; explicit daily sessions trade only on those sessions with next-session fills;
+invalid/duplicate/unsorted/non-session/tail dates and mixed timing declaration refuse; action replay cannot change
+the schedule. Focused tests and two independent candidate reviews before the real run.
+Benchmark one full166-name decision before dispatch; storage/RAM admission governs all writers.
+
+
+### ADR-0311 Amendment — Fill-eligible cadence comparison (2026-11-24)
+
+The authorized daily/weekly experiment exposed a pre-existing timing defect: a
+contract can enter the optimizer although its expiry is on the next fill session.
+This can displace executable choices. The original run is diagnostic only;
+remaining old arms are cancelled. No economic outcome informed this correction.
+
+Add optional `require_fill_before_expiry` (strict bool, default absent/false).
+When true, construction requires explicit clocks. Before quote preparation and
+optimization, retain only contracts whose expiry is strictly after the next
+actual session; record temporal refusals. Keep the entry-window fill guard.
+Prepared-cache identity already includes the flag and full clocks.
+
+Both cadences rerun in `v20261124-fill-v2`, reusing immutable old intake blobs
+and quote indexes. Reuse must bind the old config/receipt hashes and prove equal
+source, episode bounds, seal and policy; only the named eligibility flag and
+entry schedule may alter prepared parameters. Record old producer and new solver
+identities. A0008/A0009/A0010, model, risk limits, costs and sealed data stay fixed.
+
+Acceptance: equality/before/after next fill, holidays/weekends, no next session,
+legacy compatibility, strict validation, facade acceptance, cache separation,
+and reuse cross-episode refusal. Phase-0 reviewer: cadence_design_review. User
+authority: run the empirical test; this correction is necessary for its validity.
+
 ## ADR-0328 — JuMP doorway: a Julia subprocess worker behind a tier-2 pack (ACCEPTED 2026-11-24; phase 1 Python half built, Julia half not yet)
 
 **Status.** Accepted. The owner chose two points on 2026-11-24 in conversation: a subprocess worker as the bridge (over in-process juliacall) and a tier-2 pack plus one Julia package directory as the placement (over a new top-level package). The owner then authorized building on 2026-11-24 in conversation ("I give you permission to download/build anything"), which the agent took as approval of the entry as written, file list included; the owner may correct this. The Python half is built; no Julia install and no Julia code exists yet.
@@ -37833,3 +37887,5 @@ Peak RSS: Julia worker about 0.5 GiB, Python 164 MiB. On in-worker clocks JuMP b
 Peak RSS: Julia worker 0.60 GiB (JSON) and 0.54 GiB (Arrow), Python 231 MiB. On in-worker clocks JuMP builds about 12x faster; seen from Python an `open` is about 2.8x to 3.3x faster than the pyomo build and an update about 16x faster than a pyomo re-build. The solves are equal within noise at this size and reach the same optimum. The update row still compares against a pyomo full re-build, not pyomo's own in-place path. Most of an `open` seen from Python is neither build nor transfer: reading the request line and the pool's memory estimate, as the first review noted.
 
 *200,000 items: not measured.* One attempt on 2026-11-26 was admitted and ran, and the script crashed formatting the pyomo result: pyomo reached the 60 s limit with no feasible point, so its objective was `None`. The script now prints `no point` for such a solve. A second attempt was refused by the storage guard (C: 9.7 GiB free against the 10 GiB reserve). So the construction-speed claim is evidenced at 2,000 and 20,000 items only.
+
+**Disclosed Minor backlog at the wrap (2026-11-26, candidate `42ddafca`, not fixed).** Pool recency and the byte cap are not pinned by a test on the real worker. `Base.summarysize` (the pool's memory estimate) costs about as much as a build, sits outside `build_seconds`, and under-reads real memory because it sees the Julia side only. A refused update that dropped the last solution would not be caught by a test. Bound restoration on `free` after a rebuild is unreachable with the two reference programs (both are all-binary). The environment guard checks that a Manifest exists and names the running Julia, not that it is resolved for `Project.toml`. `start_accepted` is always null: HiGHS does not report whether a start was used. The worker creates the assignment variables bin-major and the pyomo twin item-major, which made the worker's solve slower at 2,000 items (0.72 s against 0.40 s) and equal at 20,000. The "same handle" clause of the search incumbent rule is shadowed by the pool-hit version bump, so neither guard is pinned alone. An integer beyond float64 range inside a float64 array is `bad_data` on the fake and `bad_request` on the Julia worker.
