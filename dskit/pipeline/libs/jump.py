@@ -959,6 +959,9 @@ def _flatten(value, ndim):
 
     An empty list at one level gives length 0 to every deeper dimension.
     """
+    if ndim == 1 and (type(value) is list or type(value) is tuple):
+        flat = tuple(value)
+        return (len(flat),), flat
     level, shape = [value], []
     for depth in range(ndim):
         if not all(isinstance(item, (list, tuple)) for item in level):

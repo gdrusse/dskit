@@ -1723,6 +1723,64 @@ class TestDataContract:
         same = {**WIDE, "grid": [[1, 0.0, 2.0], [3.5, 4, 5]], "scale": 2.0}
         assert contract.digest(contract.check(same)) == contract.digest(contract.check(WIDE))
 
+    @pytest.mark.parametrize("vector", [list, tuple])
+    def test_rank_one_vectors_preserve_values_shapes_and_wire_bytes(self, vector):
+        contract = jump.DataContract("p", WIDE_SCHEMA)
+        data = {**WIDE, "name": vector(WIDE["name"]), "flag": vector(WIDE["flag"]),
+                "code": vector([-(1 << 63), (1 << 63) - 1, 0])}
+        full = contract.check(data)
+        assert full["name"] == ((2,), ("r1", "r2"))
+        assert full["flag"] == ((2,), (True, False))
+        assert full["code"] == ((3,), (-(1 << 63), (1 << 63) - 1, 0))
+        assert full["grid"] == ((2, 3), (1.0, -0.0, 2, 3.5, 4.0, 5.0))
+        assert contract.digest(full) == _canon(WIDE_SCHEMA, data)
+
+        schema = {"fields": {"value": {"type": "float64", "dims": ["item"]}},
+                  "dims": {"item": None}}
+        numeric = jump.DataContract("p", schema)
+        for values in (vector(), vector([-0.0, 1 << 53])):
+            payload = {"value": values}
+            checked = numeric.check(payload)
+            assert checked["value"] == ((len(values),), tuple(values))
+            assert type(checked["value"][1]) is tuple
+            assert numeric.digest(checked) == _canon(schema, payload)
+        for bad in (vector([[1.0]]), vector([True]), vector([float("inf")]),
+                    vector([(1 << 53) + 1])):
+            with pytest.raises(WorkerRefusal, match=r"\(bad_data\).*'value'.*float64"):
+                numeric.check({"value": bad})
+
+    def test_vector_update_snapshots_a_resized_input_list(self):
+        contract = jump.DataContract("p", WIDE_SCHEMA)
+        original = contract.check(WIDE)
+        updated = [3, 2, 1]
+        full = contract.check({"code": updated}, original)
+        expected_digest = _canon(WIDE_SCHEMA, {**WIDE, "code": [3, 2, 1]})
+        updated[:] = [99]
+        assert full["code"] == ((3,), (3, 2, 1))
+        assert isinstance(full["code"][1], tuple)
+        assert original["code"] == ((3,), (7, -1, 0))
+        assert contract.digest(full) == expected_digest
+
+    @pytest.mark.parametrize("base", [list, tuple])
+    def test_rank_one_subclasses_keep_the_existing_length_and_iteration_callbacks(self, base):
+        calls = []
+
+        class Sequence(base):
+            def __len__(self):
+                calls.append("length")
+                return 3
+
+            def __iter__(self):
+                calls.append("iterate")
+                return iter((7, -1, 0))
+
+        contract = jump.DataContract("p", WIDE_SCHEMA)
+        data = {**WIDE, "code": Sequence((99,))}
+        full = contract.check(data)
+        assert calls == ["length", "iterate"]
+        assert full["code"] == ((3,), (7, -1, 0))
+        assert contract.digest(full) == _canon(WIDE_SCHEMA, WIDE)
+
     def test_the_contract_keeps_the_workers_schema_not_a_copy(self):
         assert jump.DataContract("p", WIDE_SCHEMA).schema is WIDE_SCHEMA
 
