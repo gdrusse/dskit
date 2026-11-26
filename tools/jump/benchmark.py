@@ -81,6 +81,9 @@ START_TIMEOUT = 900.0
 JSON_ONLY = 1 << 62
 ARROW_ALL = 0
 
+#: What the termination row shows when a solve ended with no feasible point.
+NO_POINT = "no point"
+
 
 def make_data(items, bins, rng):
     """Return one instance of the ``assignment`` schema (row-major lists).
@@ -201,6 +204,15 @@ class PyomoSide:
                 results.best_feasible_objective)
 
 
+def outcome(termination, objective):
+    """One cell for a solve's end: the termination and its objective, or ``no point``.
+
+    A solve that stops at its time limit before any feasible point has no
+    objective; the table still needs a row for it.
+    """
+    return f"{termination}:{NO_POINT}" if objective is None else f"{termination}:{objective:.6g}"
+
+
 def median_first(values):
     """Return ``(median of the repeats, the first call)`` of a measure's runs."""
     return statistics.median(values[1:]), values[0]
@@ -214,7 +226,7 @@ def run_pyomo(data, update, repeats, time_limit, gap):
         out.setdefault("pyomo cold build", []).append(seconds)
         solve_seconds, termination, objective = side.solve(solver)
         out.setdefault("pyomo solve", []).append(solve_seconds)
-        out.setdefault("pyomo termination", []).append(f"{termination}:{objective:.6g}")
+        out.setdefault("pyomo termination", []).append(outcome(termination, objective))
         del solver
         gc.collect()
         seconds, solver = side.build({**data, **update}, seed=r)
@@ -267,7 +279,7 @@ def run_jump(data, update, repeats, time_limit, gap, scratch, arrow):
             _, record = model.solve({"time_limit": time_limit})
             out.setdefault("JuMP solve", []).append(model.timings.solve_seconds)
             out.setdefault("JuMP termination", []).append(
-                f"{record.termination}:{record.objective:.6g}")
+                outcome(record.termination, record.objective))
             started = time.perf_counter()
             model.update(data=update)
             wall = time.perf_counter() - started

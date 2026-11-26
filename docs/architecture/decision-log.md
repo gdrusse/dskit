@@ -37820,3 +37820,16 @@ A request is a handle `solve` exactly when it carries `handle`. The one-shot `so
 | solve | 0.399 [0.432] | 0.722 [0.766] (slower: JuMP is not faster here) |
 | start-up, once per run | - | 1.1 s (start, hello, describe) |
 Peak RSS: Julia worker about 0.5 GiB, Python 164 MiB. On in-worker clocks JuMP builds about 11x faster and updates in place more than 80x faster than pyomo rebuilds at this size. Seen from Python the margins are smaller: an `open` (0.041 to 0.053) is about 1.7x to 2.2x faster than the pyomo build, an update (0.008) about 11x, and open plus solve is slower end to end (about 0.77 s against 0.49 s). The solve is slower through the worker, and the HiGHS build difference is not the cause (corrected after the candidate-785e8a0a review, which wrote both models to MPS and solved each with one highspy): the two are the same program, but the worker creates the assignment variables bin-major and the pyomo twin item-major, and that column order alone reproduced the slower solve. `build_seconds` also leaves out the pool's byte estimate (`Base.summarysize`), which the open seen from Python includes; a cheaper estimate is deferred. Only the 2,000-item size is evidenced.
+
+*Acceptance benchmark, 20,000 items (2026-11-26, orchestrating agent).* Same host, versions, program and options; run under the compute planner and the storage guard (2 GiB declared) after the Linux file cache was dropped to return RAM to Windows: `tools/jump/benchmark.py --sizes 20000 --repeats 3 --time-limit 60`. Seconds, median of 3 [first call].
+| 20,000 items x 2 bins (20,002 rows, 40,000 binaries) | pyomo | JuMP worker |
+|---|---|---|
+| cold build | 1.041 [1.196] | 0.085 [0.154] |
+| open seen from Python, JSON / Arrow | - | 0.368 [0.509] / 0.312 [1.035] |
+| transfer, JSON / Arrow | - | 0.032 [0.059] / 0.012 [0.243] |
+| update (pyomo: re-build) | 1.040 [1.030] | 0.002 [0.002] in place; 0.066 [0.121] seen from Python |
+| solve | 7.079 [7.079] | 6.710 [6.686] |
+| termination, objective | optimal, 116617 | OPTIMAL, 116617 |
+Peak RSS: Julia worker 0.60 GiB (JSON) and 0.54 GiB (Arrow), Python 231 MiB. On in-worker clocks JuMP builds about 12x faster; seen from Python an `open` is about 2.8x to 3.3x faster than the pyomo build and an update about 16x faster than a pyomo re-build. The solves are equal within noise at this size and reach the same optimum. The update row still compares against a pyomo full re-build, not pyomo's own in-place path. Most of an `open` seen from Python is neither build nor transfer: reading the request line and the pool's memory estimate, as the first review noted.
+
+*200,000 items: not measured.* One attempt on 2026-11-26 was admitted and ran, and the script crashed formatting the pyomo result: pyomo reached the 60 s limit with no feasible point, so its objective was `None`. The script now prints `no point` for such a solve. A second attempt was refused by the storage guard (C: 9.7 GiB free against the 10 GiB reserve). So the construction-speed claim is evidenced at 2,000 and 20,000 items only.
