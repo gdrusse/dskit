@@ -22,11 +22,14 @@ The Page could not be opened from this session (it needs the owner's sign-in).
 The six symbols marked "new" are therefore unchecked against it.
 
 Reused unchanged: cutoff session $d$, historical origin $a$ before $d$ on the
-same session clock, stock $n$ in $N$, calendar DTE $t$, session count $\eta$,
-original expiry rank $\rho$, raw PIT $`u_{nt\mid a}`$, and the recalibration map
-$`\widehat\Gamma_{n,\rho,d}`$ as written in the fitting-methods report.
+same session clock, stock $n$ in $N$, calendar DTE $t$, session count $\eta$ and
+original expiry rank $\rho$. The agreed CDF, raw PIT, counters and correction
+map are restated below for one cell.
 
 **Cells and targets.** A cell is a stock and an original expiry rank (A0006).
+The rank is the expiry's place in line on the day the forecast is made: rank 1
+is the stock's nearest listed Friday expiry, rank 2 is the one after it. A cell
+is the group whose PITs are counted and calibrated together.
 
 ```math
 n\in N,\qquad \rho\in\mathcal R_n,\qquad
@@ -44,13 +47,15 @@ At origin $a$:
 \begin{aligned}
 E_{n\rho\mid a} &:= \text{the expiry that A0006 ranks }\rho\text{ for stock }n\text{ at origin }a, \qquad\text{(new)}\\
 t_{n\rho\mid a} &:= \text{calendar days from }a\text{ to }E_{n\rho\mid a},\\
-\eta_{n\rho\mid a} &:= \text{trading sessions from }a\text{ to that expiry-price observation},\\
-u_{n\rho\mid a} &\equiv u_{nt\mid a}\quad\text{with }t=t_{n\rho\mid a}.
+\eta_{n\rho\mid a} &:= \text{trading sessions from }a\text{ to that expiry-price observation}.
 \end{aligned}
 ```
 
 The rank is fixed when the forecast is issued. It is an identity label and is
-never re-ranked as the contract approaches expiry.
+never re-ranked as the contract approaches expiry. For example, a forecast made
+on Monday 6 March 2023 with rank 2 targets Friday 17 March, 11 calendar days and
+9 trading sessions ahead. A week later that date is the nearest Friday, but the
+forecast keeps rank 2.
 
 **Earliest usable cutoff.** The first cutoff at which the PIT may be used:
 
@@ -58,15 +63,57 @@ never re-ranked as the contract approaches expiry.
 d^{\star}_{n\rho\mid a} := \min\lbrace\, d\ge a+\eta_{n\rho\mid a} :\ \text{the expiry-price record is available by cutoff }d \,\rbrace \qquad\text{(new)}
 ```
 
-**Copula input.** The corrected PIT, using the map issued with the forecast at
+**CDF, raw PIT and correction for one cell.** These were agreed on 25 November.
+They are restated here with the cell index and the earliest usable cutoff; the
+counter and map symbols follow the fitting-methods report.
+
+The forecast issued at origin $a$ for stock $n$ and the expiry at calendar DTE
+$`t=t_{n\rho\mid a}`$ has the CDF below: the forecast probability that the
+expiry price is at or below $p$.
+
+```math
+\widehat\Psi_{nt}(p\mid\mathcal F_a):=\widehat{\Pr}(p_{nt}\le p\mid\mathcal F_a)
+```
+
+The raw PIT reads that CDF at the price that actually occurred. It is the agreed
+$`u_{nt\mid a}`$, filed under its cell.
+
+```math
+u_{n\rho\mid a}:=\widehat\Psi_{nt}\left(S_{n,\,a+\eta_{n\rho\mid a}}\mid\mathcal F_a\right)\in[0,1]
+```
+
+At cutoff $d$ the cell's counters, over the configured thresholds
+$`\beta\in\mathcal Q`$, are:
+
+```math
+\begin{aligned}
+M_{n,\rho,d} &:= \#\lbrace a<d :\ d^{\star}_{n\rho\mid a}\le d \rbrace,\\
+A_{n,\rho,d}(\beta) &:= \#\lbrace a<d :\ d^{\star}_{n\rho\mid a}\le d,\ u_{n\rho\mid a}\le\beta \rbrace.
+\end{aligned}
+```
+
+The correction map is set at each threshold, anchored at both ends and linear in
+between. The one shared strength $\zeta$ is positive; a larger value pulls the
+map toward no correction.
+
+```math
+\widehat\Gamma_{n,\rho,d}(\beta):=\frac{A_{n,\rho,d}(\beta)+\zeta\beta}{M_{n,\rho,d}+\zeta},
+\qquad \widehat\Gamma_{n,\rho,d}(0):=0,\qquad \widehat\Gamma_{n,\rho,d}(1):=1
+```
+
+The corrected CDF and the corrected PIT use the map issued with the forecast at
 $a$, never today's map:
 
 ```math
-w_{n\rho\mid a} := \widehat\Gamma_{n,\rho,a}\left(u_{n\rho\mid a}\right)\in[0,1] \qquad\text{(new)}
+\begin{aligned}
+p &\mapsto \widehat\Gamma_{n,\rho,a}\left(\widehat\Psi_{nt}(p\mid\mathcal F_a)\right),\\
+w_{n\rho\mid a} &:= \widehat\Gamma_{n,\rho,a}\left(u_{n\rho\mid a}\right)\in[0,1]. \qquad\text{(new)}
+\end{aligned}
 ```
 
-Raw $u$ and corrected $w$ are both kept. Where no map was issued at $a$, for
-example during warmup, $w$ is not defined here; that fallback stays open.
+The corrected PIT $w$ is the copula input. Raw $u$ and corrected $w$ are both
+kept. Where no map was issued at $a$, for example during warmup, $w$ is not
+defined here; that fallback stays open.
 
 **Joint observation.** All forecasts issued at one origin form one joint
 observation. Its coordinates are cells, not calendar dates. This mirrors the
