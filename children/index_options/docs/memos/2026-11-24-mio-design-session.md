@@ -7,6 +7,143 @@ chronological selection procedure. Resume with PIT alignment across assets and
 expiry ranks, then define the copula. No calibration fitting, validation or joint
 scenario experiment was run in this session.
 
+26 November: step 1 (PIT alignment) is proposed in the next section and awaits
+owner confirmation. It is on the session branch only; nothing was fitted or run.
+
+## 26 November proposal: step 1, PIT alignment (awaiting confirmation)
+
+Owner: Russell; author: Claude Fable 5.2, from a draft by Claude Opus 5.5 in the
+same session. This is a proposal: not an agreed definition, not a result, and
+not yet in the Working Draft. It sits on the session branch so the math renders
+on GitHub. Nothing was fitted, replayed or read from protected data; no code,
+config, ledger or Path row changed.
+
+The Page could not be opened from this session (it needs the owner's sign-in).
+The six symbols marked "new" are therefore unchecked against it.
+
+Reused unchanged: cutoff session $d$, historical origin $a$ before $d$ on the
+same session clock, stock $n$ in $N$, calendar DTE $t$, session count $\eta$,
+original expiry rank $\rho$, raw PIT $`u_{nt\mid a}`$, and the recalibration map
+$`\widehat\Gamma_{n,\rho,d}`$ as written in the fitting-methods report.
+
+**Cells and targets.** A cell is a stock and an original expiry rank (A0006).
+
+```math
+n\in N,\qquad \rho\in\mathcal R_n,\qquad
+\mathcal R_n:=
+\begin{cases}
+\lbrace 1,\dots,8\rbrace, & n\text{ a weekly name},\\
+\lbrace 1,2,3\rbrace, & n\text{ a monthly-only name}.
+\end{cases}
+\qquad\text{(new)}
+```
+
+At origin $a$:
+
+```math
+\begin{aligned}
+E_{n\rho\mid a} &:= \text{the expiry that A0006 ranks }\rho\text{ for stock }n\text{ at origin }a, \qquad\text{(new)}\\
+t_{n\rho\mid a} &:= \text{calendar days from }a\text{ to }E_{n\rho\mid a},\\
+\eta_{n\rho\mid a} &:= \text{trading sessions from }a\text{ to that expiry-price observation},\\
+u_{n\rho\mid a} &\equiv u_{nt\mid a}\quad\text{with }t=t_{n\rho\mid a}.
+\end{aligned}
+```
+
+The rank is fixed when the forecast is issued. It is an identity label and is
+never re-ranked as the contract approaches expiry.
+
+**Earliest usable cutoff.** The first cutoff at which the PIT may be used:
+
+```math
+d^{\star}_{n\rho\mid a} := \min\lbrace\, d\ge a+\eta_{n\rho\mid a} :\ \text{the expiry-price record is available by cutoff }d \,\rbrace \qquad\text{(new)}
+```
+
+**Copula input.** The corrected PIT, using the map issued with the forecast at
+$a$, never today's map:
+
+```math
+w_{n\rho\mid a} := \widehat\Gamma_{n,\rho,a}\left(u_{n\rho\mid a}\right)\in[0,1] \qquad\text{(new)}
+```
+
+Raw $u$ and corrected $w$ are both kept. Where no map was issued at $a$, for
+example during warmup, $w$ is not defined here; that fallback stays open.
+
+**Joint observation.** All forecasts issued at one origin form one joint
+observation. Its coordinates are cells, not calendar dates. This mirrors the
+solve, where every forecast in the book shares one origin.
+
+```math
+\begin{aligned}
+\mathcal C_a &:= \lbrace (n,\rho) :\ n\in N,\ \rho\in\mathcal R_n,\ \text{a valid forecast was issued at }a \rbrace, \qquad\text{(new)}\\
+\mathcal O_{a,d} &:= \lbrace (n,\rho)\in\mathcal C_a :\ d^{\star}_{n\rho\mid a}\le d \rbrace. \qquad\text{(new)}
+\end{aligned}
+```
+
+Two cells of one origin are admissible as a pair at cutoff $d$ once both have
+settled:
+
+```math
+(n,\rho),\,(n',\rho')\in\mathcal O_{a,d}
+\iff
+d\ge\max\left(d^{\star}_{n\rho\mid a},\ d^{\star}_{n'\rho'\mid a}\right).
+```
+
+A cell is **pending** while it is in $`\mathcal C_a`$ but not yet in
+$`\mathcal O_{a,d}`$, and **absent** when it is not in $`\mathcal C_a`$ or is
+marked `NEEDS_REPAIR`. Neither is ever imputed. While 2024 onward stays sealed
+(A0003, A0010) the cutoff never passes the end of 2023, so a cell expiring later
+stays pending. Consecutive origins cover largely the same returns; that lowers
+the independent information and is left to the later uncertainty rules.
+
+```text
+INPUT cutoff d; Appendix C output (u records, PENDING, NEEDS_REPAIR); issued maps
+
+FOR each u record (a, n, t) from Appendix C:
+    rho    <- original expiry rank of that forecast (A0006)
+    d_star <- first cutoff at which its expiry price was available
+
+    IF the map issued at a cannot be verified:
+        Mark NEEDS_REPAIR; record the reason; CONTINUE.
+
+    w <- Gamma_hat[n,rho,a](u)
+
+    APPEND row (a, n, rho, E, t, eta, d_star, u, w,
+                forecast, map and outcome versions).
+
+Settled[a,d] <- appended rows of origin a        (every such row has d_star <= d)
+A pair of rows of origin a is usable once d >= the larger of their two d_star.
+
+OUTPUT appended rows. PENDING and NEEDS_REPAIR records stay separate.
+       Nothing is imputed.
+```
+
+Storage plan: one append-only row per $(a,n,\rho)$, partitioned by the earliest
+usable cutoff. The open forecasts cover 2019Q4 to 2023Q4, about 1,070 sessions;
+with at most 166 x 8 = 1,328 cells per origin that is at most about 1.4 million
+rows, an estimated tens of megabytes, assuming one origin per session (not
+verified). Marginal counters cannot recover this joint record. Nothing has been
+written.
+
+Existing dependence code, not yet reconciled with this step:
+`index_options/kelly_sizer.py` (`joint_atoms`, a one-factor Student t copula,
+ADR-0300) and `index_options/joint_scenarios.py` (`EmpiricalCopula`, which
+block-bootstraps whole days of the pinned `copula_bars` closes, sums each name's
+returns to its horizon and ranks the draws). Both take dependence from daily
+returns aligned on calendar days and need no PIT history. Whether step 2 extends
+`JointScenarioGenerator` or estimates a copula from the PIT rows above is an
+owner choice; in the first case these rows serve validation only.
+
+To confirm, with (a) recommended in each:
+
+1. Cell identity: (a) $(n,\rho)$ with $E$ recorded, following A0006; (b) align
+   on a shared expiry date.
+2. Copula input: (a) corrected $w$, because scenarios use the corrected
+   marginals; (b) raw $u$.
+3. Admission: (a) pairwise, as defined above; (b) whole origin only, which waits
+   about eight weeks and drops any origin with an absent cell.
+4. Origins: (a) every origin, with overlap treated later; (b) a non-overlapping
+   subsample.
+
 ## 25 November formulation checkpoint
 
 Owner: Russell; author: GPT-6. The owner requested “wrap, merge, and purge”.
