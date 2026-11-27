@@ -420,6 +420,8 @@ def test_exact_manifest_and_agent_parity(child_root):
         # ADR-0270: the panel-source document (the arms study repurposed to materialize the panel), its fold table and test.
         "configs/strike-screen-panel-source.json", "configs/strike-screen-folds-screen.jsonl",
         "tests/test_strike_screen_panel_source.py",
+        # ADR-0330: the panel-source document with the two proxy options, and its test.
+        "configs/panel-source-rule-fixes.json", "tests/test_panel_source_rule_fixes.py",
         # ADR-0270: the strike-level assessment node over saved CDFExperiment fits, its document and test.
         "configs/run-strike-region-scores.json", "index_options/strike_region_scores.py",
         "tests/test_strike_region_scores.py",

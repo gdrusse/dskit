@@ -206,7 +206,7 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # run-theta-exact-expiry-tables.json (ADR-0276: frozen Theta export through
                            # ThetaExactExpiryTables; a new output_root per run)
                            # strike-screen-panel-source.json + strike-screen-folds-screen.jsonl (ADR-0276: the arms study repurposed; ONLY materializes the
-                           # exact-expiry panel through cdf_study --stage panel; pinned to strike-screen-protocol.json by tests/test_strike_screen_panel_source.py)
+                           # exact-expiry panel through cdf_study --stage panel; pinned to strike-screen-protocol.json by tests/test_strike_screen_panel_source.py); panel-source-rule-fixes.json (ADR-0330: strike-screen-panel-source.json with the curve's quote mask without open interest and the inner-block estimator; pinned to it by tests/test_panel_source_rule_fixes.py)
                            # run-strike-screen-fits-{L1,L3,timing,control}.json (ADR-0276: the CDFExperiment fit documents, L1 and L3 losses,
                            # the L1 timing pilot and the block-shift label control; placeholder pins; tests/test_strike_screen_fits.py; no fit until registered)
                            # run-strike-region-scores.json + run-strike-region-scores-L3.json (ADR-0276: StrikeRegionScores over one CDFExperiment output each;
@@ -246,7 +246,7 @@ tests/                     # conftest.py; test_contracts, observations, nodes,
                            # configs, integration, distribution, rl_env,
                            # synthetic_distribution_run, distribution_zoo, real_data,
                            # quote_backtest, debit_backtest, ledger_studies, theta_hypotheses (+ theta_synthetic.py, its
-                           # synthetic world), theta_exact_expiry, strike_screen_panel_source, strike_screen_fits, strike_region_scores,
+                           # synthetic world), theta_exact_expiry, strike_screen_panel_source, panel_source_rule_fixes, strike_screen_fits, strike_region_scores,
                            # mio_run_report, mio_run_report_contract (ADR-0283), mio_book_outcomes (ADR-0285), mio_worker, mio_parallel_queue (ADR-0297; imports tools/) (.py)
 ```
 
