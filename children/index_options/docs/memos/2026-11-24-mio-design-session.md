@@ -550,6 +550,16 @@ only a put needs converting into a call price. In the worked example the gap at
 strike 145 is 1.05 for the call and 0.01 for the put; at strike 160 it is 0.01
 for the call and 0.55 for the put.
 
+**Where the forward's value matters.** The forward does two jobs: it decides
+where the step switches from puts to calls, and it joins the two halves. Between
+two strikes that both use puts it cancels out of the slope of definition 5, and
+between two that both use calls it never appears. It enters only the one slope
+that spans the switch, and that slope sits in the middle of the distribution. In
+the worked example that pair is 152.5 and 155: with the forward of 154.11 the
+curve reads 0.446 at 153.75, and with the close of 153.83 in its place it would
+read 0.558. That is why the forward is taken from the option quotes themselves
+and not from the stock's close.
+
 **5. Slopes between neighbouring strikes.** For two neighbouring strikes
 $`s_{-}<s_{+}`$ in $`U_{nt}`$, with no kept strike between them:
 
