@@ -521,7 +521,10 @@ q_{nt}(\beta)&:=\frac{1}{\kappa_{nt}}\ \ln\left(\frac{\widehat G_{nt}^{-1}(\beta
 both sides, too few strikes on either side of the forward, or gaps that are too
 wide), no quantiles are produced for that forecast. The fit code then replaces
 each missing input with its median over the training rows, and the network is
-not told that it was filled. How often this happens was not measured here.
+not told that it was filled. How often this happens on the locked stock list
+was not measured here. An earlier audit of the previous recipe, on a different
+stock list, recorded market inputs filled on 42 to 50 percent of fit rows
+(research note of 5 November, "Deferred input fixes").
 
 **Indices and dimension.** One input list for every stock $`n\in N`$ and every
 expiry $`t\in T`$ forecast at $d$. It has
@@ -535,6 +538,18 @@ and open interest. The locked recipe reads none of those: its inputs are these
 21 numbers only, as the planned 2020Q1 fit document confirms. The stock's own
 price history enters in one place, the scale $`\kappa_{nt}`$ of stage 1, which
 divides both the quantiles and the return being forecast.
+
+**Why no other inputs.** Candidates with many more inputs were tried and scored
+slightly worse. The zoo selection file that A0008 cites scored 11 eligible
+candidates on 2020 to 2023 for the 166 names (761,825 rows) by
+threshold-weighted CRPS, where lower is better. This recipe was lowest at
+0.5219. The
+next best was 0.5230, the previous recipe (a blend that includes a 90-input
+network) 0.5232, the recalibrated market 0.5263 and the raw market 0.5272. The
+research note of 5 November also found that most of the 90-input network's
+gain came from its market inputs. Two cautions: the margin over the runners-up
+is about 0.2 percent, and those years had already been used for selection, so
+this is not clean evidence.
 
 **Why.**
 
