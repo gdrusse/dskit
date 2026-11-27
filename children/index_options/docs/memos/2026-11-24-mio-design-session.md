@@ -211,9 +211,11 @@ Sources. Stages 1 and 4 to 7 restate definitions agreed on 25 November. The
 update lines of stages 6 and 7 are written out here for the first time, and
 their eligibility test uses the earliest usable cutoff proposed in step 1.
 Stages 2 and 3 describe the locked forecast recipe. Their sizes were read from
-the recipe file, its fit template and the fit code; the functions that set them
+the recipe file, its fit template, the planned 2020Q1 fit document and the fit
+code; the functions that set them, and the estimator of the market quantiles,
 are identical in this branch and at the commit recorded in the 2020Q1 forecast
-receipt. No saved fit was opened and no code was run. Stages 8 to 11 rest on
+receipt. The panel that holds the quantiles was built before that run, and its
+own commit was not traced. No saved fit was opened and no code was run. Stages 8 to 11 rest on
 step 1 above and on step 2, which is not yet proposed. The Page could not be
 opened, so every symbol marked "new" is unchecked against it. A0002, A0006,
 A0008 and A0009 are locked rows of the Path, the owner's decision ledger:
@@ -268,8 +270,8 @@ Three rules govern superscripts and subscripts.
   are not indices and are defined where they appear: the hat, prime, tilde and
   bold above; the star in $`d^{\star}`$; the superscript $-1$ of an inverse; the
   superscript $Z$ of the forecast CDF; the word market on the set
-  $`\mathcal Q^{\text{market}}`$; and the signs on $`\beta_{-}`$ and
-  $`\beta_{+}`$. Anything else is written out in words.
+  $`\mathcal Q^{\text{market}}`$; and the signs on $`\beta_{-}`$, $`\beta_{+}`$,
+  $`s_{-}`$ and $`s_{+}`$. Anything else is written out in words.
 
 ### Existing sets and clocks
 
@@ -449,12 +451,90 @@ q_{nt}(\beta)\in\mathbb R\quad\text{for }\beta\in\mathcal Q^{\text{market}},\qqu
 - $`t/\eta_{nt}`$: calendar days per trading session over the forecast's life.
   For one full week it is 7/5 = 1.4. Code field `calendar_days_per_session`.
 
+**Where the quantiles come from.** They are built from the end-of-day option
+quotes of stock $n$ for the expiry $t$ calendar days after $d$, in five steps:
+
+```math
+\begin{aligned}
+\text{mid}_{nt}^{j}(s)&:=\tfrac12\left(\text{bid}_{nt}^{j}(s)+\text{ask}_{nt}^{j}(s)\right),\\
+\text{fwd}_{nt}&:=\operatorname{median}\lbrace\, s+\text{mid}_{nt}^{c}(s)-\text{mid}_{nt}^{p}(s) :\ s\text{ quoted for both a call and a put}\,\rbrace,\\
+\text{cq}_{nt}(s)&:=\begin{cases}\text{mid}_{nt}^{c}(s), & s\ge\text{fwd}_{nt},\\ \text{mid}_{nt}^{p}(s)+\text{fwd}_{nt}-s, & s\le\text{fwd}_{nt},\end{cases}\\
+\widehat G_{nt}\left(\tfrac12(s_{-}+s_{+})\right)&:=1+\operatorname{iso}\left(\frac{\text{cq}_{nt}(s_{+})-\text{cq}_{nt}(s_{-})}{s_{+}-s_{-}}\right),\\
+q_{nt}(\beta)&:=\frac{1}{\kappa_{nt}}\ \ln\left(\frac{\widehat G_{nt}^{-1}(\beta)}{S_{n,d}}\right),\qquad \beta\in\mathcal Q^{\text{market}}.
+\end{aligned}
+```
+
+**Symbols of the five steps.** All but the first three entries are new.
+
+- $n$, $t$, $d$: the stock, the calendar days to the expiry, and the origin
+  session. $j$: the option type; as a superscript, $c$ is call and $p$ is put.
+- $s$: a strike price in dollars per share, read in brackets. A contract is
+  named here by its strike; in the Working Draft the same contract is named by
+  its index $k$. $`s_{-}`$, $`s_{+}`$: two neighbouring strikes, the lower and
+  the higher; the signs are labels, not indices.
+- $`\text{bid}_{nt}^{j}(s)`$, $`\text{ask}_{nt}^{j}(s)`$: the Working Draft's
+  per-share bid and ask of the option of type $j$ on stock $n$, expiry $t$ and
+  strike $s$, read at the close of session $d$. Only valid quotes are used: bid
+  above zero and ask at least the bid.
+- $`\text{mid}_{nt}^{j}(s)`$: the midpoint of that quote.
+- $`\text{fwd}_{nt}`$: the forward price of stock $n$ for that expiry implied by
+  the quotes. The median is the middle value over the strikes that have both.
+- $`\text{cq}_{nt}(s)`$: the call-equivalent quote at strike $s$: the call's
+  midpoint at or above the forward, and the put's midpoint restated as a call
+  price at or below it.
+- $`\operatorname{iso}`$: a smoothing that changes the slopes as little as
+  possible so that they never fall from one strike to the next and stay between
+  -1 and 0.
+- $`\widehat G_{nt}`$: the market-implied CDF of the expiry price: under the
+  option quotes, the probability that stock $n$ finishes at or below a strike.
+  It is set at the midpoint of each pair of neighbouring strikes, joined by
+  straight lines in the logarithm of the strike, and completed with 0 at the
+  lowest strike kept and 1 at the highest. $`\widehat G_{nt}^{-1}(\beta)`$ is
+  the price at which it equals $\beta$; the superscript $-1$ marks the inverse.
+- $`S_{n,d}`$, $`\kappa_{nt}`$: the closing price at the origin and the scale of
+  stage 1.
+
+**Why each step.**
+
+- **Why the midpoint.** It is the middle of what buyers bid and sellers ask,
+  the usual single price for a quoted option.
+- **Why the forward.** A call and a put at one strike differ in price by the
+  forward minus the strike. Each strike quoted on both sides therefore gives
+  the forward, and the median guards against one bad quote. The same relation
+  restates a put as a call.
+- **Why the two cases.** Each strike uses its out-of-the-money contract: the
+  put below the forward and the call above it.
+- **Why the slope gives a probability.** Raising a call's strike by one dollar
+  lowers its payoff by one dollar whenever the stock ends above the strike, and
+  by nothing otherwise. So the fall in price per dollar of strike is the
+  probability of ending above it, and 1 plus the slope is the probability of
+  ending at or below it.
+- **Why smooth the slopes.** Quotes are noisy, so raw slopes can run the wrong
+  way, and a probability cannot fall as the strike rises.
+- **Why divide by the scale.** It puts the quantiles in the same normalized
+  units as the return being forecast.
+- **Why it is only a proxy.** Option prices mix probability with the price of
+  risk; these stock options can be exercised early, which the steps ignore; and
+  no interest or dividend adjustment is applied.
+
+**When there are no quantiles.** If the chain is too thin (no strike quoted on
+both sides, too few strikes on either side of the forward, or gaps that are too
+wide), no quantiles are produced for that forecast. The fit code then replaces
+each missing input with its median over the training rows, and the network is
+not told that it was filled. How often this happens was not measured here.
+
 **Indices and dimension.** One input list for every stock $`n\in N`$ and every
 expiry $`t\in T`$ forecast at $d$. It has
 $`\lvert\mathcal Q^{\text{market}}\rvert+2`$ = 19 + 2 = 21 numbers. At an earlier
 origin $a$ it reads $`q_{nt\mid a}(\beta)`$ and
-$`\eta_{nt\mid a}`$. The study lists 327 candidate feature columns; the locked
-recipe reads these 21.
+$`\eta_{nt\mid a}`$.
+
+**This is the whole input.** The study lists 327 candidate feature columns,
+among them past returns, realized volatility, implied-volatility level, volume
+and open interest. The locked recipe reads none of those: its inputs are these
+21 numbers only, as the planned 2020Q1 fit document confirms. The stock's own
+price history enters in one place, the scale $`\kappa_{nt}`$ of stage 1, which
+divides both the quantiles and the return being forecast.
 
 **Why.**
 
@@ -1101,8 +1181,9 @@ To confirm, with (a) recommended in each:
    versions can be rebuilt from the joint record; (b) keep every version.
 4. New sets and symbols here ($`\mathcal Q^{\text{market}}`$, $`\mathcal E`$,
    $Y$, $\Omega$ with their members $e$, $y$ and $\omega$; the market quantile
-   $`q_{nt}(\beta)`$; $`\mathcal C`$, $`\mathcal H_d`$, $`d'`$, bold for a list,
-   the tilde and the placeholder Cop): (a) accept; (b) rename.
+   $`q_{nt}(\beta)`$ and the names used to build it (mid, fwd, cq, iso and
+   $`\widehat G_{nt}`$); $`\mathcal C`$, $`\mathcal H_d`$, $`d'`$, bold for a
+   list, the tilde and the placeholder Cop): (a) accept; (b) rename.
 5. Scenario payoff lines of stage 11: (a) keep them as the shape of the agreed
    payoff under a scenario; (b) leave them out until joint scenarios are agreed.
 
