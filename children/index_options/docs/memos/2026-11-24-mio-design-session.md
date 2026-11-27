@@ -200,20 +200,51 @@ To confirm, with (a) recommended in each:
 Owner: Russell; author: Claude Fable 5.2. Each stage from the model's inputs to
 joint scenarios is written as it would read in the MIO formulation: its
 definition, its dimension, the existing sets that index it and, where a value is
-carried from one decision to the next, an update with the new assignment. This
-is a proposal on the session branch, not in the Working Draft. Nothing was
-fitted, replayed or read from protected data; no code, config, ledger or Path
-row changed.
+carried from one decision to the next, an update with the new assignment. Every
+symbol is defined in the stage that uses it, and a "Why" note follows each step
+whose reason is not obvious. This is a proposal on the session branch, not in
+the Working Draft. Nothing was fitted, replayed or read from protected data; no
+code, config, ledger or Path row changed.
 
 Sources. Stages 1 and 4 to 7 restate definitions agreed on 25 November. The
 update lines of stages 6 and 7 are written out here for the first time, and
 their eligibility test uses the earliest usable cutoff proposed in step 1.
-Stages 2 and 3 describe the locked forecast recipe (A0008). Their sizes were
-read from the recipe file, its fit template and the fit code; the functions that
-set them are identical in this branch and at the commit recorded in the 2020Q1
-forecast receipt. No saved fit was opened and no code was run. Stages 8 to 11
-rest on step 1 above and on step 2, which is not yet proposed. The Page could
-not be opened, so every symbol marked "new" is unchecked against it.
+Stages 2 and 3 describe the locked forecast recipe. Their sizes were read from
+the recipe file, its fit template and the fit code; the functions that set them
+are identical in this branch and at the commit recorded in the 2020Q1 forecast
+receipt. No saved fit was opened and no code was run. Stages 8 to 11 rest on
+step 1 above and on step 2, which is not yet proposed. The Page could not be
+opened, so every symbol marked "new" is unchecked against it. A0002, A0006,
+A0008 and A0009 are locked rows of the Path, the owner's decision ledger:
+scoring, the cell definition, the forecast recipe and the stock list.
+
+### Reading the notation
+
+These general marks are defined once. Every other symbol is defined again in
+each stage that uses it.
+
+- $`:=`$ means "is defined as". $`\leftarrow`$ means "is assigned": the left
+  side is the value at the next cutoff, and the right side uses the values held
+  now.
+- $`x\in X`$ means $x$ is a member of the set $X$. $`\lvert X\rvert`$ is the
+  number of members of $X$. $`\#\lbrace\cdot\rbrace`$ is the number of items
+  that meet the condition inside the braces. $`X\cup Y`$ joins two sets.
+- $`\mathbb R`$ is the real numbers and $`\mathbb Z`$ the integers; a subscript
+  such as $`\ge 0`$ restricts them. $`\mathbb R^{19}`$ is a list of 19 real
+  numbers. $`[0,1]`$ is the numbers from 0 to 1.
+- $`f:X\to Y`$ means $f$ takes a member of $X$ and returns a member of $Y$.
+  $`f^{-1}`$ is its inverse: it returns the input that gives a stated output.
+  $`x\mapsto y`$ means $x$ is sent to $y$.
+- A hat marks a forecast or an estimate. A prime, as in $`d'`$, marks the next
+  cutoff. A tilde marks a simulated value. Bold marks a list of numbers.
+- A bar inside a subscript, as in $`u_{n\rho\mid a}`$, reads "for the forecast
+  issued at origin $a$". A bar inside brackets, as in
+  $`(z\mid\mathcal F_d)`$, reads "given the information $`\mathcal F_d`$".
+- $\ln$ is the natural logarithm, $\sum$ a sum and a root sign the square
+  root. $\max$ takes the larger of two numbers; $\min$ takes the smallest
+  member of a set.
+- CDF is short for cumulative distribution function: the probability that a
+  quantity is at or below a stated value.
 
 ### Existing sets and clocks
 
@@ -225,36 +256,116 @@ not be opened, so every symbol marked "new" is unchecked against it.
 \end{aligned}
 ```
 
-All are reused unchanged. $N$ holds 166 stocks (A0009) and $`\mathcal Q`$ holds
-11 thresholds by default. Every stage is per stock and expiry, so it carries $n$
-with $t$ or $\rho$ only. The contract indices $i$, $j$ and $k$ enter in stage
-11, when a scenario price is placed in the payoff $V$.
+**Symbols.** All are already in the MIO and are reused unchanged.
 
-Step 1 proposed $`\mathcal R_n`$, $`E_{n\rho\mid a}`$,
-$`d^{\star}_{n\rho\mid a}`$, $`w_{n\rho\mid a}`$, $`\mathcal C_a`$ and
-$`\mathcal O_{a,d}`$; they still await confirmation. Two more symbols are new
-here. The first is the set of all cells:
+- $i$, $I$, $b$, $s$: the transaction side, one of the set $I$; $b$ is buy and
+  $s$ is sell.
+- $j$, $J$, $c$, $p$: the option type, one of the set $J$; $c$ is call and $p$
+  is put. Elsewhere $p$ with a subscript, or as the argument of a CDF, is a
+  price.
+- $n$, $N$: one stock, and the stock universe of 166 names (A0009).
+- $t$, $T$: the remaining calendar days to an expiry, and the set of such
+  values in use.
+- $k$, $`K_{nt}^{j}`$: one option contract, and the contracts available for
+  stock $n$, expiry $t$ and type $j$.
+- $d$: the current cutoff session. Sessions are trading days numbered in order.
+  The information used is what was available by this session's cutoff, and the
+  forecasts issued now have $d$ as their origin.
+- $a$: an earlier session at which a forecast was issued; its origin.
+- $\beta$, $`\mathcal Q`$: one calibration threshold, a probability level
+  between 0 and 1, and the configured set of them. The agreed default has 11,
+  from 0.01 to 0.99.
+- $\rho$: the original expiry rank, the expiry's place in line on the day the
+  forecast is issued. For a stock with weekly expiries, rank 1 is its nearest
+  listed Friday expiry and rank 2 the one after it. A forecast keeps its rank
+  for life.
+
+Every stage below is per stock and expiry, so it carries $n$ with $t$ or $\rho$
+only. The contract indices $i$, $j$ and $k$ enter in stage 11.
+
+Two sets and one mark are not yet in the Working Draft:
+
+```math
+\mathcal R_n:=
+\begin{cases}
+\lbrace 1,\dots,8\rbrace, & n\text{ a weekly name},\\
+\lbrace 1,2,3\rbrace, & n\text{ a monthly-only name}.
+\end{cases}
+```
 
 ```math
 \mathcal C := \lbrace (n,\rho) :\ n\in N,\ \rho\in\mathcal R_n \rbrace,\qquad
-\lvert\mathcal C\rvert=\sum_{n\in N}\lvert\mathcal R_n\rvert\le 166\times 8=1328 \qquad\text{(new)}
+\lvert\mathcal C\rvert=\sum_{n\in N}\lvert\mathcal R_n\rvert\le 166\times 8=1328
 ```
 
-The second is $`d'`$, the next cutoff after $d$; if every session is processed,
-$`d'=d+1`$. At origin $d$ the cell $`(n,\rho)`$ and the forecast $`(n,t)`$ name
-the same thing when $`t=t_{n\rho\mid d}`$. In every update below, the left side
-belongs to the next cutoff and the right side uses the snapshot at $d$, as in
-the holdings update.
+**Symbols.**
+
+- $`\mathcal R_n`$ (proposed in step 1): the ranks used for stock $n$. A0006
+  sets ranks 1 to 8 for a stock with weekly expiries and positions 1 to 3 for a
+  stock with monthly expiries only.
+- $`\mathcal C`$ (new): the set of all cells. A cell $`(n,\rho)`$ is one stock
+  with one rank: the group whose forecasts are counted and calibrated together.
+- $`d'`$ (new): the next cutoff session after $d$. If every session is
+  processed, $`d'=d+1`$.
+
+At origin $d$ the cell $`(n,\rho)`$ and the forecast $`(n,t)`$ name the same
+thing when $t$ is the number of calendar days from $d$ to the expiry of rank
+$\rho$. In every update below, the left side belongs to the next cutoff and the
+right side uses the snapshot at $d$, as in the holdings update.
 
 ### Stage 1. Preprocessing (agreed)
 
 ```math
-\chi_{n,d}\in\mathbb R_{\ge 0},\qquad \eta_{nt}\in\mathbb Z_{>0},\qquad \kappa_{nt}\in\mathbb R_{>0},\qquad
-Z_{nt}:=\frac{\ln(p_{nt}/S_{n,d})}{\kappa_{nt}}
+\begin{aligned}
+r_{n,d}&:=\ln\left(\frac{S_{n,d}}{S_{n,d-1}}\right),\\
+\chi_{n,d}&:=\sqrt{\frac{1}{22}\sum_{\ell=0}^{21} r_{n,d-\ell}^{2}},\\
+\kappa_{nt}&:=\max\left(\chi_{n,d},\ 0.001\right)\sqrt{\eta_{nt}},\\
+Z_{nt}&:=\frac{\ln(p_{nt}/S_{n,d})}{\kappa_{nt}}.
+\end{aligned}
 ```
 
-Indexed by $`n\in N`$ and $`t\in T`$: one $\chi$ per stock, one $\eta$ and one
-$\kappa$ per forecast.
+**Symbols.**
+
+- $n$, $t$, $d$: the stock, the calendar days to the expiry, and the current
+  cutoff session.
+- $`S_{n,d}`$: the split-adjusted closing price of stock $n$ at session $d$, in
+  dollars per share. It is positive.
+- $`r_{n,d}`$: the log return of stock $n$ over session $d$.
+- $\ell$: a counter that steps back over the last 22 sessions; 0 is session $d$.
+- $`\chi_{n,d}`$: the root mean square of the last 22 one-session log returns of
+  stock $n$, ending at session $d$. It is zero or positive. Code field `rv_22`.
+- $`\eta_{nt}`$: the number of trading sessions from session $d$ to the session
+  whose close is the expiry price. A positive integer. Code field
+  `sessions_to_expiry`.
+- $`\kappa_{nt}`$: the scale that this forecast's return is divided by. It is
+  positive. Code field `reference_scale`.
+- $`p_{nt}`$: the price of stock $n$ at that expiry. It is not known at $d$.
+- $`Z_{nt}`$: the normalized expiry log return. This is what the model forecasts.
+
+**Dimension.** Indexed by $`n\in N`$ and $`t\in T`$: one $\chi$ per stock, 166
+numbers, and one $\eta$, $\kappa$ and $Z$ per forecast.
+
+**Why.**
+
+- **What the scale measures.** The root mean square of the last 22 daily log
+  returns says how much the stock has typically moved in one session lately.
+  It uses only past prices, so it is known at the origin.
+- **Why divide the return by a scale.** Stocks differ widely in how much they
+  move, and a two-month return moves more than a one-week return. Dividing by a
+  scale known at the origin puts every forecast in comparable units, so one
+  network can serve all 166 stocks and every expiry. The earlier comparison memo
+  also gives numerical stability as the reason.
+- **Why 22.** It is the look-back window of the scale, about one trading month.
+  It is not the forecast horizon: the horizon enters through $\eta$.
+- **Why the square root of the session count.** The typical size of a return
+  grows roughly with the square root of the number of sessions it covers.
+  Multiplying the one-session scale by that root stretches it to the forecast's
+  own horizon.
+- **Why the floor of 0.001.** It keeps the scale positive for a stock that has
+  barely moved, so the division is always defined.
+- **Why these exact numbers.** 22 and 0.001 are the preprocessing the locked
+  model was trained with. Changing either would change what the trained networks
+  expect, so they are restated here, not chosen.
 
 **Update (agreed, restated).** When the next session is observed:
 
@@ -263,25 +374,53 @@ $\kappa$ per forecast.
 \kappa_{nt}\ \leftarrow\ \max\left(\chi_{n,d'},\ 0.001\right)\sqrt{\eta_{nt}}
 ```
 
-The session count $\eta$ is recounted from the new origin. Carried state: each
-stock's last 22 squared returns, 22 x 166 = 3,652 numbers.
+Here $`d'`$ is the next cutoff session, $`r_{n,d'-\ell}`$ is the log return
+$\ell$ sessions before it, and $`\eta_{nt}`$ on the right is recounted from
+$`d'`$. The window slides by one session: the oldest squared return leaves and
+the newest enters. Carried state: each stock's last 22 squared returns,
+22 x 166 = 3,652 numbers.
 
 ### Stage 2. Model input (new symbol)
 
-For a forecast $`(n,t)`$ at origin $d$:
+For a forecast of stock $n$ at the expiry $t$ calendar days after origin $d$:
 
 ```math
 q_{nt}^{\text{mkt}}\in\mathbb R^{19},\qquad
 \left(q_{nt}^{\text{mkt}},\ \ln\eta_{nt},\ t/\eta_{nt}\right)\in\mathbb R^{21} \qquad\text{(new)}
 ```
 
-Each entry of $`q_{nt}^{\text{mkt}}`$ is a quantile of the normalized return
-$`Z_{nt}`$ under the distribution implied by that expiry's option prices, at one
-of the 19 configured probability levels from 0.01 to 0.99. It is a market-implied
-proxy, not a real-world probability. Code fields: `rn_q_0100` to `rn_q_9900`,
-`log_sessions_to_expiry` and `calendar_days_per_session`. The study lists 327
-candidate feature columns; the locked recipe reads these 21. Indexed by
-$`n\in N`$ and $`t\in T`$.
+**Symbols.**
+
+- $n$, $t$, $d$: the stock, the calendar days to the expiry, and the origin
+  session.
+- $`q_{nt}^{\text{mkt}}`$ (new): a list of 19 numbers. Each is a quantile of the
+  normalized return $`Z_{nt}`$ under the distribution implied by that expiry's
+  option prices: the value that the return falls below with a stated
+  probability. The 19 probabilities are 0.01, 0.025, 0.05, 0.1, 0.15, 0.2, 0.25,
+  0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.975 and 0.99. Code
+  fields `rn_q_0100` to `rn_q_9900`.
+- $`\eta_{nt}`$: the number of trading sessions to the expiry-price session, as
+  in stage 1. $`\ln\eta_{nt}`$ is its natural logarithm. Code field
+  `log_sessions_to_expiry`.
+- $`t/\eta_{nt}`$: calendar days per trading session over the forecast's life.
+  For one full week it is 7/5 = 1.4. Code field `calendar_days_per_session`.
+- $`\mathbb R^{19}`$, $`\mathbb R^{21}`$: lists of 19 and of 21 real numbers.
+
+**Dimension.** 21 numbers per forecast, indexed by $`n\in N`$ and $`t\in T`$.
+The study lists 327 candidate feature columns; the locked recipe reads these 21.
+
+**Why.**
+
+- **Why the market's quantiles.** Option prices already hold the market's view
+  of where the stock may finish. The locked recipe gives the network that view
+  and the two calendar numbers, and nothing else. The choice came from the model
+  selection recorded in A0008; it is restated here, not argued again.
+- **Why they are a proxy.** Option prices mix probability with the price of
+  risk, so these quantiles are not real-world probabilities. The network is
+  trained on realized outcomes to turn them into a real-world forecast.
+- **Why the two calendar numbers.** One network serves every horizon, so it must
+  be told the horizon. The logarithm gives its length; the ratio tells it how
+  much of the period is weekends and holidays.
 
 **No update.** The input is rebuilt at each origin from that session's quotes.
 
@@ -289,7 +428,7 @@ $`n\in N`$ and $`t\in T`$.
 
 Five networks, one per seed (11, 29, 47, 53, 71), share one design and serve all
 166 stocks. The 21 inputs are first standardized with the fit's own means and
-scales. Roman names stand for the network's parts (new):
+scales.
 
 ```math
 \begin{aligned}
@@ -304,12 +443,40 @@ The head takes the encoder's 8 values and the two calendar numbers:
 \operatorname{head}\left(\operatorname{enc}\left(q_{nt}^{\text{mkt}}\right),\ \ln\eta_{nt},\ t/\eta_{nt}\right)\ \mapsto\ \left(\text{wt},\ \text{loc},\ \text{sd}\right)\in\mathbb R^{3}\times\mathbb R^{3}\times\mathbb R^{3}
 ```
 
-The nine outputs decode to three weights (positive, summing to 1), three
-centres and three standard deviations (positive). Under the recipe's fixed
-location the centres are constants of the network: they do not depend on the
-input. Each network has (19 x 64 + 64) + (64 x 8 + 8) + (10 x 8 + 8) +
+**Symbols.**
+
+- $`\operatorname{enc}`$ (new): the encoder, a function that takes the 19 market
+  quantiles and returns 8 numbers. "Layers 19 to 64 to 8" gives the sizes of its
+  input, its one hidden layer and its output.
+- $`\operatorname{head}`$ (new): a function that takes those 8 numbers and the
+  two calendar numbers, 10 in all, and returns 9 numbers through one hidden
+  layer of 8.
+- $`q_{nt}^{\text{mkt}}`$, $`\ln\eta_{nt}`$, $`t/\eta_{nt}`$: the model input of
+  stage 2 for stock $n$ and the expiry $t$ calendar days away: the 19 market
+  quantiles, the logarithm of the session count and the calendar days per
+  session.
+- wt, loc, sd (new): the three weights, three centres and three standard
+  deviations that one network returns. The weights are positive and sum to 1;
+  the standard deviations are positive. Stage 4 uses them.
+- $`\mathbb R^{3}\times\mathbb R^{3}\times\mathbb R^{3}`$: three lists of three
+  real numbers.
+
+**Dimension.** Each network has (19 x 64 + 64) + (64 x 8 + 8) + (10 x 8 + 8) +
 (8 x 9 + 9) = 1,969 trained weights, 9,845 over the five seeds, plus 42
 standardization constants. That count is mine, from the layer sizes in the code.
+
+**Why.**
+
+- **Why five networks.** Training starts from random numbers set by the seed,
+  so two seeds give slightly different networks. Pooling five reduces the effect
+  of one lucky or unlucky start. A0008 fixes the five seeds.
+- **Why the centres are constants.** This is the recipe's "fixed location": the
+  input can move weight between the centres and widen or narrow each curve, but
+  it cannot move the centres. The choice is A0008's, restated here.
+- **Why standardize the inputs.** The 21 inputs differ in size. Subtracting each
+  one's training mean and dividing by its training spread puts them on one scale
+  for training.
+- **Why these layer sizes.** 64 and 8 are tuned values locked in A0008.
 
 **Update (locked, A0008).** At the first session of each calendar quarter:
 
@@ -317,8 +484,16 @@ standardization constants. That count is mine, from the layer sizes in the code.
 \left(\operatorname{enc},\ \operatorname{head},\ \text{loc}\right)\ \leftarrow\ \operatorname{fit}\left(\text{all mature history before the quarter starts}\right)
 ```
 
-The fit also resets the standardization constants. Within the quarter the five
-networks stay fixed.
+Here $`\operatorname{fit}`$ is the locked training procedure of A0008 (learning
+rate 0.0001, dropout 0.11, weight decay 0.045, 6 epochs); it returns the trained
+encoder, head and centres of each seed and resets the standardization
+constants. Mature history means forecasts whose outcome had settled. Within the
+quarter the five networks stay fixed.
+
+**Why each quarter, and why only mature history.** Retraining each quarter lets
+the networks learn from the newest outcomes. Using only outcomes settled before
+the quarter starts means no forecast in the quarter is trained on its own
+future.
 
 ### Stage 4. Forecast CDF (agreed)
 
@@ -327,41 +502,142 @@ networks stay fixed.
 \sum_{\ell=1}^{15}\text{wt}_{\ell,nt}=1,\qquad \widehat\Psi_{nt}^{Z}:\mathbb R\to[0,1]
 ```
 
-$\Phi$ is the standard normal CDF. Components 1 to 3 come from the first seed, 4
-to 6 from the second, and so on; each seed's three weights sum to one fifth,
-which is the linear pool. A forecast is therefore 45 numbers: 15 weights, 15
-centres and 15 standard deviations, with the centres shared by every forecast of
-a quarter. In price coordinates, as agreed:
+In price coordinates, as agreed:
 
 ```math
 \widehat\Psi_{nt}(p\mid\mathcal F_d)=\widehat\Psi_{nt}^{Z}\left(\frac{\ln(p/S_{n,d})}{\kappa_{nt}}\mid\mathcal F_d\right),\qquad p>0
 ```
 
-Indexed by $`n\in N`$ and $`t\in T`$. The 45 numbers are saved, and so is the
-curve at 13 values of $z$ from -3 to 3 (25 on the fine grid).
+**Symbols.**
+
+- $n$, $t$, $d$: the stock, the calendar days to the expiry, and the origin.
+- $`\mathcal F_d`$: the information available by the cutoff of session $d$.
+- $z$: any value of the normalized return.
+- $`\widehat\Psi_{nt}^{Z}(z\mid\mathcal F_d)`$: the forecast probability, made
+  with that information, that the normalized return $`Z_{nt}`$ of stage 1 is at
+  or below $z$. The superscript $Z$ marks normalized-return units.
+- $\ell$: here a counter over the 15 mixture components. Components 1 to 3 come
+  from the first seed, 4 to 6 from the second, and so on.
+- $`\text{wt}_{\ell,nt}`$: the weight of component $\ell$ in this forecast. Each
+  seed's three weights sum to one fifth, so all 15 sum to 1.
+- $`\text{loc}_{\ell}`$: the centre of component $\ell$, in normalized-return
+  units. It is the same for every forecast of a quarter.
+- $`\text{sd}_{\ell,nt}`$: the standard deviation, or width, of component
+  $\ell$ in this forecast. It is positive.
+- $\Phi$: the standard normal CDF.
+- $p$: any price level, in dollars per share.
+- $`\widehat\Psi_{nt}(p\mid\mathcal F_d)`$: the same forecast in price terms:
+  the probability that the expiry price $`p_{nt}`$ is at or below $p$.
+- $`S_{n,d}`$, $`\kappa_{nt}`$: the closing price at the origin and the scale
+  of stage 1.
+
+**Dimension.** Indexed by $`n\in N`$ and $`t\in T`$. A forecast is 45 numbers:
+15 weights, 15 centres and 15 standard deviations. Those are saved, and so is
+the curve at 13 values of $z$ from -3 to 3 (25 on the fine grid).
+
+**Why.**
+
+- **Why a mixture.** One normal curve cannot be lopsided or fat-tailed. A
+  weighted sum of several can, and it stays a smooth, valid CDF that can be
+  evaluated exactly at any point.
+- **Why one fifth per seed.** Averaging the five networks' CDFs with equal
+  weight is the linear pool that A0008 locks. An average of mixtures is again a
+  mixture, here with 15 components.
+- **Why two coordinate systems.** The network works in normalized units, but
+  payoffs need dollars. The second line converts: a price $p$ corresponds to the
+  normalized return $`\ln(p/S_{n,d})/\kappa_{nt}`$.
+- **Why 13 saved points.** They are the grid on which A0002 scores forecasts.
+  The PIT of stage 5 needs the curve at the exact realized price, which the 45
+  numbers give.
 
 **No update.** A forecast is evaluated once, at its origin, and kept as issued.
 
 ### Stage 5. Raw PIT (agreed)
 
 ```math
-u_{n\rho\mid a}:=\widehat\Psi_{nt}\left(S_{n,\,a+\eta_{n\rho\mid a}}\mid\mathcal F_a\right)\in[0,1],\qquad t=t_{n\rho\mid a}
+\begin{aligned}
+E_{n\rho\mid a}&:=\text{the expiry that holds rank }\rho\text{ for stock }n\text{ at origin }a,\\
+t_{n\rho\mid a}&:=\text{calendar days from }a\text{ to }E_{n\rho\mid a},\\
+\eta_{n\rho\mid a}&:=\text{trading sessions from }a\text{ to the session whose close is the expiry price},\\
+d^{\star}_{n\rho\mid a}&:=\min\lbrace\, d\ge a+\eta_{n\rho\mid a} :\ \text{the expiry-price record is available by cutoff }d \,\rbrace,\\
+u_{n\rho\mid a}&:=\widehat\Psi_{nt}\left(S_{n,\,a+\eta_{n\rho\mid a}}\mid\mathcal F_a\right)\in[0,1],\qquad t=t_{n\rho\mid a}.
+\end{aligned}
 ```
 
-One number per settled forecast, shared by its contracts. Indexed by
-$`n\in N`$, $`\rho\in\mathcal R_n`$ and the origins $`a<d`$.
+**Symbols.**
 
-**Update.** Created once, at the first cutoff with
+- $n$, $\rho$, $a$: the stock, the original expiry rank, and the origin session
+  of a past forecast.
+- $`E_{n\rho\mid a}`$ (proposed in step 1): the expiry date of that forecast.
+- $`t_{n\rho\mid a}`$, $`\eta_{n\rho\mid a}`$: its calendar days and its trading
+  sessions to expiry, counted at its origin.
+- $`d^{\star}_{n\rho\mid a}`$ (proposed in step 1): the earliest usable cutoff,
+  the first cutoff session at which the forecast's outcome may be used.
+- $`S_{n,\,a+\eta_{n\rho\mid a}}`$: the closing price of stock $n$ on the
+  expiry-price session. It is the realized expiry price.
+- $`\mathcal F_a`$: the information available by the cutoff of session $a$.
+- $`\widehat\Psi_{nt}(\cdot\mid\mathcal F_a)`$: the forecast CDF of stage 4 in
+  price terms, exactly as issued at origin $a$.
+- $`u_{n\rho\mid a}`$: the raw PIT of that forecast, a number from 0 to 1. PIT
+  is short for probability integral transform.
+
+**Dimension.** One number per settled forecast, shared by its contracts.
+Indexed by $`n\in N`$, $`\rho\in\mathcal R_n`$ and the origins $`a<d`$.
+
+**Why.**
+
+- **Why read the CDF at the realized price.** It turns each outcome into a
+  score from 0 to 1: the probability the forecast gave to a price at or below
+  the one that occurred. If the forecasts were perfectly calibrated, these
+  scores would be spread evenly from 0 to 1; bunching shows where they are
+  wrong. It also puts every stock and horizon on one scale.
+- **Why the forecast as issued.** The score must judge what was actually
+  forecast at $a$, with that day's price, scale and model version.
+- **Why an earliest usable cutoff.** An outcome may be used only once it has
+  happened and its record was on hand. Otherwise the history would hold
+  information we did not have at the time.
+- **Why the rank is fixed at issue.** A0006 groups forecasts by the rank the
+  expiry had when the forecast was made, so a group always holds forecasts of a
+  similar horizon.
+
+**Update.** Created once, at the first cutoff $`d'`$ with
 $`d^{\star}_{n\rho\mid a}\le d'`$. Never revised.
 
 ### Stage 6. Counters (agreed)
 
 ```math
-M_{n,\rho,d}\in\mathbb Z_{\ge 0},\qquad A_{n,\rho,d}(\beta)\in\mathbb Z_{\ge 0}\quad\text{for }\beta\in\mathcal Q
+\begin{aligned}
+M_{n,\rho,d} &:= \#\lbrace a<d :\ d^{\star}_{n\rho\mid a}\le d \rbrace\in\mathbb Z_{\ge 0},\\
+A_{n,\rho,d}(\beta) &:= \#\lbrace a<d :\ d^{\star}_{n\rho\mid a}\le d,\ u_{n\rho\mid a}\le\beta \rbrace\in\mathbb Z_{\ge 0},\qquad \beta\in\mathcal Q.
+\end{aligned}
 ```
 
-Indexed by $`(n,\rho)\in\mathcal C`$ and $`\beta\in\mathcal Q`$: 1 + 11 = 12
-integers per cell, at most 15,936 in all.
+**Symbols.**
+
+- $n$, $\rho$, $d$: the stock and rank of the cell, and the current cutoff.
+- $a$: the origin of a past forecast of that cell.
+- $`d^{\star}_{n\rho\mid a}`$: that forecast's earliest usable cutoff (stage 5).
+- $`u_{n\rho\mid a}`$: its raw PIT (stage 5).
+- $\beta$, $`\mathcal Q`$: one calibration threshold and the configured set of
+  11.
+- $`M_{n,\rho,d}`$: the number of the cell's forecasts whose outcome is usable
+  by cutoff $d$.
+- $`A_{n,\rho,d}(\beta)`$: the number of those whose raw PIT is at or below
+  $\beta$.
+
+**Dimension.** Indexed by $`(n,\rho)\in\mathcal C`$ and $`\beta\in\mathcal Q`$:
+1 + 11 = 12 integers per cell, at most 15,936 in all.
+
+**Why.**
+
+- **Why counts, not every score.** The correction of stage 7 needs only, for
+  each threshold, the share of scores at or below it. Twelve integers per cell
+  hold that. The storage never grows and an update is an addition.
+- **Why per cell.** Forecast errors differ by stock and by horizon. A0006 sets
+  the cell as the group that is calibrated together.
+- **What the counts cannot do.** They do not record which scores occurred
+  together, so they cannot supply the dependence between cells. Stage 9 keeps
+  that record.
 
 **Update.**
 
@@ -372,18 +648,63 @@ A_{n,\rho,d'}(\beta) &\leftarrow A_{n,\rho,d}(\beta)+\#\lbrace a :\ d<d^{\star}_
 \end{aligned}
 ```
 
-Both start at zero. Only the forecasts that settled since $d$ are read; no PIT
-history is scanned again.
+Here $`d'`$ is the next cutoff session, and the condition
+$`d<d^{\star}_{n\rho\mid a}\le d'`$ picks the forecasts whose outcome became
+usable since $d$. Both counters start at zero. Only those forecasts are read; no
+PIT history is scanned again.
 
 ### Stage 7. Correction map (agreed working map)
 
 ```math
-\widehat\Gamma_{n,\rho,d}:[0,1]\to[0,1],\qquad
-\text{fixed by its values at the 11 thresholds and the anchors }(0,0)\text{ and }(1,1)
+\widehat\Gamma_{n,\rho,d}(\beta):=\frac{A_{n,\rho,d}(\beta)+\zeta\beta}{M_{n,\rho,d}+\zeta}\quad\text{for }\beta\in\mathcal Q,\qquad
+\widehat\Gamma_{n,\rho,d}(0):=0,\qquad \widehat\Gamma_{n,\rho,d}(1):=1
 ```
 
-Linear between neighbouring points and strictly increasing. Indexed like the
-counters: 11 numbers per cell, at most 14,608 per cutoff.
+Between two neighbouring points the map is a straight line:
+
+```math
+\widehat\Gamma_{n,\rho,d}(y):=\frac{\beta_{+}-y}{\beta_{+}-\beta_{-}}\ \widehat\Gamma_{n,\rho,d}(\beta_{-})+\frac{y-\beta_{-}}{\beta_{+}-\beta_{-}}\ \widehat\Gamma_{n,\rho,d}(\beta_{+}),\qquad \beta_{-}\le y\le\beta_{+}
+```
+
+**Symbols.**
+
+- $n$, $\rho$, $d$: the stock and rank of the cell, and the current cutoff.
+- $\beta$, $`\mathcal Q`$: one calibration threshold and the configured set of
+  11.
+- $`M_{n,\rho,d}`$, $`A_{n,\rho,d}(\beta)`$: the cell's counters of stage 6.
+- $\zeta$: the strength, one positive number shared by all cells. A larger value
+  pulls the map toward no correction. Its value is not chosen yet.
+- $`\widehat\Gamma_{n,\rho,d}`$: the correction map of the cell at cutoff $d$.
+  It takes a probability from 0 to 1 and returns a corrected probability from 0
+  to 1.
+- $y$: any probability level from 0 to 1.
+- $`\beta_{-}`$, $`\beta_{+}`$: the neighbouring points just below and just
+  above $y$, among the 11 thresholds and the two ends 0 and 1.
+
+**Dimension.** Indexed like the counters. The map is fixed by 11 numbers per
+cell, at most 14,608 per cutoff.
+
+**Why.**
+
+- **Why this formula.** Write $A$ and $M$ for the two counters above. The share
+  of past scores at or below $\beta$ is $A/M$. If the forecasts were right,
+  that share would be $\beta$ itself. The formula is a weighted average of the
+  two, shown here for $M$ above zero:
+
+```math
+\frac{A+\zeta\beta}{M+\zeta}=\frac{M}{M+\zeta}\cdot\frac{A}{M}+\frac{\zeta}{M+\zeta}\cdot\beta
+```
+
+- **What that gives.** With no outcomes the map returns $\beta$, which is no
+  correction. As outcomes accumulate it moves toward the observed share.
+- **Why the strength.** It sets how many outcomes it takes before the data
+  outweigh "no correction". It is not a count of independent observations.
+- **Why fixed ends and straight lines.** They make the map continuous and
+  strictly increasing from (0, 0) to (1, 1). The corrected forecast is then
+  still a valid CDF, and the map can be inverted, which stage 11 needs.
+- **What 11 thresholds can fix.** They split the scores into twelve bands. The
+  map corrects how much probability each band holds, not the shape inside a
+  band, so it cannot repair a wrong far tail.
 
 **Update.** After the counters:
 
@@ -391,12 +712,17 @@ counters: 11 numbers per cell, at most 14,608 per cutoff.
 \widehat\Gamma_{n,\rho,d'}(\beta)\ \leftarrow\ \frac{A_{n,\rho,d'}(\beta)+\zeta\beta}{M_{n,\rho,d'}+\zeta},\qquad \beta\in\mathcal Q
 ```
 
-The map issued at $d$ is kept, not overwritten, until every forecast issued with
-it has settled: a forecast is always corrected by the map of its own origin.
+Here $`d'`$ is the next cutoff session and the counters on the right are the
+updated ones of stage 6. The map issued at $d$ is kept, not overwritten, until
+every forecast issued with it has settled.
+
+**Why keep the issued map.** A forecast must be corrected with what was known at
+its own origin. Using a later map would let later outcomes into an earlier
+score.
 
 ### Stage 8. Corrected CDF and corrected PIT
 
-The composition was agreed; the symbol $w$ is from step 1.
+The composition was agreed; the symbol $w$ was proposed in step 1.
 
 ```math
 \begin{aligned}
@@ -405,31 +731,79 @@ w_{n\rho\mid a} &:= \widehat\Gamma_{n,\rho,a}\left(u_{n\rho\mid a}\right)\in[0,1
 \end{aligned}
 ```
 
-The first line is the corrected CDF of a forecast issued now. The second is the
-corrected PIT of a settled forecast. That is one curve and one number per cell
-and origin. Indexed by $`(n,\rho)\in\mathcal C`$ and the origin.
+**Symbols.**
 
-**Update.** $w$ is computed once, at settlement, with the stored map of
-origin $a$.
+- $n$, $\rho$: the stock and rank of the cell. $d$: the current cutoff and
+  origin. $a$: the origin of a past forecast.
+- $p$: any price level, in dollars per share.
+- $`t_{n\rho\mid d}`$: the calendar days from $d$ to the expiry of rank $\rho$.
+- $`\widehat\Psi_{nt}(p\mid\mathcal F_d)`$: the forecast CDF of stage 4 in
+  price terms, issued at $d$ with the information $`\mathcal F_d`$.
+- $`\widehat\Gamma_{n,\rho,d}`$, $`\widehat\Gamma_{n,\rho,a}`$: the cell's
+  correction map of stage 7, as issued at $d$ and as issued at $a$.
+- $`u_{n\rho\mid a}`$: the raw PIT of the past forecast (stage 5).
+- $`w_{n\rho\mid a}`$ (proposed in step 1): its corrected PIT, a number from 0
+  to 1.
 
-### Stage 9. Joint observation and joint record (step 1; one new symbol)
+**Dimension.** One curve and one number per cell and origin. Indexed by
+$`(n,\rho)\in\mathcal C`$ and the origin.
+
+**Why.**
+
+- **Why compose the two.** The base forecast says the price will be at or below
+  $p$ with some probability. The map replaces that probability with the share
+  of past cases in which the outcome did fall at or below a level given the same
+  probability. The first line is the forecast with its measured miscalibration
+  removed.
+- **Why the corrected PIT.** Scenarios are drawn through the corrected CDFs, so
+  dependence must be measured on scores made the same way.
+
+**Update.** $`w_{n\rho\mid a}`$ is computed once, at settlement, with the stored
+map of origin $a$.
+
+### Stage 9. Joint observation and joint record (proposed in step 1; one new symbol)
 
 ```math
-\mathbf w_a := \left(w_{n\rho\mid a}\right)_{(n,\rho)\in\mathcal C_a}\in[0,1]^{\lvert\mathcal C_a\rvert},\qquad
-\lvert\mathcal C_a\rvert\le\lvert\mathcal C\rvert\le 1328
+\begin{aligned}
+\mathcal C_a &:= \lbrace (n,\rho)\in\mathcal C :\ \text{a valid forecast was issued at }a \rbrace,\\
+\mathcal O_{a,d} &:= \lbrace (n,\rho)\in\mathcal C_a :\ d^{\star}_{n\rho\mid a}\le d \rbrace,\\
+\mathbf w_a &:= \left(w_{n\rho\mid a}\right)_{(n,\rho)\in\mathcal C_a}\in[0,1]^{\lvert\mathcal C_a\rvert},\\
+\mathcal H_d &:= \lbrace \left(a,\ n,\ \rho,\ u_{n\rho\mid a},\ w_{n\rho\mid a}\right) :\ a<d,\ (n,\rho)\in\mathcal O_{a,d} \rbrace .
+\end{aligned}
 ```
 
-At cutoff $d$ only the coordinates in $`\mathcal O_{a,d}`$ are known. The joint
-record holds every settled row:
+**Symbols.**
 
-```math
-\mathcal H_d := \lbrace \left(a,\ n,\ \rho,\ u_{n\rho\mid a},\ w_{n\rho\mid a}\right) :\ a<d,\ (n,\rho)\in\mathcal O_{a,d} \rbrace \qquad\text{(new)}
-```
+- $a$, $d$: an origin session and the current cutoff session.
+- $`(n,\rho)`$, $`\mathcal C`$: a cell, one stock with one rank, and the set of
+  all cells.
+- $`\mathcal C_a`$ (proposed in step 1): the cells that received a valid
+  forecast at origin $a$.
+- $`d^{\star}_{n\rho\mid a}`$: a forecast's earliest usable cutoff (stage 5).
+- $`\mathcal O_{a,d}`$ (proposed in step 1): the cells of origin $a$ whose
+  outcome is usable by cutoff $d$.
+- $`u_{n\rho\mid a}`$, $`w_{n\rho\mid a}`$: the raw and the corrected PIT.
+- $`\mathbf w_a`$: the joint observation of origin $a$: the list of its
+  corrected PITs, one per cell in $`\mathcal C_a`$. At cutoff $d$ only the
+  entries in $`\mathcal O_{a,d}`$ are known.
+- $`\mathcal H_d`$ (new): the joint record at cutoff $d$: every settled row.
 
-Indexed by the origins $`a<d`$ and the cells $`(n,\rho)\in\mathcal C_a`$. The
-2020Q1 forecast receipt records 69,687 rows over 62 sessions, about 1,120 per
-session, so every session is an origin. Over the roughly 1,070 sessions of open
+**Dimension.** A joint observation has at most 1,328 entries. The joint record
+is indexed by the origins $`a<d`$ and the cells of $`\mathcal C_a`$. The 2020Q1
+forecast receipt records 69,687 rows over 62 sessions, about 1,120 per session,
+so every session is an origin. Over the roughly 1,070 sessions of open
 forecasts that is about 1.2 million rows, and never more than about 1.4 million.
+
+**Why.**
+
+- **Why one observation per origin.** A solve holds forecasts all made at the
+  same cutoff. Dependence must therefore be measured between scores of
+  forecasts made on the same day.
+- **Why cells, not calendar dates, as coordinates.** A cell means the same thing
+  at every origin, the same stock at the same place in line, so its scores can
+  be compared across origins.
+- **Why keep every row.** Dependence needs to know which scores occurred
+  together. The counters of stage 6 discard that.
 
 **Update.**
 
@@ -440,23 +814,47 @@ forecasts that is about 1.2 million rows, and never more than about 1.4 million.
 \end{aligned}
 ```
 
-Rows are appended, never rewritten.
+Here $`d'`$ is the next cutoff session, and the condition picks the forecasts
+whose outcome became usable since $d$. Rows are appended, never rewritten,
+because a settled score does not change.
 
 ### Stage 10. Copula (step 2, not yet defined)
 
-Only the object and its size can be stated now. The name Cop is a placeholder,
-because $C$ is the premium.
+Only the object and its size can be stated now.
 
 ```math
 \operatorname{Cop}_d:[0,1]^{\lvert\mathcal C_d\rvert}\to[0,1],\qquad
 \operatorname{Cop}_d(\mathbf y):=\widehat{\Pr}\left(w_{n\rho\mid d}\le y_{n\rho}\ \text{ for all }(n,\rho)\in\mathcal C_d\ \mid\ \mathcal F_d\right)
 ```
 
-Indexed by the cells $`(n,\rho)\in\mathcal C_d`$. By definition each coordinate
-alone is uniform on [0, 1]. The dimension is the number of cells forecast at
-$d$, at most 1,328. If a correlation-matrix family is chosen, its state is one
-symmetric matrix of that size: at most 881,128 distinct pairs, against about
-1,070 overlapping origins.
+**Symbols.**
+
+- $d$: the current cutoff and origin. $`\mathcal F_d`$: the information
+  available by its cutoff.
+- $`(n,\rho)`$: a cell, one stock $n$ with one original expiry rank $\rho$.
+- $`\mathcal C_d`$: the cells that receive a valid forecast at $d$ (stage 9,
+  with $d$ as the origin).
+- $`w_{n\rho\mid d}`$: the corrected PIT that the forecast issued now for cell
+  $`(n,\rho)`$ will have once it settles. It is not known at $d$.
+- $`\mathbf y`$, $`y_{n\rho}`$: a list of levels from 0 to 1, one per cell, and
+  its entry for cell $`(n,\rho)`$.
+- $`\widehat{\Pr}`$: a forecast probability.
+- $`\operatorname{Cop}_d`$ (new, a placeholder name because $C$ is the
+  premium): the copula at $d$. It returns the forecast probability that every
+  cell's corrected PIT is at or below its level.
+
+**Dimension.** The number of cells forecast at $d$, at most 1,328. By definition
+each entry alone is spread evenly from 0 to 1. If a correlation-matrix family is
+chosen, its state is one symmetric matrix of that size: at most 881,128 distinct
+pairs, against about 1,070 overlapping origins.
+
+**Why.**
+
+- **Why a copula.** Stage 8 gives each cell its own corrected CDF but says
+  nothing about cells moving together. The copula holds only that linkage.
+  Keeping the two apart lets each be estimated and checked on its own.
+- **Why it is needed.** Portfolio tail risk depends on many positions losing
+  together. Without the linkage that risk cannot be measured.
 
 **Update: not defined.** It belongs to step 2. The counters cannot supply it.
 
@@ -467,17 +865,54 @@ symmetric matrix of that size: at most 881,128 distinct pairs, against about
 \tilde p_{nt} := \widehat\Psi_{nt}^{-1}\left(\widehat\Gamma_{n,\rho,d}^{-1}\left(\tilde w_{n\rho}\right)\mid\mathcal F_d\right),\qquad t=t_{n\rho\mid d}
 ```
 
-A tilde marks a simulated value (new). One scenario is one draw of at most
-1,328 linked scores, each turned into an expiry price by inverting the corrected
-CDF of its cell. Both inverses exist for scores strictly between 0 and 1,
-because the map and the mixture CDF are strictly increasing. Each price then
-replaces the known $`p_{nt}`$ in the agreed payoff $`V_{knt}^{ij}`$; this is
-where $`i\in I`$, $`j\in J`$ and $`k\in K_{nt}^{j}`$ enter. Shape: the number of
-scenarios times the number of cells; that number is not chosen.
+**Symbols.**
 
-**No update.** Scenarios are drawn again at every solve.
+- $d$: the current cutoff and origin. $`\mathcal F_d`$: the information
+  available by its cutoff.
+- $`(n,\rho)`$: a cell, one stock $n$ with one original expiry rank $\rho$.
+- $`\operatorname{Cop}_d`$: the copula of stage 10. The mark $\sim$ reads "is
+  drawn at random from".
+- $`\tilde{\mathbf w}`$, $`\tilde w_{n\rho}`$ (new): one simulated list of
+  corrected PITs, one per cell forecast at $d$, and its entry for cell
+  $`(n,\rho)`$.
+- $`\widehat\Gamma_{n,\rho,d}^{-1}`$: the inverse of the cell's correction map
+  of stage 7: it returns the raw probability that the map sends to a stated
+  corrected probability.
+- $`\widehat\Psi_{nt}^{-1}(\cdot\mid\mathcal F_d)`$: the inverse of the forecast
+  CDF of stage 4 in price terms: it returns the price at which that CDF equals a
+  stated probability.
+- $`t_{n\rho\mid d}`$: the calendar days from $d$ to the expiry of rank $\rho$.
+- $`\tilde p_{nt}`$ (new): the simulated expiry price of stock $n$ at that
+  expiry.
+
+Each simulated price then replaces the known price $`p_{nt}`$ in the agreed
+payoff $`V_{knt}^{ij}`$, the expiry payoff of one contract with side $`i\in I`$,
+type $`j\in J`$, contract index $`k\in K_{nt}^{j}`$, stock $n$ and expiry $t$.
+
+**Dimension.** The number of scenarios times the number of cells forecast at
+$d$, at most 1,328 prices per scenario. The number of scenarios is not chosen.
+
+**Why.**
+
+- **Why invert.** A draw is a score from 0 to 1, but payoffs need prices.
+  Inverting the corrected CDF returns the price whose corrected probability
+  equals the score. Each cell's simulated prices then follow its own corrected
+  forecast, while the draw carries the linkage between cells.
+- **Why the inverses exist.** The map and the mixture CDF are strictly
+  increasing, so for a score strictly between 0 and 1 there is exactly one
+  price.
+
+**No update.** Scenarios are drawn again at every solve, because the forecasts,
+the maps and the cells change with the cutoff.
 
 ### Order of one update
+
+Names in the block: `chi`, `eta`, `kappa`, `zeta`, `beta` and `rho` are the
+Greek letters above; `d_star` is the earliest usable cutoff; `Psi_hat` and
+`Gamma_hat` are the forecast CDF and the correction map; `F[a]` is the
+information at origin `a`; `S[n, session]` is the closing price of stock `n` at
+that session; `M` and `A` are the counters; `u` and `w` are the raw and the
+corrected PIT; `H` is the joint record; `<-` is the assignment.
 
 ```text
 UPDATE from cutoff d to the next cutoff d'
@@ -509,6 +944,11 @@ UPDATE from cutoff d to the next cutoff d'
 9. Solve with the forecasts and maps of d'.
 ```
 
+**Why this order.** Step 3 comes before steps 4 and 5 so that every new score is
+made with the map of its own origin before its outcome changes any counter.
+Step 7 comes after step 5 so that each new forecast is issued with the newest
+map.
+
 ### Sizes at a glance
 
 | Stage | Object | Size | Carried to the next cutoff |
@@ -521,7 +961,7 @@ UPDATE from cutoff d to the next cutoff d'
 | 6 | Counters | 12 integers per cell: at most 15,936 | Yes, incremented |
 | 7 | Correction map | 11 numbers per cell: at most 14,608 per version | Yes, recomputed |
 | 8 | Corrected PIT | 1 number per settled forecast | Created at settlement |
-| 9 | Joint record | At most about 1.4 million rows | Yes, appended |
+| 9 | Joint record | About 1.2 million rows | Yes, appended |
 | 10 | Copula | Dimension at most 1,328 | Step 2 |
 | 11 | Scenarios | Number of scenarios x at most 1,328 prices | No, redrawn |
 
@@ -530,12 +970,12 @@ To confirm, with (a) recommended in each:
 1. Names of the network's parts: (a) roman words (enc, head, wt, loc, sd), as
    bid and ask already are; (b) single letters of your choice.
 2. Update clock: (a) counters, maps and the joint record update at every
-   session even when the solve is weekly, as the EWMA rule already does;
-   (b) they update only at solves.
+   session even when the solve is weekly, as the agreed daily variance update
+   already does; (b) they update only at solves.
 3. Issued maps: (a) keep each version until its forecasts settle, since older
    versions can be rebuilt from the joint record; (b) keep every version.
 4. New symbols here ($`q_{nt}^{\text{mkt}}`$, $`\mathcal C`$, $`\mathcal H_d`$,
-   $`d'`$, bold for a vector, the tilde and the placeholder Cop): (a) accept;
+   $`d'`$, bold for a list, the tilde and the placeholder Cop): (a) accept;
    (b) rename.
 
 Step 1's four choices above stay open.
