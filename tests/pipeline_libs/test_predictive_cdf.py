@@ -3364,6 +3364,107 @@ def test_option_price_cdf_refuses_nonnumeric_price_record():
     assert not predictive_cdf.OptionPriceCDF(**_option_curve_params()).estimate(frame, 100)["eligible"]
 
 
+def _block_chain(strikes, only=None, tilt=0.):
+    """Black-Scholes marks on forward 100 at ``strikes``; ``only`` maps a strike to its single side."""
+    from scipy.stats import norm
+    only = only or {}
+    rows = []
+    for strike in strikes:
+        d1 = (np.log(100/strike)+.02)/.2
+        marks = {"call": 100*norm.cdf(d1)-strike*norm.cdf(d1-.2),
+                 "put": strike*norm.cdf(.2-d1)-100*norm.cdf(-d1)}
+        for side in ("call", "put"):
+            if only.get(strike, side) == side:
+                rows.append({"strike": float(strike), "type": side,
+                             "mark": marks[side]*(1+tilt*(strike-100)/100 if side == "put" else 1.)})
+    return pd.DataFrame(rows)
+
+
+def _inner_block(**knobs):
+    return predictive_cdf.InnerBlockOptionPriceCDF(**dict(_option_curve_params(), **knobs))
+
+
+def _without_cut(result):
+    """Return ``result`` minus ``strikes_cut``, which must be a plain int."""
+    result = dict(result)
+    assert type(result.pop("strikes_cut")) is int
+    return result
+
+
+_BLOCK_NEAR = np.arange(70., 131., 5.)
+
+
+def test_inner_block_equals_the_base_when_no_gap_is_wide():
+    rows = _block_chain(_BLOCK_NEAR)
+    base = predictive_cdf.OptionPriceCDF(**_option_curve_params()).estimate(rows, 100)
+    assert base["eligible"]
+    got = _inner_block().estimate(rows, 100)
+    assert got["strikes_cut"] == 0
+    _assert_estimates_equal(_without_cut(got), base)
+
+
+@pytest.mark.parametrize("far", [{60.: "put"}, {150.: "call"}, {60.: "put", 150.: "call"}])
+def test_inner_block_drops_one_sided_strikes_beyond_a_wide_gap(far):
+    near = _block_chain(_BLOCK_NEAR)
+    full = _block_chain(sorted(set(_BLOCK_NEAR) | set(far)), only=far)
+    base = predictive_cdf.OptionPriceCDF(**_option_curve_params())
+    assert base.estimate(near, 100)["eligible"]
+    assert base.estimate(full, 100)["reasons"] == ["inadequate_wing_support"]
+    got = _inner_block().estimate(full, 100)
+    assert got["eligible"] and got["strikes_cut"] == len(far)
+    _assert_estimates_equal(_without_cut(got), base.estimate(near, 100))
+
+
+def test_inner_block_cuts_at_the_wide_gap_nearest_the_forward():
+    far = {60.: "put", 40.: "put", 150.: "call", 220.: "call"}
+    full = _block_chain(sorted(set(_BLOCK_NEAR) | set(far)), only=far)
+    got = _inner_block().estimate(full, 100)
+    assert got["eligible"] and got["strikes_cut"] == 4
+    _assert_estimates_equal(_without_cut(got), predictive_cdf.OptionPriceCDF(
+        **_option_curve_params()).estimate(_block_chain(_BLOCK_NEAR), 100))
+
+
+def test_inner_block_keeps_the_forward_of_every_row():
+    far = [55., 50., 45., 150., 160.]
+    rows = _block_chain(sorted(set(_BLOCK_NEAR) | set(far)), tilt=.02)
+    near = _block_chain(_BLOCK_NEAR, tilt=.02)
+    parity = predictive_cdf.OptionPriceCDF.parity_forwards
+    assert abs(np.median(parity(rows))-np.median(parity(near))) > 1e-7
+    got = _inner_block().estimate(rows, 100)
+    assert got["eligible"] and got["strikes_cut"] == len(far)
+    assert got["forward_ratio"]*100 == pytest.approx(np.median(parity(rows)), rel=1e-12)
+    assert got["forward_pairs"] == len(parity(rows))
+
+
+@pytest.mark.parametrize("strikes", [
+    [70, 75, 80, 85, 90, 110, 115, 120, 125, 130],             # the gap straddles the forward
+    [70, 75, 80, 85, 90, 95, 100, 115, 120, 125, 130],         # nearest strike above is too far
+    [70, 75, 80, 85, 100, 105, 110, 115, 120, 125, 130]])      # nearest strike below is too far
+def test_inner_block_still_rejects_a_wide_gap_next_to_the_forward(strikes):
+    rows = _block_chain(strikes)
+    assert _inner_block().estimate(rows, 100)["reasons"] == ["inadequate_wing_support"]
+
+
+def test_inner_block_cut_below_the_strike_minimum_rejects_for_the_base_reason():
+    rows = _block_chain([60, 65, 70, 95, 100, 105, 110, 115])
+    assert predictive_cdf.OptionPriceCDF(**_option_curve_params()).estimate(
+        rows, 100)["reasons"] == ["inadequate_wing_support"]
+    got = _inner_block().estimate(rows, 100)
+    assert got["reasons"] == ["insufficient_strikes"] and not got["eligible"]
+
+
+def test_inner_block_cut_that_thins_a_wing_rejects_for_the_base_reason():
+    rows = _block_chain([60, 65, 70, 90, 95, 100, 105, 110, 115, 120])
+    got = _inner_block().estimate(rows, 100)
+    assert got["reasons"] == ["inadequate_wing_support"] and not got["eligible"]
+
+
+def test_option_price_cdf_support_hook_returns_its_inputs_and_no_diagnostics():
+    strike, price = np.array([90., 100., 110.]), np.array([12., 4., 1.])
+    out = predictive_cdf.OptionPriceCDF(**_option_curve_params())._support(strike, price, 100.)
+    assert out[0] is strike and out[1] is price and out[2] == {}
+
+
 def test_option_panel_refuses_quantile_field_collisions_and_missing_close_clock():
     params = {**_option_curve_params(), "required_multiplier": 100,
               "required_style": "american", "max_quote_age_seconds": 900}

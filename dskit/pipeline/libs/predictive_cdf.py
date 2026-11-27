@@ -34,7 +34,7 @@ __all__ = ["MixtureCurve", "GridCurve", "CalibratedCurve", "ConvexCurve",
            "DecisionWeightedMixtureMLPCDF", "DecisionWeightedMonotoneCDF",
            "ChronologicalCDFStudy", "CDFHyperparameterStudy", "CDFThresholdAudit",
            "DiscreteCDFGrid", "MeanPreservingCDFGrid", "TorchCDF", "BoostedTorchCDF", "DecisionRegionScores",
-           "OptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel", "NominalStrikeMasses",
+           "OptionPriceCDF", "InnerBlockOptionPriceCDF", "ExpiryCloseLabels", "OptionCDFPanel", "NominalStrikeMasses",
            "MixtureLossSpec", "mixture_family", "MIXTURE_FAMILY_KINDS",
            "mlp_stack", "MLP_ACTIVATIONS", "mixture_parts", "CurveMoments",
            "AUTO_DEVICE", "DEVICE_KINDS", "resolve_device"]
@@ -8278,6 +8278,29 @@ class OptionPriceCDF:
         starts, counts = OptionPriceCDF._runs(strike)
         return strike[starts], OptionPriceCDF._run_medians(price, starts, counts)
 
+    def _support(self, strike, price, forward):
+        """Choose the out-of-the-money strikes the curve is built from (ADR-0330).
+
+        The hook ``estimate`` calls once, after the call-equivalent prices are
+        formed and before the strike-count and wing checks. This base keeps
+        every strike, so a gap above ``max_outer_gap`` still rejects the chain.
+
+        Parameters
+        ----------
+        strike, price : numpy.ndarray
+            Ascending distinct strikes and their finite call-equivalent prices.
+        forward : float
+            The parity forward; a subclass never recomputes it.
+
+        Returns
+        -------
+        tuple
+            ``(strike, price, diagnostics)``: the kept strikes and prices, and a
+            dict of extra keys merged into the final result of ``estimate``,
+            not into an earlier rejection (empty here).
+        """
+        return strike, price, {}
+
     def estimate(self, rows, spot, growth=1.0):
         """Recover a proxy using consistently undiscounted option prices.
 
@@ -8343,6 +8366,7 @@ class OptionPriceCDF:
         strike, price = self._otm_prices(strike_all[otm], call_equivalent[otm])
         if not np.isfinite(price).all():
             return {"eligible": False, "reasons": ["nonfinite_call_equivalents"]}
+        strike, price, diagnostics = self._support(strike, price, forward)
         if len(strike) < 2*self.min_wing_nodes+1:
             return {"eligible": False, "reasons": ["insufficient_strikes"]}
         left, right = strike < forward, strike > forward
@@ -8401,8 +8425,49 @@ class OptionPriceCDF:
                 "raw_projected_probabilities": (1+slope).tolist(),
                 "raw_midpoint_log_returns": np.log(
                     (strike[:-1]/2+strike[1:]/2)/spot).tolist(),
-                "tail_completion": "finite_support_endpoint_completion"}
+                "tail_completion": "finite_support_endpoint_completion", **diagnostics}
 
+
+class InnerBlockOptionPriceCDF(OptionPriceCDF):
+    """Option-price CDF proxy built from the strikes inside the first wide gap (ADR-0330).
+
+    Same parameters and result as ``OptionPriceCDF``, except that a chain with a
+    gap in log strike above ``max_outer_gap`` is cut there instead of rejected:
+    only the block of strikes around the forward, with no wide gap inside it,
+    is used. The forward still comes from every parity pair. A wide gap next to
+    the forward is not cut, so the wing rules reject it as before.
+
+    Parameters
+    ----------
+    probabilities, min_forward_pairs, min_wing_nodes, max_inner_gap, max_outer_gap
+        As for ``OptionPriceCDF``; ``max_outer_gap`` is also the cut threshold.
+    max_projection_distance, max_forward_dispersion : float or None
+        As for ``OptionPriceCDF``.
+
+    Examples
+    --------
+    Cut a chain at gaps above 0.12 in log strike::
+
+        proxy = InnerBlockOptionPriceCDF([.1, .5, .9], 3, 3, .08, .12)
+        out = proxy.estimate(rows, spot)
+        # -> out["strikes_cut"] is the number of strikes left out
+    """
+
+    def _support(self, strike, price, forward):
+        """Keep the strikes around the forward up to the first wide gap on each side; count the rest."""
+        import numpy as np
+        if len(strike) < 2:
+            return strike, price, {"strikes_cut": 0}
+        with np.errstate(divide="ignore", invalid="ignore"):
+            wide = np.diff(np.log(strike/forward)) > self.max_outer_gap     # wide[i]: strike[i] to strike[i+1]
+        below, above = np.flatnonzero(strike <= forward), np.flatnonzero(strike >= forward)
+        low = int(below[-1]) if len(below) else 0
+        high = int(above[0]) if len(above) else len(strike)-1
+        while low > 0 and not wide[low-1]:
+            low -= 1
+        while high < len(strike)-1 and not wide[high]:
+            high += 1
+        return strike[low:high+1], price[low:high+1], {"strikes_cut": low+len(strike)-1-high}
 
 
 class ExpiryCloseLabels(Node):
