@@ -453,9 +453,34 @@ q_{nt}(\beta)\in\mathbb R\quad\text{for }\beta\in\mathcal Q^{\text{market}},\qqu
   For one full week it is 7/5 = 1.4. Code field `calendar_days_per_session`.
 
 **Where the quantiles come from.** They are built from the end-of-day option
-quotes of stock $n$ for the expiry $t$ calendar days after $d$. The seven
-definitions below are in order; each is followed by its symbols and its reason.
-All symbols in this part are new unless stated.
+quotes of stock $n$ for the expiry $t$ calendar days after $d$.
+
+**The idea in three facts.** The construction is not specific to this project;
+it rests on three standard things.
+
+1. Prices across strikes are probabilities. The slope of the put price across
+   strikes is the market's probability that the stock finishes at or below that
+   strike; from calls it is 1 plus the slope of the call price. This is the
+   textbook result of Breeden and Litzenberger (1978).
+2. The slope is read from out-of-the-money options: puts below the forward and
+   calls above it. Those are the options that trade and are quoted tightly.
+   This is market convention; Cboe's VIX is built the same way.
+3. A call and a put at one strike differ in price by the forward minus the
+   strike. This is put-call parity, which holds because otherwise there would
+   be free money. It is the only reason the forward appears: it marks the
+   boundary in fact 2, and it lets the put half and the call half be placed on
+   one curve.
+
+So there are not two different functions. There is one rule, slope equals
+probability, applied to puts on the low side and to calls on the high side.
+Restating the puts as call prices is bookkeeping, so that one formula covers
+both halves. Facts 1 and 3 are exact for options that cannot be exercised
+early. Ours can, so here they are approximations. Fact 2 is a regularity, not a
+law, and the code does not check it chain by chain; it held at all 25
+two-sided strikes of the worked example.
+
+The seven definitions below carry this out, in order; each is followed by its
+symbols and its reason. All symbols in this part are new unless stated.
 
 **1. Usable quotes and midpoints.**
 
@@ -614,7 +639,8 @@ on a quantity that must lie between -1 and 0.
 **Why.** Raising a call's strike by one dollar lowers its payoff by one dollar
 whenever the stock ends above the strike, and by nothing otherwise. So the fall
 in the call price per dollar of strike is the probability of ending above, and
-1 plus the slope is the probability of ending at or below. Quotes are noisy, so
+1 plus the slope is the probability of ending at or below. For two strikes that
+both use puts, this is simply the slope of the put price. Quotes are noisy, so
 raw slopes can run the wrong way; a probability cannot fall as the price rises,
 and the smoothing enforces that with the smallest change.
 
