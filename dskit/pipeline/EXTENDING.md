@@ -684,14 +684,13 @@ the active caller fixes. A search's top-level bound uses the model under the
 caller's fixes before round restrictions. A trajectory row's bound applies
 to that round's restricted problem.
 
-At this pin, caller fixes can hide variable bounds from an update hook.
-`free` or search cleanup can also erase a variable equality installed by
-the program with JuMP `fix`. Clear caller fixes on the held handle before a
-bound edit or before returning it to the pool. Use a fresh one-shot solve
-when prior pooled fixes are uncertain. For models with program-owned fixes,
-avoid persistent fixing and search, or express those equalities as constraint
-rows and verify fresh-versus-updated parity. The example edits only objective
-coefficients.
+Caller fixes apply to the current handle. An update hook sees the
+program-owned bounds and fixed equalities. A held update checks retained
+caller fixes against the updated domain. A conflicting fix refuses the update
+and leaves the previous setup committed. `free` and search round cleanup
+preserve program-owned fixed equalities. Reopening a pooled model clears
+the previous handle's caller fixes and start. The example edits only
+objective coefficients.
 
 Keep authoring review scoped to the child model's contract, adapter and
 evidence. After three failed correction cycles, pause for an independent
