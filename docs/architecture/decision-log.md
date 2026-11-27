@@ -37926,7 +37926,7 @@ References list symbol dependencies, not subscript expressions. Formula text is 
 | Input boundary | Check both Python and CLI, malformed UTF-8/JSON, duplicate keys, nonfinite numeric data and accumulated independent problems. State which checks require reading the mathematics. No formula text executes. |
 | Deliverables and closure | Extend the existing pipeline guide and its discovery link, add one JSON example, one validator and focused tests. No edits to child paths, solver lifecycle, scenario algorithms or runtime hashes. Use the existing review convergence checkpoint after three consecutive failed correction cycles. |
 
-## ADR-0330 — Market-curve inputs: a quote is not dropped for open interest, a wide strike gap cuts the chain instead of rejecting it, and an input fill report is the acceptance check (PROPOSED 2026-11-27, awaiting owner approval)
+## ADR-0330 — Market-curve inputs: a quote is not dropped for open interest, a wide strike gap cuts the chain instead of rejecting it, and an input fill report is the acceptance check (proposed and approved by the owner 2026-11-27)
 
 **Why.** Owner question, 2026-11-27: are the forecast model's inputs mostly imputes? The locked recipe (A0008) reads 21 inputs. The two calendar inputs are always present. The 19 market quantiles are present together or not at all, and are absent on 41.6% of 2017-2019 forecasts and 31.7% of 2020-2023 forecasts. An absent curve is filled with training medians, unflagged. Two cleaning rules cause much of this, and neither reflects a missing price.
 
@@ -37958,3 +37958,5 @@ Measured with inputs only and no fit (`/home/russell/data/index_options/runs/rul
 | Real data | On all 791,231 keys of 2017-2019 the built eligibility flag equals the recount's: the frozen panel's flag under defaults, `no_oi_trim` under both options. |
 
 Review follows `docs/skills/implementation-workflow.md`: two independent skeptic lenses and zero unresolved Critical or Major. Development approval authorizes no fit, replay or holdout read.
+
+**Approval.** The owner approved this entry on 2026-11-27 ("Sure.") without choosing among the three options under "Not decided here", so the median fill stays as it is until the owner rules.

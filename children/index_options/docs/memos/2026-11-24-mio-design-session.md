@@ -1876,3 +1876,23 @@ reviewed code and handoff. Final commits and purge receipts are appended to the
 existing external verification.json. Remove only contained clean session branches
 and worktrees. Preserve canonical data, evidence and services; the frozen code
 remains reachable through the merged history.
+
+## 27 November: ADR-0330 implementation record
+
+Scope record for the implementation workflow. Evidence is appended below as the work proceeds.
+
+- **Contract.** ADR-0330 in `docs/architecture/decision-log.md`, approved by the owner on 2026-11-27.
+- **Base.** Commit `6c51f60d` on `worktree-mio-copula-20261126`, with `origin/main` merged at `13068c94`.
+- **Bounded result.** The curve's own quote mask, the inner-block estimator and the audit columns, each behind a
+  default that reproduces today's output; then the second panel and its input fill table.
+- **Allowed paths.** `dskit/pipeline/libs/predictive_cdf.py`, `tests/pipeline_libs/test_predictive_cdf.py`,
+  `children/index_options/index_options/cdf_study.py`, `children/index_options/tests/test_cdf_study.py`, one
+  fill-report document and one panel document under `children/index_options/configs/`, and the package docs that
+  list these files.
+- **Non-goals.** No tail-closing change, no stock filter, no change to `OptionCDFPanel`, no change to the frozen
+  panel, the A0008 recipe, its forecasts or its scores, and no fit.
+- **Exit.** The acceptance table of ADR-0330, two independent skeptic lenses with zero unresolved Critical or
+  Major, and the real-data row: the built eligibility flag equals the recount's on all 791,231 keys of 2017-2019.
+- **Risk class.** Not high-risk: optional arguments whose defaults keep today's bytes, no trust boundary and no
+  irreversible effect. No Phase 0; the two final lenses apply.
+- **Locked rows cited.** A0002, A0005, A0007, A0008, A0009, A0010: none is changed.
