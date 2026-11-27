@@ -673,6 +673,17 @@ q_{nt}(\beta)&:=\frac{1}{\kappa_{nt}}\ \ln\left(\frac{\widehat G_{nt}^{-1}(\beta
 out. Dividing by the scale puts the quantiles in the same normalized units as
 the return being forecast.
 
+**How much is cut off.** The panel stores, for each forecast, how much of the
+probability the kept points cover: the last kept value minus the first. For the
+worked example it is 0.996. Across the 761,825 forecasts of 2020 to 2023 that
+have quantiles the median is 0.96. It is below 0.95 for 44 percent of them,
+below 0.90 for 22 percent and below 0.80 for 6 percent, and it is lower at long
+horizons: the median is 0.98 within a week and 0.94 beyond four weeks. Where it
+is low, closing the curve packs the uncovered probability into the last strike
+gaps, so the outermost quantile inputs mostly record where the last bid was,
+not the market's tail. No rule rejects a chain for low coverage, and the stored
+figure does not say which side the shortfall is on.
+
 **When a chain is used.** All of these must hold, or no quantiles are built:
 
 ```math
