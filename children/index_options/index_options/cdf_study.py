@@ -2277,12 +2277,65 @@ def _build_part(builder, path, cached, requested):
 
 
 class RawChainFeatureBuilder:
-    """Prepare order-invariant contract tensors and option-implied proxy quantiles."""
+    """Prepare order-invariant contract tensors and option-implied proxy quantiles.
+
+    Parameters
+    ----------
+    nodes : int
+        Moneyness nodes per tensor, at least 3.
+    moneyness_bounds : sequence of float
+        Lower (negative) and upper (positive) log-moneyness of the node centers.
+    max_node_gap : float
+        Farthest a contract may sit from a node center, in log moneyness.
+    proxy_probabilities : sequence of float
+        Strictly increasing quantile levels inside (0, 1) of the option-implied proxy.
+    min_wing_nodes : int
+        Strikes required on each side of the forward.
+    max_inner_gap, max_outer_gap : float
+        Gap limits in log strike for the proxy (see ``OptionPriceCDF``).
+    proxy_quote_fields : list or tuple of str, default ``QUOTE_FIELDS``
+        The ancillary fields a quote must carry, finite and in range, to enter the
+        proxy curve (ADR-0330). Distinct members of ``QUOTE_FIELDS``, stored in that
+        order. Price validity is never optional, and the node tensors and flow
+        aggregates always use every field.
+    proxy_estimator : str, default ``PROXY_ESTIMATOR``
+        A ``module:Class`` reference to the class that builds the proxy curve; it
+        must be ``OptionPriceCDF`` or a subclass (ADR-0330).
+    proxy_diagnostics : bool, default False
+        Write ``rn_proxy_reason`` and ``rn_strikes_cut`` right after the quantile
+        columns (ADR-0330).
+
+    Examples
+    --------
+    Build a curve that does not require open interest and cuts at wide gaps::
+
+        builder = RawChainFeatureBuilder(
+            nodes=9, moneyness_bounds=[-.3, .3], max_node_gap=.04,
+            proxy_probabilities=[.1, .5, .9], min_wing_nodes=3,
+            max_inner_gap=.08, max_outer_gap=.12,
+            proxy_quote_fields=["bid_size", "ask_size", "implied_volatility"],
+            proxy_estimator="dskit.pipeline.libs.predictive_cdf:InnerBlockOptionPriceCDF",
+            proxy_diagnostics=True)
+        features = builder.transform(chain, meta)
+    """
 
     NODE_FIELDS = ("log_moneyness", "iv", "log_rel_spread", "log_oi", "log_depth")
+    #: Price fields every usable quote carries, finite; never optional.
+    PRICE_FIELDS = ("strike", "mark", "bid", "ask")
+    #: Ancillary field -> (pandas comparison, bound) of its range rule: the one table.
+    _FIELD_RULES = {"bid_size": ("ge", 0), "ask_size": ("ge", 0),
+                    "open_interest": ("ge", 0), "implied_volatility": ("gt", 0)}
+    #: The ancillary quote fields: the vocabulary of ``proxy_quote_fields`` and its default.
+    QUOTE_FIELDS = tuple(_FIELD_RULES)
+    #: The default ``proxy_estimator``.
+    PROXY_ESTIMATOR = "dskit.pipeline.libs.predictive_cdf:OptionPriceCDF"
+    #: The default ``proxy_diagnostics``.
+    PROXY_DIAGNOSTICS = False
 
     def __init__(self, nodes, moneyness_bounds, max_node_gap, proxy_probabilities,
-                 min_wing_nodes, max_inner_gap, max_outer_gap):
+                 min_wing_nodes, max_inner_gap, max_outer_gap,
+                 proxy_quote_fields=QUOTE_FIELDS, proxy_estimator=PROXY_ESTIMATOR,
+                 proxy_diagnostics=PROXY_DIAGNOSTICS):
         import math
         if (type(nodes) is not int or nodes < 3 or len(moneyness_bounds) != 2
                 or moneyness_bounds[0] >= 0 or moneyness_bounds[1] <= 0
@@ -2300,24 +2353,96 @@ class RawChainFeatureBuilder:
         self.proxy_probabilities = tuple(proxy_probabilities)
         self.min_wing_nodes = min_wing_nodes
         self.max_inner_gap, self.max_outer_gap = max_inner_gap, max_outer_gap
+        self.proxy_quote_fields = self._checked_fields(proxy_quote_fields)
+        self.proxy_estimator = proxy_estimator
+        self._proxy_class = self._resolved_estimator(proxy_estimator)
+        if type(proxy_diagnostics) is not bool:
+            raise ValueError("proxy_diagnostics must be a bool")
+        self.proxy_diagnostics = proxy_diagnostics
+
+    @classmethod
+    def _checked_fields(cls, fields):
+        """Return ``fields`` as a tuple in ``QUOTE_FIELDS`` order, or refuse naming ``proxy_quote_fields``."""
+        if not isinstance(fields, (list, tuple)) or not fields:
+            raise ValueError("proxy_quote_fields must be a non-empty list or tuple of names")
+        if any(not isinstance(name, str) for name in fields):
+            raise ValueError("proxy_quote_fields members must be strings")
+        if len(set(fields)) != len(fields):
+            raise ValueError(f"proxy_quote_fields has a duplicate name: {list(fields)}")
+        unknown = [name for name in fields if name not in cls.QUOTE_FIELDS]
+        if unknown:
+            raise ValueError(f"proxy_quote_fields {unknown} are not among {list(cls.QUOTE_FIELDS)}")
+        return tuple(name for name in cls.QUOTE_FIELDS if name in fields)
+
+    @staticmethod
+    def _resolved_estimator(reference):
+        """Return the ``OptionPriceCDF`` class ``reference`` names, or refuse naming ``proxy_estimator``."""
+        from dskit.pipeline.base import import_ref, is_class_ref
+        from dskit.pipeline.libs.predictive_cdf import OptionPriceCDF
+        if not is_class_ref(reference):
+            raise ValueError(f"proxy_estimator must be a 'module:Class' reference, got {reference!r}")
+        try:
+            resolved = import_ref(reference)
+        except ValueError as error:
+            raise ValueError(f"proxy_estimator: {error}") from error
+        if not (isinstance(resolved, type) and issubclass(resolved, OptionPriceCDF)):
+            raise ValueError(f"proxy_estimator {reference!r} must name OptionPriceCDF or a subclass")
+        return resolved
+
+    def _proxy_options(self):
+        """Return the three proxy options as the JSON-ready mapping the sidecar records."""
+        return {"quote_fields": list(self.proxy_quote_fields),
+                "estimator": self.proxy_estimator, "diagnostics": self.proxy_diagnostics}
+
+    @classmethod
+    def _default_proxy_options(cls):
+        """Return what ``_proxy_options`` is for a builder made with no proxy option."""
+        return {"quote_fields": list(cls.QUOTE_FIELDS), "estimator": cls.PROXY_ESTIMATOR,
+                "diagnostics": cls.PROXY_DIAGNOSTICS}
+
+    def _estimator_files(self):
+        """Return the source files of the modules that define the proxy estimator and its base classes.
+
+        One path per module, in method-resolution order. A subclass defined elsewhere inherits
+        most of its behaviour, so its bases' files are bound too, not only its own.
+        """
+        import sys
+        files = []
+        for klass in self._proxy_class.__mro__:
+            path = getattr(sys.modules.get(klass.__module__), "__file__", None)
+            if path and path not in files:
+                files.append(path)
+        return files
+
+    def _estimator_implementation(self):
+        """Return one sha256 hex over the bytes of every file of :meth:`_estimator_files`, in order."""
+        digest = hashlib.sha256()
+        for path in self._estimator_files():
+            digest.update(hashlib.sha256(Path(path).read_bytes()).digest())
+        return digest.hexdigest()
 
     @staticmethod
     def _qname(probability):
         return f"rn_q_{int(round(10000*probability)):04d}"
 
     @staticmethod
-    def _usable_mask(rows, within=()):
-        """Mark valid, uncrossed contracts that are not duplicated (strike, type) within ``within`` columns."""
+    def _usable_mask(rows, within=(), fields=QUOTE_FIELDS):
+        """Mark valid, uncrossed contracts that are not duplicated (strike, type) within ``within`` columns.
+
+        Price validity always applies; of the ancillary fields only the names in ``fields``
+        must be finite and in range (ADR-0330), by the ``_FIELD_RULES`` table.
+        """
         import numpy as np
+        cls = RawChainFeatureBuilder
         duplicate = rows.duplicated([*within, "strike", "type"], keep=False)
-        finite = np.isfinite(rows[["strike", "mark", "bid", "ask", "bid_size",
-                                   "ask_size", "open_interest",
-                                   "implied_volatility"]]).all(axis=1)
-        return (finite & ~duplicate & (rows.strike > 0) & (rows.mark > 0)
-                & (rows.bid >= 0) & (rows.ask >= rows.bid)
-                & (rows.mark >= rows.bid) & (rows.mark <= rows.ask)
-                & (rows.bid_size >= 0) & (rows.ask_size >= 0)
-                & (rows.open_interest >= 0) & (rows.implied_volatility > 0))
+        finite = np.isfinite(rows[[*cls.PRICE_FIELDS, *fields]]).all(axis=1)
+        valid = (finite & ~duplicate & (rows.strike > 0) & (rows.mark > 0)
+                 & (rows.bid >= 0) & (rows.ask >= rows.bid)
+                 & (rows.mark >= rows.bid) & (rows.mark <= rows.ask))
+        for name in fields:
+            comparison, bound = cls._FIELD_RULES[name]
+            valid &= getattr(rows[name], comparison)(bound)
+        return valid
 
     @staticmethod
     def _usable_quotes(rows):
@@ -2449,49 +2574,52 @@ class RawChainFeatureBuilder:
             seen > 0, spread/np.where(seen > 0, mass, 1.), np.nan)
         return columns
 
-    def _proxy(self, estimator, rows, spot):
-        """Return the eligible option-implied proxy of one group's cleaned rows, else ``None``."""
-        proxy = estimator.estimate(rows, spot)
-        if not proxy["eligible"]:
-            return None
-        import numpy as np
-        return {k: np.asarray(proxy[k]) if k == "quantiles" else proxy[k]
-                for k in ("forward_ratio", "projection_distance", "mass", "quantiles")}
-
     def _proxy_columns(self, count, spot, group, kind, quotes):
-        """Return the proxy columns, one ``estimate`` call per group on its cleaned rows."""
+        """Return the proxy columns, one ``estimate`` call per group on its cleaned rows.
+
+        ``quotes`` holds rows cleaned with ``proxy_quote_fields``, not necessarily the rows
+        of the node tensors. With ``proxy_diagnostics`` the text ``rn_proxy_reason`` and the
+        float ``rn_strikes_cut`` follow the quantile columns (ADR-0330).
+        """
         import numpy as np
         import pandas as pd
-        from dskit.pipeline.libs.predictive_cdf import OptionPriceCDF
-        estimator = OptionPriceCDF(self.proxy_probabilities, 1, self.min_wing_nodes,
-                                   self.max_inner_gap, self.max_outer_gap)
+        estimator = self._proxy_class(self.proxy_probabilities, 1, self.min_wing_nodes,
+                                      self.max_inner_gap, self.max_outer_gap)
         eligible = np.zeros(count, dtype=int)
         scalars = {name: np.full(count, np.nan) for name in
                    ("forward_ratio", "projection_distance", "mass")}
         quantiles = np.full((count, len(self.proxy_probabilities)), np.nan)
+        reason = np.full(count, "no_usable_rows", dtype=object)
+        cut = np.full(count, np.nan)
         bounds = np.r_[0, np.cumsum(np.bincount(group, minlength=count))]
         for i in np.flatnonzero(np.diff(bounds)):
             part = slice(bounds[i], bounds[i+1])
             rows = pd.DataFrame({"strike": quotes["strike"][part], "type": kind[part],
                                  "mark": quotes["mark"][part]})
-            proxy = self._proxy(estimator, rows, spot[i])
-            if proxy is not None:
-                eligible[i] = 1
-                for name in scalars:
-                    scalars[name][i] = proxy[name]
-                quantiles[i] = proxy["quantiles"]
+            proxy = estimator.estimate(rows, spot[i])
+            if not proxy["eligible"]:
+                reason[i] = proxy["reasons"][0]
+                continue
+            eligible[i], reason[i], cut[i] = 1, "eligible", proxy.get("strikes_cut", 0.)
+            for name in scalars:
+                scalars[name][i] = proxy[name]
+            quantiles[i] = proxy["quantiles"]
         columns = {"rn_proxy_eligible": eligible, "rn_forward_ratio": scalars["forward_ratio"],
                    "rn_projection_distance": scalars["projection_distance"],
                    "rn_interior_mass": scalars["mass"]}
         for j, probability in enumerate(self.proxy_probabilities):
             columns[self._qname(probability)] = quantiles[:, j]
+        if self.proxy_diagnostics:
+            columns["rn_proxy_reason"], columns["rn_strikes_cut"] = reason, cut
         return columns
 
-    def _clean_arrays(self, chain, group, spot):
+    def _clean_arrays(self, chain, group, spot, fields=QUOTE_FIELDS):
         """Return the cleaned rows' group index, side and numeric arrays, ordered by (group, strike, side).
 
-        Quotes are cleaned once for the whole frame (:meth:`_usable_mask`, duplicates within
-        a group), then derived columns are computed against each row's own group spot.
+        Quotes are cleaned once for the whole frame (:meth:`_usable_mask` with ``fields``,
+        duplicates within a group), then derived columns are computed against each row's own
+        group spot. ``fields`` are the ancillary quote fields a kept row must carry
+        (ADR-0330); a field left out may be NaN or out of range in the returned arrays.
         """
         import numpy as np
         import pandas as pd
@@ -2500,7 +2628,7 @@ class RawChainFeatureBuilder:
                                    "gamma", "vega") if name in chain]
         frame = chain[names].reset_index(drop=True)
         frame["_group"] = group
-        frame = frame.loc[self._usable_mask(frame, ("_group",))]
+        frame = frame.loc[self._usable_mask(frame, ("_group",), fields)]
         owner, kind = frame["_group"].to_numpy(), frame["type"].to_numpy()
         quotes = {"strike": frame["strike"].to_numpy(dtype=float),
                   **{name: frame[name].to_numpy(dtype=float) for name in
@@ -2521,7 +2649,9 @@ class RawChainFeatureBuilder:
 
         The quotes are cleaned once for the whole frame and every group's nodes and
         aggregates come from sorted arrays and one ``bincount`` per quantity; only the
-        proxy solve runs once per group.
+        proxy solve runs once per group. The nodes and aggregates always use the rows
+        cleaned with every quote field; the proxy uses rows cleaned with
+        ``proxy_quote_fields`` (a second pass only when that is fewer fields, ADR-0330).
 
         Parameters
         ----------
@@ -2537,8 +2667,10 @@ class RawChainFeatureBuilder:
         -------
         pandas.DataFrame
             One row per requested key, sorted by key: node tensors and masks, the proxy
-            columns, the flow and exposure aggregates and the lagged open interest. A key
-            with no chain rows or no positive finite price is all NaN with empty masks.
+            columns (plus ``rn_proxy_reason`` and ``rn_strikes_cut`` when
+            ``proxy_diagnostics``), the flow and exposure aggregates and the lagged open
+            interest. A key with no chain rows or no positive finite price is all NaN with
+            empty masks.
         """
         import numpy as np
         import pandas as pd
@@ -2567,7 +2699,12 @@ class RawChainFeatureBuilder:
                 "volume", "delta", "gamma", "vega", "moneyness", "depth", "rel_spread")}
         data = {name: [key[i] for key in ordered] for i, name in enumerate(keys)}
         data.update(self._node_columns(count, owner, kind, quotes))
-        data.update(self._proxy_columns(count, spot, owner, kind, quotes))
+        if self.proxy_quote_fields == self.QUOTE_FIELDS or not take.any():
+            proxy_arrays = (owner, kind, quotes)
+        else:
+            proxy_arrays = self._clean_arrays(chain.loc[take], group[take], spot,
+                                              self.proxy_quote_fields)
+        data.update(self._proxy_columns(count, spot, *proxy_arrays))
         data.update(self._flow_columns(count, active, owner, kind, quotes))
         result = pd.DataFrame(data).sort_values(keys).reset_index(drop=True)
         group = result.groupby(["symbol", "expiry"], sort=False)
@@ -2609,6 +2746,12 @@ class RawChainFeatureBuilder:
         is written atomically to the same cached path and read back in key order, so the
         output and the sidecar are byte-identical for any ``workers``, which never enters
         the cache identity.
+
+        The cache identity also binds ``proxy_quote_fields``, ``proxy_estimator``,
+        ``proxy_diagnostics`` and the sha256 of the estimator's module file, so a change made
+        only in that module never reuses stale parts (ADR-0330). The ``.sources.json``
+        sidecar gains a ``proxy`` key naming the three options only when one is not its
+        default, so a default build's sidecar bytes are unchanged.
         """
         import pandas as pd
 
@@ -2627,12 +2770,16 @@ class RawChainFeatureBuilder:
         metadata_sha256 = hashlib.sha256(canonical_metadata.to_json(
             orient="records", date_format="iso", double_precision=15).encode()).hexdigest()
         meta["year"] = meta.quote_date.str[:4].astype(int)
+        options = self._proxy_options()
         identity = hashlib.sha256(json.dumps({
             "nodes": self.nodes, "bounds": self.bounds, "max_node_gap": self.max_node_gap,
             "probabilities": self.proxy_probabilities, "min_wing_nodes": self.min_wing_nodes,
             "max_inner_gap": self.max_inner_gap, "max_outer_gap": self.max_outer_gap,
             "metadata_sha256": metadata_sha256,
             "implementation": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "proxy_quote_fields": options["quote_fields"], "proxy_estimator": options["estimator"],
+            "proxy_diagnostics": options["diagnostics"],
+            "estimator_implementation": self._estimator_implementation(),
         }, sort_keys=True).encode()).hexdigest()[:16]
         cache = Path(str(output)+".parts")/identity
         cache.mkdir(parents=True, exist_ok=True)
@@ -2670,6 +2817,8 @@ class RawChainFeatureBuilder:
                    "sources": source_hashes}
         if tree.store is not None:
             sidecar["store"] = tree.store
+        if options != self._default_proxy_options():
+            sidecar["proxy"] = options
         temporary_manifest.write_text(json.dumps(sidecar, indent=2, sort_keys=True)+"\n")
         temporary_manifest.replace(manifest)
         return result

@@ -242,3 +242,6 @@ ADR-0213: predictive_cdf.OptionPriceCDF owns the shared parity/isotonic proxy.
 ExpiryCloseLabels and OptionCDFPanel expose default-deny JSON policies and
 content-addressed options, labels, curves and panel artifacts. Provider trade
 closes never masquerade as quotes; future/unverified outcomes remain null.
+ADR-0330: `OptionPriceCDF._support` is the one hook that chooses the strikes the
+curve is built from; `InnerBlockOptionPriceCDF` cuts a chain at a gap above
+`max_outer_gap` instead of rejecting it and reports `strikes_cut`.

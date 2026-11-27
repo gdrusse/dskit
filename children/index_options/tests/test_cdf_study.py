@@ -1214,6 +1214,223 @@ def test_raw_chain_archive_cache_is_bound_to_spot_metadata(tmp_path):
     assert first_manifest['metadata_sha256'] != second_manifest['metadata_sha256']
 
 
+# ---- ADR-0330: the curve's own quote fields, estimator choice and audit columns ---------------
+
+_INNER_BLOCK = "dskit.pipeline.libs.predictive_cdf:InnerBlockOptionPriceCDF"
+_NO_OPEN_INTEREST = ["bid_size", "ask_size", "implied_volatility"]
+_PROXY_CONTRACT = dict(nodes=5, moneyness_bounds=[-.15, .15], max_node_gap=.08,
+                       proxy_probabilities=[.1, .25, .5, .75, .9], min_wing_nodes=2,
+                       max_inner_gap=.08, max_outer_gap=.2)
+
+
+def _proxy_option_chain(date="2020-01-02", far_put=False):
+    """Five strikes of put/call quotes around a forward of 100; ``far_put`` adds a put alone at 60."""
+    strike = np.repeat([90., 95., 100., 105., 110.], 2)
+    mark = np.array([1., 11., 2., 7., 4., 4., 8., 2., 12., 1.])
+    rows = pd.DataFrame({
+        "symbol": "SPY", "date": date, "expiration": "2020-02-21", "strike": strike,
+        "type": ["put", "call"]*5, "mark": mark, "bid": mark-.1, "ask": mark+.1,
+        "bid_size": 10., "ask_size": 12., "open_interest": 100., "implied_volatility": .25})
+    if far_put:
+        rows.loc[len(rows)] = ["SPY", date, "2020-02-21", 60., "put", .05, .04, .06, 10., 12., 100., .3]
+    return rows
+
+
+def _proxy_option_meta(*dates):
+    return pd.DataFrame({"symbol": "SPY", "quote_date": list(dates or ("2020-01-02",)),
+                         "expiry": "2020-02-21", "chain_underlying_price": 100.})
+
+
+def _proxy_option_builder(**options):
+    return RawChainFeatureBuilder(**_PROXY_CONTRACT, **options)
+
+
+def test_proxy_option_defaults_are_the_pre_adr_0330_behaviour():
+    builder = _proxy_option_builder()
+    assert builder.proxy_quote_fields == RawChainFeatureBuilder.QUOTE_FIELDS
+    assert builder.proxy_estimator == RawChainFeatureBuilder.PROXY_ESTIMATOR
+    assert builder.proxy_diagnostics is False
+    rng = np.random.default_rng(3)
+    n = 300
+    rows = pd.DataFrame({"strike": rng.integers(50, 400, n).astype(float),
+                         "type": rng.choice(["put", "call"], n),
+                         "mark": rng.choice([1., 2., 3., np.nan, 0.], n, p=[.4, .3, .2, .05, .05])})
+    rows["bid"] = rows.mark-rng.choice([.1, -.5, np.nan], n, p=[.9, .05, .05])
+    rows["ask"] = rows.mark+rng.choice([.1, -.5], n, p=[.95, .05])
+    rows.loc[rng.random(n) < .05, "strike"] = np.nan
+    for name in RawChainFeatureBuilder.QUOTE_FIELDS:
+        rows[name] = rng.choice([1., 0., -1., np.nan, np.inf], n, p=[.8, .05, .05, .05, .05])
+    mask = RawChainFeatureBuilder._usable_mask(rows)
+    assert mask.tolist() == RawChainFeatureBuilder._usable_mask(
+        rows, fields=RawChainFeatureBuilder.QUOTE_FIELDS).tolist()
+    assert 0 < mask.sum() < n
+    pd.testing.assert_frame_equal(
+        rows.loc[mask].sort_values(["strike", "type"], kind="mergesort").copy(),
+        _reference_usable_quotes(rows))
+
+
+def test_proxy_option_a_missing_open_interest_no_longer_disqualifies_a_price():
+    chain = _proxy_option_chain()
+    chain.loc[chain.strike == 90., "open_interest"] = np.nan
+    chain.loc[(chain.strike == 110.) & (chain.type == "call"), "open_interest"] = -1.
+    meta = _proxy_option_meta()
+    default = _proxy_option_builder().transform(chain, meta)
+    relaxed = _proxy_option_builder(proxy_quote_fields=_NO_OPEN_INTEREST).transform(chain, meta)
+    assert default.rn_proxy_eligible.iloc[0] == 0
+    assert relaxed.rn_proxy_eligible.iloc[0] == 1
+    assert np.isfinite(relaxed.filter(regex="^rn_q_").to_numpy()).all()
+    plain = [name for name in default if not name.startswith("rn_")]
+    assert plain and list(relaxed.columns) == list(default.columns)
+    pd.testing.assert_frame_equal(default[plain], relaxed[plain])         # nodes keep the full mask
+    assert relaxed.chain_node_00_mask.tolist() == default.chain_node_00_mask.tolist()
+
+
+def test_proxy_option_fields_are_stored_in_vocabulary_order():
+    fields = RawChainFeatureBuilder.QUOTE_FIELDS
+    assert _proxy_option_builder(proxy_quote_fields=tuple(reversed(fields))).proxy_quote_fields == fields
+    assert _proxy_option_builder(
+        proxy_quote_fields=["implied_volatility", "bid_size"]).proxy_quote_fields == (
+            "bid_size", "implied_volatility")
+
+
+@pytest.mark.parametrize("options", [
+    {"proxy_quote_fields": "bid_size"}, {"proxy_quote_fields": {"bid_size"}},
+    {"proxy_quote_fields": []}, {"proxy_quote_fields": ()},
+    {"proxy_quote_fields": ["bid_size", 3]}, {"proxy_quote_fields": ["volume"]},
+    {"proxy_quote_fields": ["bid_size", "bid_size"]}, {"proxy_quote_fields": None},
+    {"proxy_estimator": "not-a-reference"}, {"proxy_estimator": 7},
+    {"proxy_estimator": "no_such_module_xyz:Thing"},
+    {"proxy_estimator": "dskit.pipeline.libs.predictive_cdf:NoSuchClass"},
+    {"proxy_estimator": "dskit.pipeline.libs.predictive_cdf:GridCurve"},
+    {"proxy_estimator": "json:dumps"},
+    {"proxy_diagnostics": 1}, {"proxy_diagnostics": "yes"}, {"proxy_diagnostics": None}])
+def test_proxy_option_refusals_name_the_argument(options):
+    with pytest.raises(ValueError, match=next(iter(options))):
+        _proxy_option_builder(**options)
+
+
+def test_proxy_option_estimator_choice_cuts_a_chain_at_a_wide_gap():
+    chain, meta = _proxy_option_chain(far_put=True), _proxy_option_meta()
+    default = _proxy_option_builder(proxy_diagnostics=True).transform(chain, meta)
+    inner = _proxy_option_builder(proxy_estimator=_INNER_BLOCK, proxy_diagnostics=True
+                                  ).transform(chain, meta)
+    assert default.rn_proxy_eligible.iloc[0] == 0 and inner.rn_proxy_eligible.iloc[0] == 1
+    assert default.rn_proxy_reason.iloc[0] == "inadequate_wing_support"
+    assert np.isnan(default.rn_strikes_cut.iloc[0])
+    assert inner.rn_proxy_reason.iloc[0] == "eligible" and inner.rn_strikes_cut.iloc[0] == 1.0
+    # the same chain without the far strike: the base estimator reports no cut, the subclass none
+    clean = _proxy_option_builder(proxy_diagnostics=True).transform(_proxy_option_chain(), meta)
+    assert clean.rn_proxy_reason.iloc[0] == "eligible" and clean.rn_strikes_cut.iloc[0] == 0.0
+    cut = inner.filter(regex="^rn_q_").to_numpy()
+    np.testing.assert_allclose(
+        cut, _proxy_option_builder().transform(_proxy_option_chain(), meta).filter(regex="^rn_q_").to_numpy())
+
+
+def test_proxy_option_diagnostic_columns_are_two_and_follow_the_quantiles():
+    chain, meta = _proxy_option_chain(), _proxy_option_meta()
+    off = _proxy_option_builder().transform(chain, meta)
+    on = _proxy_option_builder(proxy_diagnostics=True).transform(chain, meta)
+    assert "rn_proxy_reason" not in off and "rn_strikes_cut" not in off
+    last = max(i for i, name in enumerate(off.columns) if name.startswith("rn_q_"))
+    expected = list(off.columns[:last+1])+["rn_proxy_reason", "rn_strikes_cut"]+list(off.columns[last+1:])
+    assert list(on.columns) == expected
+    pd.testing.assert_frame_equal(on.drop(columns=["rn_proxy_reason", "rn_strikes_cut"]), off)
+
+
+def test_proxy_option_a_key_without_usable_rows_reports_no_usable_rows():
+    good = _proxy_option_chain("2020-01-02")
+    broken = _proxy_option_chain("2020-01-03").assign(mark=np.nan)          # every row fails the mask
+    meta = _proxy_option_meta("2020-01-02", "2020-01-03", "2020-01-06")      # the last has no chain rows
+    out = _proxy_option_builder(proxy_diagnostics=True).transform(pd.concat([good, broken]), meta)
+    assert out.rn_proxy_reason.tolist() == ["eligible", "no_usable_rows", "no_usable_rows"]
+    assert np.isnan(out.rn_strikes_cut.iloc[1:]).all() and out.rn_strikes_cut.iloc[0] == 0.0
+
+
+def _proxy_option_archive(tmp_path):
+    archive = tmp_path/"archive"
+    (archive/"spy").mkdir(parents=True)
+    pd.DataFrame([{"symbol": "SPY", "date": "2020-01-02", "expiration": "2020-02-21",
+                   "strike": 100., "type": "call", "mark": 4., "bid": 3.9, "ask": 4.1,
+                   "bid_size": 10, "ask_size": 12, "open_interest": 100,
+                   "implied_volatility": .2}]).to_parquet(archive/"spy"/"options_2020.parquet", index=False)
+    return archive, _proxy_option_meta()
+
+
+def _proxy_option_identity(builder, tmp_path, archive, meta, name):
+    output = tmp_path/name
+    builder.build_archive(meta, archive, output)
+    identity, = [p.name for p in Path(str(output)+".parts").iterdir()]
+    return identity
+
+
+def test_proxy_option_cache_identity_binds_every_option_and_the_estimator_module(tmp_path, monkeypatch):
+    archive, meta = _proxy_option_archive(tmp_path)
+    variants = {"default": {}, "fields": {"proxy_quote_fields": _NO_OPEN_INTEREST},
+                "estimator": {"proxy_estimator": _INNER_BLOCK}, "diagnostics": {"proxy_diagnostics": True}}
+    identities = {name: _proxy_option_identity(_proxy_option_builder(**options), tmp_path, archive, meta, name)
+                  for name, options in variants.items()}
+    assert len(set(identities.values())) == len(variants)
+    explicit = _proxy_option_builder(proxy_quote_fields=list(RawChainFeatureBuilder.QUOTE_FIELDS),
+                                     proxy_estimator=RawChainFeatureBuilder.PROXY_ESTIMATOR,
+                                     proxy_diagnostics=False)
+    assert _proxy_option_identity(explicit, tmp_path, archive, meta, "explicit") == identities["default"]
+    monkeypatch.setattr(RawChainFeatureBuilder, "_estimator_implementation", lambda self: "0"*64)
+    assert _proxy_option_identity(_proxy_option_builder(), tmp_path, archive, meta, "changed") != identities["default"]
+
+
+def test_proxy_option_estimator_implementation_binds_every_file_of_the_class_lineage(tmp_path, monkeypatch):
+    import dskit.pipeline.libs.predictive_cdf as module
+    assert _proxy_option_builder()._estimator_files() == [module.__file__]
+    source = tmp_path/"adr0330_far_estimator.py"
+    source.write_text("from dskit.pipeline.libs.predictive_cdf import InnerBlockOptionPriceCDF\n\n\n"
+                      "class Far(InnerBlockOptionPriceCDF):\n    pass\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    far = _proxy_option_builder(proxy_estimator="adr0330_far_estimator:Far")
+    assert far._estimator_files() == [str(source), module.__file__]       # its own file, then its bases'
+    before, base_before = far._estimator_implementation(), _proxy_option_builder()._estimator_implementation()
+    assert before != base_before
+    source.write_text(source.read_text()+"# changed\n")
+    changed = far._estimator_implementation()
+    assert changed != before                                              # its own file is bound
+    other = tmp_path/"other_base.py"
+    other.write_text("# stands in for an edited base module\n")
+    monkeypatch.setattr(module, "__file__", str(other))
+    assert far._estimator_files() == [str(source), str(other)]
+    assert far._estimator_implementation() != changed                     # and so is its base's file
+    assert _proxy_option_builder()._estimator_implementation() != base_before
+
+
+def test_proxy_option_sidecar_names_the_options_only_when_one_is_not_default(tmp_path):
+    archive, meta = _proxy_option_archive(tmp_path)
+    sidecars = {}
+    for name, options in (("default", {}), ("explicit", {"proxy_diagnostics": False}),
+                          ("custom", {"proxy_quote_fields": _NO_OPEN_INTEREST,
+                                      "proxy_estimator": _INNER_BLOCK, "proxy_diagnostics": True})):
+        output = tmp_path/f"{name}.parquet"
+        _proxy_option_builder(**options).build_archive(meta, archive, output)
+        sidecars[name] = json.loads(Path(str(output)+".sources.json").read_text())
+    assert set(sidecars["default"]) == {"metadata_columns", "metadata_sha256", "sources"}
+    assert sidecars["explicit"] == sidecars["default"]
+    assert sidecars["custom"].pop("proxy") == {"quote_fields": _NO_OPEN_INTEREST,
+                                               "estimator": _INNER_BLOCK, "diagnostics": True}
+    assert sidecars["custom"] == sidecars["default"]
+
+
+def test_proxy_option_archive_is_byte_identical_for_any_worker_count(tmp_path):
+    archive, meta = _archive_fixture(tmp_path)
+    builder = RawChainFeatureBuilder(**_BUILDERS[0], proxy_quote_fields=_NO_OPEN_INTEREST,
+                                     proxy_estimator=_INNER_BLOCK, proxy_diagnostics=True)
+    outputs = []
+    for workers in (1, 2):
+        outputs.append(tmp_path/f"features{workers}.parquet")
+        builder.build_archive(meta, archive, outputs[-1], workers=workers)
+    assert outputs[0].read_bytes() == outputs[1].read_bytes()
+    assert (Path(str(outputs[0])+".sources.json").read_text()
+            == Path(str(outputs[1])+".sources.json").read_text())
+    frame = pd.read_parquet(outputs[1])
+    assert {"rn_proxy_reason", "rn_strikes_cut"} <= set(frame) and frame.rn_proxy_eligible.sum() > 0
+
+
 def test_risk_neutral_config_pins_architectures_and_excludes_actual_dte():
     path = Path(__file__).parents[1]/'configs'/'run-predictive-cdf-risk-neutral.json'
     config = json.loads(path.read_text())

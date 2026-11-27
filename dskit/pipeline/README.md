@@ -1461,6 +1461,9 @@ ADR-0213: predictive_cdf.OptionPriceCDF owns the shared parity/isotonic proxy.
 ExpiryCloseLabels and OptionCDFPanel expose default-deny JSON policies and
 content-addressed options, labels, curves and panel artifacts. Provider trade
 closes never masquerade as quotes; future/unverified outcomes remain null.
+ADR-0330: `OptionPriceCDF._support` is the one hook that chooses the strikes the
+curve is built from; `InnerBlockOptionPriceCDF` cuts a chain at a gap above
+`max_outer_gap` instead of rejecting it and reports `strikes_cut`.
 
 ADR-0276 adds `libs.pyomo.TransportPortfolioSolve`: joint integer actions with marginal W1 objectives, exclusive pairs, linear reserve epigraphs and shared caps; independent primal checks and a single profit solve. `libs.option_ledger.FundedOptionAccount` tracks recurring deposits, settled funding and atomic reserved-book admission. Both consume prepared data; neither reads market sources or places orders. Provably cost-bearing opposite pairs omit redundant exclusion binaries only under exact coefficient dominance checks. Approximate incumbents disclose matched-quantity cleanup and profit improvement; original solver records and independent feasibility/value certificates remain available. The portfolio uses the opt-in sparse, unbanded `WassersteinDual.attach(..., sparse=True)` representation with unrestricted adjacent potentials; default/banded attachment remains unchanged.
 
