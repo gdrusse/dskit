@@ -1337,13 +1337,38 @@ def test_proxy_option_diagnostic_columns_are_two_and_follow_the_quantiles():
     pd.testing.assert_frame_equal(on.drop(columns=["rn_proxy_reason", "rn_strikes_cut"]), off)
 
 
-def test_proxy_option_a_key_without_usable_rows_reports_no_usable_rows():
+def test_proxy_option_reasons_tell_unusable_rows_from_a_dead_spot_from_a_missing_chain():
     good = _proxy_option_chain("2020-01-02")
     broken = _proxy_option_chain("2020-01-03").assign(mark=np.nan)          # every row fails the mask
-    meta = _proxy_option_meta("2020-01-02", "2020-01-03", "2020-01-06")      # the last has no chain rows
-    out = _proxy_option_builder(proxy_diagnostics=True).transform(pd.concat([good, broken]), meta)
-    assert out.rn_proxy_reason.tolist() == ["eligible", "no_usable_rows", "no_usable_rows"]
+    dead = _proxy_option_chain("2020-01-06")                                 # valid rows, no usable spot
+    meta = _proxy_option_meta("2020-01-02", "2020-01-03", "2020-01-06", "2020-01-07")   # the last has no rows
+    meta.loc[meta.quote_date == "2020-01-06", "chain_underlying_price"] = np.nan
+    out = _proxy_option_builder(proxy_diagnostics=True).transform(pd.concat([good, broken, dead]), meta)
+    assert out.rn_proxy_reason.tolist() == ["eligible", "no_usable_rows", "inactive_spot", "no_chain_rows"]
     assert np.isnan(out.rn_strikes_cut.iloc[1:]).all() and out.rn_strikes_cut.iloc[0] == 0.0
+
+
+def test_proxy_option_an_estimator_that_cannot_be_imported_or_built_refuses_naming_the_argument(
+        tmp_path, monkeypatch):
+    (tmp_path/"adr0330_raises_on_import.py").write_text("raise RuntimeError('import fails')\n")
+    (tmp_path/"adr0330_one_argument.py").write_text(
+        "from dskit.pipeline.libs.predictive_cdf import OptionPriceCDF\n\n\n"
+        "class OneArgument(OptionPriceCDF):\n    def __init__(self, only):\n        pass\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    for reference in ("adr0330_raises_on_import:Anything", "adr0330_one_argument:OneArgument"):
+        with pytest.raises(ValueError, match="proxy_estimator"):
+            _proxy_option_builder(proxy_estimator=reference)
+
+
+def test_proxy_option_a_quote_without_a_finite_bid_or_ask_never_enters_the_curve():
+    meta = _proxy_option_meta()
+    relaxed = _proxy_option_builder(proxy_quote_fields=["implied_volatility"], proxy_diagnostics=True)
+    assert relaxed.transform(_proxy_option_chain(), meta).rn_proxy_eligible.iloc[0] == 1
+    for name, value in (("ask", np.inf), ("bid", np.nan)):
+        chain = _proxy_option_chain()
+        chain.loc[(chain.strike == 90.) & (chain.type == "put"), name] = value
+        out = relaxed.transform(chain, meta)
+        assert out.rn_proxy_eligible.iloc[0] == 0 and out.rn_proxy_reason.iloc[0] == "insufficient_strikes"
 
 
 def _proxy_option_archive(tmp_path):

@@ -1896,3 +1896,28 @@ Scope record for the implementation workflow. Evidence is appended below as the 
 - **Risk class.** Not high-risk: optional arguments whose defaults keep today's bytes, no trust boundary and no
   irreversible effect. No Phase 0; the two final lenses apply.
 - **Locked rows cited.** A0002, A0005, A0007, A0008, A0009, A0010: none is changed.
+
+Evidence so far (27 November).
+
+- **Pack slice, commit `fcb5e048`.** RED on the unchanged code: 12 failed with `AttributeError` for the missing
+  class and hook. GREEN: 12 new cases, the 118 existing `option_price_cdf` cases unmodified, the whole file (777).
+- **Child slice, commit `9434480d`.** RED: 27 failed with `TypeError` and `AttributeError` for the missing
+  arguments and constants. GREEN: the whole file (208), the theta, strike-screen and strike-region files (221).
+  A default build of the six-part archive fixture has the same parquet and sidecar sha256 before and after.
+- **Review lens 1, correctness and authority (Sonnet, candidate `9434480d`).** No Critical, no Major, 2 Minor,
+  3 Nit. Its probes: 4,800 random chains through `estimate` and 80 random frames through `transform` against the
+  base modules loaded from git, all identical; archive and sidecar bytes identical for 1 and 3 workers; node
+  columns unchanged under five option sets.
+- **Review lens 2, tests and integration (Sonnet, same candidate).** No Critical, no Major, 5 Minor, 5 Nit. It
+  ran 47 mutants: 39 killed, 8 survived, of which 4 were equivalent or unreachable. No existing test was edited.
+  A panel read with the two audit columns returns them and changes nothing else.
+- **Dispositions.** Fixed with tests in the next commit: an estimator that raises while imported or cannot be
+  built from the builder's parameters now refuses at construction naming the argument; the reason column tells
+  `no_chain_rows`, `inactive_spot` and `no_usable_rows` apart; four test gaps closed (a gap between the inner and
+  outer limit, a gap equal to the limit, no `strikes_cut` in a rejection, a quote without a finite bid or ask under
+  a relaxed mask). Accepted without change: no committed golden-bytes test for the default build (both lenses
+  proved byte identity against the base by probe); a cut count is not kept for a curve rejected at an optional
+  limit the builder never sets; a class whose module has no file is not bound into the cache identity.
+- **Noted for the panel build.** `panel_extension.verify_overlap` requires an equal schema, and the strike-screen
+  protocol pins 118 chain columns, so a panel carrying the two audit columns is a separate asset.
+- **Real-data row.** Not run yet: on 27 November both admission gates refused the launch for low host memory.

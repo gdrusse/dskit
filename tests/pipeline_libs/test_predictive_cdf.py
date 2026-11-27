@@ -3451,12 +3451,35 @@ def test_inner_block_cut_below_the_strike_minimum_rejects_for_the_base_reason():
         rows, 100)["reasons"] == ["inadequate_wing_support"]
     got = _inner_block().estimate(rows, 100)
     assert got["reasons"] == ["insufficient_strikes"] and not got["eligible"]
+    assert "strikes_cut" not in got                     # the extras go into the final result only
 
 
 def test_inner_block_cut_that_thins_a_wing_rejects_for_the_base_reason():
     rows = _block_chain([60, 65, 70, 90, 95, 100, 105, 110, 115, 120])
     got = _inner_block().estimate(rows, 100)
     assert got["reasons"] == ["inadequate_wing_support"] and not got["eligible"]
+    assert "strikes_cut" not in got
+
+
+def test_inner_block_leaves_a_gap_between_the_inner_and_the_outer_limit_alone():
+    knobs = _option_curve_params()
+    far = {143.: "call"}                                # log(143/130) sits between the two limits
+    assert knobs["max_inner_gap"] < np.log(143/130) < knobs["max_outer_gap"]
+    rows = _block_chain(sorted(set(_BLOCK_NEAR) | set(far)), only=far)
+    base = predictive_cdf.OptionPriceCDF(**knobs).estimate(rows, 100)
+    assert base["eligible"]
+    got = _inner_block().estimate(rows, 100)
+    assert got["strikes_cut"] == 0
+    _assert_estimates_equal(_without_cut(got), base)
+
+
+def test_inner_block_a_gap_equal_to_the_limit_is_not_wide():
+    strike, price = np.array([70., 80., 90., 100., 110., 150.]), np.array([31., 22., 13., 6., 2., .1])
+    gap = float(np.diff(np.log(strike/100.))[-1])
+    kept = _inner_block(max_outer_gap=gap)._support(strike, price, 100.)
+    assert kept[2] == {"strikes_cut": 0} and len(kept[0]) == len(strike)          # equal: kept, as the base rule
+    cut = _inner_block(max_outer_gap=float(np.nextafter(gap, 0.)))._support(strike, price, 100.)
+    assert cut[2] == {"strikes_cut": 1} and cut[0].tolist() == strike[:-1].tolist()
 
 
 def test_option_price_cdf_support_hook_returns_its_inputs_and_no_diagnostics():

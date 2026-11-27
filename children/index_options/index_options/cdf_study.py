@@ -2303,7 +2303,12 @@ class RawChainFeatureBuilder:
         must be ``OptionPriceCDF`` or a subclass (ADR-0330).
     proxy_diagnostics : bool, default False
         Write ``rn_proxy_reason`` and ``rn_strikes_cut`` right after the quantile
-        columns (ADR-0330).
+        columns (ADR-0330). The reason is ``eligible``; else the estimator's first
+        rejection reason; else, for a key the estimator never saw, ``no_chain_rows``
+        (no quote of that key), ``inactive_spot`` (quotes but no positive finite
+        spot) or ``no_usable_rows`` (quotes and a spot, none passing the proxy mask).
+        The cut is the strikes an eligible curve left out, ``0.0`` when the estimator
+        reports none, and NaN for a key without an eligible curve.
 
     Examples
     --------
@@ -2331,6 +2336,9 @@ class RawChainFeatureBuilder:
     PROXY_ESTIMATOR = "dskit.pipeline.libs.predictive_cdf:OptionPriceCDF"
     #: The default ``proxy_diagnostics``.
     PROXY_DIAGNOSTICS = False
+    #: ``rn_proxy_reason`` of a key with a curve, and of the three kinds of key the estimator never sees.
+    ELIGIBLE, NO_CHAIN_ROWS, INACTIVE_SPOT, NO_USABLE_ROWS = (
+        "eligible", "no_chain_rows", "inactive_spot", "no_usable_rows")
 
     def __init__(self, nodes, moneyness_bounds, max_node_gap, proxy_probabilities,
                  min_wing_nodes, max_inner_gap, max_outer_gap,
@@ -2356,6 +2364,11 @@ class RawChainFeatureBuilder:
         self.proxy_quote_fields = self._checked_fields(proxy_quote_fields)
         self.proxy_estimator = proxy_estimator
         self._proxy_class = self._resolved_estimator(proxy_estimator)
+        try:
+            self._estimator()
+        except Exception as error:
+            raise ValueError(f"proxy_estimator {proxy_estimator!r} cannot be built from this "
+                             f"builder's parameters: {error}") from error
         if type(proxy_diagnostics) is not bool:
             raise ValueError("proxy_diagnostics must be a bool")
         self.proxy_diagnostics = proxy_diagnostics
@@ -2383,11 +2396,16 @@ class RawChainFeatureBuilder:
             raise ValueError(f"proxy_estimator must be a 'module:Class' reference, got {reference!r}")
         try:
             resolved = import_ref(reference)
-        except ValueError as error:
-            raise ValueError(f"proxy_estimator: {error}") from error
+        except Exception as error:      # a module may raise anything while it is imported
+            raise ValueError(f"proxy_estimator {reference!r} cannot be imported: {error}") from error
         if not (isinstance(resolved, type) and issubclass(resolved, OptionPriceCDF)):
             raise ValueError(f"proxy_estimator {reference!r} must name OptionPriceCDF or a subclass")
         return resolved
+
+    def _estimator(self):
+        """Return a new proxy estimator built from this builder's parameters (the one construction call)."""
+        return self._proxy_class(self.proxy_probabilities, 1, self.min_wing_nodes,
+                                 self.max_inner_gap, self.max_outer_gap)
 
     def _proxy_options(self):
         """Return the three proxy options as the JSON-ready mapping the sidecar records."""
@@ -2583,13 +2601,12 @@ class RawChainFeatureBuilder:
         """
         import numpy as np
         import pandas as pd
-        estimator = self._proxy_class(self.proxy_probabilities, 1, self.min_wing_nodes,
-                                      self.max_inner_gap, self.max_outer_gap)
+        estimator = self._estimator()
         eligible = np.zeros(count, dtype=int)
         scalars = {name: np.full(count, np.nan) for name in
                    ("forward_ratio", "projection_distance", "mass")}
         quantiles = np.full((count, len(self.proxy_probabilities)), np.nan)
-        reason = np.full(count, "no_usable_rows", dtype=object)
+        reason = np.full(count, self.NO_USABLE_ROWS, dtype=object)
         cut = np.full(count, np.nan)
         bounds = np.r_[0, np.cumsum(np.bincount(group, minlength=count))]
         for i in np.flatnonzero(np.diff(bounds)):
@@ -2600,7 +2617,7 @@ class RawChainFeatureBuilder:
             if not proxy["eligible"]:
                 reason[i] = proxy["reasons"][0]
                 continue
-            eligible[i], reason[i], cut[i] = 1, "eligible", proxy.get("strikes_cut", 0.)
+            eligible[i], reason[i], cut[i] = 1, self.ELIGIBLE, proxy.get("strikes_cut", 0.)
             for name in scalars:
                 scalars[name][i] = proxy[name]
             quantiles[i] = proxy["quantiles"]
@@ -2704,7 +2721,11 @@ class RawChainFeatureBuilder:
         else:
             proxy_arrays = self._clean_arrays(chain.loc[take], group[take], spot,
                                               self.proxy_quote_fields)
-        data.update(self._proxy_columns(count, spot, *proxy_arrays))
+        proxy = self._proxy_columns(count, spot, *proxy_arrays)
+        if self.proxy_diagnostics:      # a key the estimator never saw says which kind it is
+            proxy["rn_proxy_reason"][~present] = self.NO_CHAIN_ROWS
+            proxy["rn_proxy_reason"][present & ~active] = self.INACTIVE_SPOT
+        data.update(proxy)
         data.update(self._flow_columns(count, active, owner, kind, quotes))
         result = pd.DataFrame(data).sort_values(keys).reset_index(drop=True)
         group = result.groupby(["symbol", "expiry"], sort=False)
@@ -2748,8 +2769,10 @@ class RawChainFeatureBuilder:
         the cache identity.
 
         The cache identity also binds ``proxy_quote_fields``, ``proxy_estimator``,
-        ``proxy_diagnostics`` and the sha256 of the estimator's module file, so a change made
-        only in that module never reuses stale parts (ADR-0330). The ``.sources.json``
+        ``proxy_diagnostics`` and one sha256 over the source files of every module in the
+        estimator's class lineage (:meth:`_estimator_files`), so a change made only in the
+        estimator's module, or in a base of a subclass defined elsewhere, never reuses stale
+        parts (ADR-0330). The ``.sources.json``
         sidecar gains a ``proxy`` key naming the three options only when one is not its
         default, so a default build's sidecar bytes are unchanged.
         """
