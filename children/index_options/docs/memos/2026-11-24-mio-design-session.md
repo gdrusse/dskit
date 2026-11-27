@@ -521,10 +521,12 @@ q_{nt}(\beta)&:=\frac{1}{\kappa_{nt}}\ \ln\left(\frac{\widehat G_{nt}^{-1}(\beta
 both sides, too few strikes on either side of the forward, or gaps that are too
 wide), no quantiles are produced for that forecast. The fit code then replaces
 each missing input with its median over the training rows, and the network is
-not told that it was filled. How often this happens on the locked stock list
-was not measured here. An earlier audit of the previous recipe, on a different
-stock list, recorded market inputs filled on 42 to 50 percent of fit rows
-(research note of 5 November, "Deferred input fixes").
+not told that it was filled. On the locked stock list this is common: 353,516
+of the 1,115,341 validation forecasts of 2020 to 2023, or 31.7 percent, have no
+market quantiles. The share is 39 percent for expiries within a week and 47
+percent beyond 50 days. Twenty-seven of the 166 stocks lack them for more than
+half of their forecasts, and RIG and HPE almost always. These counts come from
+the eligibility flag in the zoo's saved score rows.
 
 **Indices and dimension.** One input list for every stock $`n\in N`$ and every
 expiry $`t\in T`$ forecast at $d$. It has
@@ -539,17 +541,10 @@ and open interest. The locked recipe reads none of those: its inputs are these
 price history enters in one place, the scale $`\kappa_{nt}`$ of stage 1, which
 divides both the quantiles and the return being forecast.
 
-**Why no other inputs.** Candidates with many more inputs were tried and scored
-slightly worse. The zoo selection file that A0008 cites scored 11 eligible
-candidates on 2020 to 2023 for the 166 names (761,825 rows) by
-threshold-weighted CRPS, where lower is better. This recipe was lowest at
-0.5219. The
-next best was 0.5230, the previous recipe (a blend that includes a 90-input
-network) 0.5232, the recalibrated market 0.5263 and the raw market 0.5272. The
-research note of 5 November also found that most of the 90-input network's
-gain came from its market inputs. Two cautions: the margin over the runners-up
-is about 0.2 percent, and those years had already been used for selection, so
-this is not clean evidence.
+**Why no other inputs.** Candidates with many more inputs were tried. On the
+forecasts that have market quantiles they scored slightly worse, and the zoo
+chose on those forecasts alone. On the forecasts without market quantiles they
+scored better. The check near the end of this section gives the numbers.
 
 **Why.**
 
@@ -1336,7 +1331,68 @@ Carried to the next cutoff: the return window (every session), the networks
 Rebuilt each time: the model input, the forecast CDF and the scenarios. The raw
 and corrected PIT are created once, at settlement.
 
-To confirm, with (a) recommended in each:
+### Check of the recipe choice against the raw outputs
+
+The owner asked whether this was truly the best recipe, judged from raw
+outputs and not from write-ups. Read for this check: the zoo's saved per-row
+score files for every candidate, the zoo selection file, the ledger of 135
+tuning trials, the 15-cell follow-up grid and the candidate lists. Not read:
+any memo, the scores of the locked quarterly forecasts (A0008 marks them unread
+by agents) and anything from 2024 on. The score is threshold-weighted CRPS on
+the 13-point grid, as in the zoo; lower is better. The zoo's own numbers were
+reproduced exactly.
+
+| Forecasts of 2020 to 2023 | Rows | This recipe | Best rival | Against the best blend | Rank of 11 |
+|---|---|---|---|---|---|
+| With market quantiles | 761,825 | 0.52193 | 0.52304 | better by 0.21% (-0.004 to 0.425) | 1 |
+| Without market quantiles | 353,516 | 0.49698 | 0.49359 | worse by 0.64% (0.08 to 1.20) | 10 |
+| All | 1,115,341 | 0.51402 | 0.51377 | worse by 0.05% (-0.21 to 0.31) | 5 |
+
+The brackets are 95 percent intervals clustered by expiry and by stock. "This
+recipe" is the zoo's version of it: zoo settings and one seed. The best blend
+is M51, a blend built on the 90-input network. Where market quantiles are
+missing every blend equals that 90-input network alone, and the 65-input
+network is the best rival.
+
+- **The zoo chose on the first row only.** Its scoring kept only forecasts with
+  market quantiles. On those this recipe leads, in all four years against the
+  two best blends, but the interval against the best one just reaches zero.
+- **The lead is the size of seed noise.** The zoo used one seed per candidate.
+  In the earlier candidate scan, three seeds of one 90-input network differed
+  by 0.23 percent, about the size of this lead. A rerun of one candidate with
+  the same seed moved its score by 0.03 percent.
+- **Where market quantiles are missing it is not the best.** There it equals
+  the pooled baseline, as expected of a model whose inputs were filled, and it
+  trails the 90-input network in all four years.
+- **Over all forecasts it is a tie.** It ranks fifth of 11, behind four blends
+  by less than the interval, and behind the best blend in three of four years.
+- **Its lead grows with the horizon.** With market quantiles it gains nothing
+  on the best blends for expiries within a week and about 0.35 percent beyond
+  four weeks.
+- **The tuning holds.** All 135 trials and the 15 grid cells were scored on
+  2019. The top is flat: the ten best trials span 0.016 percent. The locked
+  settings are the best cell of the grid, which used five fresh seeds, at
+  0.493855 against 0.493887 for the next cell, and about 0.23 percent better
+  than the zoo's settings on that year.
+- **Unequal treatment.** Only this recipe was tuned and pooled over five
+  seeds. The rivals were scored with one seed and untuned settings.
+- **Not confirmed.** How the tuned five-seed recipe scores on 2020 to 2023 is
+  in the quarterly scores, which were not opened. No candidate was compared on
+  clean, unused years.
+
+So the choice is confirmed for forecasts that have market quantiles, and not
+for the 31.7 percent that lack them. Whether that matters depends on how the
+optimizer treats those forecasts: the files it reads carry no flag for them,
+and its own filters were not traced here. Changing the recipe, or routing
+those forecasts to a second model, would touch the locked row A0008 and is the
+owner's decision; nothing was changed.
+
+The scripts behind this check and the worked example are in the session
+scratchpad, which is temporary; they were not added to the repository.
+
+### To confirm
+
+With (a) recommended in each:
 
 1. Names and indices of the network's parts: (a) roman words with the seed and
    the component as superscripts, as in $`\text{wt}_{nt}^{ey}`$, following bid
