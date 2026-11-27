@@ -38,6 +38,7 @@ dskit/pipeline/
 ├── __main__.py        the CLI: python -m dskit.pipeline
 ├── document.py        PipelineDocument / NodeSpec / ROLES + MODES / splits + walkforward
 │                      + foreach (ADR-0039: stores what was written, derives what runs) / refs
+├── formulation.py     static optimization declarations and validator (ADR-0329)
 ├── node.py            Node + TrainableNode ABCs, NodeContext, registry, register_node_kind
 ├── planner.py         document -> Plan; role rules live here
 ├── driver.py          run_document: LOAD..RECORD, $prev, journal hook

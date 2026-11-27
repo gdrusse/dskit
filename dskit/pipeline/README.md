@@ -1188,6 +1188,9 @@ Project-specific nodes belong in YOUR package — a dskit **child**, which is
 the whole adapter unit (ADR-0032: never a `pipeline_<venue>` sibling, in
 dskit or beside it; see `children/README.md`) — never here.
 
+Use the [static optimization formulation](EXTENDING.md#static-optimization-formulation)
+to declare and validate one optimization problem.
+
 For a child-owned optimization model, follow [Julia programs in child projects](EXTENDING.md#julia-programs-in-child-projects).
 
 ## The legacy stage-list grammar
@@ -1209,6 +1212,7 @@ dskit/pipeline/
 ├── __main__.py        the CLI: python -m dskit.pipeline
 ├── document.py        PipelineDocument / NodeSpec / ROLES + MODES / splits + walkforward
 │                      + foreach specs / refs / the foreach expansion
+├── formulation.py     static optimization declarations and validator (ADR-0329)
 ├── node.py            Node + TrainableNode ABCs, NodeContext, NodeKindRegistry, register_node_kind
 ├── planner.py         document -> Plan: topo order, role rules, wire checks
 ├── driver.py          LOAD -> IMPORT -> PLAN -> RESOLVE -> EXECUTE -> RECORD; run dirs;

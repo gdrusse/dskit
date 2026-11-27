@@ -431,6 +431,95 @@ package does and what ships, `CLAUDE.md` how to work in it.
   expected_roles=)` at any pack; probes are behavioural, not optional
   (`require_probes=False` is a written-down decision).
 
+## Static optimization formulation
+
+Use this template to describe one parameterized optimization problem before
+choosing an implementation. Fix the supplied inputs, including any initial
+state, to get one instance. Time- or scenario-indexed decisions can belong
+to that instance. Describe how to run successive instances separately.
+
+### 1. Purpose
+
+State what one solve chooses, what is supplied, and what a solution means.
+
+### 2. Sets and indices
+
+Give each set's members, range or membership rule. Name each index and
+its set. Specify admissible tuples for sparse relationships and list
+subscripts in order. Two indices can range over the same set.
+
+### 3. Given quantities
+
+For each supplied quantity, give its symbol, index order, meaning, units
+and value domain. Include any inherited state that is fixed for this solve.
+Use `1` for dimensionless quantities and state the instance values separately
+from the domain.
+
+### 4. Decision variables
+
+For each quantity the solver chooses, give its symbol, index order, meaning,
+units, domain and bounds. Use real, integer or binary domains and make
+decision-dependent restrictions explicit in the constraints. An auxiliary
+unknown is a decision and needs its own linking constraints.
+
+### 5. Derived expressions
+
+Define each abbreviation with its units, index order and a formula in
+terms of given quantities, decisions and other abbreviations. Keep these
+dependencies acyclic. State which indices are bound by sums or other local
+operations. An empty index list denotes a scalar.
+
+### 6. Objective
+
+State whether to minimize or maximize, what the value measures and its
+units. Give one scalar expression and bind each index that it uses.
+
+### 7. Constraints
+
+State each admissibility condition with its two sides, relation, quantified
+indices and interpretation. Specify when a feasible solution exists and
+whether an optimum is attained before reporting an optimum. Use a membership
+relation when several quantities must belong to a set together.
+
+### Worked facility example
+
+The [facility declaration](../../examples/pipeline/formulation-facilities.json)
+opens facilities A and B with binary decisions $y_i$ and chooses nonnegative
+outputs $x_i$ in kg. Each capacity constraint is $x_i \le u_i y_i$, and
+$x_A + x_B = 3.5$ meets demand. Capacities are $(4, 3)$ kg, fixed opening
+charges are $(1, 4)$ credits, and variable costs are $(2, 1)$ credits/kg.
+
+```math
+\min \sum_{i \in \lbrace A, B \rbrace} (f_i y_i + c_i x_i)
+```
+
+With neither facility open or only B open, supply falls short of demand.
+A alone supplies 3.5 kg for 8 credits. With both active, use B up to its
+3 kg capacity and supply the remaining 0.5 kg from A, for 9 credits.
+A alone attains the minimum.
+
+### Validate the declaration
+
+From the checkout root, run the validator on the worked example.
+
+```bash
+python -m dskit.pipeline.formulation examples/pipeline/formulation-facilities.json
+```
+
+The standalone JSON has an integer `schema_version` of `1` and the seven
+sections above. Each expression has `text`, `refs` and `over`. List declared
+symbol IDs in `refs` and locally bound index IDs in `over`. `axes` declares
+the free indices of a quantity and `forall` declares the indices of a row.
+Local binders cannot shadow either. A decision's additional bound can be
+a finite number, `null` or an expression depending only on fixed quantities.
+
+Call `dskit.pipeline.formulation.validate_formulation(obj)` on decoded JSON.
+It returns `None` or raises `ConfigError` with field locations. Read
+[ADR-0329](../../docs/architecture/decision-log.md#adr-0329--declare-and-validate-one-static-mixed-integer-optimization-formulation-accepted-2026-11-27)
+for the exact keys and vocabularies. The validator checks those declarations,
+references and scopes. Formula text stays opaque. A mathematical review
+checks the formulas, units, feasibility and attainment.
+
 ## Julia programs in child projects
 
 A child can put its optimization model in JuMP and expose it as an ordinary
