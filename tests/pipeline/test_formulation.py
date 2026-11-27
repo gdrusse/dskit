@@ -1,6 +1,7 @@
 """Focused contract checks for the static formulation declaration."""
 
 from copy import deepcopy
+from decimal import Decimal
 import itertools
 import json
 from pathlib import Path
@@ -104,6 +105,39 @@ def test_worked_example_with_independent_activation_oracle():
             demand_row["rhs"]["refs"]) == ([], "=", ["total_output"], ["demand"])
     assert (capacity_row["forall"], capacity_row["relation"], capacity_row["lhs"]["refs"],
             capacity_row["rhs"]["refs"]) == (["f"], "<=", ["output"], ["capacity", "active"])
+    assert document["sets"] == [{
+        "id": "facilities", "indices": ["f"],
+        "definition": "The two facilities A and B. The example data below are listed in that order.",
+    }]
+    assert [(g["id"], g["axes"], g["domain"], g["units"]) for g in document["given"]] == [
+        ("demand", [], "nonnegative real", "kg"),
+        ("capacity", ["f"], "nonnegative real", "kg"),
+        ("fixed_cost", ["f"], "nonnegative real", "credits"),
+        ("unit_cost", ["f"], "nonnegative real", "credits/kg"),
+    ]
+    assert [(d["id"], d["units"], d["upper"]) for d in document["decisions"]] == [
+        ("active", "1", None), ("output", "kg", None),
+    ]
+    assert document["derived"] == [
+        {"id": "total_output", "axes": [], "units": "kg",
+         "expression": expr("∑_{f ∈ facilities} output_f",
+                            refs=["facilities", "output"], over=["f"])},
+        {"id": "facility_cost", "axes": ["f"], "units": "credits",
+         "expression": expr("fixed_cost_f × active_f + unit_cost_f × output_f",
+                            refs=["fixed_cost", "active", "unit_cost", "output"])},
+    ]
+    assert document["objective"] == {
+        "sense": "min", "units": "credits",
+        "expression": expr("∑_{f ∈ facilities} facility_cost_f",
+                           refs=["facilities", "facility_cost"], over=["f"]),
+        "definition": "Minimize total operating and supply costs in credits.",
+    }
+    assert [(r["id"], r["lhs"], r["rhs"]) for r in document["constraints"]] == [
+        ("meet_demand", expr("total_output", refs=["total_output"]),
+         expr("demand", refs=["demand"])),
+        ("activation_capacity", expr("output_f", refs=["output"]),
+         expr("capacity_f × active_f", refs=["capacity", "active"])),
+    ]
     demand, capacity, fixed, unit = 3.5, (4, 3), (1, 4), (2, 1)
     costs = {}
     splits = {}
@@ -335,3 +369,35 @@ def test_cli_reports_read_and_accumulated_shape_failures(tmp_path, minimal):
     result = cli(path)
     assert result.returncode == 1 and str(path) in result.stderr
     assert "purpose" in result.stderr and "objective.sense" in result.stderr
+
+
+def test_large_integer_cli_and_shared_loader(minimal, tmp_path):
+    from dskit.pipeline.document import _load_strict_json
+
+    digits = "1" + "0" * 5000
+    bound = int(Decimal(digits))
+    limit = sys.get_int_max_str_digits()
+    path = tmp_path / "large.json"
+    for lower, upper, valid in [(-bound, bound, True), (bound, bound, True),
+                                (bound + 1, bound, False)]:
+        minimal["decisions"][0].update(lower=lower, upper=upper)
+        if valid:
+            assert validate_formulation(minimal) is None
+        else:
+            check_invalid(minimal, "decisions[0].lower")
+        minimal["decisions"][0].update(lower=0, upper=0)
+        lower_text = ("-" + digits if lower < 0 else
+                      "1" + "0" * 4999 + "1" if lower > bound else digits)
+        body = json.dumps(minimal).replace('"lower": 0, "upper": 0',
+                                            f'"lower": {lower_text}, "upper": {digits}')
+        path.write_text(body, encoding="utf-8")
+        result = cli(path)
+        assert (result.returncode == 0) is valid, result.stderr
+    assert sys.get_int_max_str_digits() == limit
+    with pytest.raises(ValueError):
+        _load_strict_json(path)
+    parsed = _load_strict_json(path, parse_int=lambda token: int(Decimal(token)))
+    assert parsed["decisions"][0]["lower"] == bound + 1
+    path.write_text('{"nodes": [1, -2, 0], "float": 1.5}', encoding="utf-8")
+    assert _load_strict_json(path) == {"nodes": [1, -2, 0], "float": 1.5}
+    assert sys.get_int_max_str_digits() == limit

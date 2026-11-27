@@ -7,6 +7,7 @@ formulation without becoming an executable language.
 
 import argparse
 from collections import deque
+from decimal import Decimal
 import math
 import re
 import sys
@@ -30,6 +31,11 @@ _ROOT_FIELDS = ("schema_version", "purpose", *_DECLARATION_FIELDS, "objective")
 _REFERENCE_KINDS = {"sets", "given", "decisions", "derived"}
 _DOMAINS = ("real", "integer", "binary")
 _RELATIONS = ("<=", "=", ">=", "<", ">", "in")
+
+
+def _parse_integer(token):
+    """Convert an exact signed JSON integer without changing global limits."""
+    return int(Decimal(token))
 
 
 def _finite_number(value):
@@ -297,7 +303,7 @@ def _main(argv=None):
     parser.add_argument("file", metavar="FILE", help="UTF-8 JSON declaration")
     args = parser.parse_args(argv)
     try:
-        obj = _load_strict_json(args.file)
+        obj = _load_strict_json(args.file, parse_int=_parse_integer)
         validate_formulation(obj)
     except (OSError, ValueError, RecursionError) as exc:
         print(f"Could not validate {args.file}\n{exc}", file=sys.stderr)
