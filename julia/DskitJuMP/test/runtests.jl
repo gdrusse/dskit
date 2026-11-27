@@ -168,6 +168,9 @@ mutable struct LifecycleCaps{Mode} <: D.Program
     builds::Int
     updates::Int
     on_record::Function
+    on_build::Function
+    on_update::Function
+    on_solution::Function
 end
 
 D.program_name(::LifecycleCaps{Mode}) where {Mode} = "test_lifecycle_$Mode"
@@ -179,8 +182,10 @@ D.typed_data(::LifecycleCaps, c::D.Columns) =
     (ids=D.column(c, "ids", String).values, cap=only(D.column(c, "cap", Float64).values))
 D.typed_params(::LifecycleCaps, ::Dict{String,Any}, ::Vector{String}) = nothing
 D.variables(::LifecycleCaps, x) = (x,)
-D.solution(::LifecycleCaps, x, ::D.Setup, at) =
-    Dict("quantity" => (at === nothing ? nothing : at.(x)))
+function D.solution(p::LifecycleCaps, x, ::D.Setup, at)
+    p.on_solution(x)
+    return Dict("quantity" => (at === nothing ? nothing : at.(x)))
+end
 
 function D.constraint_groups(p::LifecycleCaps, x, ::D.Setup)
     p.on_record(x)
@@ -197,6 +202,7 @@ function D.build!(m::Model, p::LifecycleCaps{Mode}, s::D.Setup) where {Mode}
         fix(x[1], 4.0; force=true)
     end
     @objective(m, Max, sum(x))
+    p.on_build(s)
     return x
 end
 
@@ -210,16 +216,17 @@ function D.update!(::Model, p::Union{LifecycleCaps{:direct},LifecycleCaps{:condi
             set_upper_bound(v, new.data.cap)
         end
     end
+    p.on_update(new)
     return
 end
 
 for mode in (:direct, :conditional, :rebuild, :intrinsic)
-    register_program!(LifecycleCaps{mode}(0, 0, identity))
+    register_program!(LifecycleCaps{mode}(0, 0, identity, identity, identity, identity))
 end
 
-lifecycle_open(s, mode, cap; ids=["x", "y"]) =
+lifecycle_open(s, mode, cap; ids=["x", "y"], solver="HiGHS") =
     rpc(s, "open"; program="test_lifecycle_$mode", data=Dict("ids" => ids, "cap" => cap),
-        params=Dict(), solver="HiGHS", solver_options=OPTS, components=Dict())
+        params=Dict(), solver, solver_options=OPTS, components=Dict())
 lifecycle_update(s, handle, cap) =
     rpc(s, "update"; handle, data=Dict("cap" => cap), params=nothing, components=Dict())
 lifecycle_values(ids, values) = Dict("quantity" => Dict("keys" => [[id] for id in ids], "values" => values))
@@ -255,6 +262,141 @@ function lifecycle_pool_snapshot(pool)
         bytes=sum(lm.bytes for lm in values(pool.models)),
     )
 end
+
+# A thin native optimizer delegate that can throw after a selected MOI write.
+# Production code has no fault switches.
+struct LifecycleFaultOptimizer <: MOI.AbstractOptimizer
+    inner::D.HiGHS.Optimizer
+end
+LifecycleFaultOptimizer() = LifecycleFaultOptimizer(D.HiGHS.Optimizer())
+const LIFECYCLE_FAULT = Ref((:none, 0))
+
+function lifecycle_trip!(event)
+    target, remaining = LIFECYCLE_FAULT[]
+    target == event || return
+    LIFECYCLE_FAULT[] = remaining == 1 ? (:none, 0) : (target, remaining - 1)
+    remaining == 1 && D.refuse("bad_data", "lifecycle backend fault: $event")
+    return
+end
+
+MOI.supports_incremental_interface(o::LifecycleFaultOptimizer) =
+    MOI.supports_incremental_interface(o.inner)
+MOI.is_empty(o::LifecycleFaultOptimizer) = MOI.is_empty(o.inner)
+MOI.empty!(o::LifecycleFaultOptimizer) = MOI.empty!(o.inner)
+MOI.optimize!(o::LifecycleFaultOptimizer) = MOI.optimize!(o.inner)
+MOI.add_variable(o::LifecycleFaultOptimizer) = MOI.add_variable(o.inner)
+MOI.add_variables(o::LifecycleFaultOptimizer, n::Int) = MOI.add_variables(o.inner, n)
+MOI.supports_constraint(o::LifecycleFaultOptimizer, ::Type{F}, ::Type{S}) where
+    {F<:MOI.AbstractFunction,S<:MOI.AbstractSet} = MOI.supports_constraint(o.inner, F, S)
+MOI.supports_add_constrained_variable(o::LifecycleFaultOptimizer, ::Type{S}) where
+    {S<:MOI.AbstractScalarSet} = MOI.supports_add_constrained_variable(o.inner, S)
+MOI.add_constrained_variable(o::LifecycleFaultOptimizer, s::MOI.AbstractScalarSet) =
+    MOI.add_constrained_variable(o.inner, s)
+MOI.is_valid(o::LifecycleFaultOptimizer, i::MOI.VariableIndex) = MOI.is_valid(o.inner, i)
+MOI.is_valid(o::LifecycleFaultOptimizer, i::MOI.ConstraintIndex) = MOI.is_valid(o.inner, i)
+for Attr in (MOI.AbstractModelAttribute, MOI.AbstractOptimizerAttribute)
+    @eval MOI.supports(o::LifecycleFaultOptimizer, a::$Attr) = MOI.supports(o.inner, a)
+    @eval MOI.get(o::LifecycleFaultOptimizer, a::$Attr) = MOI.get(o.inner, a)
+    @eval MOI.set(o::LifecycleFaultOptimizer, a::$Attr, value) = MOI.set(o.inner, a, value)
+end
+MOI.get(o::LifecycleFaultOptimizer, a::MOI.AbstractVariableAttribute, i::MOI.VariableIndex) =
+    MOI.get(o.inner, a, i)
+MOI.get(o::LifecycleFaultOptimizer, a::MOI.AbstractConstraintAttribute, i::MOI.ConstraintIndex) =
+    MOI.get(o.inner, a, i)
+MOI.set(o::LifecycleFaultOptimizer, a::MOI.AbstractConstraintAttribute, i::MOI.ConstraintIndex, v) =
+    MOI.set(o.inner, a, i, v)
+
+function MOI.set(o::LifecycleFaultOptimizer, a::MOI.ConstraintSet,
+                 i::MOI.ConstraintIndex{MOI.VariableIndex,MOI.EqualTo{Float64}}, value)
+    MOI.set(o.inner, a, i, value)
+    lifecycle_trip!(:write_fix)
+    return
+end
+
+function MOI.set(o::LifecycleFaultOptimizer, a::MOI.VariablePrimalStart, i::MOI.VariableIndex, value)
+    MOI.set(o.inner, a, i, value)
+    lifecycle_trip!(value === nothing ? :clear_start : :write_start)
+    return
+end
+
+function MOI.add_constraint(o::LifecycleFaultOptimizer, f::MOI.AbstractFunction, s::MOI.AbstractSet)
+    i = MOI.add_constraint(o.inner, f, s)
+    f isa MOI.VariableIndex && s isa MOI.EqualTo && lifecycle_trip!(:add_fix)
+    return i
+end
+
+function MOI.delete(o::LifecycleFaultOptimizer, i::MOI.ConstraintIndex{F,S}) where {F,S}
+    MOI.delete(o.inner, i)
+    F == MOI.VariableIndex && S <: MOI.EqualTo && lifecycle_trip!(:delete_fix)
+    return
+end
+
+D.SOLVERS["LifecycleFault"] = LifecycleFaultOptimizer
+
+struct LifecycleDomain
+    lower::Union{Nothing,Float64}
+    upper::Union{Nothing,Float64}
+    equality::Union{Nothing,Float64}
+end
+
+struct LifecycleDomains <: D.Program end
+D.program_name(::LifecycleDomains) = "test_lifecycle_domains"
+D.schema(::LifecycleDomains) = D.Schema([D.FieldSpec("ids", "string", ["item"])], ["item" => "ids"])
+D.variable_groups(::LifecycleDomains) = [D.GroupSpec("quantity", ["item"], "continuous")]
+D.typed_data(::LifecycleDomains, c::D.Columns) = D.column(c, "ids", String).values
+D.typed_params(::LifecycleDomains, r::Dict{String,Any}, ::Vector{String}) =
+    LifecycleDomain(r["lower"], r["upper"], r["equality"])
+D.variables(::LifecycleDomains, x) = (x,)
+D.constraint_groups(::LifecycleDomains, x, ::D.Setup) = Pair{String,Vector{ConstraintRef}}[]
+D.solution(::LifecycleDomains, x, ::D.Setup, at) =
+    Dict("quantity" => (at === nothing ? nothing : at.(x)))
+D.has_update(::LifecycleDomains) = true
+
+function set_lifecycle_domain!(v, domain::LifecycleDomain)
+    is_fixed(v) && unfix(v)
+    has_lower_bound(v) && delete_lower_bound(v)
+    has_upper_bound(v) && delete_upper_bound(v)
+    domain.lower === nothing || set_lower_bound(v, domain.lower)
+    domain.upper === nothing || set_upper_bound(v, domain.upper)
+    domain.equality === nothing || fix(v, domain.equality; force=true)
+    return
+end
+
+function D.build!(m::Model, ::LifecycleDomains, s::D.Setup)
+    @variable(m, x[1:length(s.data)])
+    for v in x
+        @constraint(m, 2 * v <= 40)
+        @constraint(m, 2 * v >= -40)
+        set_lifecycle_domain!(v, s.params)
+    end
+    @objective(m, Max, sum(x))
+    return x
+end
+
+function D.update!(::Model, ::LifecycleDomains, x, ::D.Setup, s::D.Setup)
+    for v in x
+        set_lifecycle_domain!(v, s.params)
+    end
+    return nothing
+end
+
+D.register_program!(LifecycleDomains())
+lifecycle_domain_params(domain) =
+    Dict("lower" => domain.lower, "upper" => domain.upper, "equality" => domain.equality)
+
+function lifecycle_seeded_session(mode; solver="HiGHS", ids=["x", "y"], values=[1.0, 2.0])
+    s = Session(models=2)
+    h = lifecycle_open(s, mode, 10.0; ids, solver)["handle"]
+    @assert rpc(s, "fix"; handle=h,
+                values=lifecycle_values(ids[1:length(values)], values))["fixed"] == length(values)
+    @assert rpc(s, "start"; handle=h, source="values",
+                values=lifecycle_values(ids[1:2], [1.0, 2.0]))["started"] == 2
+    @assert solve_h(s, h)["ok"]
+    other = open_ks(s)
+    @assert other["ok"]
+    return s, h, live(s, h)
+end
+
 
 @testset "DskitJuMP" begin
 
@@ -1295,6 +1437,191 @@ end
             end
         end
     end
+
+    @testset "one-sided, unbounded and intrinsic domain transitions" begin
+        bounded = LifecycleDomain(0.0, 10.0, nothing)
+        lower = LifecycleDomain(0.0, nothing, nothing)
+        upper = LifecycleDomain(nothing, 3.0, nothing)
+        unbounded = LifecycleDomain(nothing, nothing, nothing)
+        intrinsic = LifecycleDomain(nothing, nothing, 2.0)
+        equal_bounds = LifecycleDomain(2.0, 2.0, nothing)
+        transitions = [(bounded, lower), (lower, upper), (upper, unbounded),
+                       (unbounded, bounded), (bounded, intrinsic),
+                       (intrinsic, equal_bounds), (equal_bounds, intrinsic)]
+        for (from, to) in transitions
+            @testset "$from to $to" begin
+                s = Session()
+                r = rpc(s, "open"; program="test_lifecycle_domains", data=Dict("ids" => ["x"]),
+                        params=lifecycle_domain_params(from), solver="HiGHS",
+                        solver_options=OPTS, components=Dict())
+                @test r["ok"]
+                h = r["handle"]
+                model = live(s, h).model
+                @test rpc(s, "fix"; handle=h, values=lifecycle_values(["x"], [2.0]))["fixed"] == 1
+                updated = rpc(s, "update"; handle=h, data=Dict(), params=lifecycle_domain_params(to),
+                              components=Dict())
+                @test updated["ok"] && updated["timings"]["path"] == "updated"
+                @test live(s, h).model === model
+                lifecycle_solve_to(s, h, 2.0)
+                @test rpc(s, "free"; handle=h, targets="all")["fixed"] == 0
+                @test lifecycle_restrictions(only(live(s, h).index.all)) ==
+                      (fixed=to.equality, lower=to.lower, upper=to.upper)
+                lifecycle_solve_to(s, h, something(to.equality, to.upper, 20.0))
+            end
+        end
+        s = Session()
+        r = rpc(s, "open"; program="test_lifecycle_domains", data=Dict("ids" => ["x"]),
+                params=lifecycle_domain_params(intrinsic), solver="HiGHS",
+                solver_options=OPTS, components=Dict())
+        h = r["handle"]
+        @test rpc(s, "fix"; handle=h, values=lifecycle_values(["x"], [2.0]))["fixed"] == 1
+        lm = live(s, h)
+        before = lifecycle_state_snapshot(lm)
+        pool = lifecycle_pool_snapshot(s.w.pool)
+        changed = LifecycleDomain(nothing, nothing, 3.0)
+        rejected = rpc(s, "update"; handle=h, data=Dict(), params=lifecycle_domain_params(changed),
+                       components=Dict())
+        @test kind(rejected) == "bad_value"
+        @test lifecycle_state_snapshot(lm) == before
+        @test lifecycle_pool_snapshot(s.w.pool) == pool
+        @test rpc(s, "free"; handle=h, targets="all")["fixed"] == 0
+        @test rpc(s, "update"; handle=h, data=Dict(), params=lifecycle_domain_params(changed),
+                  components=Dict())["ok"]
+        lifecycle_solve_to(s, h, 3.0)
+    end
+
+    @testset "update hook and off-model rebuild construction failures do not commit" begin
+        for mode in (:direct, :rebuild), scope in (:held, :idle)
+            @testset "$mode $scope" begin
+                s, h, lm = lifecycle_seeded_session(mode)
+                p = lm.program
+                scope == :idle && @test rpc(s, "close"; handle=h)["ok"]
+                before = lifecycle_state_snapshot(lm)
+                pool = lifecycle_pool_snapshot(s.w.pool)
+                model = lm.model
+                hook = mode == :direct ? :on_update : :on_build
+                setproperty!(p, hook, setup -> setup.data.cap == 3.0 &&
+                             D.refuse("bad_data", "fault after $hook changed solver state"))
+                result = try
+                    scope == :held ? lifecycle_update(s, h, 3.0) : lifecycle_open(s, mode, 3.0)
+                finally
+                    setproperty!(p, hook, identity)
+                end
+                @test kind(result) == "bad_data" && occursin("fault after", result["error"]["message"])
+                @test lifecycle_state_snapshot(lm) == before
+                @test lifecycle_pool_snapshot(s.w.pool) == pool
+                @test mode != :rebuild || lm.model === model
+                if scope == :idle
+                    @test kind(solve_h(s, h)) == "unknown_handle"
+                    retry = lifecycle_open(s, mode, 3.0)
+                    @test retry["handle"] == "h$(pool.counters[1] + 1)"
+                    lifecycle_solve_to(s, retry["handle"], 6.0)
+                else
+                    lifecycle_solve_to(s, h, 3.0)
+                    @test lifecycle_update(s, h, 3.0)["ok"]
+                    @test rpc(s, "free"; handle=h, targets="all")["fixed"] == 0
+                    lifecycle_solve_to(s, h, 6.0)
+                end
+            end
+        end
+    end
+
+    @testset "one-shot backend faults after partial writes preserve all caller state" begin
+        for (mode, scope, phase) in ((:direct, :held, :delete_fix), (:direct, :idle, :delete_fix),
+                                     (:direct, :held, :add_fix), (:direct, :idle, :clear_start),
+                                     (:direct, :held, :write_start), (:rebuild, :held, :write_start))
+            @testset "$mode $scope $phase" begin
+                solver = "LifecycleFault"
+                s, h, lm = lifecycle_seeded_session(mode; solver)
+                scope == :idle && @test rpc(s, "close"; handle=h)["ok"]
+                before = lifecycle_state_snapshot(lm)
+                pool = lifecycle_pool_snapshot(s.w.pool)
+                model = lm.model
+                LIFECYCLE_FAULT[] = (phase, 2)
+                result = try
+                    scope == :held ? lifecycle_update(s, h, 3.0) :
+                    lifecycle_open(s, mode, 3.0; solver)
+                finally
+                    @test LIFECYCLE_FAULT[] == (:none, 0)
+                    LIFECYCLE_FAULT[] = (:none, 0)
+                end
+                @test kind(result) == "bad_data" &&
+                      occursin("lifecycle backend fault: $phase", result["error"]["message"])
+                @test lifecycle_state_snapshot(lm) == before
+                @test lifecycle_pool_snapshot(s.w.pool) == pool
+                @test mode != :rebuild || lm.model === model
+                if scope == :idle
+                    @test kind(solve_h(s, h)) == "unknown_handle"
+                    retry = lifecycle_open(s, mode, 3.0; solver)
+                    @test retry["handle"] == "h$(pool.counters[1] + 1)"
+                    lifecycle_solve_to(s, retry["handle"], 6.0)
+                else
+                    lifecycle_solve_to(s, h, 3.0)
+                    @test lifecycle_update(s, h, 3.0)["ok"]
+                    @test rpc(s, "free"; handle=h, targets="all")["fixed"] == 0
+                    lifecycle_solve_to(s, h, 6.0)
+                end
+            end
+        end
+        for (phase, op) in ((:add_fix, "fix"), (:write_fix, "fix"), (:delete_fix, "free"))
+            @testset "$op fails after second $phase" begin
+                setup_fixes = phase == :add_fix ? Float64[] : [1.0, 2.0]
+                s, h, lm = lifecycle_seeded_session(:direct; solver="LifecycleFault", values=setup_fixes)
+                before = lifecycle_state_snapshot(lm)
+                pool = lifecycle_pool_snapshot(s.w.pool)
+                LIFECYCLE_FAULT[] = (phase, 2)
+                reply = try
+                    op == "free" ? rpc(s, "free"; handle=h, targets="all") :
+                    rpc(s, "fix"; handle=h, values=lifecycle_values(["x", "y"], [3.0, 4.0]))
+                finally
+                    @test LIFECYCLE_FAULT[] == (:none, 0)
+                    LIFECYCLE_FAULT[] = (:none, 0)
+                end
+                @test kind(reply) == "bad_data" && occursin("lifecycle backend fault: $phase", reply["error"]["message"])
+                @test lifecycle_state_snapshot(lm) == before
+                @test lifecycle_pool_snapshot(s.w.pool) == pool
+                lifecycle_solve_to(s, h, isempty(setup_fixes) ? 20.0 : 3.0)
+            end
+        end
+    end
+
+    @testset "failed cleanup and solution extraction preserve the prior search state" begin
+        for phase in (:round_cleanup, :start_cleanup, :solution_hook)
+            @testset "$phase" begin
+                s, h, lm = lifecycle_seeded_session(:direct; solver="LifecycleFault",
+                                                   ids=["w", "x", "y", "z"], values=[1.0])
+                p = lm.program
+                before = lifecycle_state_snapshot(lm)
+                pool = lifecycle_pool_snapshot(s.w.pool)
+                seen = Ref(0)
+                if phase == :solution_hook
+                    p.on_solution = _ -> D.refuse("bad_data", "lifecycle solution probe")
+                else
+                    p.on_record = _ -> begin
+                        seen[] += 1
+                        if seen[] == 2
+                            fault = phase == :round_cleanup ? :delete_fix : :clear_start
+                            LIFECYCLE_FAULT[] = (fault, 2)
+                        end
+                    end
+                end
+                result = try
+                    search_h(s, h; params=Dict("free" => 1, "stall" => 2),
+                             seed=0, limits=Dict("rounds" => 1))
+                finally
+                    p.on_record, p.on_solution = identity, identity
+                    @test LIFECYCLE_FAULT[] == (:none, 0)
+                    LIFECYCLE_FAULT[] = (:none, 0)
+                end
+                message = phase == :solution_hook ? "lifecycle solution probe" : "lifecycle backend fault"
+                @test kind(result) == "bad_data" && occursin(message, result["error"]["message"])
+                @test lifecycle_state_snapshot(lm) == before
+                @test lifecycle_pool_snapshot(s.w.pool) == pool
+                lifecycle_solve_to(s, h, 31.0)
+            end
+        end
+    end
+
 end
 
 end # testset DskitJuMP

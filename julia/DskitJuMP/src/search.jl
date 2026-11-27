@@ -339,6 +339,30 @@ function search_gap(objective, bound)
     return abs(objective - bound) / abs(objective)
 end
 
+"""Restore caller restrictions after a round, rebuilding only if physical cleanup failed."""
+function restore_search!(lm::LiveModel, round_fixed, partial_fixes, starts_moved,
+                         saved_fixes, saved_start, saved_source, original=nothing)
+    if partial_fixes
+        # Lower-level writes may have thrown before all ledger entries were installed.
+        restore_committed!(lm, saved_fixes, saved_start, saved_source, original)
+        return
+    end
+    try
+        lift_fixes!(lm.index, lm.fixed, round_fixed)
+        if starts_moved
+            set_all_starts!(lm, nothing)
+            write_starts!(lm.index, nothing, saved_start)
+        end
+    catch cleanup
+        cause = original === nothing ? cleanup :
+            ErrorException("$(sprint(showerror, original)); cleanup: $(sprint(showerror, cleanup))")
+        restore_committed!(lm, saved_fixes, saved_start, saved_source, cause)
+        original === nothing && guarded(() -> throw(cleanup), "restore search state")
+    end
+    lm.fixed = saved_fixes
+    return
+end
+
 """
     run_search!(lm, handle, search, seed, limits, round_limits)
 
@@ -357,6 +381,7 @@ function run_search!(lm::LiveModel, handle::String, search::Search, seed::UInt64
     began = time()
     solving = changing = 0.0
     accepted = nothing
+    saved_fixes = lm.fixed
     saved_start, saved_source = lm.start, lm.start_source
     kept = lm.last
     stands = kept !== nothing && lm.start === nothing && kept.handle == handle &&
@@ -365,7 +390,7 @@ function run_search!(lm::LiveModel, handle::String, search::Search, seed::UInt64
     trajectory = Dict{String,Any}[]
     stop = SEARCH_NO_INCUMBENT
     round_fixed = Int[]
-    starts_moved = false
+    partial_fixes = starts_moved = false
     try
         if stands
             incumbent, found = kept.values, kept.record
@@ -387,15 +412,23 @@ function run_search!(lm::LiveModel, handle::String, search::Search, seed::UInt64
                 started = time()
                 hood = Set(neighbourhood(search, st))
                 round_fixed = Int[pos for pos in st.candidates if !(pos in hood)]
-                apply_fixes!(lm, [pos => st.incumbent[pos] for pos in round_fixed])
+                lm.fixed === saved_fixes && (lm.fixed = copy(saved_fixes))
+                partial_fixes = true
+                install_fixes!(lm.index, lm.fixed, [pos => st.incumbent[pos] for pos in round_fixed])
+                partial_fixes = false
                 starts_moved = true
                 set_all_starts!(lm, st.incumbent)
                 changing += time() - started
                 values, record, seconds = search_solve!(lm, round_limits)
                 solving += seconds
                 started = time()
-                free_positions!(lm, round_fixed)
+                partial_fixes = true
+                lift_fixes!(lm.index, lm.fixed, round_fixed)
+                for pos in round_fixed
+                    delete!(lm.fixed, pos)
+                end
                 empty!(round_fixed)
+                partial_fixes = false
                 changing += time() - started
                 candidate = values === nothing ? nothing :
                             Candidate(point_objective(record), values, record)
@@ -411,26 +444,26 @@ function run_search!(lm::LiveModel, handle::String, search::Search, seed::UInt64
             end
             incumbent = st.incumbent
         end
-    finally
-        started = time()
-        free_positions!(lm, round_fixed)
-        if starts_moved
-            set_all_starts!(lm, nothing)
-            saved_start === nothing || apply_start!(lm, saved_start, saved_source)
-        end
-        changing += time() - started
+    catch err
+        restore_search!(lm, round_fixed, partial_fixes, starts_moved,
+                        saved_fixes, saved_start, saved_source, err)
+        rethrow()
     end
+    started = time()
+    restore_search!(lm, round_fixed, partial_fixes, starts_moved,
+                    saved_fixes, saved_start, saved_source)
+    changing += time() - started
     objective = incumbent === nothing ? nothing : found["objective"]
     record = merge(found, Dict{String,Any}(
         "status" => incumbent === nothing ? "NO_SOLUTION" : "FEASIBLE_POINT",
         "termination" => stop, "objective" => objective, "bound" => bound,
         "gap" => search_gap(objective, bound), "seconds" => time() - began))
+    extracted = solution(lm.program, lm.state, lm.setup, at_values(lm, incumbent))
     if incumbent !== nothing
         lm.last = LastSolution(incumbent, record, handle, lm.version)
     end
     return Dict{String,Any}("handle" => handle,
-                            "solution" => solution(lm.program, lm.state, lm.setup,
-                                                   at_values(lm, incumbent)),
+                            "solution" => extracted,
                             "record" => record, "trajectory" => trajectory,
                             "update_seconds" => changing, "solve_seconds" => solving,
                             "accepted" => accepted)

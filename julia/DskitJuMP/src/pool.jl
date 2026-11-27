@@ -67,15 +67,16 @@ function find_group(index::VarIndex, name::String)
 end
 
 """
-    FixInfo(value, lower, upper)
+    FixInfo(value, lower, upper, equality)
 
-A variable's fix: the value, and the bounds it had before it was fixed (restored by
-`free`; `nothing` for no bound).
+A caller's fix and the program-owned domain it overlaid. An intrinsic equality
+is distinct from coincident bounds and stays installed under a matching fix.
 """
 struct FixInfo
     value::Float64
     lower::Union{Nothing,Float64}
     upper::Union{Nothing,Float64}
+    equality::Union{Nothing,Float64}
 end
 
 """

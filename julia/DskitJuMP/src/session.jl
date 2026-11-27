@@ -120,80 +120,117 @@ function build_live(pool::Pool, p::P, setup::Setup{D,Q}, cols::Columns, sig::Str
 end
 
 """
-    change!(lm, setup, cols, digest)
+    change!(lm, setup, cols, digest; reopen=false)
 
-Bring `lm` to `setup` in place: `reused` when nothing differs, `updated` through the
-program's `update!` hook, `rebuilt` when the program has none. Returns `(path,
-build_seconds, update_seconds)`.
+Bring a held or idle model to the requested setup. A held edit keeps compatible
+caller state. An idle reopen releases caller state. Returns path, build seconds
+and update seconds.
 """
 function change!(lm::LiveModel{P,D,Q,S}, setup::Setup{D,Q}, cols::Columns,
-                 digest::String) where {P,D,Q,S}
+                 digest::String; reopen::Bool=false) where {P,D,Q,S}
     if digest == lm.digest && setup.params_json == lm.setup.params_json &&
        setup.attached == lm.setup.attached
-        return "reused", 0.0, 0.0
+        (!reopen || (isempty(lm.fixed) && lm.start === nothing)) && return "reused", 0.0, 0.0
+        started = time()
+        release!(lm)
+        return "reused", 0.0, time() - started
     end
+    fixes = reopen ? Dict{Int,FixInfo}() : lm.fixed
+    start, source = reopen ? (nothing, nothing) : (lm.start, lm.start_source)
     if has_update(lm.program)
         started = time()
-        try
+        next_fixes = with_recovery(lm, "update") do
+            lift_fixes!(lm.index, lm.fixed, keys(lm.fixed))
+            reopen && write_starts!(lm.index, lm.start, nothing)
             update!(lm.model, lm.program, lm.state, lm.setup, setup)
-        catch err
-            # The model may be half changed: construct it again from the setup it had,
-            # fixes and starts re-applied, so the refusal leaves the handle as it was.
-            # The error reply has no timings, so its message records the rebuild.
-            build, update = rebuild!(lm, lm.setup)
-            note = "; the half-changed model was rebuilt from its previous data " *
-                   "($(round(build + update; digits=3)) s)"
-            try
-                guarded(() -> rethrow(err), "update")  # always a Refusal
-            catch refusal
-                throw(Refusal(refusal.kind, refusal.message * note))
-            end
+            restored = restore_fixes!(lm.index, fixes)
+            write_starts!(lm.index, nothing, start)
+            return restored
         end
-        seconds = time() - started
+        lm.fixed, lm.start, lm.start_source = next_fixes, start, source
         adopt!(lm, setup, cols, digest)
-        return "updated", 0.0, seconds
+        return "updated", 0.0, time() - started
     end
-    build, update = rebuild!(lm, setup)
+    next, build, update = guarded(
+        () -> prepare_replacement(lm, setup, cols, fixes, start, source), "rebuild")
+    started = time()
+    install_replacement!(lm, next)
     adopt!(lm, setup, cols, digest)
-    return "rebuilt", build, update
+    return "rebuilt", build, update + (time() - started)
 end
 
-"""Record that `lm` now carries `setup` (a state change: the version moves)."""
+"""Commit the new setup and invalidate any standing incumbent."""
 function adopt!(lm::LiveModel, setup::Setup, cols::Columns, digest::String)
     lm.setup, lm.columns, lm.digest = setup, cols, digest
     lm.version += 1
     return
 end
 
-"""
-    rebuild!(lm, setup)
-
-Construct `lm`'s model again from `setup` under the same handle and key, then re-apply
-every fix at its value and the start values (the last solution, its handle and state
-are kept: positions are stable because the shape is). Returns `(build, update)` seconds.
-"""
-function rebuild!(lm::LiveModel{P,D,Q,S}, setup::Setup{D,Q}) where {P,D,Q,S}
-    started = time()
+"""Prepare a complete backend from the target columns, independently of the active model."""
+function prepare_replacement(lm::LiveModel{P,D,Q,S}, setup::Setup{D,Q}, cols::Columns,
+                             fixes, start, source) where {P,D,Q,S}
+    began = time()
     model = new_model(lm.program, lm.solver, lm.options)
-    state = guarded(() -> build!(model, lm.program, setup), "rebuild")::S
-    index = make_index(lm.program, state, schema(lm.program), lm.columns)
-    build = time() - started
-    started = time()
-    old = lm.model
-    lm.model, lm.state, lm.index = model, state, index
-    fixes = lm.fixed
-    lm.fixed = Dict{Int,FixInfo}()
-    apply_fixes!(lm, [pos => info.value for (pos, info) in fixes])
-    lm.start === nothing || apply_start!(lm, lm.start, lm.start_source)
-    MOI.empty!(backend(old))
-    lm.bytes = estimate_bytes(model)
-    return build, time() - started
+    state = build!(model, lm.program, setup)::S
+    index = make_index(lm.program, state, schema(lm.program), cols)
+    built = time()
+    fixed = restore_fixes!(index, fixes)
+    write_starts!(index, nothing, start)
+    next = (; model, state, index, fixed, start, source, bytes=estimate_bytes(model))
+    return next, built - began, time() - built
 end
 
-"""Release every fix and clear every start value (a pool hit's `open`)."""
+"""Install a prepared backend, then retire the previous backend."""
+function install_replacement!(lm::LiveModel, next; bytes=next.bytes)
+    old = lm.model
+    lm.model, lm.state, lm.index = next.model, next.state, next.index
+    lm.fixed, lm.start, lm.start_source, lm.bytes = next.fixed, next.start, next.source, bytes
+    try
+        MOI.empty!(backend(old))
+    catch err
+        # Replacement succeeded. A discarded backend cannot change the live model.
+        @error "cannot clear the retired optimizer" exception=(err, catch_backtrace())
+    end
+    return
+end
+
+"""Recreate committed domains and caller state after a partial backend mutation."""
+function restore_committed!(lm::LiveModel, fixes, start, source, cause)
+    try
+        next, build, update = prepare_replacement(lm, lm.setup, lm.columns, fixes, start, source)
+        install_replacement!(lm, next; bytes=lm.bytes)
+        return build + update
+    catch err
+        first_error = first(sprint(showerror, cause), 110)
+        recovery_error = first(sprint(showerror, err), 110)
+        error("cannot restore the committed model after $first_error; recovery raised $recovery_error")
+    end
+end
+
+"""Protect committed state while an operation makes fallible physical changes."""
+function with_recovery(f, lm::LiveModel, operation::String)
+    try
+        return f()
+    catch err
+        seconds = restore_committed!(lm, lm.fixed, lm.start, lm.start_source, err)
+        note = "; the half-changed model was rebuilt from its previous data " *
+               "($(round(seconds; digits=3)) s)"
+        try
+            guarded(() -> throw(err), operation)
+        catch refusal
+            throw(Refusal(refusal.kind, refusal.message * note))
+        end
+    end
+end
+
+"""Release caller overlays before handing an idle model to its new holder."""
 function release!(lm::LiveModel)
-    isempty(lm.fixed) || free_positions!(lm, collect(keys(lm.fixed)))
-    clear_start!(lm)
+    with_recovery(lm, "release") do
+        lift_fixes!(lm.index, lm.fixed, keys(lm.fixed))
+        write_starts!(lm.index, lm.start, nothing)
+    end
+    empty!(lm.fixed)
+    lm.start, lm.start_source = nothing, nothing
     return
 end
 
@@ -202,26 +239,30 @@ end
 """Whether `v` is a wire number (an integer or a finite float; never a bool)."""
 is_number(v) = (v isa Integer && !(v isa Bool)) || v isa Float64
 
-"""The bounds variable `v` is checked against: those saved by its fix, or its own."""
-function declared_bounds(lm::LiveModel, pos::Int)
-    info = get(lm.fixed, pos, nothing)
-    info === nothing || return info.lower, info.upper
-    v = lm.index.all[pos]
+"""Return the program-owned bounds and intrinsic equality for one flat position."""
+function declared_domain(index::VarIndex, fixes::Dict{Int,FixInfo}, pos::Int)
+    info = get(fixes, pos, nothing)
+    info === nothing || return info.lower, info.upper, info.equality
+    v = index.all[pos]
     return (has_lower_bound(v) ? lower_bound(v) : nothing,
-            has_upper_bound(v) ? upper_bound(v) : nothing)
+            has_upper_bound(v) ? upper_bound(v) : nothing,
+            is_fixed(v) ? fix_value(v) : nothing)
 end
 
-"""Refuse (`bad_value`) a value outside variable `pos`'s domain or declared bounds."""
-function check_value(lm::LiveModel, g::VarGroup, pos::Int, value)
+"""Refuse a value outside the declared domain, naming its group and key."""
+function check_value(index::VarIndex, fixes::Dict{Int,FixInfo}, g::VarGroup, pos::Int, value)
     x = Float64(value)
-    if g.spec.domain == "binary"
-        x in (0.0, 1.0) || refuse("bad_value", "$(g.spec.name) is binary: $(value) is not 0 or 1")
-    elseif g.spec.domain == "integer"
-        isinteger(x) || refuse("bad_value", "$(g.spec.name) is integer: $(value) is not integral")
+    if g.spec.domain == "binary" && !(x in (0.0, 1.0))
+        refuse("bad_value", "$(g.spec.name) key $(canonical_json(g.keys[pos - g.offset])) is binary: $value is not 0 or 1")
+    elseif g.spec.domain == "integer" && !isinteger(x)
+        refuse("bad_value", "$(g.spec.name) key $(canonical_json(g.keys[pos - g.offset])) is integer: $value is not integral")
     end
-    lower, upper = declared_bounds(lm, pos)
-    ((lower === nothing || x >= lower) && (upper === nothing || x <= upper)) ||
-        refuse("bad_value", "$(value) is outside the bounds of a $(g.spec.name) variable")
+    lower, upper, equality = declared_domain(index, fixes, pos)
+    if equality !== nothing && x != equality
+        refuse("bad_value", "$value conflicts with the program equality $equality at $(g.spec.name) key $(canonical_json(g.keys[pos - g.offset]))")
+    elseif (lower !== nothing && x < lower) || (upper !== nothing && x > upper)
+        refuse("bad_value", "$value is outside bounds [$lower, $upper] at $(g.spec.name) key $(canonical_json(g.keys[pos - g.offset]))")
+    end
     return x
 end
 
@@ -268,7 +309,7 @@ function addressed(lm::LiveModel, obj, with_values::Bool)
             if with_values
                 is_number(vs[i]) || refuse("bad_request", "a value must be a number, got " *
                                                           "$(canonical_json(vs[i]))")
-                push!(out, pos => check_value(lm, g, pos, vs[i]))
+                push!(out, pos => check_value(lm.index, lm.fixed, g, pos, vs[i]))
             else
                 push!(out, pos => 0.0)
             end
@@ -279,57 +320,96 @@ end
 
 # --- fixes and starts on the model ------------------------------------------------------
 
-"""Fix each addressed variable at its value (`fix(x, v; force = true)`), saving its bounds."""
-function apply_fixes!(lm::LiveModel, pairs::Vector{Pair{Int,Float64}})
+"""Apply physical overlays, then update the ledger after all writes succeed."""
+function install_fixes!(index::VarIndex, fixes::Dict{Int,FixInfo}, pairs::Vector{Pair{Int,Float64}})
+    planned = Pair{Int,FixInfo}[]
     for (pos, value) in pairs
-        v = lm.index.all[pos]
-        old = get(lm.fixed, pos, nothing)
-        info = if old === nothing
-            FixInfo(value, has_lower_bound(v) ? lower_bound(v) : nothing,
-                    has_upper_bound(v) ? upper_bound(v) : nothing)
-        else
-            FixInfo(value, old.lower, old.upper)
-        end
-        fix(v, value; force=true)
-        lm.fixed[pos] = info
+        lower, upper, equality = declared_domain(index, fixes, pos)
+        # The program equality also stays intact under a rounded search incumbent.
+        push!(planned, pos => FixInfo(something(equality, value), lower, upper, equality))
+    end
+    for (pos, info) in planned
+        info.equality === nothing && fix(index.all[pos], info.value; force=true)
+    end
+    for (pos, info) in planned
+        fixes[pos] = info
     end
     return
 end
 
-"""Unfix the variables at `positions` that are fixed, restoring their declared bounds."""
-function free_positions!(lm::LiveModel, positions::Vector{Int})
+"""Install prior caller values on the new domains, checking the entire set first."""
+function restore_fixes!(index::VarIndex, prior::Dict{Int,FixInfo})
+    isempty(prior) && return prior
+    fixes = Dict{Int,FixInfo}()
+    values = Pair{Int,Float64}[]
+    for (pos, info) in prior
+        g = only(g for g in index.groups if g.offset < pos <= g.offset + length(g.refs))
+        push!(values, pos => check_value(index, fixes, g, pos, info.value))
+    end
+    install_fixes!(index, fixes, values)
+    return fixes
+end
+
+"""Remove physical caller restrictions without changing the ledger."""
+function lift_fixes!(index::VarIndex, fixes::Dict{Int,FixInfo}, positions)
     for pos in positions
-        info = get(lm.fixed, pos, nothing)
-        info === nothing && continue
-        v = lm.index.all[pos]
+        info = get(fixes, pos, nothing)
+        (info === nothing || info.equality !== nothing) && continue
+        v = index.all[pos]
         unfix(v)
         info.lower === nothing || set_lower_bound(v, info.lower)
         info.upper === nothing || set_upper_bound(v, info.upper)
+    end
+    return
+end
+
+"""Fix addressed variables as one caller operation."""
+function apply_fixes!(lm::LiveModel, pairs::Vector{Pair{Int,Float64}})
+    isempty(pairs) && return
+    with_recovery(lm, "fix") do
+        install_fixes!(lm.index, lm.fixed, pairs)
+    end
+    return
+end
+
+"""Release addressed caller fixes as one operation."""
+function free_positions!(lm::LiveModel, positions::Vector{Int})
+    isempty(positions) && return
+    with_recovery(lm, "free") do
+        lift_fixes!(lm.index, lm.fixed, positions)
+    end
+    for pos in positions
         delete!(lm.fixed, pos)
     end
     return
 end
 
-"""Clear every start value on the model."""
-function clear_start!(lm::LiveModel)
-    if lm.start !== nothing
-        for pos in keys(lm.start)
-            set_start_value(lm.index.all[pos], nothing)
+"""Write the physical start change while leaving its bookkeeping intact."""
+function write_starts!(index::VarIndex, current, target)
+    if current !== nothing
+        for pos in keys(current)
+            (target === nothing || !haskey(target, pos)) && set_start_value(index.all[pos], nothing)
         end
     end
-    lm.start, lm.start_source = nothing, nothing
+    if target !== nothing
+        for (pos, value) in target
+            set_start_value(index.all[pos], value)
+        end
+    end
     return
 end
 
-"""Replace every start value with `start` (a partial start leaves the rest without one)."""
-function apply_start!(lm::LiveModel, start::Dict{Int,Float64}, source::String)
-    clear_start!(lm)
-    for (pos, value) in start
-        set_start_value(lm.index.all[pos], value)
+"""Replace the caller's starts and publish their source after all writes succeed."""
+function apply_start!(lm::LiveModel, start, source)
+    with_recovery(lm, "start") do
+        write_starts!(lm.index, lm.start, start)
     end
     lm.start, lm.start_source = start, source
     return
 end
+
+"""Clear the caller's start values."""
+clear_start!(lm::LiveModel) = apply_start!(lm, nothing, nothing)
 
 # --- the ops ----------------------------------------------------------------------------
 
@@ -362,11 +442,8 @@ function open_model(pool::Pool, p::Program, setup::Setup, cols::Columns, digest:
         add!(pool, lm)
         path = "built"
     else
-        path, build, update = change!(lm, setup, cols, digest)
-        started = time()
-        release!(lm)
+        path, build, update = change!(lm, setup, cols, digest; reopen=true)
         lm.version += 1
-        update += time() - started
         touch!(pool, lm.serial)
     end
     handle = next_handle!(pool)
@@ -492,11 +569,12 @@ function solve_live(lm::LiveModel, handle::String, limits::Limits)
     point = has_point(model)
     rows = record_rows(lm.program, lm.state, lm.setup, point)
     record = solve_record(model, lm.solver, seconds, rows)
+    extracted = solution(lm.program, lm.state, lm.setup, point ? point_value : nothing)
     if point
         lm.last = LastSolution(Float64[point_value(v) for v in lm.index.all], record, handle,
                                lm.version)
     end
-    return solution(lm.program, lm.state, lm.setup, point ? point_value : nothing), record, seconds
+    return extracted, record, seconds
 end
 
 """The `close` reply body: release the handle; its model stays idle in the pool."""

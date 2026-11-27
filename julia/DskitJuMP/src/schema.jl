@@ -281,22 +281,29 @@ function check_full(s::Schema, cols::Columns)
     return cols
 end
 
+"""The axis length in the first available declared field that uses it, or zero."""
+function _positional_length(s::Schema, cols::Columns, dim::String)
+    for f in s.fields
+        i = findfirst(==(dim), f.dims)
+        if i !== nothing && haskey(cols, f.name)
+            return cols[f.name].shape[i]
+        end
+    end
+    return 0
+end
+
+"""Copy label values into a vector of variable key elements."""
+_materialize_label_keys(values) = KeyElem[v for v in values]
+
 """Each dimension's keys: its label field's values, or the positions 0..n-1."""
 function dimension_keys(s::Schema, cols::Columns)
     out = Dict{String,Vector{KeyElem}}()
     for (dim, label) in s.dims
         if label !== nothing
-            out[dim] = KeyElem[v for v in cols[label].values]
+            out[dim] = _materialize_label_keys(cols[label].values)
             continue
         end
-        n = 0
-        for f in s.fields
-            i = findfirst(==(dim), f.dims)
-            if i !== nothing && haskey(cols, f.name)
-                n = cols[f.name].shape[i]
-                break
-            end
-        end
+        n = _positional_length(s, cols, dim)
         out[dim] = KeyElem[i for i in 0:n-1]
     end
     return out
@@ -345,12 +352,25 @@ end
 
 """The default signature: `shape:` and the sha256 of every dimension's name, length, labels."""
 function shape_signature(s::Schema, cols::Columns)
-    keys_by_dim = dimension_keys(s, cols)
+    # Resolve dimensions in declaration order before writing the sorted hash.
+    lengths = Dict{String,Int}()
+    for (dim, label) in s.dims
+        if label === nothing
+            n = _positional_length(s, cols, dim)
+            lengths[dim] = length(0:n-1)
+        else
+            values = cols[label].values
+            if !(values isa Union{Vector{String},Vector{Int}})
+                values = _materialize_label_keys(values)
+            end
+            lengths[dim] = length(values)
+        end
+    end
     io = IOBuffer()
     write(io, SHAPE_MAGIC)
     for (dim, label) in sort(s.dims; by=p -> codeunits(first(p)))
         put_name(io, dim)
-        write(io, htol(UInt64(length(keys_by_dim[dim]))))
+        write(io, htol(UInt64(lengths[dim])))
         if label === nothing
             write(io, 0x00)
         else
