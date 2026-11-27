@@ -904,6 +904,31 @@ is $`q_{nt}(\beta)`$, the log return divided by the scale of 0.051942.
 fit's own mean and spread; those constants live in the saved fit, which was not
 opened.
 
+**From the inputs to the forecast.** The figure follows the same forecast
+through the network of stage 3 to the output of stage 4.
+
+![The worked example end to end: the 19 market quantiles as input, the network's operations, and the forecast CDF beside the market's curve with the realized outcome marked](2026-11-27-input-example-network-flow.png)
+
+- **Left, the input.** The 19 market quantiles of step 6, one dot per input
+  number.
+- **Middle, the network.** The encoder turns the 19 quantiles into 8 numbers.
+  The head takes those 8 and the two calendar numbers, 2.197 and 1.222, and
+  returns three normal curves: three weights, three widths and three fixed
+  centres. In the locked recipe five such networks, one per seed, are averaged,
+  which gives 15 curves.
+- **Right, the output.** The forecast CDF at its 13 saved points, beside the
+  market's curve it started from. The two agree on the left and in the centre.
+  On the right the network leaves more room for a large rise: it puts 0.839 at
+  or below one scale where the market puts 0.877.
+- **The target.** AAPL closed at 155.00 on 17 March, a normalized return of
+  $`\ln(155.00/153.83)/0.051942=0.146`$. That one number is what the forecast
+  is trained and scored against. The forecast had put 0.52 at or below it,
+  which is the raw PIT of stage 5.
+
+The output shown is the zoo's version of this recipe, with the zoo's settings
+and one seed, read from the zoo's saved score rows. The locked five-seed
+forecasts were not opened.
+
 **How it was checked.** The scale, the forward, both calendar numbers and all
 19 quantiles were recomputed from the quotes with the pipeline's own rules and
 compared with the panel row. The largest difference is 0.0000000002.
