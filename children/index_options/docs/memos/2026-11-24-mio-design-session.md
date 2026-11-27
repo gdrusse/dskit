@@ -10,6 +10,10 @@ scenario experiment was run in this session.
 26 November: step 1 (PIT alignment) is proposed in the next section and awaits
 owner confirmation. It is on the session branch only; nothing was fitted or run.
 
+27 November: the section after step 1 writes the whole chain, from the model's
+inputs to joint scenarios, in formulation form with dimensions and updates. It
+is also a proposal awaiting confirmation; nothing was fitted or run.
+
 ## 26 November proposal: step 1, PIT alignment (awaiting confirmation)
 
 Owner: Russell; author: Claude Fable 5.2, from a draft by Claude Opus 5.5 in the
@@ -167,9 +171,9 @@ OUTPUT appended rows. PENDING and NEEDS_REPAIR records stay separate.
 Storage plan: one append-only row per $(a,n,\rho)$, partitioned by the earliest
 usable cutoff. The open forecasts cover 2019Q4 to 2023Q4, about 1,070 sessions;
 with at most 166 x 8 = 1,328 cells per origin that is at most about 1.4 million
-rows, an estimated tens of megabytes, assuming one origin per session (not
-verified). Marginal counters cannot recover this joint record. Nothing has been
-written.
+rows, an estimated tens of megabytes, assuming one origin per session (the
+2020Q1 forecast receipt supports this: 69,687 rows over 62 sessions). Marginal
+counters cannot recover this joint record. Nothing has been written.
 
 Existing dependence code, not yet reconciled with this step:
 `index_options/kelly_sizer.py` (`joint_atoms`, a one-factor Student t copula,
@@ -190,6 +194,351 @@ To confirm, with (a) recommended in each:
    about eight weeks and drops any origin with an absent cell.
 4. Origins: (a) every origin, with overlap treated later; (b) a non-overlapping
    subsample.
+
+## 27 November proposal: the forecast-to-scenario chain in formulation form (awaiting confirmation)
+
+Owner: Russell; author: Claude Fable 5.2. Each stage from the model's inputs to
+joint scenarios is written as it would read in the MIO formulation: its
+definition, its dimension, the existing sets that index it and, where a value is
+carried from one decision to the next, an update with the new assignment. This
+is a proposal on the session branch, not in the Working Draft. Nothing was
+fitted, replayed or read from protected data; no code, config, ledger or Path
+row changed.
+
+Sources. Stages 1 and 4 to 7 restate definitions agreed on 25 November. The
+update lines of stages 6 and 7 are written out here for the first time, and
+their eligibility test uses the earliest usable cutoff proposed in step 1.
+Stages 2 and 3 describe the locked forecast recipe (A0008). Their sizes were
+read from the recipe file, its fit template and the fit code; the functions that
+set them are identical in this branch and at the commit recorded in the 2020Q1
+forecast receipt. No saved fit was opened and no code was run. Stages 8 to 11
+rest on step 1 above and on step 2, which is not yet proposed. The Page could
+not be opened, so every symbol marked "new" is unchecked against it.
+
+### Existing sets and clocks
+
+```math
+\begin{aligned}
+&i\in I=\lbrace b,s\rbrace,\qquad j\in J=\lbrace c,p\rbrace,\qquad n\in N,\qquad t\in T,\qquad k\in K_{nt}^{j},\\
+&d:\ \text{current cutoff session and forecast origin},\qquad a<d:\ \text{historical origin},\\
+&\beta\in\mathcal Q:\ \text{calibration thresholds},\qquad \rho:\ \text{original expiry rank}.
+\end{aligned}
+```
+
+All are reused unchanged. $N$ holds 166 stocks (A0009) and $`\mathcal Q`$ holds
+11 thresholds by default. Every stage is per stock and expiry, so it carries $n$
+with $t$ or $\rho$ only. The contract indices $i$, $j$ and $k$ enter in stage
+11, when a scenario price is placed in the payoff $V$.
+
+Step 1 proposed $`\mathcal R_n`$, $`E_{n\rho\mid a}`$,
+$`d^{\star}_{n\rho\mid a}`$, $`w_{n\rho\mid a}`$, $`\mathcal C_a`$ and
+$`\mathcal O_{a,d}`$; they still await confirmation. Two more symbols are new
+here. The first is the set of all cells:
+
+```math
+\mathcal C := \lbrace (n,\rho) :\ n\in N,\ \rho\in\mathcal R_n \rbrace,\qquad
+\lvert\mathcal C\rvert=\sum_{n\in N}\lvert\mathcal R_n\rvert\le 166\times 8=1328 \qquad\text{(new)}
+```
+
+The second is $`d'`$, the next cutoff after $d$; if every session is processed,
+$`d'=d+1`$. At origin $d$ the cell $`(n,\rho)`$ and the forecast $`(n,t)`$ name
+the same thing when $`t=t_{n\rho\mid d}`$. In every update below, the left side
+belongs to the next cutoff and the right side uses the snapshot at $d$, as in
+the holdings update.
+
+### Stage 1. Preprocessing (agreed)
+
+```math
+\chi_{n,d}\in\mathbb R_{\ge 0},\qquad \eta_{nt}\in\mathbb Z_{>0},\qquad \kappa_{nt}\in\mathbb R_{>0},\qquad
+Z_{nt}:=\frac{\ln(p_{nt}/S_{n,d})}{\kappa_{nt}}
+```
+
+Indexed by $`n\in N`$ and $`t\in T`$: one $\chi$ per stock, one $\eta$ and one
+$\kappa$ per forecast.
+
+**Update (agreed, restated).** When the next session is observed:
+
+```math
+\chi_{n,d'}\ \leftarrow\ \sqrt{\frac{1}{22}\sum_{\ell=0}^{21} r_{n,d'-\ell}^{2}},\qquad
+\kappa_{nt}\ \leftarrow\ \max\left(\chi_{n,d'},\ 0.001\right)\sqrt{\eta_{nt}}
+```
+
+The session count $\eta$ is recounted from the new origin. Carried state: each
+stock's last 22 squared returns, 22 x 166 = 3,652 numbers.
+
+### Stage 2. Model input (new symbol)
+
+For a forecast $`(n,t)`$ at origin $d$:
+
+```math
+q_{nt}^{\text{mkt}}\in\mathbb R^{19},\qquad
+\left(q_{nt}^{\text{mkt}},\ \ln\eta_{nt},\ t/\eta_{nt}\right)\in\mathbb R^{21} \qquad\text{(new)}
+```
+
+Each entry of $`q_{nt}^{\text{mkt}}`$ is a quantile of the normalized return
+$`Z_{nt}`$ under the distribution implied by that expiry's option prices, at one
+of the 19 configured probability levels from 0.01 to 0.99. It is a market-implied
+proxy, not a real-world probability. Code fields: `rn_q_0100` to `rn_q_9900`,
+`log_sessions_to_expiry` and `calendar_days_per_session`. The study lists 327
+candidate feature columns; the locked recipe reads these 21. Indexed by
+$`n\in N`$ and $`t\in T`$.
+
+**No update.** The input is rebuilt at each origin from that session's quotes.
+
+### Stage 3. Network (locked recipe, A0008)
+
+Five networks, one per seed (11, 29, 47, 53, 71), share one design and serve all
+166 stocks. The 21 inputs are first standardized with the fit's own means and
+scales. Roman names stand for the network's parts (new):
+
+```math
+\begin{aligned}
+\operatorname{enc} &: \mathbb R^{19}\to\mathbb R^{8} \qquad\text{(layers } 19\to 64\to 8\text{)},\\
+\operatorname{head} &: \mathbb R^{8+2}\to\mathbb R^{9} \qquad\text{(layers } 10\to 8\to 9\text{)}.
+\end{aligned}
+```
+
+The head takes the encoder's 8 values and the two calendar numbers:
+
+```math
+\operatorname{head}\left(\operatorname{enc}\left(q_{nt}^{\text{mkt}}\right),\ \ln\eta_{nt},\ t/\eta_{nt}\right)\ \mapsto\ \left(\text{wt},\ \text{loc},\ \text{sd}\right)\in\mathbb R^{3}\times\mathbb R^{3}\times\mathbb R^{3}
+```
+
+The nine outputs decode to three weights (positive, summing to 1), three
+centres and three standard deviations (positive). Under the recipe's fixed
+location the centres are constants of the network: they do not depend on the
+input. Each network has (19 x 64 + 64) + (64 x 8 + 8) + (10 x 8 + 8) +
+(8 x 9 + 9) = 1,969 trained weights, 9,845 over the five seeds, plus 42
+standardization constants. That count is mine, from the layer sizes in the code.
+
+**Update (locked, A0008).** At the first session of each calendar quarter:
+
+```math
+\left(\operatorname{enc},\ \operatorname{head},\ \text{loc}\right)\ \leftarrow\ \operatorname{fit}\left(\text{all mature history before the quarter starts}\right)
+```
+
+The fit also resets the standardization constants. Within the quarter the five
+networks stay fixed.
+
+### Stage 4. Forecast CDF (agreed)
+
+```math
+\widehat\Psi_{nt}^{Z}(z\mid\mathcal F_d)=\sum_{\ell=1}^{15}\text{wt}_{\ell,nt}\ \Phi\left(\frac{z-\text{loc}_{\ell}}{\text{sd}_{\ell,nt}}\right),\qquad
+\sum_{\ell=1}^{15}\text{wt}_{\ell,nt}=1,\qquad \widehat\Psi_{nt}^{Z}:\mathbb R\to[0,1]
+```
+
+$\Phi$ is the standard normal CDF. Components 1 to 3 come from the first seed, 4
+to 6 from the second, and so on; each seed's three weights sum to one fifth,
+which is the linear pool. A forecast is therefore 45 numbers: 15 weights, 15
+centres and 15 standard deviations, with the centres shared by every forecast of
+a quarter. In price coordinates, as agreed:
+
+```math
+\widehat\Psi_{nt}(p\mid\mathcal F_d)=\widehat\Psi_{nt}^{Z}\left(\frac{\ln(p/S_{n,d})}{\kappa_{nt}}\mid\mathcal F_d\right),\qquad p>0
+```
+
+Indexed by $`n\in N`$ and $`t\in T`$. The 45 numbers are saved, and so is the
+curve at 13 values of $z$ from -3 to 3 (25 on the fine grid).
+
+**No update.** A forecast is evaluated once, at its origin, and kept as issued.
+
+### Stage 5. Raw PIT (agreed)
+
+```math
+u_{n\rho\mid a}:=\widehat\Psi_{nt}\left(S_{n,\,a+\eta_{n\rho\mid a}}\mid\mathcal F_a\right)\in[0,1],\qquad t=t_{n\rho\mid a}
+```
+
+One number per settled forecast, shared by its contracts. Indexed by
+$`n\in N`$, $`\rho\in\mathcal R_n`$ and the origins $`a<d`$.
+
+**Update.** Created once, at the first cutoff with
+$`d^{\star}_{n\rho\mid a}\le d'`$. Never revised.
+
+### Stage 6. Counters (agreed)
+
+```math
+M_{n,\rho,d}\in\mathbb Z_{\ge 0},\qquad A_{n,\rho,d}(\beta)\in\mathbb Z_{\ge 0}\quad\text{for }\beta\in\mathcal Q
+```
+
+Indexed by $`(n,\rho)\in\mathcal C`$ and $`\beta\in\mathcal Q`$: 1 + 11 = 12
+integers per cell, at most 15,936 in all.
+
+**Update.**
+
+```math
+\begin{aligned}
+M_{n,\rho,d'} &\leftarrow M_{n,\rho,d}+\#\lbrace a :\ d<d^{\star}_{n\rho\mid a}\le d' \rbrace,\\
+A_{n,\rho,d'}(\beta) &\leftarrow A_{n,\rho,d}(\beta)+\#\lbrace a :\ d<d^{\star}_{n\rho\mid a}\le d',\ u_{n\rho\mid a}\le\beta \rbrace,\qquad \beta\in\mathcal Q.
+\end{aligned}
+```
+
+Both start at zero. Only the forecasts that settled since $d$ are read; no PIT
+history is scanned again.
+
+### Stage 7. Correction map (agreed working map)
+
+```math
+\widehat\Gamma_{n,\rho,d}:[0,1]\to[0,1],\qquad
+\text{fixed by its values at the 11 thresholds and the anchors }(0,0)\text{ and }(1,1)
+```
+
+Linear between neighbouring points and strictly increasing. Indexed like the
+counters: 11 numbers per cell, at most 14,608 per cutoff.
+
+**Update.** After the counters:
+
+```math
+\widehat\Gamma_{n,\rho,d'}(\beta)\ \leftarrow\ \frac{A_{n,\rho,d'}(\beta)+\zeta\beta}{M_{n,\rho,d'}+\zeta},\qquad \beta\in\mathcal Q
+```
+
+The map issued at $d$ is kept, not overwritten, until every forecast issued with
+it has settled: a forecast is always corrected by the map of its own origin.
+
+### Stage 8. Corrected CDF and corrected PIT
+
+The composition was agreed; the symbol $w$ is from step 1.
+
+```math
+\begin{aligned}
+p &\mapsto \widehat\Gamma_{n,\rho,d}\left(\widehat\Psi_{nt}(p\mid\mathcal F_d)\right)\in[0,1], &&t=t_{n\rho\mid d},\\
+w_{n\rho\mid a} &:= \widehat\Gamma_{n,\rho,a}\left(u_{n\rho\mid a}\right)\in[0,1].
+\end{aligned}
+```
+
+The first line is the corrected CDF of a forecast issued now. The second is the
+corrected PIT of a settled forecast. That is one curve and one number per cell
+and origin. Indexed by $`(n,\rho)\in\mathcal C`$ and the origin.
+
+**Update.** $w$ is computed once, at settlement, with the stored map of
+origin $a$.
+
+### Stage 9. Joint observation and joint record (step 1; one new symbol)
+
+```math
+\mathbf w_a := \left(w_{n\rho\mid a}\right)_{(n,\rho)\in\mathcal C_a}\in[0,1]^{\lvert\mathcal C_a\rvert},\qquad
+\lvert\mathcal C_a\rvert\le\lvert\mathcal C\rvert\le 1328
+```
+
+At cutoff $d$ only the coordinates in $`\mathcal O_{a,d}`$ are known. The joint
+record holds every settled row:
+
+```math
+\mathcal H_d := \lbrace \left(a,\ n,\ \rho,\ u_{n\rho\mid a},\ w_{n\rho\mid a}\right) :\ a<d,\ (n,\rho)\in\mathcal O_{a,d} \rbrace \qquad\text{(new)}
+```
+
+Indexed by the origins $`a<d`$ and the cells $`(n,\rho)\in\mathcal C_a`$. The
+2020Q1 forecast receipt records 69,687 rows over 62 sessions, about 1,120 per
+session, so every session is an origin. Over the roughly 1,070 sessions of open
+forecasts that is about 1.2 million rows, and never more than about 1.4 million.
+
+**Update.**
+
+```math
+\begin{aligned}
+\mathcal O_{a,d'} &\leftarrow \mathcal O_{a,d}\cup\lbrace (n,\rho)\in\mathcal C_a :\ d<d^{\star}_{n\rho\mid a}\le d' \rbrace,\\
+\mathcal H_{d'} &\leftarrow \mathcal H_d\cup\lbrace \left(a,\ n,\ \rho,\ u_{n\rho\mid a},\ w_{n\rho\mid a}\right) :\ d<d^{\star}_{n\rho\mid a}\le d' \rbrace.
+\end{aligned}
+```
+
+Rows are appended, never rewritten.
+
+### Stage 10. Copula (step 2, not yet defined)
+
+Only the object and its size can be stated now. The name Cop is a placeholder,
+because $C$ is the premium.
+
+```math
+\operatorname{Cop}_d:[0,1]^{\lvert\mathcal C_d\rvert}\to[0,1],\qquad
+\operatorname{Cop}_d(\mathbf y):=\widehat{\Pr}\left(w_{n\rho\mid d}\le y_{n\rho}\ \text{ for all }(n,\rho)\in\mathcal C_d\ \mid\ \mathcal F_d\right)
+```
+
+Indexed by the cells $`(n,\rho)\in\mathcal C_d`$. By definition each coordinate
+alone is uniform on [0, 1]. The dimension is the number of cells forecast at
+$d$, at most 1,328. If a correlation-matrix family is chosen, its state is one
+symmetric matrix of that size: at most 881,128 distinct pairs, against about
+1,070 overlapping origins.
+
+**Update: not defined.** It belongs to step 2. The counters cannot supply it.
+
+### Stage 11. Joint scenarios (open; shape only)
+
+```math
+\tilde{\mathbf w}\sim\operatorname{Cop}_d,\qquad
+\tilde p_{nt} := \widehat\Psi_{nt}^{-1}\left(\widehat\Gamma_{n,\rho,d}^{-1}\left(\tilde w_{n\rho}\right)\mid\mathcal F_d\right),\qquad t=t_{n\rho\mid d}
+```
+
+A tilde marks a simulated value (new). One scenario is one draw of at most
+1,328 linked scores, each turned into an expiry price by inverting the corrected
+CDF of its cell. Both inverses exist for scores strictly between 0 and 1,
+because the map and the mixture CDF are strictly increasing. Each price then
+replaces the known $`p_{nt}`$ in the agreed payoff $`V_{knt}^{ij}`$; this is
+where $`i\in I`$, $`j\in J`$ and $`k\in K_{nt}^{j}`$ enter. Shape: the number of
+scenarios times the number of cells; that number is not chosen.
+
+**No update.** Scenarios are drawn again at every solve.
+
+### Order of one update
+
+```text
+UPDATE from cutoff d to the next cutoff d'
+
+1. Observe returns, expiry-price records and option quotes through d'.
+
+2. Preprocess: chi[n,d'] <- 22-session RMS; then eta and kappa per forecast.
+
+3. Settle. FOR each (a, n, rho) with d < d_star[n,rho|a] <= d':
+       u[n,rho|a] <- Psi_hat[n,t](S[n, a + eta[n,rho|a]] | F[a])    (Appendix C)
+       w[n,rho|a] <- Gamma_hat[n,rho,a](u[n,rho|a])                 (map of origin a)
+       APPEND row (a, n, rho, u, w, and the step 1 fields) to H.
+
+4. Count:  M[n,rho,d']       <- M[n,rho,d]       + new rows of the cell
+           A[n,rho,d'](beta) <- A[n,rho,d](beta) + new rows with u <= beta
+
+5. Map:    Gamma_hat[n,rho,d'](beta) <-
+               (A[n,rho,d'](beta) + zeta * beta) / (M[n,rho,d'] + zeta)
+           Store it as version d'. Keep earlier versions that open forecasts use.
+
+6. At a quarter start only: refit the five networks (locked, A0008).
+
+7. Forecast. FOR each cell with valid inputs at d':
+       Build the 21 inputs; evaluate the 45 mixture numbers.
+       Save Psi_hat[n,t](. | F[d']) with map version d'.
+
+8. Copula state: step 2, not defined.
+
+9. Solve with the forecasts and maps of d'.
+```
+
+### Sizes at a glance
+
+| Stage | Object | Size | Carried to the next cutoff |
+|---|---|---|---|
+| 1 | Return window | 22 squared returns per stock: 3,652 | Yes, every session |
+| 2 | Model input | 21 numbers per forecast, of 327 candidate features | No, rebuilt |
+| 3 | Networks | 1,969 weights per seed: 9,845 | Yes, refitted each quarter |
+| 4 | Forecast CDF | 45 numbers per forecast | No, kept as issued |
+| 5 | Raw PIT | 1 number per settled forecast | Created at settlement |
+| 6 | Counters | 12 integers per cell: at most 15,936 | Yes, incremented |
+| 7 | Correction map | 11 numbers per cell: at most 14,608 per version | Yes, recomputed |
+| 8 | Corrected PIT | 1 number per settled forecast | Created at settlement |
+| 9 | Joint record | At most about 1.4 million rows | Yes, appended |
+| 10 | Copula | Dimension at most 1,328 | Step 2 |
+| 11 | Scenarios | Number of scenarios x at most 1,328 prices | No, redrawn |
+
+To confirm, with (a) recommended in each:
+
+1. Names of the network's parts: (a) roman words (enc, head, wt, loc, sd), as
+   bid and ask already are; (b) single letters of your choice.
+2. Update clock: (a) counters, maps and the joint record update at every
+   session even when the solve is weekly, as the EWMA rule already does;
+   (b) they update only at solves.
+3. Issued maps: (a) keep each version until its forecasts settle, since older
+   versions can be rebuilt from the joint record; (b) keep every version.
+4. New symbols here ($`q_{nt}^{\text{mkt}}`$, $`\mathcal C`$, $`\mathcal H_d`$,
+   $`d'`$, bold for a vector, the tilde and the placeholder Cop): (a) accept;
+   (b) rename.
+
+Step 1's four choices above stay open.
 
 ## 25 November formulation checkpoint
 
