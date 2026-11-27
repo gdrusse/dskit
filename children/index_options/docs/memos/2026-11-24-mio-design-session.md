@@ -566,6 +566,159 @@ this is not clean evidence.
 
 **No update.** The input is rebuilt at each origin from that session's quotes.
 
+### Worked example: the 21 inputs of one real forecast
+
+This follows stages 1 and 2 with real numbers from our data, for one forecast:
+Apple (AAPL), made at the close of Monday 6 March 2023, for the expiry of Friday
+17 March 2023. The quotes are the 136 contracts the frozen option-chain export
+holds for that stock, day and expiry; the returns and the stored inputs are the
+panel row of the same forecast. Every input recomputed below equals the value
+stored in the panel to ten decimal places. Dollar amounts are per share.
+
+**The day.** The panel holds seven forecasts for AAPL that day, one per listed
+expiry. The rank follows A0006's seven-day windows. The worked forecast is
+rank 2.
+
+| Rank | Expiry | Calendar days | Sessions | Scale | Market quantiles |
+|---|---|---|---|---|---|
+| 1 | Fri 10 Mar | 4 | 4 | 0.0346 | built |
+| 2 | Fri 17 Mar | 11 | 9 | 0.0519 | built |
+| 3 | Fri 24 Mar | 18 | 14 | 0.0648 | built |
+| 4 | Fri 31 Mar | 25 | 19 | 0.0755 | built |
+| 5 | Thu 6 Apr | 31 | 23 | 0.0830 | built |
+| 6 | Fri 14 Apr | 39 | 28 | 0.0916 | built |
+| 7 | Fri 21 Apr | 46 | 33 | 0.0995 | none, so filled |
+
+The columns are $t$, $`\eta_{nt}`$ and $`\kappa_{nt}`$. The seventh forecast is
+a real case of the fill described above: the estimator rejected that chain, so
+its 19 quantile inputs were the training medians. Why it was rejected was not
+examined here.
+
+**Step 1. The scale.** The 22 daily log returns of AAPL ending on 6 March are
+drawn below. The newest is the move from 151.03 on Friday 3 March to 153.83 on
+Monday 6 March, $`\ln(153.83/151.03)=0.01837`$. Their squares sum to 0.0065951.
+
+![The last 22 daily log returns of AAPL to 6 March 2023, with lines at plus and minus their root mean square of 1.73 percent](2026-11-27-input-example-returns.png)
+
+```math
+\chi_{n,d}=\sqrt{\frac{0.0065951}{22}}=0.017314,\qquad
+\kappa_{nt}=\max\left(0.017314,\ 0.001\right)\sqrt{9}=0.051942
+```
+
+So AAPL had typically moved 1.73 percent a session, and the scale for a
+nine-session forecast is 5.19 percent. The floor of 0.001 does not bind.
+
+**Step 2. The two calendar numbers.** From 6 March to 17 March there are $t=11$
+calendar days and $`\eta_{nt}=9`$ trading sessions.
+
+```math
+\ln\eta_{nt}=\ln 9=2.1972,\qquad t/\eta_{nt}=11/9=1.2222
+```
+
+**Step 3. Midpoints and the forward.** Of the 136 quoted contracts, 80 pass the
+quote rules. Thirty-seven are dropped for a bid of zero, and 19 because the
+data holds no positive implied volatility for them; the rules require one even
+though these steps do not use it. Seven of the strikes near the stock price:
+
+| Strike | Call bid | Call ask | Call mid | Put bid | Put ask | Put mid | Strike + call mid - put mid |
+|---|---|---|---|---|---|---|---|
+| 148.0 | 6.95 | 7.10 | 7.025 | 0.91 | 0.94 | 0.925 | 154.100 |
+| 149.0 | 6.15 | 6.30 | 6.225 | 1.12 | 1.15 | 1.135 | 154.090 |
+| 150.0 | 5.40 | 5.55 | 5.475 | 1.36 | 1.40 | 1.380 | 154.095 |
+| 152.5 | 3.75 | 3.85 | 3.800 | 2.16 | 2.21 | 2.185 | 154.115 |
+| 155.0 | 2.38 | 2.44 | 2.410 | 3.25 | 3.35 | 3.300 | 154.110 |
+| 157.5 | 1.36 | 1.39 | 1.375 | 4.70 | 4.85 | 4.775 | 154.100 |
+| 160.0 | 0.70 | 0.71 | 0.705 | 6.25 | 6.80 | 6.525 | 154.180 |
+
+The last column is the forward that each strike implies. Twenty-five strikes
+have both a call and a put; their values run from 153.705 to 154.465, and the
+median is $`\text{fwd}_{nt}=154.11`$, against a close of 153.83.
+
+**Step 4. One call-equivalent price per strike.** Below the forward the put is
+used, restated as a call; above it the call is used.
+
+```math
+\begin{aligned}
+\text{cq}_{nt}(150)&=1.380+154.11-150=5.490,\\
+\text{cq}_{nt}(152.5)&=2.185+154.11-152.5=3.795,\\
+\text{cq}_{nt}(155)&=2.410.
+\end{aligned}
+```
+
+That gives 31 strikes from 110 to 180: 20 from puts and 11 from calls.
+
+![Call-equivalent mid quotes by strike for AAPL on 6 March 2023, expiry 17 March: puts restated as calls below the forward of 154.11 and calls above it](2026-11-27-input-example-call-equivalent.png)
+
+**Step 5. Slopes into a CDF.** Between each pair of neighbouring strikes, the
+fall in price per dollar of strike is the market's probability of finishing
+above, so 1 plus the slope is the probability of finishing at or below.
+
+| Lower strike | Upper strike | Price at lower | Price at upper | Slope | CDF | Set at price |
+|---|---|---|---|---|---|---|
+| 149.0 | 150.0 | 6.245 | 5.490 | -0.755 | 0.245 | 149.50 |
+| 150.0 | 152.5 | 5.490 | 3.795 | -0.678 | 0.322 | 151.25 |
+| 152.5 | 155.0 | 3.795 | 2.410 | -0.554 | 0.446 | 153.75 |
+| 155.0 | 157.5 | 2.410 | 1.375 | -0.414 | 0.586 | 156.25 |
+| 157.5 | 160.0 | 1.375 | 0.705 | -0.268 | 0.732 | 158.75 |
+| 160.0 | 162.5 | 0.705 | 0.340 | -0.146 | 0.854 | 161.25 |
+
+For example, from 152.5 to 155 the price falls by 1.385 over 2.5 dollars, a
+slope of -0.554, so the market puts 0.446 on AAPL finishing at or below 153.75.
+The smoothing changed 2 of the 30 slopes here. The curve is kept from 115 to
+177.5, where it is completed to 0 and to 1.
+
+![The market-implied CDF of the AAPL price on 17 March 2023 as seen on 6 March, with the points before smoothing and the 19 quantiles read from the curve](2026-11-27-input-example-market-cdf.png)
+
+**Step 6. Read the 19 quantiles and divide by the scale.** Take the level
+$\beta=0.5$. It lies between 0.446 at 153.75 and 0.586 at 156.25, a fraction
+$`(0.5-0.446)/(0.586-0.446)=0.3857`$ of the way. The line is straight in the
+logarithm of price, so the return at the quantile is:
+
+```math
+\ln\frac{153.75}{153.83}+0.3857\left(\ln\frac{156.25}{153.83}-\ln\frac{153.75}{153.83}\right)=-0.000520+0.3857\times 0.016129=0.005701
+```
+
+```math
+q_{nt}(0.5)=\frac{0.005701}{0.051942}=0.110
+```
+
+That is a price of 154.71. All 19, in the same way:
+
+| Level | Price | Log return | Input |
+|---|---|---|---|
+| 0.01 | 133.99 | -0.1381 | -2.659 |
+| 0.025 | 139.00 | -0.1014 | -1.952 |
+| 0.05 | 141.00 | -0.0871 | -1.677 |
+| 0.1 | 144.79 | -0.0606 | -1.167 |
+| 0.15 | 146.79 | -0.0469 | -0.903 |
+| 0.2 | 148.21 | -0.0372 | -0.716 |
+| 0.25 | 149.61 | -0.0278 | -0.535 |
+| 0.3 | 150.75 | -0.0202 | -0.390 |
+| 0.4 | 152.82 | -0.0066 | -0.127 |
+| 0.5 | 154.71 | 0.0057 | 0.110 |
+| 0.6 | 156.49 | 0.0171 | 0.330 |
+| 0.7 | 158.20 | 0.0280 | 0.539 |
+| 0.75 | 159.12 | 0.0338 | 0.650 |
+| 0.8 | 160.14 | 0.0402 | 0.774 |
+| 0.85 | 161.17 | 0.0466 | 0.897 |
+| 0.9 | 162.76 | 0.0564 | 1.086 |
+| 0.95 | 165.06 | 0.0705 | 1.357 |
+| 0.975 | 167.34 | 0.0842 | 1.621 |
+| 0.99 | 170.25 | 0.1014 | 1.952 |
+
+The level is $\beta$ and the price is $`\widehat G_{nt}^{-1}(\beta)`$. The log
+return is the logarithm of that price divided by the close of 153.83. The input
+is $`q_{nt}(\beta)`$, the log return divided by the scale of 0.051942.
+
+**The 21 inputs.** The network receives the 19 numbers of the last column, then
+2.1972 and 1.2222. Before they enter the network each is standardized with the
+fit's own mean and spread; those constants live in the saved fit, which was not
+opened.
+
+**How it was checked.** The scale, the forward, both calendar numbers and all
+19 quantiles were recomputed from the quotes with the pipeline's own rules and
+compared with the panel row. The largest difference is 0.0000000002.
+
 ### Stage 3. Network (locked recipe, A0008)
 
 For every seed $`e\in\mathcal E`$ there is one network. It has two parts:
