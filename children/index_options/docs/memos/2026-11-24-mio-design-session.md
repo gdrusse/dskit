@@ -270,8 +270,9 @@ Three rules govern superscripts and subscripts.
   are not indices and are defined where they appear: the hat, prime, tilde and
   bold above; the star in $`d^{\star}`$; the superscript $-1$ of an inverse; the
   superscript $Z$ of the forecast CDF; the word market on the set
-  $`\mathcal Q^{\text{market}}`$; and the signs on $`\beta_{-}`$, $`\beta_{+}`$,
-  $`s_{-}`$ and $`s_{+}`$. Anything else is written out in words.
+  $`\mathcal Q^{\text{market}}`$; the signs on $`\beta_{-}`$, $`\beta_{+}`$,
+  $`s_{-}`$ and $`s_{+}`$; and the labels lo and hi on $`s_{\text{lo}}`$ and
+  $`s_{\text{hi}}`$. Anything else is written out in words.
 
 ### Existing sets and clocks
 
@@ -452,70 +453,216 @@ q_{nt}(\beta)\in\mathbb R\quad\text{for }\beta\in\mathcal Q^{\text{market}},\qqu
   For one full week it is 7/5 = 1.4. Code field `calendar_days_per_session`.
 
 **Where the quantiles come from.** They are built from the end-of-day option
-quotes of stock $n$ for the expiry $t$ calendar days after $d$, in five steps:
+quotes of stock $n$ for the expiry $t$ calendar days after $d$. The seven
+definitions below are in order; each is followed by its symbols and its reason.
+All symbols in this part are new unless stated.
+
+**1. Usable quotes and midpoints.**
 
 ```math
 \begin{aligned}
+U_{nt}^{j}&:=\lbrace s:\ \text{bid}_{nt}^{j}(s)>0\ \text{ and }\ \text{ask}_{nt}^{j}(s)\ge\text{bid}_{nt}^{j}(s)\rbrace,\\
 \text{mid}_{nt}^{j}(s)&:=\tfrac12\left(\text{bid}_{nt}^{j}(s)+\text{ask}_{nt}^{j}(s)\right),\\
-\text{fwd}_{nt}&:=\operatorname{median}\lbrace\, s+\text{mid}_{nt}^{c}(s)-\text{mid}_{nt}^{p}(s) :\ s\text{ quoted for both a call and a put}\,\rbrace,\\
-\text{cq}_{nt}(s)&:=\begin{cases}\text{mid}_{nt}^{c}(s), & s\ge\text{fwd}_{nt},\\ \text{mid}_{nt}^{p}(s)+\text{fwd}_{nt}-s, & s\le\text{fwd}_{nt},\end{cases}\\
-\widehat G_{nt}\left(\tfrac12(s_{-}+s_{+})\right)&:=1+\operatorname{iso}\left(\frac{\text{cq}_{nt}(s_{+})-\text{cq}_{nt}(s_{-})}{s_{+}-s_{-}}\right),\\
-q_{nt}(\beta)&:=\frac{1}{\kappa_{nt}}\ \ln\left(\frac{\widehat G_{nt}^{-1}(\beta)}{S_{n,d}}\right),\qquad \beta\in\mathcal Q^{\text{market}}.
+\text{gap}_{nt}^{j}(s)&:=\text{ask}_{nt}^{j}(s)-\text{bid}_{nt}^{j}(s).
 \end{aligned}
 ```
 
-**Symbols of the five steps.** All but the first three entries are new.
-
 - $n$, $t$, $d$: the stock, the calendar days to the expiry, and the origin
-  session. $j$: the option type; as a superscript, $c$ is call and $p$ is put.
+  session (existing). $j$: the option type; as a superscript, $c$ is call and
+  $p$ is put (existing).
 - $s$: a strike price in dollars per share, read in brackets. A contract is
   named here by its strike; in the Working Draft the same contract is named by
-  its index $k$. $`s_{-}`$, $`s_{+}`$: two neighbouring strikes, the lower and
-  the higher; the signs are labels, not indices.
+  its index $k$.
 - $`\text{bid}_{nt}^{j}(s)`$, $`\text{ask}_{nt}^{j}(s)`$: the Working Draft's
   per-share bid and ask of the option of type $j$ on stock $n$, expiry $t$ and
-  strike $s$, read at the close of session $d$. Only valid quotes are used: bid
-  above zero and ask at least the bid.
-- $`\text{mid}_{nt}^{j}(s)`$: the midpoint of that quote.
-- $`\text{fwd}_{nt}`$: the forward price of stock $n$ for that expiry implied by
-  the quotes. The median is the middle value over the strikes that have both.
-- $`\text{cq}_{nt}(s)`$: the call-equivalent quote at strike $s$: the call's
-  midpoint at or above the forward, and the put's midpoint restated as a call
-  price at or below it.
-- $`\operatorname{iso}`$: a smoothing that changes the slopes as little as
-  possible so that they never fall from one strike to the next and stay between
-  -1 and 0.
-- $`\widehat G_{nt}`$: the market-implied CDF of the expiry price: under the
-  option quotes, the probability that stock $n$ finishes at or below a strike.
-  It is set at the midpoint of each pair of neighbouring strikes, joined by
-  straight lines in the logarithm of the strike, and completed with 0 at the
-  lowest strike kept and 1 at the highest. $`\widehat G_{nt}^{-1}(\beta)`$ is
-  the price at which it equals $\beta$; the superscript $-1$ marks the inverse.
-- $`S_{n,d}`$, $`\kappa_{nt}`$: the closing price at the origin and the scale of
-  stage 1.
+  strike $s$, read at the close of session $d$.
+- $`U_{nt}^{j}`$: the set of strikes whose option of type $j$ has a usable
+  quote. The data rules also require finite sizes and open interest and a
+  positive implied volatility.
+- $`\text{mid}_{nt}^{j}(s)`$: the midpoint of the quote, defined for $s$ in
+  $`U_{nt}^{j}`$.
+- $`\text{gap}_{nt}^{j}(s)`$: the distance between the ask and the bid.
 
-**Why each step.**
+**Why.** The midpoint stands for the option's price. If the true price lies
+between the bid and the ask, the midpoint is off by at most half the gap. With a
+bid of zero nobody is offering to buy, so half the ask is not a price.
 
-- **Why the midpoint.** It is the middle of what buyers bid and sellers ask,
-  the usual single price for a quoted option.
-- **Why the forward.** A call and a put at one strike differ in price by the
-  forward minus the strike. Each strike quoted on both sides therefore gives
-  the forward, and the median guards against one bad quote. The same relation
-  restates a put as a call.
-- **Why the two cases.** Each strike uses its out-of-the-money contract: the
-  put below the forward and the call above it.
-- **Why the slope gives a probability.** Raising a call's strike by one dollar
-  lowers its payoff by one dollar whenever the stock ends above the strike, and
-  by nothing otherwise. So the fall in price per dollar of strike is the
-  probability of ending above it, and 1 plus the slope is the probability of
-  ending at or below it.
-- **Why smooth the slopes.** Quotes are noisy, so raw slopes can run the wrong
-  way, and a probability cannot fall as the strike rises.
-- **Why divide by the scale.** It puts the quantiles in the same normalized
-  units as the return being forecast.
-- **Why it is only a proxy.** Option prices mix probability with the price of
-  risk; these stock options can be exercised early, which the steps ignore; and
-  no interest or dividend adjustment is applied.
+**2. What a call minus a put pays.** From the agreed payoffs of one call and
+one put of stock $n$ and expiry $t$ at the same strike $s$:
+
+```math
+m\left(p_{nt}-s\right)\mathbf 1\lbrace p_{nt}\ge s\rbrace\ -\ m\left(s-p_{nt}\right)\mathbf 1\lbrace p_{nt}\le s\rbrace\ =\ m\left(p_{nt}-s\right)
+```
+
+- $m$: the contract multiplier, 100 shares (existing).
+- $`p_{nt}`$: the price of stock $n$ at that expiry, not known at $d$
+  (existing).
+- $`\mathbf 1\lbrace\cdot\rbrace`$: 1 if the condition inside is true, else 0
+  (existing).
+
+**Why.** Holding the call and owing the put pays the stock price minus the
+strike in every outcome. That is the payoff of agreeing today to buy the stock
+at expiry for $s$.
+
+**3. The forward.**
+
+```math
+\begin{aligned}
+\text{fwd}_{nt}(s)&:=s+\text{mid}_{nt}^{c}(s)-\text{mid}_{nt}^{p}(s)\quad\text{for }s\in U_{nt}^{c}\cap U_{nt}^{p},\\
+\text{fwd}_{nt}&:=\operatorname{median}\lbrace \text{fwd}_{nt}(s):\ s\in U_{nt}^{c}\cap U_{nt}^{p}\rbrace.
+\end{aligned}
+```
+
+- $`U_{nt}^{c}\cap U_{nt}^{p}`$: the strikes at which both the call and the put
+  have a usable quote.
+- $`\text{fwd}_{nt}(s)`$: with a strike in brackets, the forward that this one
+  strike implies.
+- $`\text{fwd}_{nt}`$: without brackets, the forward of stock $n$ for that
+  expiry: the middle value over those strikes. The forward is the price agreed
+  today for buying the stock at the expiry.
+
+**Why.** By definition 2 the call minus the put is worth the forward minus the
+strike, if interest is ignored, so each strike quoted on both sides gives the
+forward. The median guards against one bad quote. Both sides are needed because
+the value is a difference of the two.
+
+**4. One call price per strike, from the out-of-the-money option.**
+
+```math
+\begin{aligned}
+U_{nt}&:=\lbrace s\in U_{nt}^{p}:\ s\le\text{fwd}_{nt}\rbrace\ \cup\ \lbrace s\in U_{nt}^{c}:\ s\ge\text{fwd}_{nt}\rbrace,\\
+\text{cq}_{nt}(s)&:=\begin{cases}\text{mid}_{nt}^{p}(s)+\text{fwd}_{nt}-s, & s<\text{fwd}_{nt},\\ \text{mid}_{nt}^{c}(s), & s>\text{fwd}_{nt},\end{cases}\qquad s\in U_{nt}.
+\end{aligned}
+```
+
+- $`U_{nt}`$: the strikes kept: those with a usable put at or below the
+  forward and those with a usable call at or above it.
+- $`\text{cq}_{nt}(s)`$: the call-equivalent quote at strike $s$. At a strike
+  exactly equal to the forward with both options usable, it is the average of
+  the two lines.
+
+**Why.** A call price can be had two ways at any strike: the call's own
+midpoint, or the put's midpoint plus the forward minus the strike, which is
+definition 3 rearranged. The step takes whichever option is out of the money,
+because its quote is the tighter one. A put is out of the money below the
+forward and a call above it. The forward appears only in the first line because
+only a put needs converting into a call price. In the worked example the gap at
+strike 145 is 1.05 for the call and 0.01 for the put; at strike 160 it is 0.01
+for the call and 0.55 for the put.
+
+**5. Slopes between neighbouring strikes.** For two neighbouring strikes
+$`s_{-}<s_{+}`$ in $`U_{nt}`$, with no kept strike between them:
+
+```math
+\begin{aligned}
+\text{slope}_{nt}(s_{-},s_{+})&:=\frac{\text{cq}_{nt}(s_{+})-\text{cq}_{nt}(s_{-})}{s_{+}-s_{-}},\\
+\left|\text{error in the slope}\right|&\le\frac{\tfrac12\,\text{gap}(s_{-})+\tfrac12\,\text{gap}(s_{+})}{s_{+}-s_{-}}.
+\end{aligned}
+```
+
+- $`s_{-}`$, $`s_{+}`$: the lower and the higher of the two strikes; the signs
+  are labels, not indices.
+- $`\text{slope}_{nt}(s_{-},s_{+})`$: the change in the call-equivalent quote
+  per dollar of strike between them. It should lie between -1 and 0.
+- $`\text{gap}(s_{-})`$, $`\text{gap}(s_{+})`$: the gap of definition 1 for the
+  option used at each strike.
+
+**Why.** The bound shows why tight quotes matter: the slope divides a
+difference of two midpoints by a small strike step. Between strikes 145 and 146
+of the worked example the bound is 0.015 with the puts and 0.625 with the calls,
+on a quantity that must lie between -1 and 0.
+
+**6. From slopes to the market's CDF.**
+
+```math
+\frac{\partial}{\partial s}\left(p_{nt}-s\right)\mathbf 1\lbrace p_{nt}\ge s\rbrace=-\mathbf 1\lbrace p_{nt}>s\rbrace
+\quad\Longrightarrow\quad
+\Pr\left(p_{nt}\le s\right)=1+\frac{\partial\,(\text{call price})}{\partial s}
+```
+
+```math
+\begin{aligned}
+\operatorname{iso}(\text{slope}_{nt})&:=\ \text{the values }b\text{ that minimize }\sum_{(s_{-},s_{+})}\left(s_{+}-s_{-}\right)\left(b(s_{-},s_{+})-\text{slope}_{nt}(s_{-},s_{+})\right)^{2}\\
+&\phantom{:=}\ \text{ subject to }b\text{ never falling as the strike rises, and }-1\le b\le 0,\\
+\widehat G_{nt}\left(\tfrac12(s_{-}+s_{+})\right)&:=1+\operatorname{iso}(\text{slope}_{nt})(s_{-},s_{+}).
+\end{aligned}
+```
+
+- $`\partial/\partial s`$: the rate of change as the strike rises by one
+  dollar.
+- $\Pr$: the probability that option prices imply, with interest ignored. It is
+  not a real-world probability.
+- $b$: a trial set of slopes, one number $`b(s_{-},s_{+})`$ per pair of
+  neighbouring strikes; the sum runs over all the pairs.
+- $`\operatorname{iso}`$: the smoothed slopes: the closest set to the raw
+  slopes, weighting each pair by its strike step, among sets that never fall
+  and stay between -1 and 0.
+- $`\widehat G_{nt}`$: the market-implied CDF of the expiry price of stock $n$:
+  the implied probability of finishing at or below a price. It is set at the
+  midpoint of each pair of neighbouring strikes.
+
+**Why.** Raising a call's strike by one dollar lowers its payoff by one dollar
+whenever the stock ends above the strike, and by nothing otherwise. So the fall
+in the call price per dollar of strike is the probability of ending above, and
+1 plus the slope is the probability of ending at or below. Quotes are noisy, so
+raw slopes can run the wrong way; a probability cannot fall as the price rises,
+and the smoothing enforces that with the smallest change.
+
+**7. Completing the curve and reading the quantiles.**
+
+```math
+\begin{aligned}
+\widehat G_{nt}(s_{\text{lo}})&:=0,\qquad \widehat G_{nt}(s_{\text{hi}}):=1,\\
+q_{nt}(\beta)&:=\frac{1}{\kappa_{nt}}\ \ln\left(\frac{\widehat G_{nt}^{-1}(\beta)}{S_{n,d}}\right)\quad\text{for }\beta\in\mathcal Q^{\text{market}}.
+\end{aligned}
+```
+
+- $`s_{\text{lo}}`$, $`s_{\text{hi}}`$: the lowest and the highest strike of
+  the pairs kept, which are the pairs whose value of $`\widehat G_{nt}`$ lies
+  strictly between 0.0001 and 0.9999. The subscripts lo and hi are labels, not
+  indices.
+- Between its points $`\widehat G_{nt}`$ is a straight line in the logarithm of
+  the price.
+- $`\widehat G_{nt}^{-1}(\beta)`$: the price at which the curve equals
+  $\beta$; the superscript $-1$ marks the inverse.
+- $\beta$, $`\mathcal Q^{\text{market}}`$: one probability level and the set of
+  19 levels.
+- $`S_{n,d}`$, $`\kappa_{nt}`$: the closing price at the origin and the scale
+  of stage 1 (existing). The code divides by the stock price carried with the
+  chain; in the worked example that equals the close.
+- $`q_{nt}(\beta)`$: the model input.
+
+**Why.** Beyond the last usable strikes nobody bids, so the curve is closed to
+0 and to 1 there; this cuts off whatever probability the market puts further
+out. Dividing by the scale puts the quantiles in the same normalized units as
+the return being forecast.
+
+**When a chain is used.** All of these must hold, or no quantiles are built:
+
+```math
+\begin{aligned}
+&\lvert U_{nt}^{c}\cap U_{nt}^{p}\rvert\ge 1,\qquad \lvert U_{nt}\rvert\ge 11,\\
+&\#\lbrace s\in U_{nt}:s<\text{fwd}_{nt}\rbrace\ge 5,\qquad \#\lbrace s\in U_{nt}:s>\text{fwd}_{nt}\rbrace\ge 5,\\
+&\min_{s<\text{fwd}_{nt}}\ln\frac{\text{fwd}_{nt}}{s}\le 0.05,\qquad
+\min_{s>\text{fwd}_{nt}}\ln\frac{s}{\text{fwd}_{nt}}\le 0.05,\\
+&\ln\frac{s_{+}}{s_{-}}\le 0.1\ \text{ for every neighbouring pair},
+\end{aligned}
+```
+
+and at least three pairs must be kept in definition 7. The minima run over the
+strikes in $`U_{nt}`$.
+
+**Why.** The rules ask for enough strikes on both sides of the forward, one
+close to it on each side, and no wide hole. The numbers 5, 0.05 and 0.1 are set
+in the panel build's configuration; 0.0001 and three are fixed in the code. The
+last three rules are in logarithms of the strike, so they are harder to meet for
+a low-priced stock, whose one-dollar strike steps are large in those terms.
+That is a likely reason the stocks that most often lack quantiles are
+low-priced ones; it was not examined here.
+
+**Why it is only a proxy.** Option prices mix probability with the price of
+risk; these stock options can be exercised early, which definitions 2 to 6
+ignore; and no interest or dividend adjustment is applied.
 
 **When there are no quantiles.** If the chain is too thin (no strike quoted on
 both sides, too few strikes on either side of the forward, or gaps that are too
@@ -1405,7 +1552,8 @@ With (a) recommended in each:
    versions can be rebuilt from the joint record; (b) keep every version.
 4. New sets and symbols here ($`\mathcal Q^{\text{market}}`$, $`\mathcal E`$,
    $Y$, $\Omega$ with their members $e$, $y$ and $\omega$; the market quantile
-   $`q_{nt}(\beta)`$ and the names used to build it (mid, fwd, cq, iso and
+   $`q_{nt}(\beta)`$ and the names used to build it (the strike sets
+   $`U_{nt}^{j}`$ and $`U_{nt}`$, mid, gap, fwd, cq, slope, iso and
    $`\widehat G_{nt}`$); $`\mathcal C`$, $`\mathcal H_d`$, $`d'`$, bold for a
    list, the tilde and the placeholder Cop): (a) accept; (b) rename.
 5. Scenario payoff lines of stage 11: (a) keep them as the shape of the agreed
