@@ -1,0 +1,382 @@
+# The data contract (ADR-0328 A4): a program's declared schema, the typed columns a
+# request's `data` is parsed into, and the canonical data digest and shape signature,
+# byte for byte as the wire spec writes them (and as jump.py and the fake compute them),
+# and the Arrow handoff: a non-scalar field may arrive as a reference to an Arrow IPC file
+# that is checked (sha256, format, column, type, nulls, length) and read whole.
+
+"""The schema's element types, each with its one-byte digest tag."""
+const TYPE_TAGS = Dict("float64" => UInt8('f'), "int64" => UInt8('i'),
+                       "string" => UInt8('s'), "bool" => UInt8('b'))
+
+"""The Julia element type of each schema type."""
+const ELEMENT_TYPES = Dict{String,DataType}("float64" => Float64, "int64" => Int64,
+                                            "string" => String, "bool" => Bool)
+
+"""The largest magnitude at which every integer is exact in a float64 (2^53)."""
+const FLOAT64_EXACT = 2^53
+
+"""The first bytes of the data digest's input."""
+const DIGEST_MAGIC = "dskit-data-v1\n"
+
+"""The first bytes of the default shape signature's input."""
+const SHAPE_MAGIC = "dskit-shape-v1\n"
+
+"""The prefix of the default signature."""
+const SHAPE_PREFIX = "shape:"
+
+"""
+    FieldSpec(name, type, dims)
+
+One declared data field: its name, its element type (a key of `TYPE_TAGS`) and its
+dimension names (`[]` for a scalar).
+"""
+struct FieldSpec
+    name::String
+    type::String
+    dims::Vector{String}
+end
+
+"""
+    Schema(fields, dims)
+
+A program's data contract: its fields, and each dimension's label field (`nothing` for
+an unlabelled dimension, whose keys are the 0-based positions).
+
+# Examples
+
+    Schema([FieldSpec("ids", "string", ["item"]), FieldSpec("cost", "float64", ["item"])],
+           ["item" => "ids"])
+"""
+struct Schema
+    fields::Vector{FieldSpec}
+    dims::Vector{Pair{String,Union{Nothing,String}}}
+end
+
+"""The field of `s` named `name`, or `nothing`."""
+field_spec(s::Schema, name::AbstractString) =
+    (i = findfirst(f -> f.name == name, s.fields); i === nothing ? nothing : s.fields[i])
+
+"""The label field of dimension `dim`, or `nothing` when unlabelled."""
+label_of(s::Schema, dim::String) = last(s.dims[findfirst(p -> first(p) == dim, s.dims)])
+
+"""The JSON-able `describe` form of `s`: `{fields, dims}`."""
+function schema_object(s::Schema)
+    fields = Dict{String,Any}(f.name => Dict{String,Any}("type" => f.type, "dims" => f.dims)
+                              for f in s.fields)
+    dims = Dict{String,Any}(d => l for (d, l) in s.dims)
+    return Dict{String,Any}("fields" => fields, "dims" => dims)
+end
+
+"""
+    Column{T}(shape, values)
+
+One field's values: its length per dimension and its elements flat, row-major (first
+dimension outermost), exactly as the digest reads them.
+"""
+struct Column{T}
+    shape::Vector{Int}
+    values::Vector{T}
+end
+
+"""The typed data of one model: field name to column."""
+const Columns = Dict{String,Column}
+
+"""The column `name` of `cols` as a `Column{T}` (a type-stable accessor for `typed_data`)."""
+column(cols::Columns, name::String, ::Type{T}) where {T} = cols[name]::Column{T}
+
+"""A variable key element: a string label, or an integer label or position."""
+const KeyElem = Union{String,Int}
+
+"""A variable key: one element per index dimension (`[]` for a scalar group)."""
+const Key = Vector{KeyElem}
+
+# --- parsing wire values into columns ---------------------------------------------
+
+"""`(shape, flat)` of `value` nested one list per dimension; `bad_data` naming `name` if not."""
+function nested(name::String, value, ndim::Int)
+    level = Any[value]
+    shape = Int[]
+    for _ in 1:ndim
+        all(x -> x isa Vector{Any}, level) ||
+            refuse("bad_data", "$(repr(name)) is not nested one list per dimension")
+        lengths = unique(length.(level))
+        length(lengths) > 1 && refuse("bad_data", "$(repr(name)) is ragged")
+        push!(shape, isempty(lengths) ? 0 : only(lengths))
+        level = Any[x for item in level for x in item]
+    end
+    return shape, level
+end
+
+"""One wire element as a `T`, or the refusal `bad_data` naming the field."""
+function element(::Type{Float64}, name::String, v)
+    v isa Float64 && return v
+    v isa Int && -FLOAT64_EXACT <= v <= FLOAT64_EXACT && return Float64(v)  # abs(typemin) < 0
+    if v isa Integer && !(v isa Bool)
+        refuse("bad_data", "$(repr(name)): an integer of magnitude above 2^53 is not " *
+                           "exactly a float64; write it as a float")
+    end
+    refuse("bad_data", "$(repr(name)) must hold float64 values")
+end
+
+function element(::Type{Int64}, name::String, v)
+    v isa Int && return v
+    refuse("bad_data", "$(repr(name)) must hold int64 values")
+end
+
+function element(::Type{String}, name::String, v)
+    v isa String && return v
+    refuse("bad_data", "$(repr(name)) must hold string values")
+end
+
+function element(::Type{Bool}, name::String, v)
+    v isa Bool && return v
+    refuse("bad_data", "$(repr(name)) must hold bool values")
+end
+
+"""Whether `value` is an Arrow reference (`{"arrow": ...}`)."""
+is_arrow_ref(value) = value isa Dict{String,Any} && collect(keys(value)) == ["arrow"]
+
+"""The keys of an Arrow reference's body, sorted."""
+const ARROW_REF_KEYS = ["path", "sha256", "shape"]
+
+"""The one column an Arrow file carries."""
+const ARROW_COLUMN = :values
+
+"""The magic bytes that open and close an Arrow IPC FILE (a stream has neither)."""
+const ARROW_MAGIC = codeunits("ARROW1")
+
+"""The column of one wire field value; `bad_data` naming the field when it does not fit."""
+function parse_column(spec::FieldSpec, value)
+    !isempty(spec.dims) && is_arrow_ref(value) && return arrow_column(spec, value["arrow"])
+    shape, flat = nested(spec.name, value, length(spec.dims))
+    return typed_column(ELEMENT_TYPES[spec.type], spec.name, shape, flat)
+end
+
+"""
+    arrow_column(spec, ref)
+
+The column an Arrow reference names, read whole during the request: the reference is
+exactly `{path, sha256, shape}` (an absolute path, one length per dimension), the
+file's sha256 is checked before it is read, and it must be an Arrow IPC FILE whose one
+column `values` is of the field's type with no nulls and `prod(shape)` elements in
+row-major order. Anything else is `bad_data` naming the field. The file is never kept,
+moved or deleted.
+"""
+function arrow_column(spec::FieldSpec, ref)
+    name = spec.name
+    (ref isa Dict{String,Any} && sort!(collect(keys(ref))) == ARROW_REF_KEYS) ||
+        refuse("bad_data", "$(repr(name)): an Arrow reference is exactly {path, sha256, shape}")
+    path, digest, shape = ref["path"], ref["sha256"], ref["shape"]
+    ok = path isa String && isabspath(path) && digest isa String && shape isa Vector{Any} &&
+         length(shape) == length(spec.dims) && all(n -> n isa Int && n >= 0, shape)
+    ok || refuse("bad_data", "$(repr(name)): an Arrow reference needs an absolute path, " *
+                             "a sha256 and one length per dimension of $(spec.dims)")
+    bytes = try
+        read(path)
+    catch err
+        refuse("bad_data", "$(repr(name)): cannot read the Arrow file: " *
+                           first(sprint(showerror, err), 200))
+    end
+    bytes2hex(sha256(bytes)) == digest ||
+        refuse("bad_data", "$(repr(name)): the Arrow file's sha256 is not the one sent")
+    values = arrow_values(name, bytes)
+    return arrow_typed(ELEMENT_TYPES[spec.type], spec, Int[n for n in shape], values)
+end
+
+"""Whether `bytes` open and close with the Arrow IPC file magic."""
+function is_arrow_file(bytes::Vector{UInt8})
+    n = length(ARROW_MAGIC)
+    return length(bytes) >= 2n && view(bytes, 1:n) == ARROW_MAGIC &&
+           view(bytes, length(bytes)-n+1:length(bytes)) == ARROW_MAGIC
+end
+
+"""The `values` column of the Arrow IPC file in `bytes`; `bad_data` naming `name` if not one."""
+function arrow_values(name::String, bytes::Vector{UInt8})
+    is_arrow_file(bytes) || refuse("bad_data", "$(repr(name)): not an Arrow IPC file " *
+                                               "(a stream, or not Arrow at all)")
+    table = try
+        Arrow.Table(bytes)
+    catch err
+        refuse("bad_data", "$(repr(name)): not an Arrow IPC file: " *
+                           first(sprint(showerror, err), 200))
+    end
+    Arrow.Tables.columnnames(table) == [ARROW_COLUMN] ||
+        refuse("bad_data", "$(repr(name)): the Arrow file must hold one column 'values'")
+    return Arrow.Tables.getcolumn(table, ARROW_COLUMN)
+end
+
+"""Whether an Arrow string column is Utf8 (32-bit offsets), not LargeUtf8."""
+utf8_column(c::Arrow.List) = typeof(c).parameters[2] === Int32
+utf8_column(c::AbstractVector) = hasproperty(c, :arrays) && all(utf8_column, c.arrays)
+
+"""
+    arrow_typed(T, spec, shape, values)
+
+`values` as a `Column{T}` under `shape`: of the field's type (`float64` Float64, `int64`
+Int64, `string` Utf8, `bool` Boolean), no nulls, `prod(shape)` elements, finite floats.
+"""
+function arrow_typed(::Type{T}, spec::FieldSpec, shape::Vector{Int}, values) where {T}
+    name = spec.name
+    (nonmissingtype(eltype(values)) === T && (T !== String || utf8_column(values))) ||
+        refuse("bad_data", "$(repr(name)): the Arrow column must be of $(spec.type)")
+    length(values) == prod(shape) ||
+        refuse("bad_data", "$(repr(name)): the Arrow column must hold $(prod(shape)) values")
+    out = Vector{T}(undef, length(values))
+    for (i, v) in enumerate(values)
+        v === missing && refuse("bad_data", "$(repr(name)): the Arrow column holds a null")
+        T === Float64 && !isfinite(v) &&
+            refuse("bad_data", "$(repr(name)): the Arrow column holds a non-finite number")
+        out[i] = v
+    end
+    return Column{T}(shape, out)
+end
+
+"""A `Column{T}` of `flat` under `shape` (a function barrier over the element type)."""
+function typed_column(::Type{T}, name::String, shape::Vector{Int}, flat::Vector{Any}) where {T}
+    out = Vector{T}(undef, length(flat))
+    @inbounds for i in eachindex(flat)
+        out[i] = element(T, name, flat[i])
+    end
+    return Column{T}(shape, out)
+end
+
+"""
+    parse_columns(s, data; partial)
+
+The columns of a request's `data` object: every field required unless `partial`, no
+unknown field; `bad_data` naming the first offending field.
+"""
+function parse_columns(s::Schema, data::Dict{String,Any}; partial::Bool)
+    for name in sort!(collect(keys(data)); by=codeunits)
+        field_spec(s, name) === nothing && refuse("bad_data", "no field named $(repr(name))")
+    end
+    if !partial
+        for f in sort(s.fields; by=f -> codeunits(f.name))
+            haskey(data, f.name) || refuse("bad_data", "the field $(repr(f.name)) is required")
+        end
+    end
+    cols = Columns()
+    for (name, value) in data
+        cols[name] = parse_column(field_spec(s, name), value)
+    end
+    return cols
+end
+
+"""Refuse (`bad_data`) full columns that disagree on a dimension or repeat a label."""
+function check_full(s::Schema, cols::Columns)
+    lengths = Dict{String,Int}()
+    for name in sort!(collect(keys(cols)); by=codeunits)
+        spec = field_spec(s, name)
+        for (dim, n) in zip(spec.dims, cols[name].shape)
+            get!(lengths, dim, n) == n ||
+                refuse("bad_data", "$(repr(name)) disagrees on the length of $(repr(dim))")
+        end
+    end
+    for (_, label) in s.dims
+        label === nothing && continue
+        values = cols[label].values
+        length(unique(values)) == length(values) ||
+            refuse("bad_data", "the label field $(repr(label)) must hold distinct values")
+    end
+    return cols
+end
+
+"""The axis length in the first available declared field that uses it, or zero."""
+function _positional_length(s::Schema, cols::Columns, dim::String)
+    for f in s.fields
+        i = findfirst(==(dim), f.dims)
+        if i !== nothing && haskey(cols, f.name)
+            return cols[f.name].shape[i]
+        end
+    end
+    return 0
+end
+
+"""Copy label values into a vector of variable key elements."""
+_materialize_label_keys(values) = KeyElem[v for v in values]
+
+"""Each dimension's keys: its label field's values, or the positions 0..n-1."""
+function dimension_keys(s::Schema, cols::Columns)
+    out = Dict{String,Vector{KeyElem}}()
+    for (dim, label) in s.dims
+        if label !== nothing
+            out[dim] = _materialize_label_keys(cols[label].values)
+            continue
+        end
+        n = _positional_length(s, cols, dim)
+        out[dim] = KeyElem[i for i in 0:n-1]
+    end
+    return out
+end
+
+# --- the canonical digests ----------------------------------------------------------
+
+"""Write one element's canonical bytes."""
+put_element(io::IO, v::Float64) = write(io, htol(reinterpret(UInt64, v == 0 ? 0.0 : v)))
+put_element(io::IO, v::Int64) = write(io, htol(v))
+put_element(io::IO, v::Bool) = write(io, v ? 0x01 : 0x00)
+put_element(io::IO, v::String) = (put_name(io, v); nothing)
+
+"""Write a name as its UTF-8 byte length (u32 LE) and bytes."""
+function put_name(io::IO, text::String)
+    write(io, htol(UInt32(ncodeunits(text))))
+    write(io, text)
+    return
+end
+
+"""Write every element of `c` (a function barrier over the element type)."""
+function put_values(io::IO, c::Column{T}) where {T}
+    for v in c.values
+        put_element(io, v)
+    end
+    return
+end
+
+"""The lowercase hex sha256 of the full data's canonical form (the spec's `digest`)."""
+function data_digest(s::Schema, cols::Columns)
+    io = IOBuffer()
+    write(io, DIGEST_MAGIC)
+    for name in sort!(collect(keys(cols)); by=codeunits)
+        spec = field_spec(s, name)
+        c = cols[name]
+        put_name(io, name)
+        write(io, TYPE_TAGS[spec.type])
+        write(io, htol(UInt32(length(c.shape))))
+        for n in c.shape
+            write(io, htol(UInt64(n)))
+        end
+        put_values(io, c)
+    end
+    return bytes2hex(sha256(take!(io)))
+end
+
+"""The default signature: `shape:` and the sha256 of every dimension's name, length, labels."""
+function shape_signature(s::Schema, cols::Columns)
+    # Resolve dimensions in declaration order before writing the sorted hash.
+    lengths = Dict{String,Int}()
+    for (dim, label) in s.dims
+        if label === nothing
+            n = _positional_length(s, cols, dim)
+            lengths[dim] = length(0:n-1)
+        else
+            values = cols[label].values
+            if !(values isa Union{Vector{String},Vector{Int}})
+                values = _materialize_label_keys(values)
+            end
+            lengths[dim] = length(values)
+        end
+    end
+    io = IOBuffer()
+    write(io, SHAPE_MAGIC)
+    for (dim, label) in sort(s.dims; by=p -> codeunits(first(p)))
+        put_name(io, dim)
+        write(io, htol(UInt64(lengths[dim])))
+        if label === nothing
+            write(io, 0x00)
+        else
+            write(io, 0x01)
+            put_values(io, cols[label])
+        end
+    end
+    return SHAPE_PREFIX * bytes2hex(sha256(take!(io)))
+end

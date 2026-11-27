@@ -47,6 +47,8 @@ dskit/
 │   │                          #   summary.md + self-contained report.html + CSVs;
 │   │                          #   own README + CLAUDE.md
 │   └── journal/               # child action ledger (ADR-0056); CSV + generated md
+├── julia/                     # Julia packages a tier-2 pack drives (ADR-0328): DskitJuMP,
+│                              #   the worker behind dskit/pipeline/libs/jump.py
 ├── tools/
 │   ├── merge/                 # ADR-0109 merge drivers + install.sh
 │   ├── sweep/                 # the sweep tool + its commit-msg hook
@@ -61,7 +63,7 @@ dskit/
 │   └── onboarding/            # a worked connector config + validation suite
 └── tests/
     ├── pipeline/              # tier-1 core + purity gate
-    ├── pipeline_libs/         # tier-2 library packs
+    ├── pipeline_libs/         # tier-2 library packs (jump_fake_worker.py stands in for Julia)
     ├── assets/                # assets engine: purity, hash-parity, e2e ingest + sync
     ├── assets_libs/           # tier-2 store packs (sqlite, parquet)
     ├── onboarding/            # onboarding: purity, model pin, conformance, CLI e2e

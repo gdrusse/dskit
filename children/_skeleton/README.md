@@ -66,6 +66,8 @@ catalog. A run never waits on a certification.
 registers its node kinds, which is what makes `yourproject-*` in the
 document resolve.
 
+For a JuMP optimization node, follow [Julia programs in child projects](../../dskit/pipeline/EXTENDING.md#julia-programs-in-child-projects).
+
 **Going live:** register a SECOND source over the SAME connector class
 with different knobs, then `acquire --mode live` on a cadence.
 Checkpoints are keyed per (source, stream, mode), so the backfill and

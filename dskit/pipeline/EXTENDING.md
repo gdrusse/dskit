@@ -431,6 +431,361 @@ package does and what ships, `CLAUDE.md` how to work in it.
   expected_roles=)` at any pack; probes are behavioural, not optional
   (`require_probes=False` is a written-down decision).
 
+## Static optimization formulation
+
+Use this template to describe one parameterized optimization problem before
+choosing an implementation. Fix the supplied inputs, including any initial
+state, to get one instance. Time- or scenario-indexed decisions can belong
+to that instance. Describe how to run successive instances separately.
+
+### 1. Purpose
+
+State what one solve chooses, what is supplied, and what a solution means.
+
+### 2. Sets and indices
+
+Give each set's members, range or membership rule. Name each index and
+its set. Specify admissible tuples for sparse relationships and list
+subscripts in order. Two indices can range over the same set.
+
+### 3. Given quantities
+
+For each supplied quantity, give its symbol, index order, meaning, units
+and value domain. Include any inherited state that is fixed for this solve.
+Use `1` for dimensionless quantities and state the instance values separately
+from the domain.
+
+### 4. Decision variables
+
+For each quantity the solver chooses, give its symbol, index order, meaning,
+units, domain and bounds. Use real, integer or binary domains and make
+decision-dependent restrictions explicit in the constraints. An auxiliary
+unknown is a decision and needs its own linking constraints.
+
+### 5. Derived expressions
+
+Define each abbreviation with its units, index order and a formula in
+terms of given quantities, decisions and other abbreviations. Keep these
+dependencies acyclic. State which indices are bound by sums or other local
+operations. An empty index list denotes a scalar.
+
+### 6. Objective
+
+State whether to minimize or maximize, what the value measures and its
+units. Give one scalar expression and bind each index that it uses.
+
+### 7. Constraints
+
+State each admissibility condition with its two sides, relation, quantified
+indices and interpretation. Specify when a feasible solution exists and
+whether an optimum is attained before reporting an optimum. Use a membership
+relation when several quantities must belong to a set together.
+
+### Worked facility example
+
+The [facility declaration](../../examples/pipeline/formulation-facilities.json)
+opens facilities A and B with binary decisions $y_i$ and chooses nonnegative
+outputs $x_i$ in kg. Each capacity constraint is $x_i \le u_i y_i$, and
+$x_A + x_B = 3.5$ meets demand. Capacities are $(4, 3)$ kg, fixed opening
+charges are $(1, 4)$ credits, and variable costs are $(2, 1)$ credits/kg.
+
+```math
+\min \sum_{i \in \lbrace A, B \rbrace} (f_i y_i + c_i x_i)
+```
+
+With neither facility open or only B open, supply falls short of demand.
+A alone supplies 3.5 kg for 8 credits. With both active, use B up to its
+3 kg capacity and supply the remaining 0.5 kg from A, for 9 credits.
+A alone attains the minimum.
+
+### Validate the declaration
+
+From the checkout root, run the validator on the worked example.
+
+```bash
+python -m dskit.pipeline.formulation examples/pipeline/formulation-facilities.json
+```
+
+The standalone JSON has an integer `schema_version` of `1` and the seven
+sections above. Each expression has `text`, `refs` and `over`. List declared
+symbol IDs in `refs` and locally bound index IDs in `over`. `axes` declares
+the free indices of a quantity and `forall` declares the indices of a row.
+Local binders cannot shadow either. A decision's additional bound can be
+a finite number, `null` or an expression depending only on fixed quantities.
+
+Call `dskit.pipeline.formulation.validate_formulation(obj)` on decoded JSON.
+It returns `None` or raises `ConfigError` with field locations. Read
+[ADR-0329](../../docs/architecture/decision-log.md#adr-0329--declare-and-validate-one-static-mixed-integer-optimization-formulation-accepted-2026-11-27)
+for the exact keys and vocabularies. The validator checks those declarations,
+references and scopes. Formula text stays opaque. A mathematical review
+checks the formulas, units, feasibility and attainment.
+
+## Julia programs in child projects
+
+A child can put its optimization model in JuMP and expose it as an ordinary
+pipeline node. Keep the model, its Python adapter and the run document in the
+child. The adapter prepares data and checks the reply. The Julia worker owns
+model state and runs the solver.
+
+### 1. Pin the environment
+
+Use WSL2 with Julia `1.13.4` for the worker pinned here. Install the child and
+DSKit in an isolated WSL2 Python environment, with DSKit installed editable from the
+chosen source checkout. A source checkout supplies the worker's committed
+[Project.toml](../../julia/DskitJuMP/Project.toml) and
+[Manifest.toml](../../julia/DskitJuMP/Manifest.toml). Pin the DSKit revision
+alongside the child revision.
+
+Instantiate once from those pins before starting a worker. Run the following
+under your storage and RAM guard, budgeting the writable Julia depot, caches
+and temporary files. Set `DSKIT_CHECKOUT` to the pinned DSKit source directory.
+
+```bash
+julia --startup-file=no --project="$DSKIT_CHECKOUT/julia/DskitJuMP" \
+    -e 'using Pkg; Pkg.instantiate()'
+```
+
+Keep the frozen source and environment pins intact. Resolve changes in a new
+environment and start a new worker for the revised code or packages. For a
+wheel deployment, include the child's `worker.jl` as package data and deploy
+a pinned Julia `Project.toml` and `Manifest.toml` with `DskitJuMP` and `JuMP`
+available to the entry script. Set `worker_command` to the Julia executable,
+`--startup-file=no`, `--project=<absolute project path>` and the absolute
+path to `worker.jl`. `JuliaWorker.default_command()` finds the in-tree
+project and is the source-checkout recipe.
+
+### 2. Define the child worker
+
+Put this in `yourproject/worker.jl`. The example chooses at most one row and
+maximizes its value. The immutable `Program` descriptor declares the schema
+and group names. Typed data and mutable JuMP references belong to each model.
+The nine qualified methods are the required hooks. The final two hooks
+enable in-place objective edits.
+
+```julia
+import DskitJuMP as D
+using JuMP
+
+struct ChildPick <: D.Program end
+
+const PICK_SCHEMA = D.Schema(
+    [D.FieldSpec("ids", "string", ["item"]),
+     D.FieldSpec("value", "float64", ["item"])],
+    ["item" => "ids"],
+)
+
+D.program_name(::ChildPick) = "yourproject_pick"
+D.schema(::ChildPick) = PICK_SCHEMA
+D.variable_groups(::ChildPick) = [D.GroupSpec("pick", ["item"], "binary")]
+
+function D.typed_data(::ChildPick, columns::D.Columns)
+    return (ids = D.column(columns, "ids", String).values,
+            value = D.column(columns, "value", Float64).values)
+end
+
+function D.typed_params(::ChildPick, raw::Dict{String,Any}, attached::Vector{String})
+    isempty(raw) || throw(D.Refusal("bad_request", "yourproject_pick takes no program params"))
+    return nothing
+end
+
+function D.build!(model, ::ChildPick, setup::D.Setup)
+    values = setup.data.value
+    x = @variable(model, [1:length(values)], Bin)
+    count = AffExpr(0.0)
+    score = AffExpr(0.0)
+    for i in eachindex(x)
+        add_to_expression!(count, 1.0, x[i])
+        add_to_expression!(score, values[i], x[i])
+    end
+    cap = @constraint(model, count <= 1)
+    @objective(model, Max, score)
+    return (x = x, cap = cap)
+end
+
+D.variables(::ChildPick, state) = Any[state.x]
+D.constraint_groups(::ChildPick, state, setup) = ["cap" => [state.cap]]
+
+function D.solution(::ChildPick, state, setup, at)
+    picked = isnothing(at) ? nothing :
+             [setup.data.ids[i] for i in eachindex(state.x) if at(state.x[i]) > 0.5]
+    return Dict("picked" => picked)
+end
+
+D.has_update(::ChildPick) = true
+
+function D.update!(model, ::ChildPick, state, old::D.Setup, new::D.Setup)
+    for i in eachindex(state.x)
+        if old.data.value[i] != new.data.value[i]
+            set_objective_coefficient(model, state.x[i], new.data.value[i])
+        end
+    end
+    return nothing
+end
+
+D.register_program!(ChildPick())
+D.serve()
+```
+
+`item` gets its stable labels from `ids`; group `pick` addresses variables
+by those labels. `solution` distinguishes a feasible empty selection (`[]`)
+from the absence of a feasible point (`null`). Register the program once at
+startup and leave stdout for protocol replies. Restart the worker to change
+its registrations. The
+[program contract](../../julia/DskitJuMP/src/program.jl) defines group shapes,
+optional components and `direct_mode` for models that need solver bridges.
+
+### 3. Connect the Python node and JSON document
+
+Add the following to `yourproject/nodes.py`.
+
+```python
+from pathlib import Path
+
+from dskit.pipeline.libs.jump import (
+    OPTIMAL_TERMINATION, JuliaWorker, JumpSolve, WorkerRefusal,
+)
+
+
+class ChildPick(JumpSolve):
+    role = "transform"
+    outputs = ("picked",)
+    program = "yourproject_pick"
+    worker_command = [
+        *JuliaWorker.default_command()[:-2],
+        str(Path(__file__).resolve().with_name("worker.jl")),
+    ]
+
+    def payload(self, inputs, params):
+        rows = inputs["records"]
+        return {"ids": [row["id"] for row in rows],
+                "value": [row["value"] for row in rows]}
+
+    def extract(self, solution):
+        record = self.solve_record
+        if record.termination != OPTIMAL_TERMINATION or record.status != "FEASIBLE_POINT":
+            raise WorkerRefusal(self.program, "termination", "optimal feasible point required")
+        return {"picked": solution["picked"]}
+```
+
+Add `"yourproject-pick": ChildPick` to the existing `NODE_KINDS` mapping.
+Importing `yourproject` registers that mapping. The `worker_command` keeps
+the default executable, startup flag and project, then replaces `-e` and
+its expression with the child script. The class imports and plans without
+starting Julia.
+
+`solver` and `solver_options` are inherited JSON knobs for the optimizer.
+For additional program knobs, extend `_PARAMS` on the subclass by appending
+to `JumpSolve._PARAMS`. Extend `validate_params` using `super()` for the
+inherited rules. Have Julia `typed_params` validate the same wire object and
+construct typed values, then read `setup.params` in `build!` and apply any
+supported numeric edits in `update!`. See the
+[budgeted selection program](../../julia/DskitJuMP/src/programs/budgeted_select.jl)
+for a typed budget and row updates.
+
+Save this as `configs/run-pick.json` in the child.
+
+```json
+{
+  "name": "yourproject-pick-run",
+  "notes": "Synthetic one-record selection example.",
+  "pipeline": {
+    "sample": {"uses": "yourproject-sample"},
+    "pick": {
+      "uses": "yourproject-pick",
+      "inputs": {"records": "$sample.records"},
+      "params": {"solver": "HiGHS", "solver_options": {"threads": 1}}
+    }
+  },
+  "outputs": {"run_root": "/absolute/registered/run/path"}
+}
+```
+
+### 4. Plan, run and verify
+
+Choose an output location outside the checkout, plan and register it in the
+storage catalog, then replace the `outputs.run_root` placeholder with the
+returned absolute path. From the child root, plan the document first. Obtain
+storage and RAM admission for the run and its output, cache and scratch peaks
+before executing it. For larger inputs that cross the Arrow threshold, point
+the adapter's `scratch_root` at the admitted scratch directory and install
+PyArrow in its Python environment.
+
+```bash
+python -m dskit.pipeline plan configs/run-pick.json --adapter yourproject
+python -m dskit.pipeline run configs/run-pick.json --asof 2026-01-01 --adapter yourproject
+```
+
+The skeleton values are `10.0`, `11.5` and `9.75`, so the unique optimum
+picks `sample-0002` with objective `11.5`. The run's `carry.json` should
+contain `"pick": {"picked": ["sample-0002"]}`. A plan checks the node wiring.
+Call `node.describe()` on a `ChildPick` instance to check the worker's
+registration and schema. To exercise build and solve, add this native
+integration test to the skeleton's `tests/test_nodes.py` using its existing
+imports and `CHILD_ROOT`.
+
+```python
+def test_run_pick_document_end_to_end(tmp_path):
+    path = os.path.join(CHILD_ROOT, "configs", "run-pick.json")
+    document = load_document(path)
+    document = replace(document, outputs=OutputsConfig(run_root=str(tmp_path)))
+    result = run_document(document, asof="2026-01-01")
+    assert result.state == "ran", (result.state, result.error)
+    assert result.outputs["pick"]["picked"] == ["sample-0002"]
+```
+
+The `tmp_path` override is for this test only. Under the same admission,
+direct `TMPDIR` to the admitted scratch directory and run `python -m pytest tests/test_nodes.py::test_run_pick_document_end_to_end`.
+At the model seam, assert feasibility and the recomputed objective against
+a tiny independent oracle. Exercise malformed data or invalid params, then
+compare a same-shape update with a fresh solve of the changed data. Check
+`timings.path` and record build, update and solve time plus peak memory
+under the same inputs and solver settings before claiming a speed improvement.
+
+### 5. Use a live handle when the child needs it
+
+`JumpSolve.run()` defaults to a fresh solve. `node.open(inputs)` gives an
+explicit handle for repeated operations. `update(data=...)` merges named
+fields. `params=...` replaces the whole program params object and
+`components=...` patches the named on/off flags. With an update hook,
+same-shape edits report `updated`. Without the hook, a changed setup reports
+`rebuilt`. A `shape_changed` refusal requires opening a fresh handle with
+the complete new data, including changed dimension labels.
+
+```python
+with node.open(inputs) as model:
+    model.update(data={"value": [10.0, 12.0, 9.75]})
+    model.fix({"pick": {"sample-0001": 1}})
+    fixed_solution, fixed_record = model.solve()
+    model.free({"pick": ["sample-0001"]})
+    model.start({"pick": {"sample-0002": 1}})
+    solution, record = model.solve()
+    search_solution, search_record, rounds = model.search(
+        "fix_and_reoptimise", params={"free": 1, "stall": 1},
+        limits={"rounds": 2}, seed=0,
+    )
+node.close()
+```
+
+Here `node` is a `ChildPick` instance and `inputs` contains the three original
+skeleton records. `start` supplies a hint. A null `timings.start_accepted`
+means the solver did not report whether it used it. A solve's bound includes
+the active caller fixes. A search's top-level bound uses the model under the
+caller's fixes before round restrictions. A trajectory row's bound applies
+to that round's restricted problem.
+
+Caller fixes apply to the current handle. An update hook sees the
+program-owned bounds and fixed equalities. A held update checks retained
+caller fixes against the updated domain. A conflicting fix refuses the update
+and leaves the previous setup committed. `free` and search round cleanup
+preserve program-owned fixed equalities. Reopening a pooled model clears
+the previous handle's caller fixes and start. The example edits only
+objective coefficients.
+
+Keep authoring review scoped to the child model's contract, adapter and
+evidence. After three failed correction cycles, pause for an independent
+checkpoint and reassess the approach before revising again.
+[Skeptic review procedure](../../docs/skills/skeptic-review.md#convergence-checkpoint).
+
 ## Gotchas
 
 - **Journal (ADR-0056).** ``run_document`` / ``run_walk_forward``

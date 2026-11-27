@@ -805,7 +805,20 @@ by multiple downstream heads; never a hub name at run time); **optuna** `optuna-
 (categorical lists AND `{"low", "high"[, "log"][, "int"]}` continuous ranges;
 `hpo-grid` keeps refusing ranges — enumerating an interval is meaningless);
 **pyomo** `pyomo-budgeted-select` + `PyomoSolve` base (`build_model`/`extract`
-hooks); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures`
+hooks); **jump** (ADR-0328) `jump-budgeted-select` + `JumpSolve` base
+(`payload`/`extract` hooks; JuMP builds and solves in a long-lived Julia subprocess,
+`JuliaWorker`, speaking JSON lines, one per launch command per process so walk-forward
+folds share it; the pack imports and plans with no Julia; the solve record is the pyomo
+`SolveRecord`; protocol v2 adds live models, `LiveModel` handles to update, fix, free,
+warm-start and re-solve in place, with a `Timings` block whose `path` shows every
+rebuild, and opt-in re-use in `run()` via `_PERSISTENT_MODEL_REUSE`; a `DataContract`
+read from the worker's `describe` checks every `open`/`update` before sending and its
+digest after; arrays past `arrow_threshold` cross as Arrow files in a per-worker scratch
+directory, pyarrow imported only then; `LiveModel.search` runs a search registered in
+the worker, Python holding none; the worker is `julia/DskitJuMP`: every op, Arrow
+references read and sha256-checked, the `Search` seam with `fix_and_reoptimise`; one
+conformance class runs the same scenarios on the fake and the real worker, and
+`tools/jump/benchmark.py` times build, update and solve against pyomo); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures`
 (or the concrete `ReturnWindows`) and wire by import path. Heavy imports live
 inside `run()` — the tier rule.
 
@@ -1175,6 +1188,11 @@ Project-specific nodes belong in YOUR package — a dskit **child**, which is
 the whole adapter unit (ADR-0032: never a `pipeline_<venue>` sibling, in
 dskit or beside it; see `children/README.md`) — never here.
 
+Use the [static optimization formulation](EXTENDING.md#static-optimization-formulation)
+to declare and validate one optimization problem.
+
+For a child-owned optimization model, follow [Julia programs in child projects](EXTENDING.md#julia-programs-in-child-projects).
+
 ## The legacy stage-list grammar
 
 `PipelineConfig`/`Runner` (fixed stages `train → validate → stat_test →
@@ -1194,6 +1212,7 @@ dskit/pipeline/
 ├── __main__.py        the CLI: python -m dskit.pipeline
 ├── document.py        PipelineDocument / NodeSpec / ROLES + MODES / splits + walkforward
 │                      + foreach specs / refs / the foreach expansion
+├── formulation.py     static optimization declarations and validator (ADR-0329)
 ├── node.py            Node + TrainableNode ABCs, NodeContext, NodeKindRegistry, register_node_kind
 ├── planner.py         document -> Plan: topo order, role rules, wire checks
 ├── driver.py          LOAD -> IMPORT -> PLAN -> RESOLVE -> EXECUTE -> RECORD; run dirs;
@@ -1355,6 +1374,7 @@ dskit/pipeline/
 │                      expected re-hedge cost (item_cost) and the re-hedged leg's settle/mark (forward_leg_rehedged_value)
 │                      (A1): seeded Brownian-bridge paths (bridges, path) and the re-hedge excess along one (path_excess)
 │                      (A2): iv_source vendor_else_mid (vendor iv if quoted, else the mid-implied vol; counted leg_iv_mid)
+│                      WorsePriceForwardHedge (ADR-0320): the fixed hedge struck at max(F, S) long, min(F, S) short
 ├── false_signal.py    per-signal false-signal probability (ADR-0152):
 │                      SignalEvidence + FalseSignalEstimator ->
 │                      pi_hat and a widened pi_widened (NOT a bound);

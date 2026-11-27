@@ -1,0 +1,167 @@
+{
+  "schema_version": 1,
+  "purpose": "Choose which facilities to activate and how much each supplies to meet demand at least cost.",
+  "sets": [
+    {
+      "id": "facilities",
+      "indices": [
+        "f"
+      ],
+      "definition": "The two facilities A and B. The example data below are listed in that order."
+    }
+  ],
+  "given": [
+    {
+      "id": "demand",
+      "axes": [],
+      "domain": "nonnegative real",
+      "units": "kg",
+      "definition": "The facilities must supply 3.5 kg in the example instance."
+    },
+    {
+      "id": "capacity",
+      "axes": [
+        "f"
+      ],
+      "domain": "nonnegative real",
+      "units": "kg",
+      "definition": "Example capacities (A, B): (4, 3) kg."
+    },
+    {
+      "id": "fixed_cost",
+      "axes": [
+        "f"
+      ],
+      "domain": "nonnegative real",
+      "units": "credits",
+      "definition": "Example fixed charges (A, B): (1, 4) credits."
+    },
+    {
+      "id": "unit_cost",
+      "axes": [
+        "f"
+      ],
+      "domain": "nonnegative real",
+      "units": "credits/kg",
+      "definition": "Example variable costs (A, B): (2, 1) credits/kg."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "active",
+      "axes": [
+        "f"
+      ],
+      "domain": "binary",
+      "units": "1",
+      "lower": null,
+      "upper": null,
+      "definition": "One if facility f operates, zero otherwise."
+    },
+    {
+      "id": "output",
+      "axes": [
+        "f"
+      ],
+      "domain": "real",
+      "units": "kg",
+      "lower": 0,
+      "upper": null,
+      "definition": "Kilograms supplied by facility f."
+    }
+  ],
+  "derived": [
+    {
+      "id": "total_output",
+      "axes": [],
+      "units": "kg",
+      "expression": {
+        "text": "∑_{f ∈ facilities} output_f",
+        "refs": [
+          "facilities",
+          "output"
+        ],
+        "over": [
+          "f"
+        ]
+      }
+    },
+    {
+      "id": "facility_cost",
+      "axes": [
+        "f"
+      ],
+      "units": "credits",
+      "expression": {
+        "text": "fixed_cost_f × active_f + unit_cost_f × output_f",
+        "refs": [
+          "fixed_cost",
+          "active",
+          "unit_cost",
+          "output"
+        ],
+        "over": []
+      }
+    }
+  ],
+  "objective": {
+    "sense": "min",
+    "units": "credits",
+    "expression": {
+      "text": "∑_{f ∈ facilities} facility_cost_f",
+      "refs": [
+        "facilities",
+        "facility_cost"
+      ],
+      "over": [
+        "f"
+      ]
+    },
+    "definition": "Minimize total operating and supply costs in credits."
+  },
+  "constraints": [
+    {
+      "id": "meet_demand",
+      "forall": [],
+      "lhs": {
+        "text": "total_output",
+        "refs": [
+          "total_output"
+        ],
+        "over": []
+      },
+      "relation": "=",
+      "rhs": {
+        "text": "demand",
+        "refs": [
+          "demand"
+        ],
+        "over": []
+      },
+      "definition": "Total supply must equal demand."
+    },
+    {
+      "id": "activation_capacity",
+      "forall": [
+        "f"
+      ],
+      "lhs": {
+        "text": "output_f",
+        "refs": [
+          "output"
+        ],
+        "over": []
+      },
+      "relation": "<=",
+      "rhs": {
+        "text": "capacity_f × active_f",
+        "refs": [
+          "capacity",
+          "active"
+        ],
+        "over": []
+      },
+      "definition": "An inactive facility supplies nothing. An active facility stays within capacity."
+    }
+  ]
+}

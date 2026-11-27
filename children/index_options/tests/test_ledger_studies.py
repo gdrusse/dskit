@@ -3511,7 +3511,8 @@ def test_the_two_kelly_formulations_validate_and_differ_only_in_the_fraction():
 @pytest.mark.parametrize("change", [
     lambda m: m.update(rho=.1),
     lambda m: m.update(portfolio_fraction=.5),
-    lambda m: m.update(name_fraction=.25),
+    # name_fraction below 1 is the one cap a kelly method may declare (ADR-0321); 0 still refuses.
+    lambda m: m.update(name_fraction=0.),
     lambda m: m.update(component_fraction=.25),
     lambda m: m.update(shock=SHOCK10),
     lambda m: m.update(risk_charge={"measure": "mad", "price": .5}),
@@ -7120,6 +7121,116 @@ def test_the_joint_arm_refuses_a_daily_re_struck_hedge_by_its_kind():
     assert not study._joint_scenarios_valid({**method, "hedge": {"kind": "daily_delta_forward"}})
     assert not study._joint_scenarios_valid({**method, "kelly": {k: v for k, v in method["kelly"].items()
                                                                   if k != "local_search"}})
+
+
+# --- ADR-0320: the worse-price forward hedge in the program rows, the fill and the marks ---------------------------------
+
+_WORSE = {"kind": "worse_price_forward"}
+
+
+def test_the_worse_price_fill_strikes_a_short_hedge_at_spot_and_a_long_one_at_the_forward_above_it():
+    study, hedge, spots = _hedge_study(block=_WORSE)
+    call, put = _filled(study, [("call", 1, 100., 3)]), _filled(study, [("put", 1, 100., 3)])
+    for book in (call, put):
+        hedge.attach(book, "2019-01-16", None)
+    forward = spots["2019-01-16"] * 1.001                     # the world prices every chain at 1.001 x spot
+    assert call["hedge"]["units"] < 0 < put["hedge"]["units"]
+    assert call["hedge"]["reference"] == spots["2019-01-16"], "a short hedge with F above S is struck at spot"
+    assert call["hedge"]["forward_reference"] == pytest.approx(forward)
+    assert put["hedge"]["reference"] == pytest.approx(forward) and "forward_reference" not in put["hedge"]
+    units = call["hedge"]["units"]
+    assert call["max_loss"] == pytest.approx(hedge.overlay.max_loss(
+        [("call", 3)], [100.], call["credit"], 100, units, spots["2019-01-16"]))
+    # the fixed kind on the same book: struck at the forward, no new record key
+    fixed_study, fixed, _ = _hedge_study()
+    plain = _filled(fixed_study, [("call", 1, 100., 3)])
+    fixed.attach(plain, "2019-01-16", None)
+    assert plain["hedge"]["reference"] == pytest.approx(forward) and "forward_reference" not in plain["hedge"]
+    assert plain["hedge"]["units"] == units
+
+
+def test_the_worse_price_leg_settles_and_marks_against_its_strike_and_the_shared_ledger_agrees():
+    from dskit.pipeline.libs.option_ledger import FundedOptionAccount
+    from dskit.pipeline.option_exposure import StaticDeltaHedge
+
+    study, hedge, spots = _hedge_study(block=_WORSE, spot_at_expiry=104.)
+    book = _filled(study, [("call", 1, 100., 3)])
+    hedge.attach(book, "2019-01-16", None)
+    units, ref = book["hedge"]["units"], spots["2019-01-16"]
+    account = FundedOptionAccount(10000., 1000., 14, "2019-01-02")
+    account.open[book["id"]] = book
+    settled = study._settlements(account, "2019-02-01")
+    costs = StaticDeltaHedge({"hedge_fee_per_share": .005, "hedge_half_spread_bps": 5.0, "hedge_borrow_rate": 0.}) \
+        .carry_costs(units, ref, 104., book["hedge"]["days"])["trade_costs"]
+    assert settled[book["id"]] == pytest.approx(book["credit"] + 100 * 3 * (104. - 100.) + units * (104. - ref) - costs)
+    account.advance("2019-02-01", settled)
+    ledger = study._ledger(account.closed, None, hedge)             # raises on any PnL or reserve mismatch
+    assert ledger["trades"][0]["hedge_pnl_usd"] == pytest.approx(units * (104. - ref))
+    mid = next(m for m in ledger["marks"] if m["date"] == "2019-01-23")
+    assert mid["hedge_pnl_usd"] == pytest.approx(units * (spots["2019-01-23"] * 1.001 - ref))
+    assert hedge.mark(book["hedge"], spots["2019-01-23"] * 1.001) == pytest.approx(
+        units * (spots["2019-01-23"] * 1.001 - ref) - _costs_entry(book["hedge"]))
+
+
+def _costs_entry(record):
+    """The entry half of a recorded leg's round-trip cost at its reference."""
+    from dskit.pipeline.option_exposure import StaticDeltaHedge
+
+    rule = StaticDeltaHedge({**record["rates"], "hedge_borrow_rate": 0.})
+    return rule.carry_costs(record["units"], record["reference"], record["reference"], record["days"])["trade_costs"] / 2
+
+
+def test_the_worse_price_carry_ratio_fallback_carries_the_forward_not_the_spot_strike():
+    study, hedge, spots = _hedge_study(block=_WORSE, bump=lambda day, right, k, row: row.update(bid_size=0, ask_size=0)
+                                       if day == "2019-01-22" else None)
+    book = _filled(study, [("call", 1, 100., 3)])
+    hedge.attach(book, "2019-01-16", None)
+    forward = book["hedge"]["forward_reference"]
+    assert hedge.path(book)["2019-01-22"] == (pytest.approx(spots["2019-01-22"] * forward / spots["2019-01-16"]), True)
+
+
+def test_the_worse_price_program_rows_take_one_reference_per_item_by_its_side():
+    study, hedge, _ = _hedge_study(block={**_TABLE_BLOCK, **_WORSE})
+    group, meta, entries = _table_group([-35., 30., -18., -30.])
+    out, meta2 = hedge.rewrite(group, meta, entries, 95.0, 100)         # decision forward 95 below the spot of 100
+    references = [95.0, 100.0, 95.0, 95.0]                               # only the long hedge (+30) moves to spot
+    assert meta2["program_hedge"]["references"] == references and meta2["program_hedge"]["reference"] == 95.0
+    row = ledger_studies.WeeklyOptionPortfolioStudy._loss_row
+    units = [-35., 30., -18., -30.]
+    for s, hedged in zip(group["grid"], out["losses"]):
+        assert hedged == row(meta["items"], s, 100, (units, references))
+    # the bear put spread (items 1 and 2): -120 credit, +30 at 100 and -18 at 95; the loss at S = 0 by hand
+    assert _rows_value(out, [0, 1, 1, 0]) == pytest.approx(120. - 500. + 30. * 100. - 18. * 95.)
+    terms = ledger_studies.WeeklyOptionPortfolioStudy._move_terms([0.], {"X": 1.}, [meta2], [out], 100)
+    assert terms[0.]["g"] == pytest.approx([a - c for a, c in zip(row(meta["items"], 100., 100, (units, references)),
+                                                                   out["credit"])])
+
+
+def test_the_fixed_kind_program_rows_are_the_scalar_reference_rows_bit_for_bit():
+    study, hedge, _ = _hedge_study(block=_TABLE_BLOCK)
+    group, meta, entries = _table_group([-35., 30., -18., -30.])
+    out, meta2 = hedge.rewrite(group, meta, entries, 95.0, 100)
+    assert meta2["program_hedge"]["references"] == [95.0] * 4
+    row = ledger_studies.WeeklyOptionPortfolioStudy._loss_row
+    for s, hedged in zip(group["grid"], out["losses"]):
+        assert hedged == row(meta["items"], s, 100, ([-35., 30., -18., -30.], 95.0))
+
+
+@pytest.mark.parametrize("block", [_WORSE, {}], ids=["worse_price", "fixed"])
+def test_the_selected_books_physical_reserve_matches_the_program_rows_with_per_item_references(block):
+    study, hedge, _ = _hedge_study(block={**_TABLE_BLOCK, **block})
+    study.params["bridge"]["solver"]["fee_per_contract_usd"] = 0.        # the table's credits carry no fee
+    group, meta, entries = _table_group([-35., 30., -18., -30.])
+    out, meta2 = hedge.rewrite(group, meta, entries, 95.0, 100)
+    charge = {"reserve_per_contract": 0., "short_notional_fraction": 0.}
+    held = [0, 1, 1, 0]
+    reserve = _rows_value(out, held)
+    selection = {"quantities": [held], "reserves": [reserve], "group_values": [0.]}
+    (book,) = study._books(selection, [meta2], charge)
+    assert book["reserve"] == pytest.approx(reserve) and book["max_loss"] == pytest.approx(reserve)
+    basis = 30. * (100. - 95.) if block else 0.
+    assert book["program_hedge"].get("basis_usd", 0.) == pytest.approx(basis)
+    assert ("basis_usd" in book["program_hedge"]) is bool(block)
 
 
 def test_explicit_decision_dates_enable_next_session_entry_and_preserve_default():

@@ -6,7 +6,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 
 | Lane | Note | State (one line, dated) |
 |---|---|---|
-| dskit core | "Core" below | 2026-11-24: non-DSKit relocation complete; shared data retained; C17.3 GB/D734.2 GB free; upgrade/compaction not performed. |
+| dskit core | "Core" below | 2026-11-27: Static MIO template and validator reviewed at `211dedc` on the local branch. State transitions and custom algorithm design are next. |
 | index_options | children/index_options/docs/RE-ENTRY.md | 2026-11-25: MIO calibration definitions saved; fitting/validation pending; next align PITs across assets/expiry ranks, then define copula. |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-19: historical 600-entry audit complete; method24 two-cell Kalshi recommendation beat market scores in later W4/W5; retrospective; protected tests closed; two final reviews passed |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
@@ -19,30 +19,37 @@ history questions, the memos and ADRs are reached from the lane note's links.
 
 ## Core (dskit itself)
 
-**Now.** 2026-11-24: non-DSKit relocation completed: 10.64 GB verified on D,
-old paths preserved, DSKit/shared inputs retained on C. Gears5 and the verified
-empty384 GiB D image were retired by owner request. Windows measured C17.3 GB
-and D734.2 GB free. Normal admission passes; the migration exception is retired.
-No WSL shutdown, upgrade or compaction occurred. The index_options lane holds
-the unfinished mathematical MIO and cadence-study re-entry.
+**Now.** ADR-0329 provides a seven-section template and a version 1 JSON
+declaration for one static optimization instance. The Python API and CLI
+validate references, index scopes, fixed bounds and derived cycles. The CLI
+reads strict JSON. Mathematical text stays opaque and requires human review.
 
-**Next.** Follow that lane note; check storage and host RAM before bulk work.
-The shared .venv imports from a preserved older checkout. Bind imports explicitly
-to reviewed code; never repoint an active environment.
+Candidate `211dedc` is reviewed on the local branch, with 68 focused
+formulation and strict JSON checks passing. Both final Terra reviewers
+reported zero findings after one correction batch. The separate purity
+check still reports the baseline `libs/parquet.py` import of
+`dskit.onboarding.snapshot`, reproduced on the unchanged base.
 
-**Blocked / owner decisions.** The WSL upgrade/sparse-reclaim pilot and full
-backup remain unperformed; wrap does not resume them. Preserve other sessions'
-unpublished commits, active jobs and frozen pins. Earlier ADR-0284 Mac
-path-mapping findings were not addressed here.
+At 10,000 declarations, median validation took 31.851 ms for the forward
+chain and 33.110 ms for the wide sparse case. Peak process RSS was
+58.84 MiB including startup and fixture construction. The cold example
+CLI median was 216.892 ms. These are measurements of synthetic fixtures.
+The preceding Julia runtime work landed in PR #20.
 
-**Read first.** `/home/russell/storage-investigation/non-dskit-migration-20261124/completion-receipt.json`;
-`/home/russell/pmquant/docs/data-locations.md`;
-`/home/russell/storage-investigation/storage-policy.json`;
-`/home/russell/storage-investigation/storage-migration-plan.json`.
+**Next.** Review the design for state transitions between instances and
+custom algorithms with the owner before Julia generation.
 
-**Do not.** Add WSL free space to C capacity, claim full backup or automatic
-reclaim was enabled, delete protected results, or treat development review as
-empirical evidence or deployment approval. Normal reserves are C10/D150 GiB.
+**Blocked / owner decisions.** The real MIO formulation still needs decisions
+on cash, joint scenarios, CVaR and hedges.
+
+**Read first.** [Template and validator](../dskit/pipeline/EXTENDING.md#static-optimization-formulation),
+[facility example](../examples/pipeline/formulation-facilities.json),
+[ADR-0329](architecture/decision-log.md#adr-0329--declare-and-validate-one-static-mixed-integer-optimization-formulation-accepted-2026-11-27),
+and [review and benchmark evidence](</home/russell/data/dskit/runs/mio-formulation/v20261127/HANDOFF.md>).
+
+**Do not.** Use structural validation as proof of mathematical correctness
+or use fixture timings to infer solver performance. Obtain separate approval
+before implementing a real MIO port, running a replay or deploying.
 
 ## Protocol
 

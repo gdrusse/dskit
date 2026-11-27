@@ -2614,7 +2614,7 @@ class PipelineDocument:
 # ---------------------------------------------------------------------------
 
 
-def _load_strict_json(path):
+def _load_strict_json(path, *, parse_int=int):
     """Read JSON once, refusing non-finite constants with its path."""
 
     def _refuse_nonfinite_json_constant(constant):
@@ -2644,6 +2644,7 @@ def _load_strict_json(path):
         try:
             return json.load(
                 fh,
+                parse_int=parse_int,
                 parse_constant=_refuse_nonfinite_json_constant,
                 parse_float=_refuse_nonfinite_json_float,
                 object_pairs_hook=_refuse_duplicate_json_key,

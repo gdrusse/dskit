@@ -549,17 +549,29 @@ class PyomoSolve(Node):
 
     @classmethod
     def validate_params(cls, params):
+        return PyomoSolve.solver_param_problems(params, cls._PARAMS, DEFAULT_SOLVER)
+
+    @staticmethod
+    def solver_param_problems(params, allowed, default_solver):
+        """The solver doorway's plan-time param rules, one owner for every solver pack.
+
+        Unknown names (default-deny against ``allowed``), the solver NAME's
+        shape and ``solver_options`` as a flat mapping of non-empty string
+        to JSON scalar. ``default_solver`` is the name an absent ``solver``
+        means, and the example a refusal shows; the JuMP pack
+        (``libs/jump.py``) passes its own.
+        """
         problems = []
-        unknown = sorted(set(params) - set(cls._PARAMS))
+        unknown = sorted(set(params) - set(allowed))
         if unknown:
             problems.append(
-                f"unknown param(s) {unknown} — allowed: {sorted(cls._PARAMS)}"
+                f"unknown param(s) {unknown} — allowed: {sorted(allowed)}"
             )
-        solver = params.get("solver", DEFAULT_SOLVER)
+        solver = params.get("solver", default_solver)
         if not isinstance(solver, str) or not re.match(_SOLVER_NAME_OK, solver):
             problems.append(
                 f"solver must be a solver-name string matching {_SOLVER_NAME_OK} "
-                f"(e.g. {DEFAULT_SOLVER!r}), got {solver!r}"
+                f"(e.g. {default_solver!r}), got {solver!r}"
             )
         options = params.get("solver_options", {})
         if not isinstance(options, dict):
@@ -789,7 +801,14 @@ class BudgetedSelect(PyomoSolve):
 
     @classmethod
     def validate_params(cls, params):
-        problems = super().validate_params(params)
+        return super().validate_params(params) + BudgetedSelect.budget_problems(params)
+
+    # -- the knapsack contract, one owner for both twins (libs/jump.py) -------
+
+    @staticmethod
+    def budget_problems(params):
+        """The ``budget`` param's plan-time rules: required, finite, > 0."""
+        problems = []
         if "budget" not in params:
             problems.append(
                 "budget is required — the spend ceiling the selection must "
@@ -870,11 +889,55 @@ class BudgetedSelect(PyomoSolve):
                     problems.append(f"survivors entries must be strings, got {s!r}")
         return problems
 
+    @staticmethod
+    def eligible(inputs):
+        """The candidate rows whose ``id`` the gate's ``survivors`` cleared, in deck order."""
+        survivors = set(inputs["survivors"])
+        return [row for row in inputs["candidates"] if row["id"] in survivors]
+
+    @staticmethod
+    def nothing_cleared(n_candidates):
+        """The outputs of an empty gate: zero positions, zero outlay, no solve."""
+        return {
+            "positions": [],
+            "outlay": 0.0,
+            "metrics": {
+                "objective": 0.0,
+                "n_selected": 0,
+                "n_eligible": 0,
+                "n_candidates": n_candidates,
+            },
+        }
+
+    @staticmethod
+    def refuse_over_budget(out, budget):
+        """Raise ``AssertionError`` when ``out["outlay"]`` exceeds ``budget``; return ``out``."""
+        outlay = float(out["outlay"])
+        if outlay > budget * (1.0 + 1e-9):
+            raise AssertionError(
+                f"budget violated: outlay {outlay!r} exceeds budget "
+                f"{budget!r} — refusing to report an over-budget selection "
+                "(a budget that does not bind is the F-220 #1 ghost)"
+            )
+        return out
+
+    @staticmethod
+    def selection(chosen, cost, value, n_eligible, n_candidates):
+        """The outputs of a solved selection: ``chosen`` ids priced by the ``cost``/``value`` maps."""
+        return {
+            "positions": chosen,
+            "outlay": float(sum(cost[cid] for cid in chosen)),
+            "metrics": {
+                "objective": float(sum(value[cid] for cid in chosen)),
+                "n_selected": len(chosen),
+                "n_eligible": n_eligible,
+                "n_candidates": n_candidates,
+            },
+        }
+
     def run(self, ctx, inputs):
         budget = float(self.params["budget"])
-        survivors = set(inputs["survivors"])
-        eligible = [row for row in inputs["candidates"] if row["id"] in survivors]
-        if not eligible:
+        if not BudgetedSelect.eligible(inputs):
             # The gate cleared no one: deploy NOTHING, and never wake the
             # solver — an empty program solved anyway is capital treating
             # its gate as decoration.
@@ -884,25 +947,8 @@ class BudgetedSelect(PyomoSolve):
                 "solver not invoked",
                 len(inputs["candidates"]),
             )
-            return {
-                "positions": [],
-                "outlay": 0.0,
-                "metrics": {
-                    "objective": 0.0,
-                    "n_selected": 0,
-                    "n_eligible": 0,
-                    "n_candidates": len(inputs["candidates"]),
-                },
-            }
-        out = super().run(ctx, inputs)
-        outlay = float(out["outlay"])
-        if outlay > budget * (1.0 + 1e-9):
-            raise AssertionError(
-                f"budget violated: outlay {outlay!r} exceeds budget "
-                f"{budget!r} — refusing to report an over-budget selection "
-                "(a budget that does not bind is the F-220 #1 ghost)"
-            )
-        return out
+            return BudgetedSelect.nothing_cleared(len(inputs["candidates"]))
+        return BudgetedSelect.refuse_over_budget(super().run(ctx, inputs), budget)
 
     def build_model(self, inputs, params):
         from pyomo.environ import (
@@ -914,8 +960,7 @@ class BudgetedSelect(PyomoSolve):
             maximize,
         )
 
-        survivors = set(inputs["survivors"])
-        rows = [row for row in inputs["candidates"] if row["id"] in survivors]
+        rows = BudgetedSelect.eligible(inputs)
         ids = [row["id"] for row in rows]
         cost = {row["id"]: float(row["cost"]) for row in rows}
         value = {row["id"]: float(row["value"]) for row in rows}
@@ -950,16 +995,8 @@ class BudgetedSelect(PyomoSolve):
             )
         meta = model._select
         chosen = sorted(cid for cid in meta["ids"] if (model.x[cid].value or 0.0) > 0.5)
-        return {
-            "positions": chosen,
-            "outlay": float(sum(meta["cost"][cid] for cid in chosen)),
-            "metrics": {
-                "objective": float(sum(meta["value"][cid] for cid in chosen)),
-                "n_selected": len(chosen),
-                "n_eligible": len(meta["ids"]),
-                "n_candidates": meta["n_candidates"],
-            },
-        }
+        return BudgetedSelect.selection(chosen, meta["cost"], meta["value"],
+                                        len(meta["ids"]), meta["n_candidates"])
 
 
 def _same_number(a, b):

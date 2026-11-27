@@ -1,0 +1,26 @@
+name = "DskitJuMP"
+uuid = "e73123b3-bded-4c06-82dd-4d3ff2c7a6b3"
+version = "0.1.0"
+
+[deps]
+Arrow = "69666777-d1a9-59fb-9406-91d4454c9d45"
+HiGHS = "87dc4568-4c63-4d18-b0c0-bb2238e4078b"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+JuMP = "4076af6c-e467-56ae-b986-b466b2749572"
+PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
+SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+
+[compat]
+Arrow = "~2.8.1"
+HiGHS = "~1.27.0"
+JSON = "~1.13.4"
+JuMP = "~1.32.1"
+PrecompileTools = "~1.4.0"
+SHA = "~1.0.0"
+julia = "1.13"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
