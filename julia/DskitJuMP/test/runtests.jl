@@ -162,6 +162,100 @@ no_round(s, h) = search_h(s, h; limits=Dict("time_limit" => 1e-9))
 fresh(r) = r["ok"] && r["record"]["objective"] == SEARCH_OPT && r["timings"]["solve_seconds"] > 0 &&
            r["record"]["termination"] == "SEARCH_TIME_LIMIT" && isempty(r["trajectory"])
 
+# --- lifecycle regression fixtures -------------------------------------------------------
+
+mutable struct LifecycleCaps{Mode} <: D.Program
+    builds::Int
+    updates::Int
+    on_record::Function
+end
+
+D.program_name(::LifecycleCaps{Mode}) where {Mode} = "test_lifecycle_$Mode"
+D.schema(::LifecycleCaps) =
+    D.Schema([D.FieldSpec("ids", "string", ["item"]), D.FieldSpec("cap", "float64", String[])],
+             ["item" => "ids"])
+D.variable_groups(::LifecycleCaps) = [D.GroupSpec("quantity", ["item"], "continuous")]
+D.typed_data(::LifecycleCaps, c::D.Columns) =
+    (ids=D.column(c, "ids", String).values, cap=only(D.column(c, "cap", Float64).values))
+D.typed_params(::LifecycleCaps, ::Dict{String,Any}, ::Vector{String}) = nothing
+D.variables(::LifecycleCaps, x) = (x,)
+D.solution(::LifecycleCaps, x, ::D.Setup, at) =
+    Dict("quantity" => (at === nothing ? nothing : at.(x)))
+
+function D.constraint_groups(p::LifecycleCaps, x, ::D.Setup)
+    p.on_record(x)
+    return Pair{String,Vector{ConstraintRef}}[]
+end
+
+function D.build!(m::Model, p::LifecycleCaps{Mode}, s::D.Setup) where {Mode}
+    p.builds += 1
+    cap = s.data.cap
+    @variable(m, 0 <= x[1:length(s.data.ids)] <= cap)
+    if Mode === :intrinsic
+        # Keep a finite optimum even if the intrinsic equality is inadvertently lost.
+        @constraint(m, 2 * x[1] <= 2 * cap)
+        fix(x[1], 4.0; force=true)
+    end
+    @objective(m, Max, sum(x))
+    return x
+end
+
+D.has_update(::Union{LifecycleCaps{:direct},LifecycleCaps{:conditional}}) = true
+
+function D.update!(::Model, p::Union{LifecycleCaps{:direct},LifecycleCaps{:conditional}},
+                   x, ::D.Setup, new::D.Setup)
+    p.updates += 1
+    for v in x
+        if p isa LifecycleCaps{:direct} || has_upper_bound(v)
+            set_upper_bound(v, new.data.cap)
+        end
+    end
+    return
+end
+
+for mode in (:direct, :conditional, :rebuild, :intrinsic)
+    register_program!(LifecycleCaps{mode}(0, 0, identity))
+end
+
+lifecycle_open(s, mode, cap; ids=["x", "y"]) =
+    rpc(s, "open"; program="test_lifecycle_$mode", data=Dict("ids" => ids, "cap" => cap),
+        params=Dict(), solver="HiGHS", solver_options=OPTS, components=Dict())
+lifecycle_update(s, handle, cap) =
+    rpc(s, "update"; handle, data=Dict("cap" => cap), params=nothing, components=Dict())
+lifecycle_values(ids, values) = Dict("quantity" => Dict("keys" => [[id] for id in ids], "values" => values))
+lifecycle_restrictions(v) = (fixed=is_fixed(v) ? fix_value(v) : nothing,
+                             lower=has_lower_bound(v) ? lower_bound(v) : nothing,
+                             upper=has_upper_bound(v) ? upper_bound(v) : nothing)
+
+function lifecycle_solve_to(s, h, objective)
+    r = solve_h(s, h)
+    ok = r["ok"] && r["record"]["termination"] == "OPTIMAL" && r["record"]["objective"] ≈ objective
+    @test ok
+    return ok
+end
+
+function lifecycle_state_snapshot(lm)
+    last = lm.last
+    return (
+        data=deepcopy(lm.setup.data), params=lm.setup.params_json, attached=copy(lm.setup.attached),
+        columns=Dict(name => (copy(c.shape), copy(c.values)) for (name, c) in lm.columns),
+        digest=lm.digest, signature=lm.signature, version=lm.version, holder=lm.holder, bytes=lm.bytes,
+        last=last === nothing ? nothing : (copy(last.values), deepcopy(last.record), last.handle, last.version),
+        fixed=Dict(pos => Tuple(deepcopy(getfield(info, field)) for field in fieldnames(typeof(info)))
+                   for (pos, info) in lm.fixed),
+        start=lm.start === nothing ? nothing : copy(lm.start), start_source=lm.start_source,
+        restrictions=lifecycle_restrictions.(lm.index.all), starts=start_value.(lm.index.all),
+    )
+end
+
+function lifecycle_pool_snapshot(pool)
+    return (
+        serials=sort!(collect(keys(pool.models))), recency=copy(pool.recency), handles=copy(pool.handles),
+        evicted=copy(pool.evicted_handles), counters=(pool.issued, pool.serials, pool.evictions),
+        bytes=sum(lm.bytes for lm in values(pool.models)),
+    )
+end
+
 @testset "DskitJuMP" begin
 
 @testset "digest and default signature match the Python reference byte for byte" begin
@@ -198,6 +292,47 @@ fresh(r) = r["ok"] && r["record"]["objective"] == SEARCH_OPT && r["timings"]["so
     @test D.data_digest(gs, c) == "201aabe99a686326e2f8ccdd1c42cd3910176ea6c272831eafcdad0cca6b2009"
     @test D.shape_signature(gs, c) ==
           "shape:288a72f6d5c33dd4ae8f898696b9912947b83e3fa30a322d63d0fa6833af7903"
+
+    # The positional axis is second in the grid. The unused axis and UTF-8 label
+    # also distinguish declaration order from the canonical dimension order.
+    mixed = D.Schema([D.FieldSpec("earlier", "float64", ["z"]),
+                      D.FieldSpec("grid", "int64", ["é", "z"]),
+                      D.FieldSpec("ids", "string", ["é"])],
+                     ["é" => "ids", "z" => nothing, "unused" => nothing])
+    mixed_shape = "shape:8f607dad46383c9373504e402a435961694f927178659f604256e579ddb015fe"
+    data = Dict("earlier" => [1.0, 2.0, 3.0], "grid" => [[1, 2, 3], [4, 5, 6]],
+                "ids" => ["β", "é"])
+    baseline = cols(mixed, data)
+    @test D.shape_signature(mixed, baseline) == mixed_shape
+    changed = cols(mixed, merge(data, Dict("grid" => [[9, 2, 3], [4, 5, 6]])))
+    @test D.shape_signature(mixed, changed) == mixed_shape
+    @test D.data_digest(mixed, changed) != D.data_digest(mixed, baseline)
+    permuted = cols(mixed, merge(data, Dict("ids" => reverse(data["ids"]))))
+    @test D.shape_signature(mixed, permuted) ==
+          "shape:0d86eee793b6a68cb66d59c4fd66a8265caf6b87ca13f65511245d89f929a557"
+
+    # Direct calls may omit fields or use columns that check_full would reject.
+    partial = copy(baseline)
+    delete!(partial, "earlier")
+    @test D.shape_signature(mixed, partial) == mixed_shape
+    keys_by_dim = D.dimension_keys(mixed, partial)
+    @test keys_by_dim == Dict("z" => [0, 1, 2], "unused" => [], "é" => ["β", "é"])
+    @test keys_by_dim["é"] !== partial["ids"].values
+    partial["earlier"] = D.Column([1], [1.0])
+    @test D.shape_signature(mixed, partial) ==
+          "shape:4944b0bfecdc261a5432791d2df5aac70274cc2c7478e5e4ee7115307357e011"
+    delete!(partial, "earlier")
+    zero_positional = "shape:1f6b63bf04331027a7723fcfca5cd7e37b379c143f9104769d2c921549474368"
+    for n in (0, -1)
+        partial["grid"] = D.Column([2, n], Int[])
+        @test D.shape_signature(mixed, partial) == zero_positional
+    end
+    delete!(partial, "grid")
+    @test D.shape_signature(mixed, partial) == zero_positional
+
+    scalar = D.Schema([D.FieldSpec("scalar", "int64", String[])], [])
+    @test D.shape_signature(scalar, cols(scalar, Dict("scalar" => 8))) ==
+          "shape:47fff46f1fe04b129448f02351a276f40908d6c3f3184e4769b7bb8cf35c1104"
 end
 
 @testset "strict JSON reading" begin
@@ -939,6 +1074,227 @@ end
     @test after["timings"]["start_source"] == "values"
     @test rpc(s, "fix"; handle=g, values=Dict())["fixed"] == 1
     @test rpc(s, "update"; handle=g, data=Dict(), params=nothing, components=Dict())["digest"] == digest
+end
+
+@testset "lifecycle: program bounds and caller overlays" begin
+    @testset "compatible cap changes, held and idle" begin
+        for mode in (:direct, :conditional, :rebuild),
+            (reopen, fixed) in ((false, 2.0), (true, 2.0), (true, 8.0))
+            @testset "$mode reopen=$reopen fixed=$fixed" begin
+                s = Session()
+                p = D.lookup_program("test_lifecycle_$mode")
+                opened = lifecycle_open(s, mode, 10.0)
+                @test opened["ok"]
+                if opened["ok"]
+                    h = opened["handle"]
+                    @test get(rpc(s, "fix"; handle=h, values=lifecycle_values(["x"], [fixed])),
+                              "fixed", nothing) == 1
+                    @test get(rpc(s, "start"; handle=h, source="values",
+                                  values=lifecycle_values(["y"], [1.0])), "started", nothing) == 1
+                    lifecycle_solve_to(s, h, fixed + 10.0)
+                    lm = live(s, h)
+                    model, builds, updates = lm.model, p.builds, p.updates
+                    if reopen
+                        @test rpc(s, "close"; handle=h)["ok"]
+                        changed = lifecycle_open(s, mode, 3.0)
+                    else
+                        changed = lifecycle_update(s, h, 3.0)
+                    end
+                    @test changed["ok"]
+                    if changed["ok"]
+                        new_handle = changed["handle"]
+                        next = live(s, new_handle)
+                        @test new_handle == (reopen ? "h2" : h)
+                        @test changed["timings"]["path"] == (mode === :rebuild ? "rebuilt" : "updated")
+                        @test (next.model === model) == (mode !== :rebuild)
+                        @test (p.builds - builds, p.updates - updates) ==
+                              (mode === :rebuild ? (1, 0) : (0, 1))
+                        # Pinned against the independent Python wire oracle.
+                        @test changed["signature"] == opened["signature"] ==
+                              "shape:f7891f95975961ac1521222d1097d964c7750c1e5a6277c7a65ecc080eba73be"
+                        @test changed["digest"] ==
+                              "1a1354b4738f214b3cb6b2b87fcba4fc1d9abdc813f0640ec7c924c525e50cff"
+                        if reopen
+                            @test isempty(next.fixed) && next.start === nothing && next.start_source === nothing
+                            @test all(isnothing, start_value.(next.index.all))
+                            @test next.last !== nothing && next.last.handle == h &&
+                                  next.last.values ≈ [fixed, 10.0]
+                            start = rpc(s, "start"; handle=new_handle, source="last", values=Dict())
+                            @test get(start, "started", nothing) == 2
+                            @test start_value.(next.index.all) == [fixed, 10.0]
+                            @test rpc(s, "start"; handle=new_handle, source="none", values=Dict())["ok"]
+                            fresh = search_h(s, new_handle; limits=Dict("time_limit" => 1e-9))
+                            @test fresh["ok"] && fresh["record"]["objective"] ≈ 6.0 &&
+                                  fresh["timings"]["solve_seconds"] > 0
+                        else
+                            @test lifecycle_restrictions(next.index.all[1]).fixed == fixed && length(next.fixed) == 1
+                            @test next.start == Dict(2 => 1.0) && next.start_source == "values"
+                            @test start_value.(next.index.all) == [nothing, 1.0]
+                            lifecycle_solve_to(s, h, fixed + 3.0)
+                            @test get(rpc(s, "free"; handle=h, targets="all"), "fixed", nothing) == 0
+                        end
+                        expected = (fixed=nothing, lower=0.0, upper=3.0)
+                        @test all(==(expected), lifecycle_restrictions.(next.index.all))
+                        lifecycle_solve_to(s, new_handle, 6.0)
+                    end
+                end
+            end
+        end
+    end
+
+    @testset "retained fix outside the new cap refuses transactionally" begin
+        for mode in (:direct, :conditional, :rebuild)
+            @testset "$mode" begin
+                s = Session(models=2)
+                opened = lifecycle_open(s, mode, 10.0; ids=["low", "high"])
+                @test opened["ok"]
+                if opened["ok"]
+                    h = opened["handle"]
+                    @test get(rpc(s, "fix"; handle=h, values=lifecycle_values(["low", "high"], [2.0, 8.0])),
+                              "fixed", nothing) == 2
+                    @test get(rpc(s, "start"; handle=h, source="values", values=lifecycle_values(["low"], [2.0])),
+                              "started", nothing) == 1
+                    lifecycle_solve_to(s, h, 10.0)
+                    @test open_ks(s)["ok"]  # the held model is now the least recent
+                    lm = live(s, h)
+                    model = lm.model
+                    before = lifecycle_state_snapshot(lm)
+                    pool = lifecycle_pool_snapshot(s.w.pool)
+                    refused = lifecycle_update(s, h, 3.0)
+                    @test kind(refused) == "bad_value"
+                    @test lifecycle_state_snapshot(live(s, h)) == before
+                    @test lifecycle_pool_snapshot(s.w.pool) == pool
+                    if mode === :rebuild
+                        @test live(s, h).model === model
+                    end
+                    if kind(refused) == "bad_value"
+                        message = refused["error"]["message"]
+                        @test all(word -> occursin(word, message), ("quantity", "high", "8", "3"))
+                        lifecycle_solve_to(s, h, 10.0)
+                        targets = Dict("quantity" => Dict("keys" => [["high"]]))
+                        @test get(rpc(s, "free"; handle=h, targets), "fixed", nothing) == 1
+                        @test lifecycle_restrictions(live(s, h).index.all[2]).upper == 10.0
+                        retry = lifecycle_update(s, h, 3.0)
+                        @test retry["ok"] && retry["digest"] ==
+                              "91acd3430df5826dd3914b5f1a956ee3b07663469f6ca0ad523322da2099fc9b"
+                        lifecycle_solve_to(s, h, 5.0)
+                        targets = Dict("quantity" => Dict("keys" => [["low"]]))
+                        @test get(rpc(s, "free"; handle=h, targets), "fixed", nothing) == 0
+                        @test lifecycle_restrictions(live(s, h).index.all[1]) ==
+                              (fixed=nothing, lower=0.0, upper=3.0)
+                        lifecycle_solve_to(s, h, 6.0)
+                    end
+                end
+            end
+        end
+    end
+
+    @testset "program equality survives caller free and pooled release" begin
+        for release in ("subset", "all", "pool")
+            @testset "$release" begin
+                s = Session()
+                opened = lifecycle_open(s, :intrinsic, 10.0)
+                @test opened["ok"]
+                if opened["ok"]
+                    h = opened["handle"]
+                    for _ in 1:2
+                        @test get(rpc(s, "fix"; handle=h, values=lifecycle_values(["x"], [4.0])),
+                                  "fixed", nothing) == 1
+                    end
+                    released = if release == "pool"
+                        @test rpc(s, "close"; handle=h)["ok"]
+                        reopened = lifecycle_open(s, :intrinsic, 10.0)
+                        @test reopened["ok"] && reopened["timings"]["path"] == "reused"
+                        reopened["ok"] ? reopened["handle"] : nothing
+                    else
+                        targets = release == "all" ? "all" : Dict("quantity" => Dict("keys" => [["x"]]))
+                        @test get(rpc(s, "free"; handle=h, targets), "fixed", nothing) == 0
+                        h
+                    end
+                    if released !== nothing
+                        lm = live(s, released)
+                        @test isempty(lm.fixed)
+                        @test lifecycle_restrictions(lm.index.all[1]) == (fixed=4.0, lower=nothing, upper=nothing)
+                        lifecycle_solve_to(s, released, 14.0)
+                    end
+                end
+            end
+        end
+    end
+
+    @testset "a conflicting caller fix leaves the valid earlier entry unmodified" begin
+        s = Session(models=2)
+        opened = lifecycle_open(s, :intrinsic, 10.0)
+        @test opened["ok"]
+        if opened["ok"]
+            h = opened["handle"]
+            @test get(rpc(s, "start"; handle=h, source="values",
+                          values=lifecycle_values(["y"], [2.0])), "started", nothing) == 1
+            lifecycle_solve_to(s, h, 14.0)
+            @test open_ks(s)["ok"]
+            before = lifecycle_state_snapshot(live(s, h))
+            pool = lifecycle_pool_snapshot(s.w.pool)
+            refused = rpc(s, "fix"; handle=h, values=lifecycle_values(["y", "x"], [3.0, 5.0]))
+            @test kind(refused) == "bad_value"
+            @test lifecycle_state_snapshot(live(s, h)) == before
+            @test lifecycle_pool_snapshot(s.w.pool) == pool
+            kind(refused) == "bad_value" && lifecycle_solve_to(s, h, 14.0)
+        end
+    end
+
+    @testset "search restores the intrinsic equality on success and on a refused round" begin
+        for fail in (false, true)
+            @testset "fail=$fail" begin
+                s = Session(models=2)
+                p = D.lookup_program("test_lifecycle_intrinsic")
+                opened = lifecycle_open(s, :intrinsic, 10.0; ids=["x", "y", "z"])
+                @test opened["ok"]
+                if opened["ok"]
+                    h = opened["handle"]
+                    @test get(rpc(s, "fix"; handle=h, values=lifecycle_values(["y"], [2.0])),
+                              "fixed", nothing) == 1
+                    @test get(rpc(s, "start"; handle=h, source="values",
+                                  values=lifecycle_values(["y"], [2.0])), "started", nothing) == 1
+                    lifecycle_solve_to(s, h, 16.0)
+                    @test open_ks(s)["ok"]
+                    lm = live(s, h)
+                    model, builds = lm.model, p.builds
+                    before = lifecycle_state_snapshot(lm)
+                    pool = lifecycle_pool_snapshot(s.w.pool)
+                    seen = []
+                    original_hook = p.on_record
+                    p.on_record = x -> begin
+                        push!(seen, (lifecycle_restrictions.(x), start_value.(x)))
+                        fail && length(seen) == 2 && D.refuse("bad_data", "lifecycle round record probe")
+                    end
+                    # Seed 0 frees z from the ordered [x, z] list. x belongs to the program.
+                    result = try
+                        search_h(s, h; params=Dict("free" => 1, "stall" => 2),
+                                 seed=0, limits=Dict("rounds" => 1))
+                    finally
+                        p.on_record = original_hook
+                    end
+                    @test length(seen) == 2
+                    if length(seen) == 2
+                        @test seen[2][1] == before.restrictions
+                        @test seen[2][2] == [4.0, 2.0, 10.0]
+                    end
+                    after = lifecycle_state_snapshot(live(s, h))
+                    if fail
+                        @test kind(result) == "bad_data" && occursin("lifecycle round record probe", result["error"]["message"])
+                        @test after == before
+                        @test lifecycle_pool_snapshot(s.w.pool) == pool
+                    else
+                        @test result["ok"] && length(result["trajectory"]) == 1 &&
+                              result["trajectory"][1]["neighbourhood"] == 1
+                        @test live(s, h).model === model && p.builds == builds
+                        @test after == merge(before, (last=after.last,))
+                    end
+                    lifecycle_solve_to(s, h, 16.0)
+                end
+            end
+        end
+    end
 end
 
 end # testset DskitJuMP
