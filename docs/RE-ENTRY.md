@@ -6,7 +6,7 @@ history questions, the memos and ADRs are reached from the lane note's links.
 
 | Lane | Note | State (one line, dated) |
 |---|---|---|
-| dskit core | "Core" below | 2026-11-27: Verified Julia lifecycle and shape changes at `7999a6da` and all 48 solver pairs. HiGHS remains the default. |
+| dskit core | "Core" below | 2026-11-27: Static MIO template and validator reviewed at `211dedc` on the local branch. State transitions and custom algorithm design are next. |
 | index_options | children/index_options/docs/RE-ENTRY.md | 2026-11-25: MIO calibration definitions saved; fitting/validation pending; next align PITs across assets/expiry ranks, then define copula. |
 | crypto_trading | `children/crypto_trading/docs/RE-ENTRY.md` | 2026-10-19: historical 600-entry audit complete; method24 two-cell Kalshi recommendation beat market scores in later W4/W5; retrospective; protected tests closed; two final reviews passed |
 | correlation_arb | `children/correlation_arb/docs/RE-ENTRY.md` | 2026-10-09: child + ADR-0256/0257 on main; Stage 1 kill test next |
@@ -19,34 +19,37 @@ history questions, the memos and ADRs are reached from the lane note's links.
 
 ## Core (dskit itself)
 
-**Now.** Candidate `7999a6da` keeps caller fixes separate from
-program-owned domains during updates, pooled reopen, free and search.
-The Julia suite passed 840/840. JSON and Arrow worker checks passed, and
-the child guide picked `sample-0002` at objective 11.5. Two independent
-reviews closed with zero unresolved findings. Large labelled and
-positional shape signatures took 18.25% and 99.19% less time in paired
-tests, respectively, and each allocated about 376 KiB less per call.
-Lifecycle pairs showed no replicated slowdown.
+**Now.** ADR-0329 provides a seven-section template and a version 1 JSON
+declaration for one static optimization instance. The Python API and CLI
+validate references, index scopes, fixed bounds and derived cycles. The CLI
+reads strict JSON. Mathematical text stays opaque and requires human review.
 
-The 48-pair HiGHS/SCIP comparison returned verified feasible points in
-all 224 measured stages. SCIP had lower median warm optimizer time on
-`budgeted_select`. Under the five-second budget, HiGHS had the higher
-`assignment` objective in 40 of 48 aligned stages and tied eight. The
-results depended on the fixture. Keep HiGHS as the default.
+Candidate `211dedc` is reviewed on the local branch, with 68 focused
+formulation and strict JSON checks passing. Both final Terra reviewers
+reported zero findings after one correction batch. The separate purity
+check still reports the baseline `libs/parquet.py` import of
+`dskit.onboarding.snapshot`, reproduced on the unchanged base.
 
-**Next.** Owner review of the feature PR against `main` before a merge.
+At 10,000 declarations, median validation took 31.851 ms for the forward
+chain and 33.110 ms for the wide sparse case. Peak process RSS was
+58.84 MiB including startup and fixture construction. The cold example
+CLI median was 216.892 ms. These are measurements of synthetic fixtures.
+The preceding Julia runtime work landed in PR #20.
 
-**Blocked / owner decisions.** The real MIO formulation is pending.
-Cash, joint scenarios, CVaR and hedge definitions remain open.
+**Next.** Review the design for state transitions between instances and
+custom algorithms with the owner before Julia generation.
 
-**Read first.** [Child Julia guide](../dskit/pipeline/EXTENDING.md#julia-programs-in-child-projects),
-[shape evidence](</home/russell/data/dskit/runs/jump-shape/v20261126/summary.json>),
-[lifecycle evidence](</home/russell/data/dskit/runs/jump-lifecycle/v20261126/HANDOFF.md>),
-[solver evidence](</home/russell/data/dskit/runs/jump-solvers/v20261126/implementation-receipt.md>),
-and [runtime design](</home/russell/reports/JuMP MIO runtime design.md>).
+**Blocked / owner decisions.** The real MIO formulation still needs decisions
+on cash, joint scenarios, CVaR and hedges.
 
-**Do not.** Generalize fixture timings to production or start an MIO
-port, replay or deployment without separate approval.
+**Read first.** [Template and validator](../dskit/pipeline/EXTENDING.md#static-optimization-formulation),
+[facility example](../examples/pipeline/formulation-facilities.json),
+[ADR-0329](architecture/decision-log.md#adr-0329--declare-and-validate-one-static-mixed-integer-optimization-formulation-accepted-2026-11-27),
+and [review and benchmark evidence](</home/russell/data/dskit/runs/mio-formulation/v20261127/HANDOFF.md>).
+
+**Do not.** Use structural validation as proof of mathematical correctness
+or use fixture timings to infer solver performance. Obtain separate approval
+before implementing a real MIO port, running a replay or deploying.
 
 ## Protocol
 

@@ -1,3 +1,36 @@
+## Replaced at 2026-11-27 static MIO formulation wrap
+
+## Core (dskit itself)
+
+**Now.** Candidate `7999a6da` keeps caller fixes separate from
+program-owned domains during updates, pooled reopen, free and search.
+The Julia suite passed 840/840. JSON and Arrow worker checks passed, and
+the child guide picked `sample-0002` at objective 11.5. Two independent
+reviews closed with zero unresolved findings. Large labelled and
+positional shape signatures took 18.25% and 99.19% less time in paired
+tests, respectively, and each allocated about 376 KiB less per call.
+Lifecycle pairs showed no replicated slowdown.
+
+The 48-pair HiGHS/SCIP comparison returned verified feasible points in
+all 224 measured stages. SCIP had lower median warm optimizer time on
+`budgeted_select`. Under the five-second budget, HiGHS had the higher
+`assignment` objective in 40 of 48 aligned stages and tied eight. The
+results depended on the fixture. Keep HiGHS as the default.
+
+**Next.** Owner review of the feature PR against `main` before a merge.
+
+**Blocked / owner decisions.** The real MIO formulation is pending.
+Cash, joint scenarios, CVaR and hedge definitions remain open.
+
+**Read first.** [Child Julia guide](../dskit/pipeline/EXTENDING.md#julia-programs-in-child-projects),
+[shape evidence](</home/russell/data/dskit/runs/jump-shape/v20261126/summary.json>),
+[lifecycle evidence](</home/russell/data/dskit/runs/jump-lifecycle/v20261126/HANDOFF.md>),
+[solver evidence](</home/russell/data/dskit/runs/jump-solvers/v20261126/implementation-receipt.md>),
+and [runtime design](</home/russell/reports/JuMP MIO runtime design.md>).
+
+**Do not.** Generalize fixture timings to production or start an MIO
+port, replay or deployment without separate approval.
+
 ## Replaced at 2026-11-27 JuMP native wrap
 
 ## Core (dskit itself)
