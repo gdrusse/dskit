@@ -3581,3 +3581,174 @@ class TestCrossWorkerConformance:
         assert (solved.termination, solved.objective, solved.bound) == (
             "INFEASIBLE", None, None)
         assert model.free() == 0  # the search restored exactly the caller's four fixes
+
+
+class TestSolverComparison:
+    """The optional benchmark uses only independently validated binary points."""
+
+    @pytest.fixture
+    def benchmark(self):
+        from tools.jump import benchmark
+
+        return benchmark
+
+    def test_comparison_is_advertised(self, benchmark, capsys):
+        with pytest.raises(SystemExit) as exc:
+            benchmark.main(["--help"])
+        assert exc.value.code == 0
+        assert "--compare-solvers" in capsys.readouterr().out
+
+    def test_legacy_mode_is_still_default(self, benchmark, monkeypatch, capsys):
+        calls = []
+        monkeypatch.setattr(benchmark.shutil, "which", lambda _: "/path/to/julia")
+        monkeypatch.setattr(benchmark, "run_pyomo", lambda *args: calls.append("pyomo") or {})
+        monkeypatch.setattr(benchmark, "run_jump",
+                            lambda *args: calls.append("arrow" if args[-1] else "json") or {})
+        assert benchmark.main(["--sizes", "2"]) == 0
+        assert calls == ["pyomo", "json", "arrow"]
+        assert "time limit 60 s" in capsys.readouterr().out
+
+    @staticmethod
+    def _selection(benchmark, selected, objective, bound, *, status="FEASIBLE_POINT",
+                   termination="TIME_LIMIT", optimum=None):
+        data = {"ids": ["a", "b", "c"], "cost": [2, 3, 8], "value": [4, 5, 20]}
+        record = SolveRecord("HiGHS", status, termination, objective, bound, None, 0, 3, 2, ())
+        return benchmark._verify_point(
+            "budgeted_select", data, {"budget": 5, "max_items": 1}, {"max_items": True},
+            {"selected": selected}, record, optimum=optimum)
+
+    @staticmethod
+    def _assignment(benchmark, assigned, objective, bound, *, optimum=None):
+        data = {"items": ["a", "b", "c"], "bins": ["x", "y"], "weight": [[2, 2], [2, 2], [5, 5]],
+                "value": [[3, 3], [3, 3], [9, 9]], "capacity": [4, 4]}
+        record = SolveRecord("SCIP", "FEASIBLE_POINT", "OPTIMAL", objective, bound, 0, 0, 6, 7, ())
+        return benchmark._verify_point(
+            "assignment", data, {"max_per_bin": 1}, {"max_per_bin": True},
+            {"assigned": assigned}, record, optimum=optimum)
+
+    @pytest.mark.parametrize("selected,objective,bound,problem", [
+        (["unknown"], 4, 5, "unknown"),
+        (["a", "a"], 8, 8, "duplicate"),
+        (["c"], 20, 20, "budget"),
+        (["a", "b"], 9, 9, "max_items"),
+        (["a"], 4.01, 5, "objective"),
+        (["a"], float("nan"), 5, "objective"),
+        (["a"], 4, 3.99, "bound"),
+        (["a"], 4, float("inf"), "bound"),
+        (["a"], 4, True, "bound"),
+    ])
+    def test_rejects_invalid_selection(self, benchmark, selected, objective, bound, problem):
+        with pytest.raises(ValueError, match=problem):
+            self._selection(benchmark, selected, objective, bound)
+
+    @pytest.mark.parametrize("assigned,problem", [
+        ([["unknown", "x"]], "unknown"),
+        ([["a", "unknown"]], "unknown"),
+        ([["a", "x"], ["a", "x"]], "duplicate"),
+        ([["a", "x"], ["a", "y"]], "one bin"),
+        ([["c", "x"]], "capacity"),
+        ([["a", "x"], ["b", "x"]], "max_per_bin"),
+    ])
+    def test_rejects_invalid_assignment(self, benchmark, assigned, problem):
+        with pytest.raises(ValueError, match=problem):
+            self._assignment(benchmark, assigned, 6, 6)
+
+    @pytest.mark.parametrize("assigned", [
+        [["a", "x"], ["b", "y"]],
+        [["a", "y"], ["b", "x"]],
+    ])
+    def test_accepts_tied_optimal_assignments(self, benchmark, assigned):
+        verified = self._assignment(benchmark, assigned, 6.0, 6.0, optimum=6)
+        assert verified["verified_objective"] == 6
+        assert verified["common_gap"] == 0
+
+    def test_empty_point_and_no_point_are_distinct(self, benchmark):
+        point = self._selection(benchmark, [], 0, 5)
+        no_point = self._selection(benchmark, None, None, None, status="NO_SOLUTION")
+        assert (point["outcome"], point["verified_objective"], point["common_gap"]) == (
+            "verified_point", 0, 5)
+        assert (no_point["outcome"], no_point["verified_objective"], no_point["common_gap"]) == (
+            "no_point", None, None)
+
+    @pytest.mark.parametrize("selected,objective,status,termination", [
+        (None, None, "FEASIBLE_POINT", "TIME_LIMIT"),
+        ([], None, "NO_SOLUTION", "TIME_LIMIT"),
+        (None, 0, "NO_SOLUTION", "TIME_LIMIT"),
+        (None, None, "NO_SOLUTION", "OPTIMAL"),
+        (None, None, "NO_SOLUTION", "INFEASIBLE"),
+    ])
+    def test_rejects_inconsistent_no_point(self, benchmark, selected, objective, status,
+                                         termination):
+        with pytest.raises(ValueError):
+            self._selection(benchmark, selected, objective, None, status=status,
+                            termination=termination)
+
+    def test_rejects_incorrect_exhaustive_optimum_or_bound(self, benchmark):
+        with pytest.raises(ValueError, match="optimum"):
+            self._selection(benchmark, ["a"], 4, 5, termination="OPTIMAL", optimum=5)
+        with pytest.raises(ValueError, match="bound"):
+            self._selection(benchmark, ["b"], 5, 6, termination="OPTIMAL", optimum=5)
+
+    def test_fixture_sequence_and_full_start_are_frozen(self, benchmark):
+        first = benchmark._make_case("assignment", 128, 6, 17, smoke=False)
+        assert first == benchmark._make_case("assignment", 128, 6, 17, smoke=False)
+        assert first != benchmark._make_case("assignment", 128, 6, 29, smoke=False)
+        assert len(first["stages"]) == 3
+        before = None
+        for stage in first["stages"]:
+            data = stage["data"]
+            assert len(data["items"]) == 128 and len(data["bins"]) == 6
+            assert all(0 <= value - weight <= 4 for row_v, row_w
+                       in zip(data["value"], data["weight"])
+                       for value, weight in zip(row_v, row_w))
+            if before is None:
+                assert data["capacity"] == [sum(col) * 7 // 60 for col in zip(*data["weight"])]
+            else:
+                assert all(cap > 0 and cap != old for cap, old
+                           in zip(data["capacity"], before["capacity"]))
+                assert sum(old != new for a, b in zip(before["weight"], data["weight"])
+                           for old, new in zip(a, b)) == 76
+            before = data
+            start = stage["start"]["x"]
+            assert len(start["keys"]) == len(start["values"]) == 768
+            assert len({tuple(key) for key in start["keys"]}) == 768
+            assert set(start["values"]) <= {0, 1}
+            assigned = [key for key, value in zip(start["keys"], start["values"]) if value]
+            record = SolveRecord("SCIP", "FEASIBLE_POINT", "TIME_LIMIT",
+                                 stage["start_objective"], None, None, 0, 768, 134, ())
+            verified = benchmark._verify_point(
+                "assignment", data, stage["params"], first["components"],
+                {"assigned": assigned}, record)
+            assert verified["verified_objective"] == stage["start_objective"]
+            assert len(stage["start_digest"]) == 64
+
+    def test_preflight_failure_blocks_pairs_without_launching(self, benchmark, monkeypatch):
+        case = benchmark._make_case("budgeted_select", 128, 0, 17, smoke=False)
+        monkeypatch.setattr(benchmark, "_launch_trial",
+                            lambda *args, **kwargs: pytest.fail("a blocked trial launched"))
+        preflight = {"HiGHS": {"full": {"outcome": "passed"}},
+                     "SCIP": {"full": {"outcome": "unsupported"}}}
+        pair = benchmark._paired_trials(case, "warm", 0, preflight, None)
+        assert pair["outcome"] == "preflight_blocked"
+        assert pair["preflight"]["SCIP"]["outcome"] == "unsupported"
+
+    def test_comparison_refuses_a_bridge_from_another_checkout(self, benchmark, monkeypatch):
+        monkeypatch.setattr(benchmark, "_ROOT", ROOT / "other")
+        with pytest.raises(ValueError, match="Python imported the bridge from"):
+            benchmark._python_bridge_evidence()
+
+    @pytest.mark.parametrize("program,items,bins", [("budgeted_select", 12, 0), ("assignment", 6, 3)])
+    def test_tiny_started_history_over_real_python_protocol(self, benchmark, program, items, bins):
+        case = benchmark._make_case(program, items, bins, 17, smoke=True)
+        trial = benchmark._run_trial(case, "warm_with_start", "HiGHS", fake_command(), None)
+        assert trial["outcome"] == "completed", trial
+        base, first, second = trial["stages"]
+        assert base["open_timings"]["path"] == "built"
+        assert base["start_supplied"] == 0
+        for stage, fixture in zip((first, second), case["stages"][1:]):
+            assert stage["update_timings"]["path"] == "updated"
+            assert stage["start_supplied"] == items * max(1, bins)
+            assert stage["start_digest"] == fixture["start_digest"]
+            assert stage["input_digest"] == fixture["input_digest"]
+            assert stage["verified_objective"] == fixture["optimum"]
+            assert stage["dispatch_to_verified_seconds"] >= stage["solve_wall_seconds"]
