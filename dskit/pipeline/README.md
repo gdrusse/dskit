@@ -291,6 +291,10 @@ legacy stage-list grammar (below).
 
 ## What ships
 
+[**DskitCopulas**](../../julia/DskitCopulas/README.md) (ADR-0331) is a native Julia
+package for fitting, prospectively scoring and sampling an elliptical copula
+from settled PITs. Its ordered draw matrix composes with caller-owned marginal
+inverses in Julia.
 
 ADR-0314 adds opt-in `libs.option_ledger.DailyStockHedge`: prior-close option delta
 sets next-session long-stock inventory on non-decision days. Explicit settled
