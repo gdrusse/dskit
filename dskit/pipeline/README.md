@@ -1188,6 +1188,8 @@ Project-specific nodes belong in YOUR package — a dskit **child**, which is
 the whole adapter unit (ADR-0032: never a `pipeline_<venue>` sibling, in
 dskit or beside it; see `children/README.md`) — never here.
 
+For a child-owned optimization model, follow [Julia programs in child projects](EXTENDING.md#julia-programs-in-child-projects).
+
 ## The legacy stage-list grammar
 
 `PipelineConfig`/`Runner` (fixed stages `train → validate → stat_test →
