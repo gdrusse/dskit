@@ -231,8 +231,9 @@ each stage that uses it.
   number of members of $N$. $`\#\lbrace\cdot\rbrace`$ is the number of items
   that meet the condition inside the braces. $\cup$ joins two sets.
 - $`\mathbb R`$ is the real numbers and $`\mathbb Z`$ the integers; a subscript
-  such as $`\ge 0`$ restricts them. $`\mathbb R^{19}`$ is a list of 19 real
-  numbers. $`[0,1]`$ is the numbers from 0 to 1.
+  such as $`\ge 0`$ restricts them. $`[0,1]`$ is the numbers from 0 to 1. A
+  superscript on $`\mathbb R`$ or on $`[0,1]`$ is the length of a list:
+  $`\mathbb R^{19}`$ is a list of 19 real numbers.
 - An arrow between two sets, as in $`\mathbb R\to[0,1]`$, describes a function
   that takes a member of the first and returns a member of the second. A
   superscript $-1$ on a function marks its inverse, which returns the input
@@ -243,13 +244,14 @@ each stage that uses it.
   cutoff. A tilde marks a simulated value. Bold marks a list of numbers.
 - A bar inside brackets, as in $`(z\mid\mathcal F_d)`$, reads "given the
   information $`\mathcal F_d`$".
-- $\ln$ is the natural logarithm, $\sum$ a sum and a root sign the square
-  root. $\max$ takes the larger of two numbers; $\min$ takes the smallest
-  member of a set.
+- $\ln$ is the natural logarithm and a root sign the square root. $\sum$ is a
+  sum; the lines under and over it give the range of its counter. A superscript
+  2 is a square. $\max$ takes the larger of two numbers; $\min$ takes the
+  smallest member of a set.
 - CDF is short for cumulative distribution function: the probability that a
   quantity is at or below a stated value.
 
-Two rules place the indices.
+Three rules govern superscripts and subscripts.
 
 - **Placement.** As in the Working Draft's $`(\cdot)_{knt}^{ij}`$, a superscript
   says which kind of piece is meant and a subscript says which stock, expiry,
@@ -261,6 +263,13 @@ Two rules place the indices.
   same quantity for a forecast issued at an earlier session $a$ adds a bar and
   the origin, as in $`\eta_{nt\mid a}`$. Each such definition therefore holds at
   every origin.
+- **Nothing undefined.** Every superscript and subscript is an index over a set
+  named in the stage that uses it. The only exceptions are these marks, which
+  are not indices and are defined where they appear: the hat, prime, tilde and
+  bold above; the star in $`d^{\star}`$; the superscript $-1$ of an inverse; the
+  superscript $Z$ of the forecast CDF; the word market on the set
+  $`\mathcal Q^{\text{market}}`$; and the signs on $`\beta_{-}`$ and
+  $`\beta_{+}`$. Anything else is written out in words.
 
 ### Existing sets and clocks
 
@@ -303,7 +312,7 @@ this section run over.
 \begin{aligned}
 \rho&\in\mathcal R_n, &&\mathcal R_n:=\begin{cases}\lbrace 1,\dots,8\rbrace,& n\text{ a weekly name},\\ \lbrace 1,2,3\rbrace,& n\text{ a monthly-only name},\end{cases}\\
 (n,\rho)&\in\mathcal C, &&\mathcal C:=\lbrace (n,\rho):\ n\in N,\ \rho\in\mathcal R_n\rbrace,\\
-\beta&\in\mathcal Q^{\text{mkt}}, &&\mathcal Q^{\text{mkt}}:\ \text{probability levels of the market quantiles},\\
+\beta&\in\mathcal Q^{\text{market}}, &&\mathcal Q^{\text{market}}:\ \text{probability levels of the market quantiles},\\
 e&\in\mathcal E, &&\mathcal E:\ \text{seeds},\\
 y&\in Y, &&Y:\ \text{mixture components of one seed},\\
 \omega&\in\Omega, &&\Omega:\ \text{scenarios}.
@@ -318,11 +327,12 @@ y&\in Y, &&Y:\ \text{mixture components of one seed},\\
 - $`\mathcal C`$ (new): the set of all cells. A cell $`(n,\rho)`$ is one stock
   with one rank: the group whose forecasts are counted and calibrated together.
   It has at most 166 x 8 = 1,328 members.
-- $`\mathcal Q^{\text{mkt}}`$ (new): the probability levels at which the
-  option market's quantiles are read; $\beta$ in it is one level. There are 19:
-  0.01, 0.025, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8,
-  0.85, 0.9, 0.95, 0.975 and 0.99. It is a different grid from the calibration
-  thresholds $`\mathcal Q`$; in both, $\beta$ is a probability level.
+- $`\mathcal Q^{\text{market}}`$ (new): the probability levels at which the
+  option market's quantiles are read; $\beta$ in it is one level. The word
+  market is a typed-out label, not an index. There are 19 levels: 0.01, 0.025,
+  0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9,
+  0.95, 0.975 and 0.99. It is a different grid from the calibration thresholds
+  $`\mathcal Q`$; in both, $\beta$ is a probability level.
 - $e$, $`\mathcal E`$ (new): one seed, and the set of seeds. A seed fixes the
   random start of one trained network. There are 5: 11, 29, 47, 53 and 71.
 - $y$, $Y$ (new): one mixture component of a seed's network, and the set of
@@ -357,16 +367,20 @@ Z_{nt}&:=\frac{\ln(p_{nt}/S_{n,d})}{\kappa_{nt}}.
 - $`S_{n,d}`$: the split-adjusted closing price of stock $n$ at session $d$, in
   dollars per share. It is positive.
 - $`r_{n,d}`$: the log return of stock $n$ over session $d$.
-- $\ell$: a counter that steps back over the last 22 sessions; 0 is session $d$.
+- $\ell$: a counter that steps back over the last 22 sessions. The subscript
+  $`d-\ell`$ is the session $\ell$ sessions before $d$, so 0 is session $d$
+  itself. The superscript 2 is a square.
 - $`\chi_{n,d}`$: the root mean square of the last 22 one-session log returns of
   stock $n$, ending at session $d$. It is zero or positive. Code field `rv_22`.
-- $`\eta_{nt}`$: the number of trading sessions from session $d$ to the session
-  whose close is the expiry price. A positive integer. Code field
-  `sessions_to_expiry`.
-- $`\kappa_{nt}`$: the scale that this forecast's return is divided by. It is
-  positive. Code field `reference_scale`.
-- $`p_{nt}`$: the price of stock $n$ at that expiry. It is not known at $d$.
-- $`Z_{nt}`$: the normalized expiry log return. This is what the model forecasts.
+- $`\eta_{nt}`$: for stock $n$ and the expiry $t$ calendar days after $d$, the
+  number of trading sessions from session $d$ to the session whose close is the
+  expiry price. A positive integer. Code field `sessions_to_expiry`.
+- $`\kappa_{nt}`$: the scale that the return of stock $n$ to expiry $t$ is
+  divided by. It is positive. Code field `reference_scale`.
+- $`p_{nt}`$: the price of stock $n$ at the expiry $t$ calendar days after $d$.
+  It is not known at $d$.
+- $`Z_{nt}`$: the normalized log return of stock $n$ to expiry $t$. This is what
+  the model forecasts.
 
 **Indices and dimension.** The first two lines hold for every stock $`n\in N`$
 and every session $d$: one $r$ and one $\chi$ per stock and session, so
@@ -414,21 +428,21 @@ squared returns, 22 x $`\lvert N\rvert`$ = 3,652 numbers.
 ### Stage 2. Model input (new symbols)
 
 ```math
-q_{nt}^{\text{mkt}}(\beta)\in\mathbb R\quad\text{for }\beta\in\mathcal Q^{\text{mkt}},\qquad
-\left(\left(q_{nt}^{\text{mkt}}(\beta)\right)_{\beta\in\mathcal Q^{\text{mkt}}},\ \ln\eta_{nt},\ t/\eta_{nt}\right)\in\mathbb R^{\lvert\mathcal Q^{\text{mkt}}\rvert+2}
+q_{nt}(\beta)\in\mathbb R\quad\text{for }\beta\in\mathcal Q^{\text{market}},\qquad
+\left(\left(q_{nt}(\beta)\right)_{\beta\in\mathcal Q^{\text{market}}},\ \ln\eta_{nt},\ t/\eta_{nt}\right)\in\mathbb R^{\lvert\mathcal Q^{\text{market}}\rvert+2}
 ```
 
 **Symbols.**
 
 - $n$, $t$: the stock and the calendar days to the expiry. The origin is the
   current cutoff session $d$, left out of the subscripts.
-- $\beta$, $`\mathcal Q^{\text{mkt}}`$ (new): one probability level, and the set
-  of 19 levels at which the market's quantiles are read.
-- $`q_{nt}^{\text{mkt}}(\beta)`$ (new): the market-implied quantile at level
-  $\beta$: under the distribution implied by that expiry's option prices, the
-  normalized return $`Z_{nt}`$ of stage 1 falls at or below this value with
-  probability $\beta$. The superscript mkt is a label, not an index. Code
-  fields `rn_q_0100` to `rn_q_9900`.
+- $\beta$, $`\mathcal Q^{\text{market}}`$ (new): one probability level, and the
+  set of 19 levels at which the market's quantiles are read. The word market is
+  a typed-out label, not an index.
+- $`q_{nt}(\beta)`$ (new): the market-implied quantile for stock $n$ and expiry
+  $t$ at level $\beta$. Under the distribution implied by that expiry's option
+  prices, the normalized return $`Z_{nt}`$ of stage 1 falls at or below this
+  value with probability $\beta$. Code fields `rn_q_0100` to `rn_q_9900`.
 - $`\eta_{nt}`$: the number of trading sessions to the expiry-price session, as
   in stage 1. $`\ln\eta_{nt}`$ is its natural logarithm. Code field
   `log_sessions_to_expiry`.
@@ -437,8 +451,8 @@ q_{nt}^{\text{mkt}}(\beta)\in\mathbb R\quad\text{for }\beta\in\mathcal Q^{\text{
 
 **Indices and dimension.** One input list for every stock $`n\in N`$ and every
 expiry $`t\in T`$ forecast at $d$. It has
-$`\lvert\mathcal Q^{\text{mkt}}\rvert+2`$ = 19 + 2 = 21 numbers. At an earlier
-origin $a$ it reads $`q_{nt\mid a}^{\text{mkt}}(\beta)`$ and
+$`\lvert\mathcal Q^{\text{market}}\rvert+2`$ = 19 + 2 = 21 numbers. At an earlier
+origin $a$ it reads $`q_{nt\mid a}(\beta)`$ and
 $`\eta_{nt\mid a}`$. The study lists 327 candidate feature columns; the locked
 recipe reads these 21.
 
@@ -462,7 +476,7 @@ recipe reads these 21.
 For every seed $`e\in\mathcal E`$ there is one network. It has two parts:
 
 ```math
-\operatorname{enc}_{d}^{e}:\ \mathbb R^{\lvert\mathcal Q^{\text{mkt}}\rvert}\to\mathbb R^{8},\qquad
+\operatorname{enc}_{d}^{e}:\ \mathbb R^{\lvert\mathcal Q^{\text{market}}\rvert}\to\mathbb R^{8},\qquad
 \operatorname{head}_{d}^{e}:\ \mathbb R^{8+2}\to\mathbb R^{3\lvert Y\rvert},\qquad e\in\mathcal E
 ```
 
@@ -471,7 +485,7 @@ returns one weight, one centre and one standard deviation per component:
 
 ```math
 \left(\text{wt}_{nt}^{ey},\ \text{loc}_{d}^{ey},\ \text{sd}_{nt}^{ey}\right)_{y\in Y}
-:=\operatorname{head}_{d}^{e}\left(\operatorname{enc}_{d}^{e}\left(\left(q_{nt}^{\text{mkt}}(\beta)\right)_{\beta\in\mathcal Q^{\text{mkt}}}\right),\ \ln\eta_{nt},\ t/\eta_{nt}\right)
+:=\operatorname{head}_{d}^{e}\left(\operatorname{enc}_{d}^{e}\left(\left(q_{nt}(\beta)\right)_{\beta\in\mathcal Q^{\text{market}}}\right),\ \ln\eta_{nt},\ t/\eta_{nt}\right)
 ```
 
 ```math
@@ -492,7 +506,7 @@ returns one weight, one centre and one standard deviation per component:
   session $d$. It takes the encoder's 8 numbers and the two calendar numbers,
   through one hidden layer of 8, and returns 3 numbers per component. It
   includes the standardization of the two calendar numbers.
-- $`q_{nt}^{\text{mkt}}(\beta)`$, $\beta$, $`\mathcal Q^{\text{mkt}}`$: the
+- $`q_{nt}(\beta)`$, $\beta$, $`\mathcal Q^{\text{market}}`$: the
   market-implied quantile at level $\beta$ and the set of 19 levels (stage 2).
 - $`\ln\eta_{nt}`$, $`t/\eta_{nt}`$: the logarithm of the session count and the
   calendar days per session (stage 2).
@@ -509,7 +523,7 @@ $`e\in\mathcal E`$; each pair serves every stock and expiry. One weight and one
 standard deviation for every seed $e$, component $`y\in Y`$, stock $`n\in N`$
 and expiry $`t\in T`$; one centre for every seed and component. Each network has
 (19 x 64 + 64) + (64 x 8 + 8) + (10 x 8 + 8) + (8 x 9 + 9) = 1,969 trained
-weights, where 19 is $`\lvert\mathcal Q^{\text{mkt}}\rvert`$ and 9 is
+weights, where 19 is $`\lvert\mathcal Q^{\text{market}}\rvert`$ and 9 is
 $`3\lvert Y\rvert`$. Over the seeds that is 1,969 x
 $`\lvert\mathcal E\rvert`$ = 9,845, plus 2 x 21 = 42 standardization constants.
 The count is mine, from the layer sizes in the code. At an earlier origin $a$
@@ -573,9 +587,10 @@ In price coordinates, as agreed:
 - $n$, $t$, $d$: the stock, the calendar days to the expiry, and the origin.
 - $`\mathcal F_d`$: the information available by the cutoff of session $d$.
 - $z$: any value of the normalized return.
-- $`\widehat\Psi_{nt}^{Z}(z\mid\mathcal F_d)`$: the forecast probability, made
-  with that information, that the normalized return $`Z_{nt}`$ of stage 1 is at
-  or below $z$. The superscript $Z$ is a label for normalized-return units.
+- $`\widehat\Psi_{nt}^{Z}(z\mid\mathcal F_d)`$: for stock $n$ and expiry $t$,
+  the forecast probability, made with that information, that the normalized
+  return $`Z_{nt}`$ of stage 1 is at or below $z$. The superscript $Z$ is a
+  label for normalized-return units, not an index.
 - $e$, $`\mathcal E`$: one seed and the set of 5 seeds. $y$, $Y$: one mixture
   component and the set of 3 components of a seed.
 - $`\text{wt}_{nt}^{ey}`$, $`\text{loc}_{d}^{ey}`$, $`\text{sd}_{nt}^{ey}`$: the
@@ -628,13 +643,16 @@ u_{n\rho\mid a}&:=\widehat\Psi_{nt}\left(S_{n,\,a+\eta_{n\rho\mid a}}\mid\mathca
 **Symbols.**
 
 - $n$, $\rho$, $a$: the stock, the original expiry rank, and the origin session
-  of a past forecast.
+  of a past forecast. In every subscript of this stage they appear in that
+  order, with the origin after the bar.
 - $`E_{n\rho\mid a}`$ (proposed in step 1): the expiry date of that forecast.
 - $`t_{n\rho\mid a}`$, $`\eta_{n\rho\mid a}`$: its calendar days and its trading
   sessions to expiry, counted at its origin.
 - $`d^{\star}_{n\rho\mid a}`$ (proposed in step 1): the earliest usable cutoff,
-  the first cutoff session at which the forecast's outcome may be used.
-- $`S_{n,\,a+\eta_{n\rho\mid a}}`$: the closing price of stock $n$ on the
+  the first cutoff session at which the forecast's outcome may be used. The
+  star is a mark that names this cutoff, not an index.
+- $`S_{n,\,a+\eta_{n\rho\mid a}}`$: the closing price of stock $n$ at the
+  session reached $`\eta_{n\rho\mid a}`$ sessions after $a$, which is the
   expiry-price session. It is the realized expiry price.
 - $`\mathcal F_a`$: the information available by the cutoff of session $a$.
 - $`\widehat\Psi_{nt}(\cdot\mid\mathcal F_a)`$: the forecast CDF of stage 4 in
@@ -683,10 +701,10 @@ A_{n,\rho,d}(\beta) &:= \#\lbrace a<d :\ d^{\star}_{n\rho\mid a}\le d,\ u_{n\rho
 - $`u_{n\rho\mid a}`$: its raw PIT (stage 5).
 - $\beta$, $`\mathcal Q`$: one calibration threshold and the configured set of
   11.
-- $`M_{n,\rho,d}`$: the number of the cell's forecasts whose outcome is usable
-  by cutoff $d$.
-- $`A_{n,\rho,d}(\beta)`$: the number of those whose raw PIT is at or below
-  $\beta$.
+- $`M_{n,\rho,d}`$: for the cell of stock $n$ and rank $\rho$, the number of
+  its forecasts whose outcome is usable by cutoff $d$.
+- $`A_{n,\rho,d}(\beta)`$: for the same cell and cutoff, the number of those
+  whose raw PIT is at or below the threshold $\beta$.
 
 **Indices and dimension.** One $M$ for every cell $`(n,\rho)\in\mathcal C`$ and
 one $A$ for every cell and every threshold $`\beta\in\mathcal Q`$, at each
@@ -739,12 +757,13 @@ Between two neighbouring points the map is a straight line:
 - $`M_{n,\rho,d}`$, $`A_{n,\rho,d}(\beta)`$: the cell's counters of stage 6.
 - $\zeta$: the strength, one positive number shared by all cells. A larger value
   pulls the map toward no correction. Its value is not chosen yet.
-- $`\widehat\Gamma_{n,\rho,d}`$: the correction map of the cell at cutoff $d$.
-  It takes a probability from 0 to 1 and returns a corrected probability from 0
-  to 1.
+- $`\widehat\Gamma_{n,\rho,d}`$: the correction map of the cell of stock $n$ and
+  rank $\rho$ at cutoff $d$. It takes a probability from 0 to 1 and returns a
+  corrected probability from 0 to 1.
 - $u$: without subscripts, any raw PIT value from 0 to 1.
 - $`\beta_{-}`$, $`\beta_{+}`$: the neighbouring points just below and just
-  above $u$, among the 11 thresholds and the two ends 0 and 1.
+  above $u$, among the 11 thresholds and the two ends 0 and 1. The signs are
+  labels, not indices.
 
 **Indices and dimension.** One map for every cell $`(n,\rho)\in\mathcal C`$ at
 each cutoff $d$. It is fixed by its values at the thresholds:
@@ -809,8 +828,8 @@ w_{n\rho\mid a} &:= \widehat\Gamma_{n,\rho,a}\left(u_{n\rho\mid a}\right)\in[0,1
 - $`\widehat\Gamma_{n,\rho,d}`$, $`\widehat\Gamma_{n,\rho,a}`$: the cell's
   correction map of stage 7, as issued at $d$ and as issued at $a$.
 - $`u_{n\rho\mid a}`$: the raw PIT of the past forecast (stage 5).
-- $`w_{n\rho\mid a}`$ (proposed in step 1): its corrected PIT, a number from 0
-  to 1.
+- $`w_{n\rho\mid a}`$ (proposed in step 1): the corrected PIT of the forecast
+  for stock $n$ and rank $\rho$ issued at origin $a$, a number from 0 to 1.
 
 **Indices and dimension.** One corrected CDF for every cell
 $`(n,\rho)\in\mathcal C`$ forecast at $d$, and one corrected PIT for every cell
@@ -846,10 +865,13 @@ map of origin $a$.
 - $`(n,\rho)`$, $`\mathcal C`$: a cell, one stock with one rank, and the set of
   all cells.
 - $`\mathcal C_a`$ (proposed in step 1): the cells that received a valid
-  forecast at origin $a$.
-- $`d^{\star}_{n\rho\mid a}`$: a forecast's earliest usable cutoff (stage 5).
+  forecast at origin $a$. The subscript is the origin.
+- $`d^{\star}_{n\rho\mid a}`$: the earliest usable cutoff of the forecast for
+  stock $n$ and rank $\rho$ issued at origin $a$ (stage 5). The star is a mark,
+  not an index.
 - $`\mathcal O_{a,d}`$ (proposed in step 1): the cells of origin $a$ whose
-  outcome is usable by cutoff $d$.
+  outcome is usable by cutoff $d$. The subscripts are the origin and the
+  cutoff.
 - $`u_{n\rho\mid a}`$, $`w_{n\rho\mid a}`$: the raw and the corrected PIT.
 - $`\mathbf w_a`$: the joint observation of origin $a$: the list of its
   corrected PITs, one per cell in $`\mathcal C_a`$. At cutoff $d$ only the
@@ -906,7 +928,8 @@ Only the object and its size can be stated now.
 - $`w_{n\rho\mid d}`$: the corrected PIT that the forecast issued now for cell
   $`(n,\rho)`$ will have once it settles. It is not known at $d$.
 - $`\operatorname{Cop}_d`$ (new, a placeholder name because $C$ is the
-  premium): the copula at $d$. A joint CDF takes one level from 0 to 1 for each
+  premium): the copula at cutoff $d$; the subscript is the cutoff. A joint CDF
+  takes one level from 0 to 1 for each
   cell and returns the forecast probability that every cell's corrected PIT is
   at or below its own level.
 
@@ -948,9 +971,10 @@ V_{knt}^{ip}(\omega)&:=m\left(s_{knt}^{ip}-\tilde p_{nt}(\omega)\right)\mathbf 1
 - $`\tilde w_{n\rho}(\omega)`$, $`\tilde{\mathbf w}(\omega)`$ (new): the
   simulated corrected PIT of cell $`(n,\rho)`$ in scenario $\omega$, and the
   list of them over the cells.
-- $`\widehat\Gamma_{n,\rho,d}^{-1}`$: the inverse of the cell's correction map
-  of stage 7: it returns the raw probability that the map sends to a stated
-  corrected probability.
+- $`\widehat\Gamma_{n,\rho,d}^{-1}`$: the inverse of the correction map of
+  stage 7 for the cell of stock $n$ and rank $\rho$ at cutoff $d$. The
+  superscript $-1$ marks the inverse: it returns the raw probability that the
+  map sends to a stated corrected probability.
 - $`\widehat\Psi_{nt}^{-1}(\cdot\mid\mathcal F_d)`$: the inverse of the forecast
   CDF of stage 4 in price terms: it returns the price at which that CDF equals a
   stated probability.
@@ -998,9 +1022,9 @@ Greek letters above; `d_star` is the earliest usable cutoff; `Psi_hat` and
 information at origin `a`; `S[n, session]` is the closing price of stock `n` at
 that session; `M` and `A` are the counters; `u` and `w` are the raw and the
 corrected PIT; `H` is the joint record; `enc[e]` and `head[e]` are the encoder
-and head of seed `e`; `wt`, `loc` and `sd` are the mixture weights, centres and
-standard deviations, indexed by seed `e` and component `y`; `<-` is the
-assignment.
+and head of seed `e`; `q[n,t](beta)` is the market-implied quantile; `wt`,
+`loc` and `sd` are the mixture weights, centres and standard deviations,
+indexed by seed `e` and component `y`; `<-` is the assignment.
 
 ```text
 UPDATE from cutoff d to the next cutoff d'
@@ -1028,7 +1052,7 @@ UPDATE from cutoff d to the next cutoff d'
        (enc[e], head[e]) <- fit[e](mature history)       (locked, A0008)
 
 7. Forecast. FOR each cell (n,rho) with valid inputs at d', t its calendar days:
-       Build the inputs q_mkt[n,t](beta), ln eta[n,t], t / eta[n,t].
+       Build the inputs q[n,t](beta), ln eta[n,t], t / eta[n,t].
        FOR each seed e, component y: evaluate wt[e,y,n,t], loc[e,y], sd[e,y,n,t].
        Save Psi_hat[n,t](. | F[d']) with map version d'.
 
@@ -1047,7 +1071,7 @@ map.
 | Stage | Object | One for every | Size in general | Size now |
 |---|---|---|---|---|
 | 1 | Return window | stock | 22 per stock | 3,652 |
-| 2 | Model input | stock and expiry | $`\lvert\mathcal Q^{\text{mkt}}\rvert+2`$ numbers | 21 |
+| 2 | Model input | stock and expiry | $`\lvert\mathcal Q^{\text{market}}\rvert+2`$ numbers | 21 |
 | 3 | Network | seed | 1,969 weights per seed | 9,845 |
 | 4 | Forecast CDF | stock and expiry | $`3\lvert\mathcal E\rvert\,\lvert Y\rvert`$ numbers | 45 |
 | 5 | Raw PIT | cell and settled origin | 1 number | 1 |
@@ -1075,10 +1099,10 @@ To confirm, with (a) recommended in each:
    already does; (b) they update only at solves.
 3. Issued maps: (a) keep each version until its forecasts settle, since older
    versions can be rebuilt from the joint record; (b) keep every version.
-4. New sets and symbols here ($`\mathcal Q^{\text{mkt}}`$, $`\mathcal E`$, $Y$,
-   $\Omega$ with their members $e$, $y$ and $\omega$; $`\mathcal C`$,
-   $`\mathcal H_d`$, $`d'`$, bold for a list, the tilde and the placeholder
-   Cop): (a) accept; (b) rename.
+4. New sets and symbols here ($`\mathcal Q^{\text{market}}`$, $`\mathcal E`$,
+   $Y$, $\Omega$ with their members $e$, $y$ and $\omega$; the market quantile
+   $`q_{nt}(\beta)`$; $`\mathcal C`$, $`\mathcal H_d`$, $`d'`$, bold for a list,
+   the tilde and the placeholder Cop): (a) accept; (b) rename.
 5. Scenario payoff lines of stage 11: (a) keep them as the shape of the agreed
    payoff under a scenario; (b) leave them out until joint scenarios are agreed.
 
