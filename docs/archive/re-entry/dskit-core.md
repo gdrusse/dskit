@@ -1,3 +1,51 @@
+## Replaced at 2026-11-27 JuMP native wrap
+
+## Core (dskit itself)
+
+**Now.** The reviewed Python candidate adds a three-line fast path for packing
+rank-one built-in lists and tuples. Candidate
+`1df99f63e75f49ef0fd95ba37568f59d463e9729`, based on
+`9bb26e40eae09d5002305ef4b329b7998106db71`, has completed development review.
+The 27 focused contract tests and Ruff passed. Two fresh Luna final reviews
+reported zero Critical, Major, Minor and Nit findings. Two runs measured
+2.89% and 5.03% faster Python preparation for a 4,096-entry tuple open.
+The representative list result was inconclusive. The timings cover Python
+preparation only. The landed ADR-0328 suite provides the Julia worker and the
+`budgeted_select` and `assignment` reference programs. No new Julia model shipped.
+
+The approved runtime direction uses HiGHS by default and benchmarks SCIP.
+The local design keeps typed decision state and the Program/Search loop in
+Julia, with independent verification and publication under host control.
+
+**Next.** Recheck admission, then run the native shape baseline and RED steps
+in the handoff. Continue with Sol implementation, speed and RAM checks, two
+fresh Luna reviews, and Terra fixes for review findings. Preserve the unmerged
+worktree `/home/russell/wt/codex-jump-shape-20261126`. Phase 0 cleared, and its
+only change is 41 unexecuted test lines. Production is unchanged.
+
+Repair two separate pre-existing Major lifecycle defects before relying on
+pooled trading updates. Pooled updates can see stale bounds under caller
+fixes, and free or search cleanup can erase a program-owned fixed equality.
+Both findings have static witnesses and await native regression tests.
+
+**Blocked / owner decisions.** At 2026-11-27 02:08 UTC, C: had 5.1 GiB free
+and Windows had 3.1 GiB available RAM, below the 4 GiB reserve. No native
+jobs launched. The owner approved a 5 GiB C: reserve for this task. The shared
+10 GiB reserve remains in force. The mathematical contract and actual MIO
+port are pending. See the immediately prior Core archive for outstanding
+amendment choices, storage actions and the disclosed Minor backlog.
+
+**Read first.** [Vector evidence](</home/russell/data/dskit/runs/jump-vector-pack/v20261126/receipt.md>),
+[runtime design](</home/russell/reports/JuMP MIO runtime design.md>) (SHA-256
+`d900dd05877a95942a1257ecd41711599c0c2c6f2641749920796cab63ab52f9`),
+[shape handoff](</home/russell/data/dskit/runs/jump-shape/v20261126/HANDOFF.md>),
+[lifecycle packet](</home/russell/research_notes/JuMP MIO transition experiments/lifecycle-next-packet.md>),
+and [lifecycle review](</home/russell/research_notes/JuMP MIO transition experiments/lifecycle-design-review.md>).
+
+**Do not.** Extrapolate Python preparation timings to Julia or solver runtime,
+run native jobs before renewed admission, or treat development review as
+approval for a real MIO port, replay, or deployment.
+
 ## Replaced at 2026-11-26 JuMP vector packing wrap
 
 ## Core (dskit itself)
