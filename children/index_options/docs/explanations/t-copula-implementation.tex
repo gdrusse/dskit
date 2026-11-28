@@ -1,0 +1,261 @@
+\documentclass[11pt,letterpaper]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern,amsmath,amssymb,booktabs,tabularx,array,geometry,microtype,xcolor,hyperref,fancyhdr}
+\geometry{margin=0.84in,top=0.90in,bottom=0.80in}
+\definecolor{ink}{HTML}{19324A}
+\definecolor{accent}{HTML}{17675D}
+\hypersetup{colorlinks=true,urlcolor=accent,linkcolor=ink,pdftitle={A Student t copula for MIO scenarios}}
+\pagestyle{fancy}\fancyhf{}
+\lhead{\small\textcolor{ink}{MIO formulation companion}}\rhead{\small\textcolor{ink}{Dependence and joint scenarios}}
+\cfoot{\small\thepage}
+\setlength{\headheight}{15pt}
+\setlength{\parindent}{0pt}\setlength{\parskip}{5.5pt}
+\setlength{\abovedisplayskip}{7pt}\setlength{\belowdisplayskip}{7pt}
+\newcommand{\sect}[1]{\section*{\color{ink}#1}}
+\newcommand{\lead}[1]{\textbf{\textcolor{accent}{#1}}}
+\newcommand{\Cop}{\operatorname{Cop}}
+\newcommand{\cind}{\mathbf 1}
+\newcommand{\wc}{w_{n\rho\mid a}}
+\newcommand{\ord}{\mathcal C_d}
+\newcommand{\edge}{\mathcal P}
+\newcommand{\src}[2]{\href{#1}{#2}}
+\begin{document}
+{\small\color{accent}\sffamily MATHEMATICAL DESIGN \quad / \quad 27 NOVEMBER 2026}
+
+{\LARGE\bfseries\color{ink} A Student \(t\) copula for MIO scenarios\par}
+{\large From settled forecast percentiles to joint expiry prices}
+
+\lead{A finite-\( \nu \) Student copula is a reasonable candidate for simultaneous extremes.}
+Each scenario receives one common shock to the size of its price surprises. A small draw of the shared denominator can send several stocks or expiries far into their respective tails. The model predicts that each pair's limiting lower-tail dependence equals its upper-tail dependence. Persistent excess downside co-movement would count against that restriction. No market-sample fit or portfolio comparison has established which family works best here.
+
+This companion fills the estimator slot in stage 10 of \emph{MIO: from forecasts to scenarios} and carries its output through stage 11. Stages 1--8 supply issued marginal forecasts and calibration maps. Stage 9 retains the joint history. The owner decisions A0001--A0010 continue to govern the forecast universe, ranks, dates and permissible studies.
+
+\sect{What crosses each boundary}
+\renewcommand{\arraystretch}{1.21}
+\begin{tabularx}{\linewidth}{@{}p{0.18\linewidth}XX@{}}
+\toprule Boundary & Input & Output \\
+\midrule
+Align at \(d\) & Historical origin \(a\), cell \((n,\rho)\), corrected PIT \(w_{n\rho\mid a}\) from the issued forecast and map, earliest usable cutoff \(d^\star_{n\rho\mid a}\). & A ragged panel of corrected, settled probability integral transforms (PITs) in current-cell order.\\
+Fit dependence & Eligible observations, required pair coverage, shrinkage, eigenvalue floor, score pairs, numerical tolerance and df candidates. & Dispersion \(\widehat R_d\), factor \(L_d\), selected \(\widehat\nu_d\), coverage and candidate scores.\\
+Draw jointly & Fitted state, number of scenarios and random number generator. & Corrected probability levels \(\tilde{\mathbf w}(\omega)\), one vector per scenario.\\
+Map to prices & Each cell's current inverse calibration map and inverse raw price CDF. & One expiry price \(\tilde p_{nt}(\omega)\) per cell, shared by all options on that stock and expiry.\\
+\bottomrule
+\end{tabularx}
+
+\smallskip
+\lead{Evidence boundary.} The parent draft gives up to 1,328 cells, or 881,128 off-diagonal pairs, against roughly 1,070 overlapping origins. The method records which pairs carry data, regularizes their estimates and profiles a single shared df. Prospective evidence must still establish the value of the extra tail parameter. \src{https://doi.org/10.1111/j.1751-5823.2005.tb00254.x}{Demarta and McNeil, sections 2--4.}
+
+\newpage
+\sect{1. Reconstruct what was knowable at cutoff \(d\)}
+Stock \(n\) and its \emph{original} expiry rank \(\rho\) identify a cell. At historical origin \(a\) the target date is \(E_{n\rho\mid a}\), its calendar days to expiry are \(t=t_{n\rho\mid a}\), and the observation is \(\eta_{n\rho\mid a}\) trading sessions ahead. Two cells can share an origin and have different expiry dates. Write \(S_{n,a+\eta_{n\rho\mid a}}\) for the observed terminal price. The raw and corrected PITs are
+\[
+ u_{n\rho\mid a}=\widehat\Psi_{nt}
+ (S_{n,a+\eta_{n\rho\mid a}}\mid\mathcal F_a),
+ \qquad
+ \wc=\widehat\Gamma_{n,\rho,a}(u_{n\rho\mid a}).
+\]
+The first value is the forecast probability attached to the observed price. The second adjusts that percentile with the map \emph{issued at \(a\)}. A later recalibration would give historical forecasts information they did not have. Under correct continuous conditional margins, corrected PITs have uniform margins. Their empirical values can depart from uniformity. \src{https://users.ssc.wisc.edu/~behansen/718/DieboldGuntherTay1998.pdf}{Diebold, Gunther and Tay.}
+
+Let \(\mathcal C_a\) be the cells forecast at \(a\), and \(\mathcal O_{a,d}\) the cells whose outcome is usable by \(d\). The earliest usable cutoff \(d^\star_{n\rho\mid a}\) incorporates both settlement and record availability. Project the stage-9 history onto the ordered current cells:
+\[
+ \mathcal H_d=\{(a,n,\rho,u_{n\rho\mid a},\wc):
+ a<d,\ (n,\rho)\in\mathcal O_{a,d}\},\qquad
+ \mathcal O_{a,d}=\{(n,\rho)\in\mathcal C_a:d^\star_{n\rho\mid a}\le d\}.
+\]
+A missing issued map provides no corrected observation. Only a pair of values issued at the \emph{same origin} contributes to a dependence estimate. The caller supplies immutable origin-map and outcome lineage. The numerical kernel receives the resulting corrected PIT and clocks.
+
+\lead{A two-cell example.} At cutoff \(d=10\), the following invented forecasts concern cells A and B. Entries are \((w,d^\star)\). A dash means no usable forecast/map record.
+\begin{center}\begin{tabular}{@{}c c c l@{}}\toprule
+Origin \(a\)&Cell A&Cell B&Pair at cutoff 10\\ \midrule
+1 & \((.15,4)\) & \((.10,6)\) & Both below one half\\
+2 & \((.72,5)\) & \((.65,7)\) & Both above one half\\
+3 & \((.25,6)\) & \((.75,8)\) & Opposite sides\\
+4 & \((.82,7)\) & \((.78,11)\) & B becomes usable at 11\\
+5 & \((.45,8)\) & --- & A alone\\ \bottomrule
+\end{tabular}\end{center}
+At 10 the pair has three usable observations. At 11 the fourth pair becomes available. Cell A at origin 5 cannot be matched to cell B from another day. Overlapping horizons can share underlying price movements even when every cutoff is respected. \src{https://www.bundesbank.de/resource/blob/635436/766e285ef812d86d49c02dd8033d7333/472B63F073F071307366337C94F8C870/2012-06-01-eltville-02-knueppel-paper-data.pdf}{Kn\"uppel, section 1.}
+
+\newpage
+\sect{2. Estimate the latent dispersion from shared origins}
+Use \(b,b'\in\ord\) as local cell labels and \(w_{b\mid a}\) for \(\wc\) at \(b=(n,\rho)\). If \(K=|\ord|\), fitted matrices have \(K\) rows and \(K\) columns. Let \(O_{ab}=1\) for a usable observed entry and zero otherwise. Define a signed observation matrix and its two cross-products:
+\[
+ D_{ab}=\begin{cases}
+ +1 & O_{ab}=1,\ w_{b\mid a}>1/2,\\
+ -1 & O_{ab}=1,\ w_{b\mid a}\le1/2,\\
+ 0 & O_{ab}=0,
+ \end{cases}
+ \qquad H=O^\top O,\quad B=D^\top D .
+\]
+\(H_{bb'}\) counts origins with both values. \(B_{bb'}\) is the number of same-side observations minus the number on opposite sides. Dividing by the pair's own count gives the observed average sign product. Exact median ties count on the lower side and are reported. Under a continuous elliptical copula with uniform margins, the population sign product has mean \(2\arcsin(R_{bb'})/\pi\). Its value is the same for a Student or Gaussian copula with the same dispersion. \src{https://wisostat.uni-koeln.de/fileadmin/sites/statistik/pdf_publikationen/SchmidSchmidtBlomqvistsBeta.pdf}{Schmid and Schmidt, proposition 8.}
+\[
+ A_{bb}=1,\qquad
+ A_{bb'}=
+ \begin{cases}
+ \sin\!\bigl(\pi B_{bb'}/(2H_{bb'})\bigr),&H_{bb'}\ge h_{\min},\\
+ 0,& H_{bb'}< h_{\min}\text{ for an unscored pair}.
+ \end{cases}
+\]
+Here \(h_{\min}\ge2\) is a caller-specified count. An unsupported scoring pair or current coordinate fails the fit. The zero on other unsupported pairs expresses a prior location and is identified by the retained counts. Missingness that selects market regimes can change the sign statistic on those pairs. An approximately uniform PIT margin matters because its median is fixed at \(1/2\). The sign discards how far observations lie from their median. Rank concordance or a full likelihood can exploit information it discards, at additional computational cost. Pooling origins also assumes enough stability across forecast versions and regimes to use the historical shape today.
+
+\lead{Make all pairs jointly usable.} Separate pair estimates can yield a matrix with a negative eigenvalue. Let \(s_0\in[0,1]\) be base shrinkage, \(\delta\in(0,1)\) a numerical eigenvalue floor and \(\ell=\lambda_{\min}(A)\). Then
+\[
+ h=\begin{cases}
+ \max\{s_0,(\delta-\ell)/(1-\ell)\},&\ell<\delta,\\
+ s_0,&\ell\ge\delta ,
+ \end{cases}\quad
+ \widehat R_d=(1-h)A+hI=L_dL_d^\top .
+\]
+Every eigenvalue \(x\) becomes \((1-h)x+h\). The diagonal stays one, and the smallest eigenvalue reaches at least \(\delta\) in exact arithmetic. Retain \(\ell,h,L_d\) and the overlap counts to audit the repair. This prescribed interpolation does not estimate an optimal shrinkage weight. \src{https://doi.org/10.1093/imanum/22.3.329}{Higham.}
+
+\lead{Continuing the example.} Two same-side pairs and one opposite pair give \(B_{AB}/H_{AB}=1/3\), so \(A_{AB}=\sin(\pi/6)=0.5\). With \(h_{\min}=2,\ s_0=0.2,\ \delta=0.01\), the smallest eigenvalue of \(A\) is 0.5. The effective shrinkage is 0.2 and the fitted off-diagonal entry is 0.4. This is a parameter of latent dependence. Correlations of simulated dollar prices or realized returns can differ.
+
+\newpage
+\sect{3. Choose degrees of freedom on a fixed pair score}
+Let \(T_\nu,f_\nu\) denote the standard univariate Student CDF and density; \(T_\infty=\Phi,\ f_\infty=\phi\) denote their standard Gaussian counterparts. Declare a finite set \(\mathcal V\) of distinct supported df values in \( [1,200] \), add \(\infty\) as the Gaussian candidate, and specify a set \(\edge\) of distinct unordered scoring pairs before looking at the outcomes. Reuse the same \(\widehat R_d\) for all candidates. Choose a numerical tolerance \(0<\epsilon<1/2\) with representable \(1-\epsilon<1\). Only for density calculations use
+\[
+ w^\epsilon_{b\mid a}=\min(1-\epsilon,\max(\epsilon,w_{b\mid a})),
+ \qquad x=T_\nu^{-1}(w^\epsilon_{b\mid a}),\
+ y=T_\nu^{-1}(w^\epsilon_{b'\mid a}).
+\]
+For \(r=(\widehat R_d)_{bb'}\), define \(q=y^2+(x-ry)^2/(1-r^2)\). The bivariate log density of the copula is the joint latent log density minus both univariate latent log densities:
+\[
+ \log c_{\nu,r}=
+ \begin{cases}
+ -\log(2\pi)-\tfrac12\log(1-r^2)-\tfrac{\nu+2}{2}\log(1+q/\nu)
+ -\log f_\nu(x)-\log f_\nu(y), & \nu<\infty,\\[2pt]
+ -\tfrac12\log(1-r^2)-\tfrac12(q-x^2-y^2), &\nu=\infty .
+ \end{cases}
+\]
+The arguments of \(c_{\nu,r}\) are the two clipped percentiles. This ratio isolates the dependence contribution to the joint log density. The independent-uniform density is one everywhere in the interior, so its log score is zero. Diagonal Student dispersion keeps dependence through the common radial variable. For example, at \(\nu=4,\ r=0,\ w_1=w_2=1/2\), the copula density equals \(32/(9\pi)>1\). \src{https://doi.org/10.1111/j.1751-5823.2005.tb00254.x}{Demarta and McNeil, sections 2 and 4.}
+
+Let \(\mathcal J_d=\{(a,b,b'): (b,b')\in\edge,\ a<d,\ O_{ab}O_{ab'}=1\}\). Estimate the shared df as
+\[
+ \mathcal L_d(\nu)=\frac{\sum_{(a,b,b')\in\mathcal J_d}
+ \log c_{\nu,(\widehat R_d)_{bb'}}(w^\epsilon_{b\mid a},w^\epsilon_{b'\mid a})}
+ {|\mathcal J_d|},\quad
+ \widehat\nu_d=\arg\max_{\nu\in\mathcal V\cup\{\infty\}}\mathcal L_d(\nu).
+\]
+Higher scores indicate greater density assigned to realized pair outcomes. Each eligible pair-origin gets equal weight. A frequently observable pair therefore contributes more. An exact tie favors Gaussian, then larger finite df. Report all candidate scores, the count of changed PITs, pair support and the selected boundary if applicable. Clipping approximates the continuous density score and can mask extreme observations. All parameters here are fitted using mature training observations. Assessing skill requires new forecast origins.
+
+\lead{Continuing the example.} With \(r=0.4\) and candidates \(4,8,\infty\), the three eligible pairs give mean log scores \(0.17571,\ 0.15123,\ 0.13082\), respectively. The fit selects \(\widehat\nu_{10}=4\). One later pair \((.40,.70)\) gives corresponding scores \(0.01916,\ 0.00686,\ -0.00839\). These synthetic values illustrate the calculation and can be reproduced using the code on page 6.
+
+\newpage
+\sect{4. Draw one joint set of percentiles, then prices}
+For a vector of interior levels \(\mathbf q=(q_b)_{b\in\ord}\), let \(F_{K,\nu,R}\) be the joint CDF of a centered \(K\)-variate Student distribution with dispersion \(R\), or a Gaussian with covariance \(R\) at \(\nu=\infty\). The fitted copula is
+\[
+ \Cop_d(\mathbf q)=F_{K,\widehat\nu_d,\widehat R_d}
+ \!\left(\bigl(T_{\widehat\nu_d}^{-1}(q_b)\bigr)_{b\in\ord}\right).
+\]
+It gives the probability that every simulated percentile is at or below its own threshold; boundary values follow by limits. The sampler realizes this distribution directly.
+
+For one scenario \(\omega\), draw \(\mathbf z(\omega)\sim N(\mathbf 0,I_K)\). With finite \(\widehat\nu_d\), draw one independent \(Q(\omega)\sim\chi^2_{\widehat\nu_d}\) for the entire vector, then compute
+\[
+ \tilde{\mathbf w}(\omega)=
+ \begin{cases}
+ T_{\widehat\nu_d}\!\left(
+ L_d\mathbf z(\omega)\sqrt{\widehat\nu_d/Q(\omega)}\right),
+ &\widehat\nu_d<\infty,\\
+ \Phi\!\left(L_d\mathbf z(\omega)\right),&\widehat\nu_d=\infty .
+ \end{cases}
+ \qquad \tilde{\mathbf w}(\omega)\sim\Cop_d .
+\]
+The CDF acts separately on each component. The resulting array is \(K\times|\Omega|\); a column is one scenario. A new scenario receives independent draws. Each finite-df component is marginally Student, so the probability integral transform makes each coordinate uniform in the population. The common factor \(Q(\omega)\) links their magnitudes. Using a different \(Q\) in each cell would produce a different joint law. When \(\nu>2\), \(\nu R/(\nu-2)\) is the covariance of the latent vector and \(R\) its correlation. The dispersion parameter still defines a copula when latent variances do not exist.
+
+\lead{A falsifiable tail prediction.} For a pair with latent coefficient \(r\), the limits of the conditional probabilities of a second low given a first low, and of a second high given a first high, coincide:
+\[
+ \lambda_L=\lambda_U=
+ 2T_{\nu+1}\!\left(-\sqrt{(\nu+1)(1-r)/(1+r)}\right)
+ \quad(\nu<\infty,\ |r|<1).
+\]
+Both limits are zero in the Gaussian case. Gaussian dependence can still produce simultaneous losses at finite, economically relevant quantiles. Even an unsupported pair with prior \(r=0\) inherits a positive limiting coefficient under finite df. These are model implications to measure on new data. \src{https://doi.org/10.1111/j.1751-5823.2005.tb00254.x}{Demarta and McNeil, proposition 1.}
+
+\lead{Use the current calibration and raw forecast.} For \(b=(n,\rho)\) and \(t=t_{n\rho\mid d}\), stage 11 gives the simulated expiry price in dollars per share:
+\[
+ \tilde p_{nt}(\omega)=\widehat\Psi_{nt}^{-1}
+ \left(\widehat\Gamma_{n,\rho,d}^{-1}(\tilde w_{n\rho}(\omega))
+ \,\middle|\,\mathcal F_d\right).
+\]
+First convert the simulated corrected percentile back to a raw forecast percentile with the \emph{current} map. Then read its price from the current forecast. As a synthetic check, a linear map segment through \((.3,.2)\) and \((.7,.8)\) sends raw .4 to corrected .35. A corrected draw of .35 therefore enters the raw quantile at .4. If the toy raw quantile is \(100+20q\) dollars, the price is \$108.
+
+At that price, one call pays \(V^{ic}_{knt}(\omega)=m\max(\tilde p_{nt}(\omega)-s^{ic}_{knt},0)\); one put pays \(V^{ip}_{knt}(\omega)=m\max(s^{ip}_{knt}-\tilde p_{nt}(\omega),0)\). Here \(m\) is the contract multiplier and \(s\) is the strike. All contracts with that stock and expiry read the same scenario price. A static vector of terminal prices supplies no intermediate conditional repricing or trading rule.
+
+\newpage
+\sect{5. Use the native Julia interface}
+The package \texttt{DskitCopulas} owns fitting, scoring and drawing. In the MIO adapter each issued cell receives one unique string ID and a stable position in the current coordinate list. A generic historical row contains \texttt{origin}, \texttt{coordinate}, \texttt{known\_at} and \texttt{pit}. The numerical API receives \(w\). Upstream retention of the raw PIT \(u\), model version, original expiry, origin-map identifier and settlement availability makes the record reproducible. All quantities are numerical probabilities or session indices until the final inverse price map.
+
+\begin{small}
+\begin{verbatim}
+using DskitCopulas, Random
+
+cells = ["A-rank1", "B-rank2"]
+row(a, b, k, w) = (origin=a, coordinate=cells[b], known_at=k, pit=w)
+records = [row(1,1,4,.15), row(1,2,6,.10), row(2,1,5,.72),
+           row(2,2,7,.65), row(3,1,6,.25), row(3,2,8,.75),
+           row(4,1,7,.82), row(4,2,11,.78), row(5,1,8,.45)]
+later_records = [row(10,1,14,.40), row(10,2,16,.70)]
+fit = fit_copula(records, 10, cells;
+    score_pairs=[(1, 2)], min_overlap=2, shrinkage=0.2,
+    eigen_floor=0.01, df_grid=[4.0, 8.0], epsilon=1e-8)
+U = sample_copula(Xoshiro(71), fit.model, 256; batch_size=64)
+evidence = score_copula(fit.model, later_records, 30)
+\end{verbatim}
+\end{small}
+The fit arguments above are illustrative. It takes settled examples from origins before 10. At cutoff 30, the prospective score takes eligible labels from origins \(10\le a<30\). All compared distributions receive the same rows. The clock values must share the cutoff's concrete integer, \texttt{Date} or \texttt{DateTime} type. Score pairs are one-based indices into \texttt{fit.model.coordinates}. The model and its arrays are read-only by caller convention. Inspect \texttt{fit.diagnostics.overlap}, \texttt{candidate\_scores}, \texttt{clipped\_pits} and \texttt{effective\_shrinkage} for coverage, candidate rankings, changed unique PITs used in scores, and the shrinkage applied. Fit, scoring and sampling can run in the caller's Julia process. The current Julia optimizer can consume the resulting scenario arrays when a separately authorized adapter supplies its required model inputs.
+
+\lead{How much work?} Let \(N_a\) count historical origins, \(K\) cells, \(E_s=|\edge|\) scoring pairs and \(G\) candidate degrees of freedom including Gaussian. Pair Grams cost \(O(N_aK^2)\); eigenvalue repair and factorization cost \(O(K^3)\). Caching transformed scores for one candidate at a time bounds the profile work by \(O(GN_a(K+E_s))\). Fit needs \(O(N_aK+K^2)\) numerical work memory besides the caller's records. Drawing \(M_s\) scenarios takes \(O(M_sK^2)\) work, \(O(KM_s)\) output and \(O(KB_s)\) additional workspace for a batch of \(B_s\) columns. These are dense-algebra scaling bounds. The code can reuse one fitted factor across many batches.
+
+\lead{What identifies a reusable result?} Keep the exact record fingerprint and cutoff, immutable ordered list, fit configuration, scoring pairs, Julia and package versions, and code identity with any retained state. Include RNG type, seed, draw order and scenario count for retained simulations. When records mature, today's eligible panel can change even if the current coordinate list stays fixed. Record content, origin-map provenance and numerical options must agree before reusing a historical fit. The package creates its statistical state in memory.
+
+\newpage
+\sect{6. Decide whether the heavier tails earn their place}
+\lead{Numerical acceptance.} On synthetic input, compare the bivariate density ratio to an independent analytic value, including the \(\nu=4,r=0\) median example on page 4. Check a seeded draw against uniform margins, its reference sign relationship and both tails. Compare the Gaussian control with independence when \(R=I\). Cover the exact cutoff boundary, late settlement, missing rows, duplicate keys, deterministic ties, support refusal, endpoint handling, \(\widehat R_d\)'s unit diagonal and positive definiteness. A finite-df density or draw outside floating-point support raises an explicit numerical error. Downstream price maps receive strictly interior uniforms.
+
+\lead{Out-of-time evaluation.} On a separately authorized study, freeze model definitions, labels, scoring edges, tail thresholds, weighting, configuration selection and dates before measuring later outcomes. For example, with a predeclared \(0<q_0<1/2\), compare the observed rates of \(w_b\le q_0,w_{b'}\le q_0\) and \(w_b\ge1-q_0,w_{b'}\ge1-q_0\) with the forecasts for precisely those pairs and origins. Also compare prospective paired log scores, inspection of each cell's PIT distribution and a joint score appropriate to the portfolio question. A coarse tail count can carry substantial sampling uncertainty.
+
+Serial dependence from overlapping expiries and shared stocks/markets matters. Prespecify an uncertainty design that preserves common-origin vectors and time dependence, inspect sensitivity to blocks spanning the overlap, and disclose numbers of independent blocks or clusters where justified. A matrix of 881,128 possible pairs does not provide 881,128 independent replications. The existing marginal forecast evaluation uses the metrics and gates in A0002, A0005 and A0007. A dependence study needs its own authorized comparison alongside them. \src{https://www.bundesbank.de/resource/blob/635436/766e285ef812d86d49c02dd8033d7333/472B63F073F071307366337C94F8C870/2012-06-01-eltville-02-knueppel-paper-data.pdf}{Kn\"uppel.}
+
+\lead{Decision.} Prefer the Gaussian control if the finite-df candidate repeatedly overstates upper or lower conditional extremes or offers no stable prospective gain within uncertainty. Persistent excess downside clustering would motivate an asymmetric alternative; groups with distinct tail behavior would motivate a grouped or factor model. Changes to the forecast, universe, or production strategy require separate decisions. \src{https://public.econ.duke.edu/~ap172/Patton_IER_2006.pdf}{Patton, conditional and asymmetric dependence.}
+
+\lead{Notation provenance.} The reference is the 23-page \emph{MIO: from forecasts to scenarios} snapshot from 27 November 2026, sections 8--11. The frozen TeX digest begins \texttt{9596de611c5e44f4}; the PDF digest begins \texttt{b9337db8378cb68b}. ADR-0331 records the complete digests and numerical contract. The new \(\nu\) denotes the Student degrees of freedom. The parent symbols \(\rho,t,\eta,a,d,\omega,\widehat\Gamma,\widehat\Psi,\Cop_d\) retain their original meanings.
+\newpage
+\sect{Engineering evidence on synthetic panels}
+\lead{The wide case exercised the parent draft's dimensions.} The generator created 1,070 historical origins and 1,328 coordinates, with about 5\% random missingness, a shared Student radial draw at \(\nu=4\), and alternating positive and negative factor loadings. It fit signed moments for all 881,128 pairs. The declared score used 64 adjacent pairs, or 61,830 observed pair-origin terms. A later 240-origin panel contributed 13,942 terms. Both the small and wide cases selected the generating candidate 4 from \(\{2,4,8,16,32,\infty\}\). These outcomes check the implementation on two designed samples.
+
+\begin{center}
+\begin{tabular}{@{}lrr@{}}\toprule
+Warm operation & 200 origins, 8 cells & 1,070 origins, 1,328 cells\\
+\midrule
+Fit & 6.64 ms & 536.57 ms\\
+Score later origins & 2.05 ms & 73.78 ms\\
+Draw joint percentiles & 1.23 ms & 478.60 ms\\
+Map draws to toy prices & 0.011 ms & 3.79 ms\\
+\midrule
+Later origins / scenarios & 60 / 1,024 & 240 / 2,048\\
+Scored edges / batch columns & 7 / 256 & 64 / 256\\
+Effective shrinkage & 0.200 & 0.432\\
+\bottomrule
+\end{tabular}
+\end{center}
+Entries are medians of three warm measurements, in milliseconds. Julia 1.13.4 used Distributions 0.25.136, one Julia thread and two OpenBLAS threads in WSL2. Xoshiro seeds 3089 and 1867 generated the input and scenarios respectively. The wide fit allocated about 555.1 MiB cumulatively, prospective scoring 107.1 MiB and sampling 461.7 MiB. Peak process RSS over the entire benchmark was 758.2 MiB. Cumulative allocations measure all allocated bytes over an operation; RSS measures resident memory at one instant. The toy price mapping uses inexpensive scalar callbacks; the actual inverse mixture forecast can cost more.
+
+\lead{What the checks established.} Focused tests exercise exact density references, future-label exclusion, ragged support, dispersion repair, numerical boundaries, seeded draws and inverse-map order. The Gaussian and independence controls share evaluation terms with the finite-df candidate. A larger speedup claim would require a timed comparison with the same algorithm and workload in an alternative runtime. The existing Python samplers implement other algorithms.
+
+\lead{Reproduction.} The Julia project contains \texttt{test/runtests.jl} and \texttt{benchmark/run.jl}. The retained run receipt \texttt{benchmark-v1.txt} records first-call, warm time, allocated bytes, environment and guarded command. The clock shown covers each complete native operation. No fit or score used a production observation.
+
+\newpage
+\sect{Primary references}
+\lead{Dependence theory and estimation}
+\begin{itemize}\setlength{\itemsep}{3pt}
+\item Demarta, S. and McNeil, A. J. (2005). \emph{The \(t\) copula and related copulas}. International Statistical Review 73, 111--129. Sections 2--4 give the scale mixture, tail coefficient and two-stage estimation. \src{https://doi.org/10.1111/j.1751-5823.2005.tb00254.x}{Article.}
+\item Schmid, F. and Schmidt, R. (2007). \emph{Nonparametric inference on multivariate versions of Blomqvist's beta and related measures of tail dependence}. Metrika 66, 323--354. Proposition 8 relates pairwise median signs to elliptical dispersion. \src{https://wisostat.uni-koeln.de/fileadmin/sites/statistik/pdf_publikationen/SchmidSchmidtBlomqvistsBeta.pdf}{Authors' paper.}
+\item Higham, N. J. (2002). \emph{Computing the nearest correlation matrix---a problem from finance}. IMA Journal of Numerical Analysis 22, 329--343. Defines the matrix constraints and the nearest-correlation problem. \src{https://doi.org/10.1093/imanum/22.3.329}{Article.}
+\item Patton, A. J. (2006). \emph{Modelling asymmetric exchange rate dependence}. International Economic Review 47, 527--556. Gives an empirical application of conditional copulas with asymmetric dependence. \src{https://public.econ.duke.edu/~ap172/Patton_IER_2006.pdf}{Author's paper.}
+\end{itemize}
+
+\lead{Forecast evaluation and computation}
+\begin{itemize}\setlength{\itemsep}{3pt}
+\item Diebold, F. X., Gunther, T. A. and Tay, A. S. (1998). \emph{Evaluating density forecasts with applications to financial risk management}. International Economic Review 39, 863--883. Describes PIT evaluation of issued forecasts. \src{https://users.ssc.wisc.edu/~behansen/718/DieboldGuntherTay1998.pdf}{Article.}
+\item Kn\"uppel, M. \emph{Evaluating the calibration of multi-step-ahead density forecasts using raw moments}. Explains serial dependence of multi-step PITs and its implications for calibration tests. \src{https://www.bundesbank.de/resource/blob/635436/766e285ef812d86d49c02dd8033d7333/472B63F073F071307366337C94F8C870/2012-06-01-eltville-02-knueppel-paper-data.pdf}{Bundesbank paper.}
+\item JuliaStats and the Julia project. The package uses distribution CDFs, inverse CDFs, log densities and matrix factorizations. \src{https://juliastats.org/Distributions.jl/stable/univariate/}{Distributions.jl univariate interface.} \src{https://docs.julialang.org/en/v1/stdlib/LinearAlgebra/}{Julia linear algebra.}
+\end{itemize}
+\end{document}

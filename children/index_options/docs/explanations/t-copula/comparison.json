@@ -1,0 +1,47 @@
+{
+  "status": "Research proposal; no real-data comparison",
+  "candidates": [
+    {
+      "candidate": "Independent uniforms",
+      "role": "Sanity baseline",
+      "construction": "Removes joint dependence",
+      "test": "Measure whether learned dependence adds forecast skill."
+    },
+    {
+      "candidate": "Dense shrunken Gaussian",
+      "role": "Reference",
+      "construction": "Retains pair-specific associations with shrinkage",
+      "test": "Can capture local effects lost by factor pooling."
+    },
+    {
+      "candidate": "Dense matched Student t",
+      "role": "Reference",
+      "construction": "Adds one symmetric shared scale at the same dispersion",
+      "test": "Test joint skill, upper and lower calibration, and market-wide loss breadth."
+    },
+    {
+      "candidate": "Structured Gaussian",
+      "role": "Lead challenger",
+      "construction": "Few broad factors and pooled within-stock expiry blocks",
+      "test": "Test whether pooling improves out-of-sample forecasts without losing local risk."
+    },
+    {
+      "candidate": "Empirical checkerboard",
+      "role": "Covered fixed panels",
+      "construction": "Reuses common-origin training rank patterns, with uniform jitter",
+      "test": "Compare all controls on the same smaller panel."
+    },
+    {
+      "candidate": "Asymmetric common factor",
+      "role": "Conditional challenger",
+      "construction": "One directional common shock, with exact latent-marginal transforms",
+      "test": "Advance for repeated conditional downside errors."
+    },
+    {
+      "candidate": "Truncated vine",
+      "role": "Conditional small-panel challenger",
+      "construction": "Fixed, shallow conditional pair structure",
+      "test": "Advance for repeatable localized dependence missed by other candidates."
+    }
+  ]
+}

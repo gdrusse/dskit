@@ -1,0 +1,57 @@
+{
+  "closed_at": "2026-11-27T23:44:04.573739+00:00",
+  "candidate": "9b476c1eb4b7a31c5329adfcc06330ad7d86b2a9",
+  "base": "13068c945a99c6e52b3ceb3754e54b785fb7b328",
+  "branch": "codex/t-copula-20261127",
+  "contract": "ADR-0331",
+  "status": "closed: two independent final lenses, zero unresolved Critical/Major",
+  "review_models": [
+    "gpt-6-luna: correctness_r1",
+    "gpt-6-luna: tests_r1"
+  ],
+  "findings": {
+    "critical": 0,
+    "major": 0,
+    "minor": 1,
+    "nit": 0
+  },
+  "minor_disposition": "Deferred direct Gaussian score versus independence assertion at identity dispersion; no demonstrated current wrong result. Add when test file is next revised.",
+  "focused_julia_assertions_passed": 99,
+  "focused_doc_tests_passed": 4,
+  "code_files": {
+    "children/index_options/docs/explanations/t-copula-implementation.tex": "efc199bb2cb2df4fefee852f0f00c76abaf861878d102774b6939357c66d5c7e",
+    "docs/architecture/decision-log.md": "cb32aa3db18cc0919c93e28a5c68ae8bd0768fe0421c5a7635e942557201ecc2",
+    "dskit/pipeline/README.md": "d6d4157de4e6089c5e8dd5623a6a2a6e6485f830764a183a23b0a389de0cf3c2",
+    "julia/DskitCopulas/Manifest.toml": "1b977cd8b804125bf9553440450171c1674099c9e87e3e736c3f0a0b1e8ac97b",
+    "julia/DskitCopulas/Project.toml": "6f1168cb953ebbde98fdcb8c49ca54d9389009d6a6b0eb238fd8706453d8f01a",
+    "julia/DskitCopulas/README.md": "ed63f30f4d101587c8c2937039bed905cfdb20ba21ce3461b9937f05385528d6",
+    "julia/DskitCopulas/benchmark/run.jl": "30712375aadacb5aadc7daba067a2639c6b2c025222a671ec352a8a147e70bb0",
+    "julia/DskitCopulas/src/DskitCopulas.jl": "0fd263a39498d59ee580656d13fdc1a592c4a8bd93ae9d4b89e108a5cb60a408",
+    "julia/DskitCopulas/test/runtests.jl": "4a809372cbdcee709ba2ab17bd23b9d5b8ba0fb6301061489e5ccac2cc1c1cb7"
+  },
+  "review_reports": {
+    "/home/russell/data/dskit/runs/t-copula-development/v20261127/run/reviews/correctness-r1.md": "0f2e8e52431334f96b833949d7997bd42695534a0b8222594a5643295616d341",
+    "/home/russell/data/dskit/runs/t-copula-development/v20261127/output/reviews/tests-r1.md": "81813a4da8972b52eab6c88c21ec2f27f89dce4c5df99e75ea3c384e2b48d621"
+  },
+  "pdf": {
+    "path": "/home/russell/data/dskit/runs/t-copula-development/v20261127/output/pdf/t-copula-implementation.pdf",
+    "sha256": "102ca402f42707d277d0ac3d0c95767b4be0b6de7ab8fd80128e57d58a1a6b74",
+    "source": "/home/russell/wt/codex-t-copula-20261127/children/index_options/docs/explanations/t-copula-implementation.tex",
+    "source_sha256": "efc199bb2cb2df4fefee852f0f00c76abaf861878d102774b6939357c66d5c7e",
+    "pages_visually_reviewed": 9
+  },
+  "evidence": {
+    "/home/russell/data/dskit/runs/t-copula-development/v20261127/output/pdf-visual-review.json": "c3d54a87a976a3bd21fc19cb3c3d6286a3820165e062dcc8c12fa2606fdc3f4f",
+    "/home/russell/data/dskit/runs/t-copula-development/v20261127/output/root-focused-checks.json": "13558678d89b02b0bf0a0ba0ee7439080bf19e35246346e0a18bfd97bedf6931",
+    "/home/russell/data/dskit/runs/t-copula-development/v20261127/output/final-resource-status.json": "12f421638f9662bbc33f3b2a31df44994b174c35af711f7c1286fc32ffeb6274"
+  },
+  "publication": {
+    "pushed": false,
+    "merged": false
+  },
+  "scope_limits": [
+    "Synthetic validation only; no market-suitability or portfolio-performance verdict",
+    "Issuer/map/settlement provenance remains caller attestation",
+    "Native numerical primitive; production integration and frozen study choices unchanged"
+  ]
+}

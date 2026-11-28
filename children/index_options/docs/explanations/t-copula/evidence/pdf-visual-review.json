@@ -1,0 +1,22 @@
+{
+  "reviewer": "Codex /root",
+  "source_sha256": "efc199bb2cb2df4fefee852f0f00c76abaf861878d102774b6939357c66d5c7e",
+  "pdf_sha256": "102ca402f42707d277d0ac3d0c95767b4be0b6de7ab8fd80128e57d58a1a6b74",
+  "pages": 9,
+  "render_tool": "mutool draw -r 100",
+  "rendered_pages_reviewed": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "visual_findings": [],
+  "latex_warnings": [],
+  "compile_log": "/home/russell/data/dskit/runs/t-copula-development/v20261127/tmp/pdfs/latex-build-round2.log",
+  "note": "All nine page renders visually inspected for clipping, overlap, missing glyphs and readability. Mathematical and implementation review still pending."
+}
