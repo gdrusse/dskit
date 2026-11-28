@@ -1,7 +1,8 @@
 """No-fit contracts for the ADR-0330 panel-source document.
 
 ``configs/panel-source-rule-fixes.json`` is ``strike-screen-panel-source.json`` with exactly two
-``raw_chain`` keys added (``proxy_quote_fields`` and ``proxy_estimator``) and its two ``notes`` rewritten.
+``raw_chain`` keys added (``proxy_quote_fields`` and ``proxy_estimator``), ``data.min_dte`` added
+(ADR-0330 Amendment 1) and its two ``notes`` rewritten.
 These tests pin that duplication; nothing here opens a store, reads market data or fits.
 """
 import copy
@@ -21,18 +22,27 @@ def _json(name):
     return json.loads((CONFIGS / name).read_text())
 
 
-def _without(document, options=()):
-    """Return a copy of ``document`` without its two ``notes`` and the named ``raw_chain`` keys."""
+def _without(document, options=(), floor=False):
+    """Return a copy of ``document`` without its two ``notes``, the named ``raw_chain`` keys and,
+    when ``floor``, ``data.min_dte``."""
     document = copy.deepcopy(document)
     document.pop("notes")
     document["data"].pop("notes")
     for name in options:
         document["data"]["raw_chain"].pop(name)
+    if floor:
+        document["data"].pop("min_dte")
     return document
 
 
-def test_the_document_is_the_base_plus_the_two_options():
-    assert _without(_json(NEW), OPTIONS) == _without(_json(BASE))
+def test_the_document_is_the_base_plus_the_two_options_and_the_min_dte_floor():
+    assert _without(_json(NEW), OPTIONS, floor=True) == _without(_json(BASE))
+
+
+def test_the_min_dte_floor_is_the_owner_ruling_of_eight_days_and_the_base_has_none():
+    assert _json(NEW)["data"]["min_dte"] == 8
+    assert "min_dte" not in _json(BASE)["data"]
+    assert "min_dte" in _json(NEW)["data"]["notes"] and "min_dte" in _json(NEW)["notes"]
 
 
 def test_the_data_notes_extend_the_base_notes():

@@ -2767,7 +2767,9 @@ class ExactExpiryPanelRead(Node):
         ``chain_features raw_chain market_symbols fred_market_symbols
         surface_features ohlc_windows matched_dte_vrp reference_window change_lags
         directional_windows periods_per_year calendar calendar_pad_days dividend_field``
-        (the study conventions; see :func:`index_options.cdf_study.panel_convention_problems`)
+        (the study conventions; see :func:`index_options.cdf_study.panel_convention_problems`),
+        ``min_dte`` (a days-to-expiry floor, int from 1 to ``max_dte``: a row is kept when its
+        ``calendar_dte`` is at least it; ADR-0330 amendment 1)
         and, ADR-0230, ``exact_dte`` (keep one horizon), ``reader`` (``price_calendar``
         builds the panel from a price file alone), ``keyed_tables`` and
         ``corporate_actions`` (see :func:`index_options.cdf_study.panel_reader_problems`), and
@@ -2798,7 +2800,7 @@ class ExactExpiryPanelRead(Node):
                  "change_lags", "cohort_columns", "corporate_actions", "directional_windows",
                  "dividend_field", "exact_dte",
                  "fred_market_symbols", "keyed_tables", "market_symbols", "matched_dte_vrp",
-                 "ohlc_windows", "periods_per_year", "raw_chain", "reader", "reference_window",
+                 "min_dte", "ohlc_windows", "periods_per_year", "raw_chain", "reader", "reference_window",
                  "surface_features")
     _PARAMS = _SURFACE_REQUIRED + _REQUIRED + _OPTIONAL
 

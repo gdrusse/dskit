@@ -979,12 +979,12 @@ PANEL_READ_KEYS = {
     "matched_dte_vrp", "columns", "reference_window", "change_lags", "directional_windows",
     "periods_per_year", "calendar", "calendar_pad_days", "dividend_field",
     "exact_dte", "reader", "keyed_tables", "corporate_actions", "cohort_columns",
-    "as_of_acquisition_ms"}
+    "as_of_acquisition_ms", "min_dte"}
 PANEL_READ_REQUIRED = PANEL_READ_KEYS - {
     "chain_features", "raw_chain", "market_symbols", "fred_market_symbols", "surface_features",
     "ohlc_windows", "matched_dte_vrp", "reference_window", "change_lags", "directional_windows",
     "periods_per_year", "calendar", "calendar_pad_days", "dividend_field", "exact_dte", "reader",
-    "keyed_tables", "corporate_actions", "cohort_columns", "as_of_acquisition_ms"}
+    "keyed_tables", "corporate_actions", "cohort_columns", "as_of_acquisition_ms", "min_dte"}
 
 
 def _panel_read_params(**over):
@@ -1046,8 +1046,20 @@ def test_the_panel_readers_params_are_the_tail_data_read_keys_plus_columns(child
         set(data) - {"archive_root"} | {"columns"} | study_conventions   # frozen tail config omits them
         | {"exact_dte", "reader", "keyed_tables", "corporate_actions",   # ADR-0230 additions
            "cohort_columns"}
-        | {"as_of_acquisition_ms"})                                      # ADR-0236 amendment 3
+        | {"as_of_acquisition_ms"}                                       # ADR-0236 amendment 3
+        | {"min_dte"})                                                   # ADR-0330 amendment 1
     assert set(ExactExpiryPanelRead._PARAMS) & {"decision_regions", "macro_event_calendars"} == set()
+
+
+def test_the_panel_reader_accepts_min_dte_and_still_refuses_an_unknown_key():
+    assert ExactExpiryPanelRead.validate_params(_panel_read_params(min_dte=8)) == []
+    assert ExactExpiryPanelRead("panel", _panel_read_params(min_dte=8)).params["min_dte"] == 8
+    assert any("min_dte" in p for p in ExactExpiryPanelRead.validate_params(
+        _panel_read_params(min_dte=46)))
+    assert any("exact_dte" in p for p in ExactExpiryPanelRead.validate_params(
+        _panel_read_params(min_dte=8, exact_dte=7)))
+    problems = ExactExpiryPanelRead.validate_params(_panel_read_params(min_dte=8, floor_dte=8))
+    assert len(problems) == 1 and "unknown param" in problems[0] and "['floor_dte']" in problems[0]
 
 
 @pytest.mark.parametrize("change, match", [

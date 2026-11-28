@@ -553,6 +553,25 @@ def test_the_node_refuses_a_null_exact_dte_as_run_does():
     assert any("exact_dte" in p for p in ExactExpiryPanelRead.validate_params(params))
 
 
+def test_min_dte_up_to_the_horizon_keeps_every_row_and_one_above_it_is_refused(make):
+    default = make().read()
+    assert len(default) > 0
+    for floor in (1, 3, HORIZON):
+        pd.testing.assert_frame_equal(make(min_dte=floor).read(), default, check_exact=True)
+    with pytest.raises(ValueError, match="min_dte.*exact_dte|exact_dte.*min_dte"):
+        make(min_dte=HORIZON+1)
+
+
+def test_min_dte_enters_the_calendar_readers_cache_identity_only_when_declared(make):
+    from dskit.production.release import RuntimeFingerprint
+
+    environment = RuntimeFingerprint.capture().to_obj()
+    base = make().cache_identity(environment)
+    assert "min_dte" not in base["config"]
+    floored = make(min_dte=3).cache_identity(environment)
+    assert floored["config"]["min_dte"] == 3 and floored != base
+
+
 def test_the_date_stamp_is_utc_midnight_milliseconds():
     assert PriceCalendarCDFPanel._stamp("2023-01-03") == 1672704000000
 

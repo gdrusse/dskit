@@ -3064,7 +3064,13 @@ class CorporateActionRule:
 #: ``ObservationRows``' own read-vintage param (ADR-0154), handed to every read as is.
 PANEL_VINTAGE = "as_of_acquisition_ms"
 #: The panel's optional integer knobs and their floors.
-_PANEL_INTS = (("exact_dte", 1), (PANEL_VINTAGE, 0))
+_PANEL_INTS = (("exact_dte", 1), ("min_dte", 1), (PANEL_VINTAGE, 0))
+
+
+def _whole_number(value):
+    """Say whether ``value`` is a number ``check_int_param`` accepts as an int (never a bool)."""
+    return (isinstance(value, int) and not isinstance(value, bool)) or (
+        isinstance(value, float) and value.is_integer())
 
 
 def panel_int_problems(config):
@@ -3073,8 +3079,10 @@ def panel_int_problems(config):
     Parameters
     ----------
     config : dict
-        A panel config. ``exact_dte`` (ADR-0230) is an int >= 1 and ``as_of_acquisition_ms``
-        (:data:`PANEL_VINTAGE`) an int >= 0, each when present.
+        A panel config. ``exact_dte`` (ADR-0230) is an int >= 1, ``min_dte`` (ADR-0330
+        amendment 1, the days-to-expiry floor) an int from 1 to ``max_dte`` and not above
+        ``exact_dte``, and ``as_of_acquisition_ms`` (:data:`PANEL_VINTAGE`) an int >= 0, each
+        when present.
 
     Returns
     -------
@@ -3085,6 +3093,12 @@ def panel_int_problems(config):
     for name, low in _PANEL_INTS:
         if name in config:
             check_int_param(problems, name, config[name], ge=low)
+    if _whole_number(config.get("min_dte")):
+        floor = config["min_dte"]
+        if _whole_number(config.get("max_dte")) and floor > config["max_dte"]:
+            problems.append(f"min_dte must be at most max_dte ({config['max_dte']}), got {floor!r}")
+        if _whole_number(config.get("exact_dte")) and config["exact_dte"] < floor:
+            problems.append(f"exact_dte ({config['exact_dte']}) must not be below min_dte ({floor})")
     return problems
 
 
@@ -3134,7 +3148,10 @@ class ExactExpiryCDFPanel:
         file by store reference (``{"source", "stream", "relpath"[, "manifest_sha256"]}``,
         resolved against ``root``) or, legacy, by path string. Optional ``exact_dte``
         (int >= 1) keeps only rows whose ``actual_calendar_dte`` equals it;
-        absent keeps every horizon up to ``max_dte``. Optional ``as_of_acquisition_ms``
+        absent keeps every horizon up to ``max_dte``. Optional ``min_dte`` (int from 1 to
+        ``max_dte``, ADR-0330 amendment 1) keeps only rows whose ``calendar_dte`` is at least
+        it; the rows kept carry the values they have without it, and the rows it drops are
+        counted in ``refused[symbol]["below_min_dte"]``. Optional ``as_of_acquisition_ms``
         (int >= 0, ADR-0154's read vintage) bounds the acquisitions every observation read
         sees (index closes, market symbols, FRED, the surface reader's prices); keyed tables
         and price files are not bounded.
@@ -3229,6 +3246,29 @@ class ExactExpiryCDFPanel:
         if field not in price_frame:
             raise ValueError(f"dividend_field {field!r} is not a column of the price source")
         return price_frame[field].reindex(index)
+
+    def _above_floor(self, frame):
+        """Keep the rows at or above ``min_dte`` calendar days and count what it drops.
+
+        Parameters
+        ----------
+        frame : DataFrame
+            The panel rows, ``symbol`` and ``calendar_dte`` among their columns.
+
+        Returns
+        -------
+        DataFrame
+            ``frame`` itself without a declared ``min_dte``; else the rows whose
+            ``calendar_dte`` is at least it, re-indexed 0..n-1, with each symbol's count
+            of dropped rows in ``self.refused[symbol]["below_min_dte"]``.
+        """
+        if "min_dte" not in self.config:
+            return frame
+        below = frame.calendar_dte < self.config["min_dte"]
+        dropped = frame.symbol[below].value_counts()
+        for symbol, counts in self.refused.items():
+            counts["below_min_dte"] = int(dropped.get(symbol, 0))
+        return frame[~below].reset_index(drop=True)
 
     def _horizon_cohort(self, rows):
         """Keep the rows at ``exact_dte`` when declared, else every row."""
@@ -3963,6 +4003,9 @@ class ExactExpiryCDFPanel:
             result = self.add_surface_dynamics(
                 result, c["raw_chain"]["proxy_probabilities"], conv["change_lags"],
                 conv["reference_window"], conv["periods_per_year"])
+        # After the one feature that reads a stock-day's neighbouring expiries (term slopes),
+        # so a kept row's values never depend on the floor.
+        result = self._above_floor(result)
         if c.get("matched_dte_vrp"):
             result = self.add_matched_dte_vrp(
                 result, c["reference_floor"], conv["reference_window"], conv["periods_per_year"])

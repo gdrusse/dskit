@@ -3264,3 +3264,71 @@ def test_panel_one_hots_follow_the_configured_order_and_a_name_without_rows_is_a
         assert (out[f"is_{s}"] == (out.symbol == s).astype(int)).all(), s
     assert int(out["is_QQQ"].sum()) == 0
     assert out.columns.get_loc("is_QQQ") < out.columns.get_loc("market_vix9d")
+
+
+def _min_dte_problems(**over):
+    return cdf_study.panel_int_problems({"max_dte": 45, **over})
+
+
+def test_min_dte_floor_keeps_the_default_rows_with_every_column_unchanged(tmp_path, monkeypatch):
+    cfg = _fe_fixture(tmp_path, monkeypatch, "a")
+    default = ExactExpiryCDFPanel(cfg).read()
+    assert sorted(default.calendar_dte.unique())[0] < 8 < sorted(default.calendar_dte.unique())[-1]
+    assert default.term_slope_prev.notna().any()
+    for floor in (8, 13, 14):
+        floored = ExactExpiryCDFPanel({**cfg, "min_dte": floor}).read()
+        want = default[default.calendar_dte >= floor].reset_index(drop=True)
+        assert 0 < len(want) < len(default)
+        assert floored.calendar_dte.min() >= floor
+        pd.testing.assert_frame_equal(floored, want, check_exact=True)   # term slopes included
+    kept = default[default.calendar_dte >= 8]
+    assert kept.term_slope_prev.notna().any()      # the slope to the expiry the floor removes survives
+    assert len(ExactExpiryCDFPanel({**cfg, "min_dte": 1}).read()) == len(default)
+
+
+def test_min_dte_counts_the_rows_it_leaves_out_by_symbol_and_only_when_declared(tmp_path, monkeypatch):
+    cfg = _fe_fixture(tmp_path, monkeypatch, "a")
+    plain = ExactExpiryCDFPanel(cfg)
+    default = plain.read()
+    assert all("below_min_dte" not in counts for counts in plain.refused.values())
+    floored = ExactExpiryCDFPanel({**cfg, "min_dte": 8})
+    out = floored.read()
+    assert floored.refused["QQQ"]["below_min_dte"] == len(default) - len(out) > 0
+    assert floored.provenance()["refused"]["QQQ"]["below_min_dte"] == len(default) - len(out)
+
+
+def test_min_dte_enters_the_cache_identity_only_when_declared(tmp_path, monkeypatch):
+    cfg = _fe_fixture(tmp_path, monkeypatch, "a")
+    monkeypatch.setattr("dskit.onboarding.OnboardingRoot",
+                        lambda root: type("R", (), {"content_token": lambda self: "token"})())
+
+    def identity(config):
+        return ExactExpiryCDFPanel(config).cache_identity({"python": "x"})
+
+    base, eight = identity(cfg), identity({**cfg, "min_dte": 8})
+    assert "min_dte" not in base["config"] and eight["config"]["min_dte"] == 8
+    assert base != eight and identity({**cfg, "min_dte": 8}) == eight
+    assert identity({**cfg, "min_dte": 9}) != eight
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, False, "8", 8.5, None, [8], 46])
+def test_min_dte_refuses_a_value_that_is_not_an_int_from_1_to_max_dte(bad):
+    assert any("min_dte" in p for p in _min_dte_problems(min_dte=bad)), bad
+    with pytest.raises(ValueError, match="min_dte"):
+        ExactExpiryCDFPanel({"max_dte": 45, "min_dte": bad})
+
+
+def test_min_dte_accepts_one_through_max_dte_and_may_equal_exact_dte():
+    for good in (1, 8, 45):
+        assert _min_dte_problems(min_dte=good) == [], good
+    assert _min_dte_problems(min_dte=7, exact_dte=7) == []
+    assert _min_dte_problems() == _min_dte_problems(exact_dte=7) == []
+
+
+def test_min_dte_above_exact_dte_is_refused_and_every_problem_is_reported():
+    problems = _min_dte_problems(min_dte=8, exact_dte=7)
+    assert len(problems) == 1 and "min_dte" in problems[0] and "exact_dte" in problems[0]
+    both = _min_dte_problems(min_dte=50, exact_dte=7, as_of_acquisition_ms=-1)
+    assert len(both) == 3, both                       # above max_dte, above exact_dte, the vintage
+    with pytest.raises(ValueError, match="exact_dte"):
+        ExactExpiryCDFPanel({"max_dte": 45, "min_dte": 8, "exact_dte": 7})
