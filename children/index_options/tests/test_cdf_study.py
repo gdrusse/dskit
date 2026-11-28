@@ -3332,3 +3332,13 @@ def test_min_dte_above_exact_dte_is_refused_and_every_problem_is_reported():
     assert len(both) == 3, both                       # above max_dte, above exact_dte, the vintage
     with pytest.raises(ValueError, match="exact_dte"):
         ExactExpiryCDFPanel({"max_dte": 45, "min_dte": 8, "exact_dte": 7})
+
+
+def test_min_dte_orderings_are_judged_whenever_both_sides_are_numbers():
+    # A fractional bound still orders; that it is not an int is its own validator's problem.
+    fractional = cdf_study.panel_int_problems({"max_dte": 45.5, "min_dte": 46})
+    assert sum("at most max_dte" in p for p in fractional) == 1
+    assert sum("must not be below" in p for p in _min_dte_problems(min_dte=8, exact_dte=7.5)) == 1
+    for unordered in (float("nan"), "45", None, True):
+        problems = cdf_study.panel_int_problems({"max_dte": unordered, "min_dte": 8})
+        assert not any("at most max_dte" in p for p in problems), unordered

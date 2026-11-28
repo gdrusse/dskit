@@ -15,6 +15,7 @@ from dskit.pipeline.document import date_problem
 from dskit.pipeline.base import value_hash
 from dskit.pipeline.kinds_split import label_reaches
 from dskit.pipeline.node import JsonArtifact, Node, check_int_param, reject_unknown_params
+from dskit.pipeline.records import number_ok
 from dskit.pipeline.stats import CalendarBlockBootstrap, EdgePaddedCalendarBlockBootstrap
 from dskit.pipeline.libs.predictive_cdf import (
     ChronologicalCDFStudy, CDFHyperparameterStudy, CDFThresholdAudit,
@@ -2972,8 +2973,6 @@ class CorporateActionRule:
         list of str
             Every problem; empty when usable.
         """
-        from dskit.pipeline.records import number_ok
-
         if not isinstance(spec, dict):
             return [f"corporate_actions must be an object, got {spec!r}"]
         problems = [f"corporate_actions: unknown key {k!r}" for k in spec if k not in _ACTION_KEYS]
@@ -3067,12 +3066,6 @@ PANEL_VINTAGE = "as_of_acquisition_ms"
 _PANEL_INTS = (("exact_dte", 1), ("min_dte", 1), (PANEL_VINTAGE, 0))
 
 
-def _whole_number(value):
-    """Say whether ``value`` is a number ``check_int_param`` accepts as an int (never a bool)."""
-    return (isinstance(value, int) and not isinstance(value, bool)) or (
-        isinstance(value, float) and value.is_integer())
-
-
 def panel_int_problems(config):
     """List what is wrong with a panel config's optional integer knobs.
 
@@ -3093,11 +3086,13 @@ def panel_int_problems(config):
     for name, low in _PANEL_INTS:
         if name in config:
             check_int_param(problems, name, config[name], ge=low)
-    if _whole_number(config.get("min_dte")):
-        floor = config["min_dte"]
-        if _whole_number(config.get("max_dte")) and floor > config["max_dte"]:
+    # The two orderings are compared whenever both sides are numbers; whether each is an int is
+    # check_int_param's question above (and max_dte's own validator's), never restated here.
+    floor = config.get("min_dte")
+    if number_ok(floor):
+        if number_ok(config.get("max_dte")) and floor > config["max_dte"]:
             problems.append(f"min_dte must be at most max_dte ({config['max_dte']}), got {floor!r}")
-        if _whole_number(config.get("exact_dte")) and config["exact_dte"] < floor:
+        if number_ok(config.get("exact_dte")) and config["exact_dte"] < floor:
             problems.append(f"exact_dte ({config['exact_dte']}) must not be below min_dte ({floor})")
     return problems
 
@@ -3261,6 +3256,12 @@ class ExactExpiryCDFPanel:
             ``frame`` itself without a declared ``min_dte``; else the rows whose
             ``calendar_dte`` is at least it, re-indexed 0..n-1, with each symbol's count
             of dropped rows in ``self.refused[symbol]["below_min_dte"]``.
+
+        Notes
+        -----
+        What ``read`` counted before this cut still describes the rows before it: the other
+        ``refused`` counters and the ``market_coverage`` rows and fractions. ``below_min_dte``
+        is the count that reconciles them with the frame returned.
         """
         if "min_dte" not in self.config:
             return frame
