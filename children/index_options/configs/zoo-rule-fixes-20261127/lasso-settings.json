@@ -1,0 +1,37 @@
+{
+ "notes": "The candidates of the full-span zoo that are not among the recorded method documents of the repository: Lasso10 and the two combinations that read it (qa5, cdf5), and method 12 run on the wide-mlp64 rows (the full-span zoo's M12). Steps and order are those of the full-span zoo's lasso_zoo.py and gen_methods.py; the recorded Lasso script is imported unchanged.",
+ "script": "/home/russell/data/index_options/mlp-learning-audit-20261103/lasso-study/run_lasso.py",
+ "script_sha256": "a2fd48752ab917f882eb7e2b4116be721337e8e73851656f2f2d0c0d5b6080d0",
+ "recorded_wrapper": "/home/russell/data/index_options/full-span-rerun-20261105/zoo/lasso_zoo.py",
+ "protocol": "/home/russell/data/index_options/full-span-rerun-20261105/zoo/lasso/protocol.json",
+ "all_inputs": "lasso106",
+ "base_model": "wide-mlp64",
+ "base_model_notes": "The full-span zoo took the bands and the scored rows from its 90-input model (f90); wide-mlp64 is that model here (87 inputs after the fill gate).",
+ "monitor_patience": 50,
+ "monitor_notes": "The Lasso picks its penalty on the monitor band, so its bands come from the base model's fit document with the recorded split (refit_full_train removed, patience 50), exactly as the full-span zoo did.",
+ "bands_path": "fits/wf-wider-mlp64/pooled/context_chain/wider_mlp64/{fold}/pooled/fit/metadata.json",
+ "component_source": "lasso_top10",
+ "methods": {
+  "qa5": {
+   "recorded": [
+    "stable_combination",
+    "qa5_disp.json"
+   ],
+   "base": "wide-mlp64"
+  },
+  "cdf5": {
+   "recorded": [
+    "stable_combination",
+    "cdf5_shrink.json"
+   ],
+   "base": "wide-mlp64"
+  },
+  "m12-wide-mlp64": {
+   "recorded": [
+    "repo",
+    "run-edge-method-12-stack-rolling-by-dte.json"
+   ],
+   "base": "wide-mlp64"
+  }
+ }
+}
