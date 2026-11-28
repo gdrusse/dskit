@@ -206,7 +206,7 @@ configs/                   # source-fixture.json, suite-fixture.json, run-fixtur
                            # run-theta-exact-expiry-tables.json (ADR-0276: frozen Theta export through
                            # ThetaExactExpiryTables; a new output_root per run)
                            # strike-screen-panel-source.json + strike-screen-folds-screen.jsonl (ADR-0276: the arms study repurposed; ONLY materializes the
-                           # exact-expiry panel through cdf_study --stage panel; pinned to strike-screen-protocol.json by tests/test_strike_screen_panel_source.py); panel-source-rule-fixes.json (ADR-0330: strike-screen-panel-source.json with the curve's quote mask without open interest and the inner-block estimator; pinned to it by tests/test_panel_source_rule_fixes.py)
+                           # exact-expiry panel through cdf_study --stage panel; pinned to strike-screen-protocol.json by tests/test_strike_screen_panel_source.py); panel-source-rule-fixes.json (ADR-0330: strike-screen-panel-source.json with the curve's quote mask without open interest, the inner-block estimator and, Amendment 1, min_dte 8: no row in the last week before expiry; pinned to it by tests/test_panel_source_rule_fixes.py)
                            # run-strike-screen-fits-{L1,L3,timing,control}.json (ADR-0276: the CDFExperiment fit documents, L1 and L3 losses,
                            # the L1 timing pilot and the block-shift label control; placeholder pins; tests/test_strike_screen_fits.py; no fit until registered)
                            # run-strike-region-scores.json + run-strike-region-scores-L3.json (ADR-0276: StrikeRegionScores over one CDFExperiment output each;

@@ -3297,6 +3297,16 @@ def test_min_dte_counts_the_rows_it_leaves_out_by_symbol_and_only_when_declared(
     assert floored.provenance()["refused"]["QQQ"]["below_min_dte"] == len(default) - len(out)
 
 
+def test_min_dte_attributes_the_dropped_rows_to_their_own_symbol(tmp_path, monkeypatch):
+    panel = ExactExpiryCDFPanel({**_fe_fixture(tmp_path, monkeypatch, "a"), "min_dte": 8})
+    panel.refused = {"AAA": {}, "BBB": {}, "CCC": {}}          # CCC is configured and has no row
+    frame = pd.DataFrame({"symbol": ["AAA", "AAA", "AAA", "BBB", "BBB"], "calendar_dte": [7, 8, 3, 7, 9]})
+    kept = panel._above_floor(frame)
+    assert kept.symbol.tolist() == ["AAA", "BBB"] and kept.calendar_dte.tolist() == [8, 9]
+    assert kept.index.tolist() == [0, 1]
+    assert {s: c["below_min_dte"] for s, c in panel.refused.items()} == {"AAA": 2, "BBB": 1, "CCC": 0}
+
+
 def test_min_dte_enters_the_cache_identity_only_when_declared(tmp_path, monkeypatch):
     cfg = _fe_fixture(tmp_path, monkeypatch, "a")
     monkeypatch.setattr("dskit.onboarding.OnboardingRoot",
