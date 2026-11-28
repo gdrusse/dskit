@@ -1,0 +1,57 @@
+Command python3 /home/russell/storage-investigation/storage_guard.py run --write /home/russell/data/dskit/cache/t-copula-julia/v20261127 0.5 --write /home/russell/data/dskit/runs/t-copula-development/v20261127 0.15 --peak-ram-gib 1.5 -- env JULIA_DEPOT_PATH=/home/russell/data/dskit/cache/t-copula-julia/v20261127 JULIA_NUM_PRECOMPILE_TASKS=1 JULIA_PKG_PRECOMPILE_AUTO=0 OPENBLAS_NUM_THREADS=2 JULIA_NUM_THREADS=1 TMPDIR=/home/russell/data/dskit/runs/t-copula-development/v20261127/tmp /home/russell/.local/bin/julia --startup-file=no --project=/home/russell/wt/codex-t-copula-20261127/julia/DskitCopulas /home/russell/wt/codex-t-copula-20261127/julia/DskitCopulas/benchmark/run.jl
+Julia=1.13.4 Distributions=0.25.136 julia_threads=1 blas_threads=2 blas=LBTConfig([ILP64] libopenblas64_.so) package_load_seconds=0.283667132
+
+case origins=200 coordinates=8 later_origins=60 scenarios=1024 batch_size=256
+train_records=1531 score_records=463 fit_pairs=28 score_edges=7 finite_df_grid=[2,4,8,16,32]
+fit first_seconds=0.006976895 first_allocated_bytes=5420912 compile_seconds=0.0
+fit warm_seconds=[0.006763731, 0.006772004, 0.006603501] warm_allocated_bytes=[5420912, 5420912, 5420912]
+prospective_score first_seconds=0.002124304 first_allocated_bytes=1620360 compile_seconds=0.0
+prospective_score warm_seconds=[0.00207993, 0.002054178, 0.002057863] warm_allocated_bytes=[1620360, 1620360, 1620360]
+draw first_seconds=0.001401631 first_allocated_bytes=1450784 compile_seconds=0.0
+draw warm_seconds=[0.001268638, 0.00123402, 0.001518257] warm_allocated_bytes=[1450784, 1450784, 1450784]
+price_inverse first_seconds=4.0613e-5 first_allocated_bytes=65624 compile_seconds=0.0
+price_inverse warm_seconds=[9.2898e-5, 3.5322e-5, 3.8105e-5] warm_allocated_bytes=[65624, 65624, 65624]
+selected_df=4.0 train_terms=1280 later_terms=391 effective_shrinkage=0.2 median_ties=0 prior_only_pairs=0
+initial_case_total_seconds=0.492654899 compile_seconds=0.163852277 includes_synthetic_input_setup_and_small_warm_repeats=true
+
+case origins=1070 coordinates=1328 later_origins=240 scenarios=2048 batch_size=256
+train_records=1349750 score_records=302881 fit_pairs=881128 score_edges=64 finite_df_grid=[2,4,8,16,32]
+fit first_seconds=0.6017558 first_allocated_bytes=582123328 compile_seconds=0.0
+fit warm_seconds=[0.532602233, 0.536875882, 0.528400763] warm_allocated_bytes=[582100928, 582098504, 582098504]
+prospective_score first_seconds=0.077238779 first_allocated_bytes=112290752 compile_seconds=0.0
+prospective_score warm_seconds=[0.073993948, 0.08016387, 0.076697688] warm_allocated_bytes=[112290752, 112290752, 112290752]
+draw first_seconds=0.482877657 first_allocated_bytes=484137312 compile_seconds=0.0
+draw warm_seconds=[0.475538668, 0.476772957, 0.487411552] warm_allocated_bytes=[484137312, 484137312, 484137312]
+price_inverse first_seconds=0.002350547 first_allocated_bytes=21758040 compile_seconds=0.0
+price_inverse warm_seconds=[0.010698734, 0.002485069, 0.002491087] warm_allocated_bytes=[21758040, 21758040, 21758040]
+selected_df=4.0 train_terms=61830 later_terms=13942 effective_shrinkage=0.4315920801803359 median_ties=0 prior_only_pairs=0
+
+Gaussian draw control coordinates=2 scenarios=2048 batch_size=256
+gaussian_draw first_seconds=0.000189502 first_allocated_bytes=35424 compile_seconds=0.0
+gaussian_draw warm_seconds=[0.000101489, 0.000108605, 0.00010129] warm_allocated_bytes=[35424, 35424, 35424]
+process_peak_rss_bytes=793972736
+	Command being timed: "python3 /home/russell/storage-investigation/storage_guard.py run --write /home/russell/data/dskit/cache/t-copula-julia/v20261127 0.5 --write /home/russell/data/dskit/runs/t-copula-development/v20261127 0.15 --peak-ram-gib 1.5 -- env JULIA_DEPOT_PATH=/home/russell/data/dskit/cache/t-copula-julia/v20261127 JULIA_NUM_PRECOMPILE_TASKS=1 JULIA_PKG_PRECOMPILE_AUTO=0 OPENBLAS_NUM_THREADS=2 JULIA_NUM_THREADS=1 TMPDIR=/home/russell/data/dskit/runs/t-copula-development/v20261127/tmp /home/russell/.local/bin/julia --startup-file=no --project=/home/russell/wt/codex-t-copula-20261127/julia/DskitCopulas /home/russell/wt/codex-t-copula-20261127/julia/DskitCopulas/benchmark/run.jl"
+	User time (seconds): 10.69
+	System time (seconds): 0.78
+	Percent of CPU this job got: 73%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:15.54
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 775364
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 335854
+	Voluntary context switches: 297
+	Involuntary context switches: 123
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 16
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+
+Exit 0

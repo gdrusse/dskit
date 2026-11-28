@@ -1,0 +1,138 @@
+{
+  "status": "Editorial publication of reviewed artifacts",
+  "implementation_candidate": "9b476c1eb4b7a31c5329adfcc06330ad7d86b2a9",
+  "research_report": {
+    "source": "Joint dependence model selection.md",
+    "source_sha256": "a52d06727c5ad92628ac39042eee179eadf2c295384f9e38882d5f3f2813e351",
+    "published": "children/index_options/docs/research/joint-dependence-model-selection/2026-11-28-synthesis.md",
+    "published_sha256": "ef09c933884c895532201e6489f938b70bd53a4dc38a8f0cdea53ed8dbf0dc7b",
+    "editing": [
+      "GitHub math fence delimiters for two display equations",
+      "Seven relative citation paths substituted",
+      "Question, Finding and Sources headings for the journal entry"
+    ],
+    "link_rewrites": [
+      {
+        "original_target": "claude-mio-forecast-to-scenario-chain.tex",
+        "published_target": "children/index_options/docs/explanations/t-copula/source/claude-mio-stages-5-11.pdf",
+        "link_occurrences": 3
+      },
+      {
+        "original_target": "path.csv",
+        "published_target": "children/index_options/docs/decisioning/path.csv",
+        "link_occurrences": 3
+      },
+      {
+        "original_target": "benchmark-v2.txt",
+        "published_target": "children/index_options/docs/explanations/t-copula/evidence/benchmark-v2.txt",
+        "link_occurrences": 1
+      }
+    ]
+  },
+  "original_draft_reference": {
+    "label": "Excerpt of Claude’s original forecast-to-scenario draft",
+    "original_pdf_sha256": "b9337db8378cb68b81ec3ac0c938a6e20ccf15bd680ffe29c9f2cb80f385dea0",
+    "original_tex_sha256": "9596de611c5e44f468055ae8258b79d7df2c1ad957219de70532359be1cc9ef4",
+    "original_pages": [
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21
+    ],
+    "complete_stages": [
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "published": "children/index_options/docs/explanations/t-copula/source/claude-mio-stages-5-11.pdf",
+    "published_sha256": "78d00afbc932701b94ce328836223a44195f8cfd2710e105ff6a293443150ce2",
+    "operation": "MuPDF page extraction with byte-identical extracted page text"
+  },
+  "unchanged_copies": [
+    {
+      "source": "t-copula-implementation.pdf",
+      "published": "children/index_options/docs/explanations/t-copula-implementation.pdf",
+      "sha256": "102ca402f42707d277d0ac3d0c95767b4be0b6de7ab8fd80128e57d58a1a6b74",
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "source": "comparison.json",
+      "published": "children/index_options/docs/explanations/t-copula/comparison.json",
+      "sha256": "72f90d38b4c4681143b62153c0e8f8a190b3c3961d682817a86932dc3990c2b4",
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "source": "joint-dependence-model-selection.canvas.tsx",
+      "published": "children/index_options/docs/explanations/t-copula/joint-dependence-model-selection.canvas.tsx",
+      "sha256": "b7826b5c74e86566468d00d92048fe3027c9fa9b6b5124ef6a46d91880da09d1",
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "source": "canvas-validation.json",
+      "published": "children/index_options/docs/explanations/t-copula/evidence/canvas-validation.json",
+      "sha256": "dc206877d529a0d4ea615f129915ea0e592fa76bf7112cfa2720cd9977e8c9e5",
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "source": "synthesis-review.md",
+      "published": "children/index_options/docs/explanations/t-copula/evidence/synthesis-review.md",
+      "sha256": "51fddb731a4a1de9412fe08f99c62fb2b749515c28071afa05c65df63419984d",
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "source": "review-lock.json",
+      "published": "children/index_options/docs/explanations/t-copula/evidence/review-lock.json",
+      "sha256": "4da3df7439eeca812c3c697a30cbe58ddf4536bbaf8f10b4be8fd913201b33aa",
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "source": "implementation-evidence.md",
+      "published": "children/index_options/docs/explanations/t-copula/evidence/implementation-evidence.md",
+      "sha256": "6dab652d21d149d2b1ebba16086057abfda20a9d0d49dbb78b1b2a37aeb29e12",
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "source": "benchmark-v1.txt",
+      "published": "children/index_options/docs/explanations/t-copula/evidence/benchmark-v1.txt",
+      "sha256": "70289eec213dc77a4331d4275a87624cc3d4e32c2c583818c3d6b0dd06252c11",
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "source": "benchmark-v2.txt",
+      "published": "children/index_options/docs/explanations/t-copula/evidence/benchmark-v2.txt",
+      "sha256": "cb98379b051bec9c4c191c300bf8304611ada558075866b5bdbffa371cd06dce",
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "source": "root-focused-checks.json",
+      "published": "children/index_options/docs/explanations/t-copula/evidence/root-focused-checks.json",
+      "sha256": "13558678d89b02b0bf0a0ba0ee7439080bf19e35246346e0a18bfd97bedf6931",
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "source": "pdf-visual-review.json",
+      "published": "children/index_options/docs/explanations/t-copula/evidence/pdf-visual-review.json",
+      "sha256": "c3d54a87a976a3bd21fc19cb3c3d6286a3820165e062dcc8c12fa2606fdc3f4f",
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "source": "correctness-r1.md",
+      "published": "children/index_options/docs/explanations/t-copula/evidence/correctness-r1.md",
+      "sha256": "0f2e8e52431334f96b833949d7997bd42695534a0b8222594a5643295616d341",
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "source": "tests-r1.md",
+      "published": "children/index_options/docs/explanations/t-copula/evidence/tests-r1.md",
+      "sha256": "81813a4da8972b52eab6c88c21ec2f27f89dce4c5df99e75ea3c384e2b48d621",
+      "operation": "byte-for-byte copy"
+    }
+  ]
+}

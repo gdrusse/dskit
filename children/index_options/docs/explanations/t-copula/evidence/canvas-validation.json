@@ -1,0 +1,31 @@
+{
+  "artifact": "/mnt/c/Users/russe/.cursor/projects/empty-window/canvases/joint-dependence-model-selection.canvas.tsx",
+  "sha256": "b7826b5c74e86566468d00d92048fe3027c9fa9b6b5124ef6a46d91880da09d1",
+  "typescript": {
+    "version": "6.0.3",
+    "compiler": "/home/russell/.cursor-server/bin/8f2a112cb2845a97b75fd932ea5c470579ca4060/extensions/node_modules/typescript/lib/typescript.js",
+    "node": "v22.22.1",
+    "mode": "Strict single-file compile with real installed canvas SDK",
+    "diagnostics": 0
+  },
+  "smoke": {
+    "mode": "Transpiled component evaluated with stubbed SDK/JSX host",
+    "candidateDetailsExercised": [
+      "Independent uniforms",
+      "Dense shrunken Gaussian",
+      "Dense matched Student t",
+      "Structured Gaussian",
+      "Empirical checkerboard",
+      "Asymmetric common factor",
+      "Truncated vine"
+    ],
+    "referenceActionsChecked": 8,
+    "reportActionPayloadChecked": true,
+    "reportFileExists": true
+  },
+  "visualRender": "Not verified in the live canvas host",
+  "limits": [
+    "Real host dispatch and responsive visual layout were not exercised",
+    "No model fitting or benchmark execution"
+  ]
+}
