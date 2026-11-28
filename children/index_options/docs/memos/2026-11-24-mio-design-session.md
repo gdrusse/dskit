@@ -1942,3 +1942,158 @@ Evidence so far (27 November).
   filled; the network gets no ticker indicator. The 35 names and their 2020-2023 record are in
   `acceptance/stock-rule.json`: 2.3% without a curve overall, six names above 10% in some later year (DVN, EOG,
   NEM, UAL, VRTX, WDC). These rulings replace Path rows A0008, A0009 and A0010 once the owner records them.
+
+## 28 November: zoo rerun on the second panel
+
+**Result in short.** Everything the earlier zoo tested that the second panel can feed was rerun on it overnight:
+27 models, 71 methods and the Lasso10 blend, 99 candidates, no failed unit. The best group beats the raw market
+curve by about 1.2% and the recalibrated market by about 0.65% over 2020-2023, and its members cannot be told
+apart; the plain 21-input model is one of them. Largest caveats: every candidate loses to the raw market in 2022,
+and the models with more inputs ran with 2% to 19% of their rows carrying a median-filled input, so they have not
+had a fair test.
+
+- **Contract.** ADR-0330 Amendment 1, Decision 5, and the owner's instruction of 27 November to run all methods
+  through 2023 overnight. Path rows cited: A0002 (score), A0005 (promotion rule), A0008 (no per-fit epoch
+  selection). None is changed. The run read nothing dated 2024 or later.
+- **Data.** The second panel, `/home/russell/data/index_options/derived/full-span-panel-rule-fixes/v20261127/`
+  (`panel/frame.parquet`, sha256 `575613f9d0a62f8270480ac026f3b06d937c13e04c1122eb1cb328fe043ecae4`): 375,004
+  forecasts of 35 stocks, quoted 2017-01-03 to 2023-12-21, none in the last week before expiry; 365,820 carry a
+  market curve. A forecast without a curve is neither trained on nor scored.
+- **Procedure.** The earlier zoo's. Walk-forward by year: 2019 is warm-up, then 2020, 2021, 2022 and 2023 are each
+  forecast by a model trained on earlier years only. Fixed epochs, no selection per fit (A0008). The earlier zoo
+  trained 1 epoch on about 1.62 million rows; the largest training window here has about 0.31 million, so the zoo
+  ran 5 epochs to keep the number of optimizer steps, and three headline models also ran 1 epoch (suffix `-e1`).
+  The locked recipe ran at its own 6 epochs (`locked-s11`) and at 30 (`locked-s11-matched`), seed 11 only.
+- **What ran.** 128 units, one at a time, each admitted by the storage guard and capped in memory: 27 fits, 27
+  scorings and 68 methods, then the Lasso10 bands, fit and components and the methods qa5, cdf5 and 12 on
+  `wide-mlp64`. 27 November 22:56 EST to 28 November 08:46 EST, 8.7 hours of unit time. No unit failed. Rounds 2
+  and 3 ended early: the placement tool held jobs back on its memory reserve while the input study below was
+  reading. The runner started the next round by itself and no unit was lost.
+- **Not run.** `r2` (37 of its 81 inputs are not columns of this panel), `chronos2-frozen-fusion` (its pretrained
+  encoder states exist for the first panel's rows only) and method 10 (its features come from another panel).
+  The locked recipe's five-seed pool was not run, one seed only. Nothing was tuned on this panel.
+- **Departures from the ADR, taken without the owner.** (1) Decision 5 asks that every input beyond the 21 pass
+  the fill report of Decision D before a fit. That report was not run: no shipped reader takes this panel as it
+  is. The gate applied was computed by a script on the panel (`panel/input-gate.json`): an input is left out of
+  every model when its worst yearly missing share in 2017-2019, on rows with a curve, exceeds 10%. Four fail:
+  `chain_log_skew25_change_5` and `chain_log_curvature25_change_5` (24.4%), `chain_log_atm_iv_change_5` (18.7%)
+  and `term_slope_next` (16.3%). (2) Decision 4 says no per-stock head is fitted. The recorded models `tcn` and
+  `tcn-lr1e4` have one and were fitted so that the zoo is complete (methods 18 and 19 read `tcn`); neither can
+  go forward, and they rank 94 and 85. (3) Decision 5 names A0007 beside A0005; the ranking computes A0005 only.
+- **Scoring.** `evaluate_zoo.py` in the run folder scores every candidate on the same 207,577 validation rows
+  (52,391, 53,187, 52,404 and 49,595 for 2020 to 2023). The score is A0002's threshold-weighted CRPS on the
+  13-point grid; lower is better. A gain is the paired mean difference in percent of the reference's score, with a
+  95% interval clustered by expiry and by stock. On these rows the raw market curve scores 0.52665, the
+  recalibrated market 0.52377, the per-name baseline 0.53300 and the pooled baseline 0.53182.
+
+| Rank | Candidate | Score | Gain over raw market | Over recalibrated | 2020 | 2021 | 2022 | 2023 |
+|---|---|---|---|---|---|---|---|---|
+| 1 | method 52 | 0.52023 | 1.22 [-0.25, 2.69] | 0.68 [0.34, 1.01] | 3.44 | 2.87 | -4.04 | 2.27 |
+| 2 | `fl21`: 21 inputs | 0.52029 | 1.21 [-0.13, 2.55] | 0.67 [0.31, 1.02] | 3.65 | 2.33 | -3.36 | 1.87 |
+| 3 | method 65 | 0.52031 | 1.21 [-0.21, 2.62] | 0.66 [0.34, 0.98] | 3.25 | 2.90 | -3.93 | 2.27 |
+| 4 | method 53, the earlier winner | 0.52035 | 1.20 [-0.23, 2.63] | 0.65 [0.35, 0.96] | 3.43 | 2.69 | -3.89 | 2.22 |
+| 5 | `fl21-e1`: 21 inputs, 1 epoch | 0.52040 | 1.19 [0.64, 1.73] | 0.64 [-0.35, 1.64] | 2.31 | 1.83 | -0.78 | 1.22 |
+| 18 | `locked-s11`: locked recipe, one seed | 0.52081 | 1.11 [-0.32, 2.54] | 0.56 [0.19, 0.94] | 3.45 | 2.26 | -3.53 | 1.92 |
+| 49 | `wider-mlp64`: 102 inputs | 0.52261 | 0.77 [-0.79, 2.32] | 0.22 [-0.60, 1.04] | 3.34 | 2.68 | -5.38 | 2.03 |
+| 63 | `wide-mlp64`: 87 inputs | 0.52359 | 0.58 [-1.14, 2.30] | 0.03 [-0.83, 0.89] | 3.24 | 2.57 | -6.14 | 2.25 |
+| 72 | Lasso10 | 0.52429 | 0.45 [-1.02, 1.91] | -0.10 [-0.74, 0.54] | 3.39 | 1.64 | -5.55 | 1.92 |
+
+Gains are in percent; a year column is the gain over the raw market in that year. All 99 rows are in
+`leaderboard.csv`.
+
+- **Reading.** The top of the table is a tie: `fl21` against method 52 is -0.01% [-0.36, 0.34], against method 53
+  0.01% [-0.27, 0.30], and it is not separated from 53 of the other 98 candidates. It is ahead of 45 with an
+  interval clear of zero and behind none. Against the raw market only the one-epoch `fl21-e1` has an interval
+  above zero; against the recalibrated market 40 of the 99 do, the first four among them.
+  88 of the 99 pass A0005 as computed here; the 11 that fail are methods 07, 31a, 37, 38, 43, 44 and
+  45 and the models `tcn`, `wide-tcn32`, `patchtst_hf32` and `dlinear`. No candidate beats the raw market in 2022;
+  the best is `fl21-e1` at -0.78%.
+- **21 inputs against more.** `fl21` is 0.63% ahead of the 87-input `wide-mlp64` [-0.15, 1.41]; by year 0.42,
+  -0.25, 2.62 and -0.38, so the lead is 2022. This is not a verdict on the wider sets, because the model fills a
+  missing input with the training median. Share of fitted rows with at least one filled input, 2017 to 2023
+  (`filled-rows.json`): none for 21 inputs; 2.1% to 3.9% for 63; 5.1% to 8.1% for 64; 10.2% to 17.0% for 87;
+  11.4% to 18.9% for 102. The gate above bounds each input at 10%, not the row.
+- **Epochs.** One epoch does as well as five: `fl21` is 0.02% ahead of `fl21-e1` [-0.84, 0.88], and `f21-e1` and
+  `wide-mlp64-e1` score better than their five-epoch twins (0.52043 against 0.52196, 0.52323 against 0.52359).
+  With five epochs the forecast moves further from the market: in all three pairs the 2022 loss is 1.6 to 2.6
+  points larger and the 2020 and 2023 gains are larger.
+- **Against the earlier zoo.** Of its ten best methods, seven are in the top 15 here and all are in the top 40.
+  Method 53 moved from 1 to 4, method 52 from 4 to 1, method 65 from 16 to 3 and method 36 from 39 to 7.
+
+### Input study and recount
+
+Run beside the zoo at the owner's request, inputs only, to treat the gaps of the wider sets the way the curve's
+were treated. Asset `/home/russell/data/index_options/runs/wide-input-study/v20261128/`: four study lanes, each
+re-derived by a second agent (`workflow-result.json`), and a whole-panel recount (`recount/summary.json`).
+
+- **Recount.** `recount/full_recount.py` recomputes the 19 same-day inputs of all 365,820 forecasts with a curve
+  from the vendor's quotes, under today's rules and under the proposed ones. Under today's rules it reproduces
+  the stored panel on every forecast and every input. 245 stock-years, 2 minutes 41 seconds, 1.3 GiB peak. Every
+  read is bounded by date at the read call; the latest date returned is 2023-12-29.
+
+| Rows missing at least one of the 19 | 2017 | 2018 | 2019 | 2020 | 2021 | 2022 | 2023 | Stock-years over 10% |
+|---|---|---|---|---|---|---|---|---|
+| Today | 14.30% | 11.09% | 7.27% | 6.20% | 6.36% | 5.47% | 6.66% | 67 of 245 |
+| Open-interest decode only | 9.62% | 7.71% | 7.27% | 6.20% | 6.36% | 5.46% | 6.57% | 43 |
+| All rule fixes, put share | 5.28% | 4.27% | 4.14% | 3.70% | 3.16% | 3.14% | 2.86% | 10 |
+| All rule fixes, smoothed ratio | 2.65% | 1.76% | 1.55% | 1.75% | 1.15% | 0.93% | 0.53% | 6 |
+| The same without the two volume inputs | 0.81% | 0.61% | 0.50% | 1.24% | 0.67% | 0.38% | 0.18% | 0 |
+
+- **The proposed fixes.** (1) Decode: the vendor writes "no open interest" as an empty value until November 2018
+  and on a new contract's first day from about November 2022, and as 0 in between. The builder drops a quote with
+  an empty value; the surface code already counts it as 0. Read it as 0, except on the 10 stock-days where every
+  quote of the stock is empty (CRM 4 to 14 May 2020, ISRG 6 February 2019). (2) 25-delta skew and curvature: the
+  mean of the |delta| 0.20 to 0.30 band when it holds a contract, else an interpolation at 0.25. (3)
+  At-the-money volatility: an interpolation at spot when no strike lies within 2.5%. (4) The put/call
+  open-interest ratio, undefined when one side is zero: either the put share P/(P+C), still undefined when both
+  are zero, or log((P+1)/(C+1)), which is 0 there and follows the `log1p` the other open-interest inputs use.
+- **What is left.** With the smoothed ratio the remaining gaps are chains with no trade that day, where the
+  put/call volume imbalance and the volume-weighted spread have no value: 1.84% of 2017 rows miss only those two.
+  The six stock-years still over 10% (CHTR 2017 to 2019, HUM 2017, NOW 2017, VRTX 2017) are over it because of
+  those two inputs alone. `chain_log_volume` is 0 on such a chain, so "no trade" stays visible without them.
+- **Today's values are wrong too, not only missing.** The decode changes the three volume inputs on 56% to 57% of
+  the 2017 rows and 55% to 56% of the 2018 rows that have a value today (by more than half a standard deviation
+  on 3% to 9%), and the six smile-node inputs on 9% to 18%.
+- **Other findings** (sampled, not recounted). Open interest stamped on day t is the close of t-1, published
+  before the open of t: no look-ahead. A lag is a row shift with no date check, and lagged open interest restarts
+  every January because the shift runs inside each (stock, year) build part. A one-day change has no value on an
+  expiry's first row, 12,156 rows; about a fifth would exist if the surface were built beyond 60 days to expiry.
+  `term_slope_next` needs an expiry beyond 60 days in 99.7% of sampled cases. Of the unusual curves, the 1,784
+  wide ones are real pricing; the 111 narrow and 69 shifted ones are mostly artefacts, and a three-part exclusion
+  rule would treat 1,588 curves (0.43%) as absent.
+- **A defect in the 21-input set as well.** The trading calendar counts 5 December 2018, when the market was
+  closed, as a session. On 4,180 forecasts quoted 22 October to 4 December 2018 the count of sessions to expiry
+  is one too high and `reference_scale` is overstated by 2.15% in the median (9.54% at most). The zoo ran with it.
+- **A rule slip, told to the owner on 28 November.** Three study scripts and one check read whole row groups of
+  the vendor export, which also hold quotes of 2024 and 2025, and filtered by date afterwards. Every study output
+  was scanned: no value dated 2024 or later was used, printed or saved. The recount does not read that way.
+
+### Open with the owner
+
+Nothing here is decided or started.
+
+1. The wider sets: adopt the decode and the rule fixes, with the smoothed ratio or the put share, and keep or
+   remove the two volume inputs; or leave the wider sets as they are. Adoption means an ADR amendment first, then
+   test-first code, a rebuild of the surface, the features and the panel, the gate and a rerun.
+2. The curve exclusion rule and the calendar fix. Both change the 21-input set, so every model is refitted.
+3. Which candidate goes forward; whether the 35 names become the locked list (six exceed 10% without a curve in a
+   later year); the Path rows that replace A0008, A0009 and A0010.
+4. The fill report of Decision D, still not run.
+
+### Evidence and reproducibility
+
+- Run folder `/home/russell/data/index_options/runs/zoo-rule-fixes/v20261127/`: `settings.json`, `plan.json`,
+  `resources.json`, `docs/` (the 125 documents as they ran), `receipts/` (a marker and a time and memory record
+  per unit), `night.log`, `leaderboard.csv` (sha256
+  `e6054527a3ecc8cbd00124d01720831403747bfeb4d53f3084990c005c695159`), `leaderboard.json` (with `base_against`,
+  `fl21` paired against every other candidate) and `filled-rows.json`.
+- Fits, scored rows and method outputs: 43 GiB under `/mnt/d/full-span-rule-fixes-20261127/zoo/`, on the D: disk,
+  which has no verified backup.
+- Repository copies of the documents: `configs/zoo-rule-fixes-20261127/` (commit `5b2b5e95`); journal rows A1415
+  to A1512.
+- To rescore: `PYTHONPATH=<checkout> python -B evaluate_zoo.py` in the run folder.
+- Checked: every unit has its marker and no failure record; the leaderboard's gains of method 53 in 2020 and 2021
+  (3.43% and 2.69%) equal the method's own `tables/windows.csv`; the repository copies equal what ran
+  (`twins.py check`); the recount equals the stored panel.
+- Not checked: no second agent reviewed the run scripts; the A0007 cell gate was not tabulated; the commits of
+  this branch are not pushed.
