@@ -1920,4 +1920,25 @@ Evidence so far (27 November).
   limit the builder never sets; a class whose module has no file is not bound into the cache identity.
 - **Noted for the panel build.** `panel_extension.verify_overlap` requires an equal schema, and the strike-screen
   protocol pins 118 chain columns, so a panel carrying the two audit columns is a separate asset.
-- **Real-data row.** Not run yet: on 27 November both admission gates refused the launch for low host memory.
+- **Real-data row, run 27 November on commit `4c10884e`.** Inputs only, through the candidate builder on the
+  frozen chain archive; outputs in `/home/russell/data/index_options/runs/rule-fix-recount/v20261127/acceptance/`.
+  - Defaults: 12 stocks over seven years, 84 of 84 stock-years identical to the frozen raw-chain features
+    (144,719 keys, 88 columns, no differing value).
+  - Both options, all 166 stocks: the built flag equals the recount's on 791,230 of 791,231 keys of 2017-2019,
+    coverage agrees to 3e-14 on the 573,706 common curves, and the cut counts agree on every one. The one key
+    that differs (VFC, 2018-07-25, expiry 2018-08-24) is a tie in the recount, not in the builder: VFC's
+    price-basis factor is not a simple fraction, two neighbouring floats reproduce the stored spot, and they put
+    one strike on opposite sides of the forward (`vfc_tie.py`). On the 40-date sample of 2020-2023 the flags
+    agree on all 43,823 keys.
+  - The recount's reason label differs on 1,677 rejected keys (`inadequate_wing_support` there,
+    `insufficient_strikes` in the builder). The recount only tried the cut when the gap was the first failing
+    clause; the builder always cuts first. Both reject, so no flag changes.
+  - Forecasts without a curve on the frozen panel's rows: 41.6% to 27.5% in 2017-2019 and 31.7% to 17.0% in
+    2020-2023 (189,682 of 1,115,341 still without: too few strikes 144,680, a thin wing or inner gap 44,023).
+- **Owner rulings on the inputs, 27 November.** No model input is imputed at scale. The two rule fixes are
+  adopted; forecasts in the last week before expiry are dropped (58.2% without a curve in 2017-2019, 34.0% in
+  2020-2023, for nearly every stock); a stock is kept when at most 10% of its remaining forecasts lack a curve
+  in every year of 2017-2019, which keeps 35 of 166; the few gaps left inside kept stocks are dropped, not
+  filled; the network gets no ticker indicator. The 35 names and their 2020-2023 record are in
+  `acceptance/stock-rule.json`: 2.3% without a curve overall, six names above 10% in some later year (DVN, EOG,
+  NEM, UAL, VRTX, WDC). These rulings replace Path rows A0008, A0009 and A0010 once the owner records them.
