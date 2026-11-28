@@ -2095,5 +2095,4 @@ Nothing here is decided or started.
 - Checked: every unit has its marker and no failure record; the leaderboard's gains of method 53 in 2020 and 2021
   (3.43% and 2.69%) equal the method's own `tables/windows.csv`; the repository copies equal what ran
   (`twins.py check`); the recount equals the stored panel.
-- Not checked: no second agent reviewed the run scripts; the A0007 cell gate was not tabulated; the commits of
-  this branch are not pushed.
+- Not checked: no second agent reviewed the run scripts; the A0007 cell gate was not tabulated.
